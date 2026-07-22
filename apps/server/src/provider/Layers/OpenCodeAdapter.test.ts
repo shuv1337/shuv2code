@@ -113,9 +113,10 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       return {
         url,
         exitCode: Effect.never,
+        protocol: "v1",
       };
     }),
-  connectToOpenCodeServer: ({ serverUrl }) =>
+  connectToOpenCodeServer: ({ serverUrl, serverPassword }) =>
     Effect.gen(function* () {
       const url = serverUrl ?? "http://127.0.0.1:4301";
       // Always register a finalizer so the closeCalls/closeError probes fire;
@@ -132,6 +133,8 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         url,
         exitCode: null,
         external: Boolean(serverUrl),
+        protocol: "v1",
+        ...(serverPassword ? { serverPassword } : {}),
       };
     }),
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),

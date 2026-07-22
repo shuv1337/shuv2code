@@ -12,6 +12,7 @@ import { ServerConfig } from "../../config.ts";
 import {
   OpenCodeRuntime,
   OpenCodeRuntimeError,
+  detectOpenCodeProtocolFromVersionOutput,
   type OpenCodeRuntimeShape,
 } from "../opencodeRuntime.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
@@ -57,6 +58,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
     Effect.succeed({
       url: "http://127.0.0.1:4301",
       exitCode: Effect.never,
+      protocol: "v1",
     }),
   connectToOpenCodeServer: ({ serverUrl }) =>
     Effect.gen(function* () {
@@ -71,6 +73,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         url: serverUrl ?? "http://127.0.0.1:4301",
         exitCode: null,
         external: Boolean(serverUrl),
+        protocol: "v1",
       };
     }),
   runOpenCodeCommand: () =>
@@ -149,6 +152,45 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
       NodeAssert.equal(snapshot.status, "error");
       NodeAssert.equal(snapshot.installed, true);
       NodeAssert.equal(snapshot.message, "Failed to execute OpenCode CLI health check.");
+    }),
+  );
+
+  it.effect("accepts OpenCode V2 channel prerelease builds without the V1 version floor", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.versionStdout = "opencode v0.0.0-next-202607220047\n";
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: ["openai"],
+          all: [
+            {
+              id: "openai",
+              name: "OpenAI",
+              models: {
+                "gpt-5.4": {
+                  id: "gpt-5.4",
+                  name: "GPT-5.4",
+                },
+              },
+            },
+          ],
+          default: {},
+        },
+        agents: [{ name: "build", hidden: false, mode: "primary" }],
+      };
+
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+
+      NodeAssert.equal(snapshot.status, "ready");
+      NodeAssert.equal(snapshot.installed, true);
+      NodeAssert.equal(snapshot.version, "0.0.0-next-202607220047");
+      NodeAssert.equal(
+        snapshot.models.some((model) => model.slug === "openai/gpt-5.4"),
+        true,
+      );
+      NodeAssert.equal(
+        detectOpenCodeProtocolFromVersionOutput(runtimeMock.state.versionStdout),
+        "v2",
+      );
     }),
   );
 

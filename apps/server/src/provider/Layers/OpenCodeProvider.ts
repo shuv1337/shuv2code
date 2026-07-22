@@ -18,6 +18,7 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import {
+  detectOpenCodeProtocolFromVersionOutput,
   OpenCodeRuntime,
   openCodeRuntimeErrorDetail,
   type OpenCodeInventory,
@@ -29,6 +30,13 @@ const OPENCODE_PRESENTATION = {
   showInteractionModeToggle: false,
 } as const;
 const MINIMUM_OPENCODE_VERSION = "1.14.19";
+
+export function parseOpenCodeCliVersion(output: string): string | null {
+  return (
+    output.match(/(?:^|\s)v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)/)?.[1] ??
+    parseGenericCliVersion(output)
+  );
+}
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
   readonly cause: unknown;
@@ -363,7 +371,8 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     if (versionExit._tag === "Failure") {
       return fallback(Cause.squash(versionExit.cause));
     }
-    version = parseGenericCliVersion(versionExit.value.stdout) ?? null;
+    const protocol = detectOpenCodeProtocolFromVersionOutput(versionExit.value.stdout);
+    version = parseOpenCodeCliVersion(versionExit.value.stdout);
 
     if (!version) {
       return fallback(
@@ -373,7 +382,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
         null,
       );
     }
-    if (compareSemverVersions(version, MINIMUM_OPENCODE_VERSION) < 0) {
+    if (protocol === "v1" && compareSemverVersions(version, MINIMUM_OPENCODE_VERSION) < 0) {
       return buildServerProvider({
         presentation: OPENCODE_PRESENTATION,
         enabled: openCodeSettings.enabled,
@@ -397,21 +406,24 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
             const server = yield* openCodeRuntime.connectToOpenCodeServer({
               binaryPath: openCodeSettings.binaryPath,
               serverUrl: openCodeSettings.serverUrl,
+              ...(openCodeSettings.serverPassword
+                ? { serverPassword: openCodeSettings.serverPassword }
+                : {}),
               environment: resolvedEnvironment,
             });
             return yield* openCodeRuntime.loadOpenCodeInventory(
               openCodeRuntime.createOpenCodeSdkClient({
                 baseUrl: server.url,
                 directory: cwd,
-                ...(openCodeSettings.serverPassword
-                  ? { serverPassword: openCodeSettings.serverPassword }
-                  : {}),
+                protocol: server.protocol,
+                ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
               }),
             );
           }),
         )
       : openCodeRuntime.loadInventoryFromCli({
           binaryPath: openCodeSettings.binaryPath,
+          directory: cwd,
           environment: resolvedEnvironment,
         })
     ).pipe(

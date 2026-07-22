@@ -34,21 +34,39 @@ import { collectStreamAsString } from "./providerSnapshot.ts";
 import * as NetService from "@t3tools/shared/Net";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { createOpenCodeV2CompatibilityClient } from "./opencodeV2Compatibility.ts";
+import { detectOpenCodeServerProtocol, requireOpenCodeV2Service } from "./opencodeV2Service.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
-const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
+const OPENCODE_SERVER_READY_PREFIXES = ["opencode server listening", "server listening"] as const;
+const OPENCODE_SERVER_PASSWORD_PREFIX = "server password ";
 const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 30_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
+export type OpenCodeProtocol = "v1" | "v2";
 export interface OpenCodeServerProcess {
   readonly url: string;
   readonly exitCode: Effect.Effect<number, never>;
+  readonly protocol: OpenCodeProtocol;
+  readonly serverPassword?: string;
+  /**
+   * When true, this handle points at a shared background service that must not
+   * be terminated when the caller's scope closes.
+   */
+  readonly sharedService?: boolean;
 }
 
 export interface OpenCodeServerConnection {
   readonly url: string;
   readonly exitCode: Effect.Effect<number, never> | null;
   readonly external: boolean;
+  readonly protocol: OpenCodeProtocol;
+  readonly serverPassword?: string;
+  /**
+   * True when T3 did not spawn a private process for this connection
+   * (configured URL or discovered/ensured V2 background service).
+   */
+  readonly sharedService?: boolean;
 }
 
 const OPENCODE_RUNTIME_ERROR_TAG = "OpenCodeRuntimeError";
@@ -130,6 +148,7 @@ export interface OpenCodeRuntimeShape {
   readonly connectToOpenCodeServer: (input: {
     readonly binaryPath: string;
     readonly serverUrl?: string | null;
+    readonly serverPassword?: string;
     readonly environment?: NodeJS.ProcessEnv;
     readonly port?: number;
     readonly hostname?: string;
@@ -143,6 +162,7 @@ export interface OpenCodeRuntimeShape {
   readonly createOpenCodeSdkClient: (input: {
     readonly baseUrl: string;
     readonly directory: string;
+    readonly protocol?: OpenCodeProtocol;
     readonly serverPassword?: string;
   }) => OpencodeClient;
   readonly loadOpenCodeInventory: (
@@ -150,19 +170,44 @@ export interface OpenCodeRuntimeShape {
   ) => Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError>;
   readonly loadInventoryFromCli: (input: {
     readonly binaryPath: string;
+    readonly directory?: string;
     readonly environment?: NodeJS.ProcessEnv;
   }) => Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError>;
 }
 
-function parseServerUrlFromOutput(output: string): string | null {
+/** @internal */
+export function parseOpenCodeServerUrl(output: string): string | null {
   for (const line of output.split("\n")) {
-    if (!line.startsWith(OPENCODE_SERVER_READY_PREFIX)) {
+    if (!OPENCODE_SERVER_READY_PREFIXES.some((prefix) => line.startsWith(prefix))) {
       continue;
     }
     const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
     return match?.[1] ?? null;
   }
   return null;
+}
+
+/** @internal */
+export function parseOpenCodeServerPassword(output: string): string | null {
+  for (const line of output.split("\n")) {
+    if (line.startsWith(OPENCODE_SERVER_PASSWORD_PREFIX)) {
+      return line.slice(OPENCODE_SERVER_PASSWORD_PREFIX.length).trim() || null;
+    }
+  }
+  return null;
+}
+
+export function detectOpenCodeProtocolFromVersionOutput(output: string): OpenCodeProtocol {
+  const normalized = output.trim().toLowerCase();
+  const version = normalized.match(/\b(?:v)?(\d+)\.(\d+)\.(\d+)(?:-([0-9a-z.-]+))?\b/);
+  if (version?.[1] !== undefined && Number(version[1]) >= 2) {
+    return "v2";
+  }
+  // OpenCode beta/channel builds ship as 0.0.0-<channel>-<stamp> (e.g. next, local).
+  if (version?.[1] === "0" && version[2] === "0" && version[3] === "0" && version[4]) {
+    return "v2";
+  }
+  return "v1";
 }
 
 const SLUG_LINE_RE = /^(\S+\/\S+)\s*$/;
@@ -451,6 +496,19 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ),
         ));
       const timeoutMs = input.timeoutMs ?? DEFAULT_OPENCODE_SERVER_TIMEOUT_MS;
+      const versionResult = yield* runOpenCodeCommand({
+        binaryPath: input.binaryPath,
+        args: ["--version"],
+        ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      });
+      const protocol = detectOpenCodeProtocolFromVersionOutput(versionResult.stdout);
+      if (protocol === "v2") {
+        return yield* new OpenCodeRuntimeError({
+          operation: "startOpenCodeServerProcess",
+          detail:
+            "OpenCode V2 does not use a private serve process. Connect to the running background service instead (`opencode service start`).",
+        });
+      }
       const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
       const spawnCommand = yield* resolveCommand(input.binaryPath, args, input.environment);
 
@@ -459,10 +517,16 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ChildProcess.make(spawnCommand.command, spawnCommand.args, {
             detached: hostPlatform !== "win32",
             shell: spawnCommand.shell,
-            env: {
-              ...input.environment,
-              OPENCODE_CONFIG_CONTENT: OPENCODE_EMPTY_CONFIG_CONTENT,
-            },
+            ...(protocol === "v1"
+              ? {
+                  env: {
+                    ...input.environment,
+                    OPENCODE_CONFIG_CONTENT: OPENCODE_EMPTY_CONFIG_CONTENT,
+                  },
+                }
+              : input.environment
+                ? { env: input.environment }
+                : {}),
             extendEnv: input.environment === undefined,
           }),
         )
@@ -499,15 +563,23 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
       const stdoutRef = yield* Ref.make("");
       const stderrRef = yield* Ref.make("");
-      const readyDeferred = yield* Deferred.make<string, OpenCodeRuntimeError>();
+      const readyDeferred = yield* Deferred.make<
+        { readonly url: string; readonly serverPassword?: string },
+        OpenCodeRuntimeError
+      >();
 
       const setReadyFromStdoutChunk = (chunk: string) =>
         Ref.updateAndGet(stdoutRef, (stdout) => `${stdout}${chunk}`).pipe(
           Effect.flatMap((nextStdout) => {
-            const parsed = parseServerUrlFromOutput(nextStdout);
-            return parsed
-              ? Deferred.succeed(readyDeferred, parsed).pipe(Effect.ignore)
-              : Effect.void;
+            const parsed = parseOpenCodeServerUrl(nextStdout);
+            const serverPassword = parseOpenCodeServerPassword(nextStdout);
+            if (!parsed || (protocol === "v2" && !serverPassword)) {
+              return Effect.void;
+            }
+            return Deferred.succeed(readyDeferred, {
+              url: parsed,
+              ...(serverPassword ? { serverPassword } : {}),
+            }).pipe(Effect.ignore);
           }),
         );
 
@@ -580,7 +652,11 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       }
 
       return {
-        url: readyOption.value,
+        url: readyOption.value.url,
+        protocol,
+        ...(readyOption.value.serverPassword
+          ? { serverPassword: readyOption.value.serverPassword }
+          : {}),
         exitCode: child.exitCode.pipe(
           Effect.map(Number),
           Effect.orElseSucceed(() => 0),
@@ -591,42 +667,102 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const connectToOpenCodeServer: OpenCodeRuntimeShape["connectToOpenCodeServer"] = (input) => {
     const serverUrl = input.serverUrl?.trim();
     if (serverUrl) {
-      // We don't own externally-configured servers — no scope interaction.
-      return Effect.succeed({
-        url: serverUrl,
-        exitCode: null,
-        external: true,
+      return Effect.gen(function* () {
+        const protocol = yield* Effect.tryPromise({
+          try: () =>
+            detectOpenCodeServerProtocol({
+              baseUrl: serverUrl,
+              ...(input.serverPassword ? { serverPassword: input.serverPassword } : {}),
+            }),
+          catch: (cause) =>
+            new OpenCodeRuntimeError({
+              operation: "connectToOpenCodeServer",
+              detail: `Failed to detect OpenCode server protocol at ${serverUrl}: ${openCodeRuntimeErrorDetail(cause)}`,
+              cause,
+            }),
+        });
+        return {
+          url: serverUrl,
+          exitCode: null,
+          external: true,
+          sharedService: true,
+          protocol,
+          ...(input.serverPassword ? { serverPassword: input.serverPassword } : {}),
+        } satisfies OpenCodeServerConnection;
       });
     }
 
-    return startOpenCodeServerProcess({
-      binaryPath: input.binaryPath,
-      ...(input.environment !== undefined ? { environment: input.environment } : {}),
-      ...(input.port !== undefined ? { port: input.port } : {}),
-      ...(input.hostname !== undefined ? { hostname: input.hostname } : {}),
-      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-    }).pipe(
-      Effect.map((server) => ({
+    return Effect.gen(function* () {
+      const versionResult = yield* runOpenCodeCommand({
+        binaryPath: input.binaryPath,
+        args: ["--version"],
+        ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      });
+      const protocol = detectOpenCodeProtocolFromVersionOutput(versionResult.stdout);
+      if (protocol === "v2") {
+        const version =
+          versionResult.stdout.match(/\b(?:v)?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/)?.[1] ??
+          undefined;
+        // Attach only — never spawn a private V2 serve. Private servers lack
+        // the background service's auth/model state.
+        const endpoint = yield* Effect.tryPromise({
+          try: () =>
+            requireOpenCodeV2Service({
+              ...(version ? { version } : {}),
+              ...(input.environment !== undefined ? { environment: input.environment } : {}),
+            }),
+          catch: (cause) =>
+            new OpenCodeRuntimeError({
+              operation: "connectToOpenCodeServer",
+              detail: `Failed to connect to OpenCode V2 background service: ${openCodeRuntimeErrorDetail(cause)}`,
+              cause,
+            }),
+        });
+        return {
+          url: endpoint.url,
+          exitCode: null,
+          // Treat the user-managed background service like an external server
+          // for lifecycle (do not kill) while still allowing T3 MCP registration.
+          external: false,
+          sharedService: true,
+          protocol: "v2" as const,
+          ...(endpoint.password ? { serverPassword: endpoint.password } : {}),
+        } satisfies OpenCodeServerConnection;
+      }
+
+      const server = yield* startOpenCodeServerProcess({
+        binaryPath: input.binaryPath,
+        ...(input.environment !== undefined ? { environment: input.environment } : {}),
+        ...(input.port !== undefined ? { port: input.port } : {}),
+        ...(input.hostname !== undefined ? { hostname: input.hostname } : {}),
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      });
+      return {
         url: server.url,
         exitCode: server.exitCode,
         external: false,
-      })),
-    );
+        sharedService: false,
+        protocol: server.protocol,
+        ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
+      } satisfies OpenCodeServerConnection;
+    });
   };
 
   const createOpenCodeSdkClient: OpenCodeRuntimeShape["createOpenCodeSdkClient"] = (input) =>
-    createOpencodeClient({
-      baseUrl: input.baseUrl,
-      directory: input.directory,
-      ...(input.serverPassword
-        ? {
-            headers: {
-              Authorization: `Basic ${Buffer.from(`opencode:${input.serverPassword}`, "utf8").toString("base64")}`,
-            },
-          }
-        : {}),
-      throwOnError: true,
-    });
+    input.protocol === "v2"
+      ? createOpenCodeV2CompatibilityClient(input)
+      : createOpencodeClient({
+          baseUrl: input.baseUrl,
+          directory: input.directory,
+          ...(input.serverPassword
+            ? {
+                headers: {
+                  Authorization: `Basic ${Buffer.from(`opencode:${input.serverPassword}`, "utf8").toString("base64")}`,
+                },
+              }
+            : {}),
+          throwOnError: true,
+        });
 
   const loadProviders = (client: OpencodeClient) =>
     runOpenCodeSdk("provider.list", () => client.provider.list()).pipe(
@@ -657,6 +793,30 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const loadInventoryFromCli: OpenCodeRuntimeShape["loadInventoryFromCli"] = (input) =>
     Effect.gen(function* () {
       const env = input.environment !== undefined ? { environment: input.environment } : ({} as {});
+
+      const versionResult = yield* runOpenCodeCommand({
+        binaryPath: input.binaryPath,
+        args: ["--version"],
+        ...env,
+      });
+      if (detectOpenCodeProtocolFromVersionOutput(versionResult.stdout) === "v2") {
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const server = yield* connectToOpenCodeServer({
+              binaryPath: input.binaryPath,
+              ...env,
+            });
+            return yield* loadOpenCodeInventory(
+              createOpenCodeSdkClient({
+                baseUrl: server.url,
+                directory: input.directory ?? process.cwd(),
+                protocol: server.protocol,
+                ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
+              }),
+            );
+          }),
+        );
+      }
 
       const runModelsCli = () =>
         runOpenCodeCommand({

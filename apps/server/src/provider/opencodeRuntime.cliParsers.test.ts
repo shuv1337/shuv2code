@@ -2,7 +2,54 @@ import * as NodeAssert from "node:assert/strict";
 
 import { describe, it } from "vite-plus/test";
 
-import { parseModelsCliOutput, parseAgentListCliOutput } from "./opencodeRuntime.ts";
+import {
+  detectOpenCodeProtocolFromVersionOutput,
+  parseAgentListCliOutput,
+  parseModelsCliOutput,
+  parseOpenCodeServerPassword,
+  parseOpenCodeServerUrl,
+} from "./opencodeRuntime.ts";
+import {
+  openCodeV2ChannelFromVersion,
+  openCodeV2ServiceRegistrationFileName,
+} from "./opencodeV2Service.ts";
+
+describe("OpenCode server startup output", () => {
+  it("parses legacy and V2 readiness lines", () => {
+    NodeAssert.equal(
+      parseOpenCodeServerUrl("opencode server listening on http://127.0.0.1:4301\n"),
+      "http://127.0.0.1:4301",
+    );
+    NodeAssert.equal(
+      parseOpenCodeServerUrl("server listening on http://127.0.0.1:4302\n"),
+      "http://127.0.0.1:4302",
+    );
+  });
+
+  it("parses the generated V2 server password", () => {
+    NodeAssert.equal(
+      parseOpenCodeServerPassword("server password generated-secret\n"),
+      "generated-secret",
+    );
+  });
+
+  it("detects V2 protocol from major>=2 and 0.0.0 channel prereleases", () => {
+    NodeAssert.equal(detectOpenCodeProtocolFromVersionOutput("opencode 2.0.0\n"), "v2");
+    NodeAssert.equal(
+      detectOpenCodeProtocolFromVersionOutput("opencode v0.0.0-next-202607220047\n"),
+      "v2",
+    );
+    NodeAssert.equal(detectOpenCodeProtocolFromVersionOutput("opencode 1.14.19\n"), "v1");
+    NodeAssert.equal(
+      openCodeV2ServiceRegistrationFileName(openCodeV2ChannelFromVersion("0.0.0-next-1")),
+      "service.json",
+    );
+    NodeAssert.equal(
+      openCodeV2ServiceRegistrationFileName(openCodeV2ChannelFromVersion("0.0.0-beta-1")),
+      "service-beta.json",
+    );
+  });
+});
 
 describe("parseModelsCliOutput", () => {
   it("parses a single model from a single provider", () => {

@@ -119,8 +119,11 @@ export function isOpenCodeNotFound(cause: unknown): boolean {
       continue;
     }
 
-    const name = record.name;
-    if (typeof name === "string" && name.toLowerCase() === "notfounderror") {
+    const name = record.name ?? record._tag;
+    if (
+      typeof name === "string" &&
+      (name.toLowerCase() === "notfounderror" || name.toLowerCase() === "sessionnotfounderror")
+    ) {
       return true;
     }
 
@@ -1207,12 +1210,14 @@ export function makeOpenCodeAdapter(
               const server = yield* openCodeRuntime.connectToOpenCodeServer({
                 binaryPath,
                 serverUrl,
+                ...(serverPassword ? { serverPassword } : {}),
                 ...(options?.environment ? { environment: options.environment } : {}),
               });
               const client = openCodeRuntime.createOpenCodeSdkClient({
                 baseUrl: server.url,
                 directory,
-                ...(server.external && serverPassword ? { serverPassword } : {}),
+                protocol: server.protocol,
+                ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
               });
               const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
               if (mcpSession && !server.external) {

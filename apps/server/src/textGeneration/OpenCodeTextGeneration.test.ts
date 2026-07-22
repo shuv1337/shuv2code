@@ -55,14 +55,38 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntime.OpenCodeRuntimeShape = {
       return {
         url,
         exitCode: Effect.never,
+        protocol: "v1",
       };
     }),
-  connectToOpenCodeServer: ({ serverUrl }) =>
-    Effect.succeed({
-      url: serverUrl ?? "http://127.0.0.1:4301",
-      exitCode: null,
-      external: Boolean(serverUrl),
-    }),
+  connectToOpenCodeServer: ({ serverUrl, serverPassword, binaryPath }) => {
+    if (serverUrl) {
+      return Effect.succeed({
+        url: serverUrl,
+        exitCode: null,
+        external: true,
+        sharedService: true,
+        protocol: "v1" as const,
+        ...(serverPassword ? { serverPassword } : {}),
+      });
+    }
+    return Effect.gen(function* () {
+      const index = runtimeMock.state.startCalls.length + 1;
+      const url = `http://127.0.0.1:${4_300 + index}`;
+      runtimeMock.state.startCalls.push(binaryPath);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          runtimeMock.state.closeCalls.push(url);
+        }),
+      );
+      return {
+        url,
+        exitCode: Effect.never,
+        external: false,
+        sharedService: false,
+        protocol: "v1" as const,
+      };
+    });
+  },
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({

@@ -299,7 +299,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
             const startedExit = yield* Effect.exit(
               restore(
                 openCodeRuntime
-                  .startOpenCodeServerProcess({
+                  .connectToOpenCodeServer({
                     binaryPath: input.binaryPath,
                     environment: resolvedEnvironment,
                   })
@@ -321,9 +321,21 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
               return yield* Effect.failCause(startedExit.cause);
             }
 
-            const server = startedExit.value;
+            const connection = startedExit.value;
+            // Shared V2 background services must outlive this text-generation
+            // request scope. Drop the empty scope without killing the service.
+            if (connection.sharedService) {
+              yield* Scope.close(serverScope, Exit.void).pipe(Effect.ignore);
+            }
+            const server: OpenCodeRuntime.OpenCodeServerProcess = {
+              url: connection.url,
+              protocol: connection.protocol,
+              exitCode: connection.exitCode ?? Effect.never,
+              ...(connection.serverPassword ? { serverPassword: connection.serverPassword } : {}),
+              ...(connection.sharedService ? { sharedService: true } : {}),
+            };
             sharedServerState.server = server;
-            sharedServerState.serverScope = serverScope;
+            sharedServerState.serverScope = connection.sharedService ? null : serverScope;
             sharedServerState.binaryPath = input.binaryPath;
             sharedServerState.activeRequests = 1;
             return server;
@@ -381,13 +393,14 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     });
 
     const runAgainstServer = Effect.fn("runOpenCodeJson.runAgainstServer")(
-      function* (server: Pick<OpenCodeRuntime.OpenCodeServerConnection, "url">) {
+      function* (
+        server: Pick<OpenCodeRuntime.OpenCodeServerProcess, "url" | "protocol" | "serverPassword">,
+      ) {
         const client = openCodeRuntime.createOpenCodeSdkClient({
           baseUrl: server.url,
           directory: input.cwd,
-          ...(openCodeSettings.serverUrl.length > 0 && openCodeSettings.serverPassword
-            ? { serverPassword: openCodeSettings.serverPassword }
-            : {}),
+          protocol: server.protocol,
+          ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
         });
         const session = yield* Effect.tryPromise({
           try: () =>
@@ -498,7 +511,30 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
 
     const rawOutput =
       openCodeSettings.serverUrl.length > 0
-        ? yield* runAgainstServer({ url: openCodeSettings.serverUrl })
+        ? yield* Effect.scoped(
+            Effect.gen(function* () {
+              const server = yield* openCodeRuntime
+                .connectToOpenCodeServer({
+                  binaryPath: openCodeSettings.binaryPath,
+                  serverUrl: openCodeSettings.serverUrl,
+                  ...(openCodeSettings.serverPassword
+                    ? { serverPassword: openCodeSettings.serverPassword }
+                    : {}),
+                  environment: resolvedEnvironment,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new TextGenerationError({
+                        operation: input.operation,
+                        detail: OpenCodeRuntime.openCodeRuntimeErrorDetail(cause),
+                        cause,
+                      }),
+                  ),
+                );
+              return yield* runAgainstServer(server);
+            }),
+          )
         : yield* Effect.acquireUseRelease(
             acquireSharedServer({
               binaryPath: openCodeSettings.binaryPath,
