@@ -47,16 +47,19 @@ import {
   EyeIcon,
   GlobeIcon,
   HammerIcon,
+  LoaderCircleIcon,
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
   MinusIcon,
   SquarePenIcon,
+  SquareIcon,
   TerminalIcon,
   Undo2Icon,
   WrenchIcon,
   XIcon,
   ZapIcon,
+  Volume2Icon,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -113,6 +116,8 @@ import {
   parseReviewCommentMessageSegments,
   type ReviewCommentContext,
 } from "../../reviewCommentContext";
+import { useSpeechPlayback } from "../../textToSpeech/useSpeechPlayback";
+import type { SpeechPlaybackState } from "../../textToSpeech/SpeechPlaybackController";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -135,6 +140,8 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
+  speechPlaybackState: SpeechPlaybackState;
+  onToggleAssistantSpeech: (messageId: MessageId, text: string) => void;
 }
 
 interface TimelineRowActivityState {
@@ -223,6 +230,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
+  const {
+    state: speechPlaybackState,
+    toggle: toggleAssistantSpeech,
+    stop: stopAssistantSpeech,
+  } = useSpeechPlayback();
+
+  useEffect(() => {
+    stopAssistantSpeech();
+  }, [routeThreadKey, stopAssistantSpeech]);
+
+  const onToggleAssistantSpeech = useCallback(
+    (messageId: MessageId, text: string) => {
+      void toggleAssistantSpeech(messageId, text);
+    },
+    [toggleAssistantSpeech],
+  );
 
   const onToggleTurnFold = useCallback((turnId: TurnId) => {
     setExpandedTurnIds((existing) => {
@@ -430,6 +453,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      speechPlaybackState,
+      onToggleAssistantSpeech,
     }),
     [
       timestampFormat,
@@ -444,6 +469,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      speechPlaybackState,
+      onToggleAssistantSpeech,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -1038,6 +1065,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         {row.showAssistantMeta ? (
           <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">
             <AssistantCopyButton row={row} />
+            <AssistantSpeechButton row={row} />
             {!row.message.streaming && (
               <Tooltip>
                 <TooltipTrigger
@@ -1069,6 +1097,54 @@ function AssistantCopyButton({ row }: { row: Extract<TimelineRow, { kind: "messa
   }
 
   return <MessageCopyButton text={assistantCopyState.text ?? ""} variant="ghost" />;
+}
+
+function AssistantSpeechButton({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const assistantSpeechState = resolveAssistantMessageCopyState({
+    text: row.message.text ?? null,
+    showCopyButton: row.showAssistantCopyButton,
+    streaming: row.assistantCopyStreaming,
+  });
+  if (!assistantSpeechState.visible || assistantSpeechState.text === null) {
+    return null;
+  }
+
+  const active =
+    ctx.speechPlaybackState.messageId === row.message.id &&
+    ctx.speechPlaybackState.status !== "idle";
+  const loading = active && ctx.speechPlaybackState.status === "loading";
+  const label = active ? "Stop reading message" : "Read message aloud";
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={label}
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() =>
+              ctx.onToggleAssistantSpeech(row.message.id, assistantSpeechState.text ?? "")
+            }
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          />
+        }
+      >
+        {loading ? (
+          <LoaderCircleIcon className="size-3 animate-spin" />
+        ) : active ? (
+          <SquareIcon className="size-3 fill-current" />
+        ) : (
+          <Volume2Icon className="size-3" />
+        )}
+      </TooltipTrigger>
+      <TooltipPopup>
+        <p>{label}</p>
+      </TooltipPopup>
+    </Tooltip>
+  );
 }
 
 function ProposedPlanTimelineRow({

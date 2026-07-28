@@ -3,6 +3,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import { decodeOtlpTraceRecords } from "@t3tools/shared/observability";
@@ -12,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { cast } from "effect/Function";
 import {
   HttpBody,
@@ -38,6 +40,7 @@ import {
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./httpCors.ts";
+import * as TextToSpeech from "./textToSpeech/TextToSpeech.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -84,7 +87,7 @@ export function resolveDevRedirectUrl(devUrl: URL, requestUrl: URL): string {
   return redirectUrl.toString();
 }
 
-const authenticateRawRouteWithScope = (
+export const authenticateRawRouteWithScope = (
   scope: typeof AuthOrchestrationReadScope | typeof AuthOrchestrationOperateScope,
 ) =>
   Effect.gen(function* () {
@@ -102,6 +105,83 @@ const authenticateRawRouteWithScope = (
       return yield* failEnvironmentScopeRequired(scope);
     }
   });
+
+const TextToSpeechInput = Schema.Struct({
+  input: TrimmedNonEmptyString,
+});
+const decodeTextToSpeechInput = Schema.decodeUnknownEffect(TextToSpeechInput);
+
+function textToSpeechErrorResponse(error: TextToSpeech.TextToSpeechError) {
+  switch (error.reason) {
+    case "disabled":
+    case "endpoint_missing":
+    case "endpoint_invalid":
+      return HttpServerResponse.text("Text-to-speech is not configured. Open Settings > Speech.", {
+        status: 409,
+      });
+    case "provider_rejected":
+      return HttpServerResponse.text(
+        error.status === undefined
+          ? "The speech provider rejected the request."
+          : `The speech provider returned HTTP ${error.status}.`,
+        { status: 502 },
+      );
+    case "request_failed":
+    case "response_invalid":
+      return HttpServerResponse.text("The speech provider request failed.", {
+        status: 502,
+      });
+  }
+}
+
+export const textToSpeechRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/text-to-speech",
+  Effect.gen(function* () {
+    yield* authenticateRawRouteWithScope(AuthOrchestrationOperateScope);
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const input = yield* request.json.pipe(
+      Effect.flatMap(decodeTextToSpeechInput),
+      Effect.orElseSucceed(() => null),
+    );
+    if (input === null) {
+      return HttpServerResponse.text("A non-empty input string is required.", {
+        status: 400,
+      });
+    }
+
+    return yield* TextToSpeech.synthesizeTextToSpeech(input.input).pipe(
+      Effect.map((audio) =>
+        HttpServerResponse.uint8Array(audio.bytes, {
+          contentType: audio.contentType,
+          headers: {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+          },
+        }),
+      ),
+      Effect.catchTags({
+        TextToSpeechError: (error) => Effect.succeed(textToSpeechErrorResponse(error)),
+        ServerSettingsError: (error) =>
+          Effect.logError("Failed to load text-to-speech settings", {
+            cause: error,
+          }).pipe(
+            Effect.as(
+              HttpServerResponse.text("Text-to-speech settings are unavailable.", {
+                status: 500,
+              }),
+            ),
+          ),
+      }),
+    );
+  }).pipe(
+    Effect.catchTags({
+      EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
+      EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
+    }),
+  ),
+);
 
 export const serverEnvironmentHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,

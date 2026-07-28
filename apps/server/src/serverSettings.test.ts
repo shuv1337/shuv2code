@@ -658,4 +658,65 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       );
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
+
+  it.effect("stores, preserves, redacts, replaces, and clears the TTS API key", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+
+      const created = yield* serverSettings.updateSettings({
+        textToSpeech: {
+          enabled: true,
+          endpoint: "http://127.0.0.1:8880/v1/audio/speech",
+          apiKey: "kokoro-secret",
+          apiKeyRedacted: false,
+        },
+      });
+      assert.equal(created.textToSpeech.apiKey, "kokoro-secret");
+      assert.isTrue(created.textToSpeech.apiKeyRedacted);
+      const redactedCreated = ServerSettingsModule.redactServerSettingsForClient(created);
+      assert.equal(redactedCreated.textToSpeech.apiKey, "");
+      assert.isTrue(redactedCreated.textToSpeech.apiKeyRedacted);
+
+      const rawAfterCreate = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      assert.notInclude(rawAfterCreate, "kokoro-secret");
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      assert.deepInclude(JSON.parse(rawAfterCreate), {
+        textToSpeech: {
+          enabled: true,
+          endpoint: "http://127.0.0.1:8880/v1/audio/speech",
+          apiKeyRedacted: true,
+        },
+      });
+
+      const preserved = yield* serverSettings.updateSettings({
+        textToSpeech: {
+          voice: "af_heart",
+        },
+      });
+      assert.equal(preserved.textToSpeech.apiKey, "kokoro-secret");
+      assert.equal(preserved.textToSpeech.voice, "af_heart");
+
+      const replaced = yield* serverSettings.updateSettings({
+        textToSpeech: {
+          apiKey: "remote-secret",
+          apiKeyRedacted: false,
+        },
+      });
+      assert.equal(replaced.textToSpeech.apiKey, "remote-secret");
+
+      const cleared = yield* serverSettings.updateSettings({
+        textToSpeech: {
+          apiKey: "",
+          apiKeyRedacted: false,
+        },
+      });
+      assert.equal(cleared.textToSpeech.apiKey, "");
+      assert.isFalse(cleared.textToSpeech.apiKeyRedacted);
+      const redactedCleared = ServerSettingsModule.redactServerSettingsForClient(cleared);
+      assert.equal(redactedCleared.textToSpeech.apiKey, "");
+      assert.isFalse(redactedCleared.textToSpeech.apiKeyRedacted);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
 });

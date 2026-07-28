@@ -413,6 +413,28 @@ export const SourceControlWritingStyleSettings = Schema.Struct({
 });
 export type SourceControlWritingStyleSettings = typeof SourceControlWritingStyleSettings.Type;
 
+export const MIN_TEXT_TO_SPEECH_SPEED = 0.25;
+export const MAX_TEXT_TO_SPEECH_SPEED = 4;
+export const TextToSpeechSpeed = Schema.Number.check(
+  Schema.isBetween({
+    minimum: MIN_TEXT_TO_SPEECH_SPEED,
+    maximum: MAX_TEXT_TO_SPEECH_SPEED,
+  }),
+);
+export type TextToSpeechSpeed = typeof TextToSpeechSpeed.Type;
+
+export const TextToSpeechSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  endpoint: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  apiKey: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  apiKeyRedacted: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  model: TrimmedNonEmptyString.pipe(Schema.withDecodingDefault(Effect.succeed("tts-1"))),
+  voice: TrimmedNonEmptyString.pipe(Schema.withDecodingDefault(Effect.succeed("alloy"))),
+  responseFormat: TrimmedNonEmptyString.pipe(Schema.withDecodingDefault(Effect.succeed("mp3"))),
+  speed: TextToSpeechSpeed.pipe(Schema.withDecodingDefault(Effect.succeed(1))),
+});
+export type TextToSpeechSettings = typeof TextToSpeechSettings.Type;
+
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(30);
 
 export const ServerSettings = Schema.Struct({
@@ -444,6 +466,7 @@ export const ServerSettings = Schema.Struct({
   sourceControlWriterModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  textToSpeech: TextToSpeechSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
   // of truth until `providerInstances` (below) lands per-driver migration
@@ -577,6 +600,18 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  textToSpeech: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      endpoint: Schema.optionalKey(TrimmedString),
+      apiKey: Schema.optionalKey(TrimmedString),
+      apiKeyRedacted: Schema.optionalKey(Schema.Boolean),
+      model: Schema.optionalKey(TrimmedNonEmptyString),
+      voice: Schema.optionalKey(TrimmedNonEmptyString),
+      responseFormat: Schema.optionalKey(TrimmedNonEmptyString),
+      speed: Schema.optionalKey(TextToSpeechSpeed),
+    }),
+  ),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(TrimmedString),

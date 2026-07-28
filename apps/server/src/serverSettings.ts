@@ -60,6 +60,7 @@ const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const TEXT_TO_SPEECH_API_KEY_SECRET_NAME = "text-to-speech-api-key";
 
 const normalizeServerSettings = (
   settings: ServerSettings,
@@ -109,7 +110,17 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
         : instance,
     ]),
   );
-  return { ...settings, providerInstances };
+  const hasTextToSpeechApiKey =
+    settings.textToSpeech.apiKey.length > 0 || settings.textToSpeech.apiKeyRedacted;
+  return {
+    ...settings,
+    textToSpeech: {
+      ...settings.textToSpeech,
+      apiKey: "",
+      apiKeyRedacted: hasTextToSpeechApiKey,
+    },
+    providerInstances,
+  };
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -445,6 +456,90 @@ const make = Effect.gen(function* () {
       };
     });
 
+  const materializeTextToSpeechApiKey = (
+    settings: ServerSettings,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    Effect.gen(function* () {
+      if (!settings.textToSpeech.apiKeyRedacted) {
+        return settings;
+      }
+      const secret = yield* secretStore.get(TEXT_TO_SPEECH_API_KEY_SECRET_NAME).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ServerSettingsError({
+              settingsPath,
+              operation: "read-secret",
+              environmentVariable: "TEXT_TO_SPEECH_API_KEY",
+              cause,
+            }),
+        ),
+      );
+      return {
+        ...settings,
+        textToSpeech: {
+          ...settings.textToSpeech,
+          apiKey: Option.isSome(secret) ? textDecoder.decode(secret.value) : "",
+        },
+      };
+    });
+
+  const persistTextToSpeechApiKey = (
+    current: ServerSettings,
+    settings: ServerSettings,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    Effect.gen(function* () {
+      const textToSpeech = settings.textToSpeech;
+      if (textToSpeech.apiKeyRedacted) {
+        return {
+          ...settings,
+          textToSpeech: {
+            ...textToSpeech,
+            apiKey: "",
+          },
+        };
+      }
+
+      if (textToSpeech.apiKey.length > 0) {
+        yield* secretStore
+          .set(TEXT_TO_SPEECH_API_KEY_SECRET_NAME, textEncoder.encode(textToSpeech.apiKey))
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ServerSettingsError({
+                  settingsPath,
+                  operation: "write-secret",
+                  environmentVariable: "TEXT_TO_SPEECH_API_KEY",
+                  cause,
+                }),
+            ),
+          );
+        return {
+          ...settings,
+          textToSpeech: {
+            ...textToSpeech,
+            apiKey: "",
+            apiKeyRedacted: true,
+          },
+        };
+      }
+
+      if (!current.textToSpeech.apiKeyRedacted && current.textToSpeech.apiKey.length === 0) {
+        return settings;
+      }
+      yield* secretStore.remove(TEXT_TO_SPEECH_API_KEY_SECRET_NAME).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ServerSettingsError({
+              settingsPath,
+              operation: "remove-secret",
+              environmentVariable: "TEXT_TO_SPEECH_API_KEY",
+              cause,
+            }),
+        ),
+      );
+      return settings;
+    });
+
   const writeSettingsAtomically = Effect.fnUntraced(
     function* (settings: ServerSettings) {
       const sparseSettingsJson = yield* encodeServerSettingsJson(
@@ -542,6 +637,7 @@ const make = Effect.gen(function* () {
     ready: Deferred.await(startedDeferred),
     getSettings: getSettingsFromCache.pipe(
       Effect.flatMap(materializeProviderEnvironmentSecrets),
+      Effect.flatMap(materializeTextToSpeechApiKey),
       Effect.map(resolveTextGenerationProvider),
     ),
     updateSettings: (patch) =>
@@ -552,11 +648,17 @@ const make = Effect.gen(function* () {
             current,
             applyServerSettingsPatch(current, patch),
           );
-          const next = yield* normalizeServerSettings(nextPersisted);
+          const nextWithTextToSpeechSecret = yield* persistTextToSpeechApiKey(
+            current,
+            nextPersisted,
+          );
+          const next = yield* normalizeServerSettings(nextWithTextToSpeechSecret);
           yield* writeSettingsAtomically(next);
           yield* Cache.set(settingsCache, cacheKey, next);
           yield* emitChange(next);
-          const materialized = yield* materializeProviderEnvironmentSecrets(next);
+          const materialized = yield* materializeProviderEnvironmentSecrets(next).pipe(
+            Effect.flatMap(materializeTextToSpeechApiKey),
+          );
           return resolveTextGenerationProvider(materialized);
         }),
       ),

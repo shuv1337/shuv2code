@@ -1,0 +1,34 @@
+{
+  "stage": "interview",
+  "title": "OpenAI-compatible text-to-speech",
+  "goalSlug": "openai-compatible-tts",
+  "questions": [
+    {
+      "id": "v1-product-shape",
+      "prompt": "Which product behaviors should define the first TTS release?",
+      "description": "The endpoint contract and server-side secret handling are already implied by your request; this choice only freezes the user-facing shape.",
+      "answerMode": "multi-custom",
+      "recommendedAnswer": "Ship manual playback for completed agent messages, put one provider-neutral Speech configuration in Settings, stop the current clip when another message starts, and keep auto-read, queues, caching, and per-thread overrides out of v1.",
+      "recommendedOptionIds": ["manual-only", "speech-settings", "single-playback", "lean-v1"],
+      "options": [
+        {
+          "id": "manual-only",
+          "label": "Manual read-aloud only"
+        },
+        {
+          "id": "speech-settings",
+          "label": "Dedicated Speech settings"
+        },
+        {
+          "id": "single-playback",
+          "label": "One active clip at a time"
+        },
+        {
+          "id": "lean-v1",
+          "label": "No queues, cache, or auto-read"
+        }
+      ],
+      "required": true
+    }
+  ]
+}
