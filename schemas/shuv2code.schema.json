@@ -44,7 +44,14 @@
           },
           "icon": {
             "type": "string",
-            "enum": ["play", "test", "lint", "configure", "build", "debug"],
+            "enum": [
+              "play",
+              "test",
+              "lint",
+              "configure",
+              "build",
+              "debug"
+            ],
             "description": "Icon shown next to the script in the scripts menu. Defaults to \"play\"."
           },
           "runOnWorktreeCreate": {
@@ -65,7 +72,10 @@
             "description": "When true, automatically open the preview panel at `previewUrl` the moment the script starts."
           }
         },
-        "required": ["name", "command"],
+        "required": [
+          "name",
+          "command"
+        ],
         "additionalProperties": false,
         "description": "A project script that team members can import into shuv2code."
       },
