@@ -296,15 +296,15 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(shuv2cod
   }
 
   .stage-blueprint {
-    --stage-bp-top: #eadfd7;
-    --stage-bp-mid: #b77b6c;
-    --stage-bp-bottom: #70444a;
+    --stage-bp-top: #faf8f5;
+    --stage-bp-mid: #dbd7cd;
+    --stage-bp-bottom: #f1eee9;
   }
 
   .dark .stage-blueprint {
-    --stage-bp-top: #322229;
-    --stage-bp-mid: #191a21;
-    --stage-bp-bottom: #071624;
+    --stage-bp-top: #1f2835;
+    --stage-bp-mid: #161d28;
+    --stage-bp-bottom: #0f1621;
   }
 
   .workspace-topbar {
@@ -819,27 +819,27 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(shuv2cod
 :root {
   color-scheme: light;
   --radius: 0.625rem;
-  --background: #f7f1e6;
+  --background: #faf8f5;
   --app-chrome-background: var(--background);
   --surface-raised: color-mix(in srgb, var(--card) 20%, transparent);
-  --foreground: #171d2b;
-  --card: #fffaf1;
-  --card-foreground: #171d2b;
-  --popover: #fffaf1;
-  --popover-foreground: #171d2b;
-  --primary: #a83e35;
-  --primary-foreground: #fffaf1;
-  --secondary: #eee5d6;
-  --secondary-foreground: #171d2b;
-  --muted: #eee5d6;
-  --muted-foreground: #667085;
-  --accent: #edd6d2;
-  --accent-foreground: #7f302a;
-  --brand: #c45145;
+  --foreground: #1c1a17;
+  --card: #ffffff;
+  --card-foreground: #1c1a17;
+  --popover: #ffffff;
+  --popover-foreground: #1c1a17;
+  --primary: #b64e36;
+  --primary-foreground: #ffffff;
+  --secondary: #f1eee9;
+  --secondary-foreground: #1c1a17;
+  --muted: #f1eee9;
+  --muted-foreground: #76726a;
+  --accent: #dbd7cd;
+  --accent-foreground: #1c1a17;
+  --brand: #b64e36;
   --destructive: #b6453d;
-  --border: #ddd1bf;
-  --input: #c7b9a5;
-  --ring: #b8473d;
+  --border: #dbd7cd;
+  --input: #dbd7cd;
+  --ring: #b64e36;
   --destructive-foreground: #91342f;
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
@@ -849,39 +849,39 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(shuv2cod
   --warning-foreground: var(--color-amber-700);
   /* Keep every sidebar primitive on the same light surface hierarchy, including
      portaled mobile sheets and settings navigation outside the app sidebar. */
-  --sidebar: #f1e8da;
+  --sidebar: #f1eee9;
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);
-  --sidebar-control-surface: #e7dccb;
-  --sidebar-row-hover: #f7f1e6;
-  --sidebar-row-active: #fffaf1;
-  --sidebar-row-selected: #fffaf1;
+  --sidebar-control-surface: #dbd7cd;
+  --sidebar-row-hover: #faf8f5;
+  --sidebar-row-active: #dbd7cd;
+  --sidebar-row-selected: #dbd7cd;
   --sidebar-border: var(--border);
   --sidebar-stage-fade: var(--sidebar);
 
   @variant dark {
     color-scheme: dark;
-    --background: #0f1421;
+    --background: #0c1119;
     --app-chrome-background: var(--background);
     --surface-raised: var(--secondary);
-    --foreground: #e6eaf2;
-    --card: #1a2032;
-    --card-foreground: #e6eaf2;
-    --popover: #202740;
-    --popover-foreground: #e6eaf2;
-    --primary: #d76159;
-    --primary-foreground: #0f1421;
-    --secondary: #202740;
-    --secondary-foreground: #e6eaf2;
-    --muted: #1a2032;
-    --muted-foreground: #8b95a9;
-    --accent: #2d2028;
-    --accent-foreground: #f09b94;
-    --destructive: #d76159;
-    --border: rgb(230 234 242 / 10%);
-    --input: rgb(230 234 242 / 16%);
-    --ring: #d76159;
-    --destructive-foreground: #f09b94;
+    --foreground: #e7ecf3;
+    --card: #0f1621;
+    --card-foreground: #e7ecf3;
+    --popover: #1f2835;
+    --popover-foreground: #e7ecf3;
+    --primary: #d35c46;
+    --primary-foreground: #0c1119;
+    --secondary: #1f2835;
+    --secondary-foreground: #e7ecf3;
+    --muted: #161d28;
+    --muted-foreground: #8995a6;
+    --accent: #1f2835;
+    --accent-foreground: #e7ecf3;
+    --destructive: #e5484d;
+    --border: rgb(137 149 166 / 18%);
+    --input: #1f2835;
+    --ring: #d35c46;
+    --destructive-foreground: #ffd9d6;
     --info: var(--color-blue-500);
     --info-foreground: var(--color-blue-400);
     --success: var(--color-emerald-500);
@@ -906,40 +906,40 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(shuv2cod
    changing the color system when the beta is toggled. */
 [data-sidebar-version="v1"],
 [data-sidebar-version="v2"] {
-  --background: #f7f1e6;
-  --foreground: #171d2b;
-  --card: #fffaf1;
-  --card-foreground: #171d2b;
-  --accent: #edd6d2;
-  --accent-foreground: #7f302a;
-  --muted: #eee5d6;
-  --muted-foreground: #667085;
-  --border: #ddd1bf;
-  --input: #c7b9a5;
-  --sidebar: #f1e8da;
-  --sidebar-foreground: #171d2b;
-  --sidebar-muted-foreground: #667085;
-  --sidebar-control-surface: #e7dccb;
-  --sidebar-row-hover: #f7f1e6;
-  --sidebar-row-active: #fffaf1;
-  --sidebar-row-selected: #fffaf1;
-  --sidebar-border: #ddd1bf;
+  --background: #faf8f5;
+  --foreground: #1c1a17;
+  --card: #ffffff;
+  --card-foreground: #1c1a17;
+  --accent: #dbd7cd;
+  --accent-foreground: #1c1a17;
+  --muted: #f1eee9;
+  --muted-foreground: #76726a;
+  --border: #dbd7cd;
+  --input: #dbd7cd;
+  --sidebar: #f1eee9;
+  --sidebar-foreground: #1c1a17;
+  --sidebar-muted-foreground: #76726a;
+  --sidebar-control-surface: #dbd7cd;
+  --sidebar-row-hover: #faf8f5;
+  --sidebar-row-active: #dbd7cd;
+  --sidebar-row-selected: #dbd7cd;
+  --sidebar-border: #dbd7cd;
   --sidebar-stage-fade: var(--sidebar);
   background-color: var(--sidebar);
 }
 
 .dark [data-sidebar-version="v1"],
 .dark [data-sidebar-version="v2"] {
-  --background: #0f1421;
-  --foreground: #e6eaf2;
-  --card: #011627;
+  --background: #0c1119;
+  --foreground: #e7ecf3;
+  --card: #0f1621;
   --card-foreground: var(--foreground);
-  --accent: #2d2028;
-  --accent-foreground: #f09b94;
-  --muted: #1a2032;
-  --muted-foreground: #8b95a9;
-  --border: rgb(230 234 242 / 10%);
-  --input: rgb(230 234 242 / 16%);
+  --accent: #1f2835;
+  --accent-foreground: #e7ecf3;
+  --muted: #161d28;
+  --muted-foreground: #8995a6;
+  --border: rgb(137 149 166 / 18%);
+  --input: #1f2835;
   --sidebar: var(--card);
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);

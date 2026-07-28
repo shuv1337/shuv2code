@@ -55,7 +55,7 @@ const outputs = {
 } as const;
 
 function channelMark(source: string, color: string): Buffer {
-  return Buffer.from(source.replaceAll("#C45145", color));
+  return Buffer.from(source.replaceAll("#D35C46", color));
 }
 
 async function renderMark(source: Buffer, size: number): Promise<Buffer> {

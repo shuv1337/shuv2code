@@ -23,33 +23,33 @@
   },
   "channels": {
     "production": {
-      "body": "#C45145",
-      "screen": "#011627",
-      "prompt": "#F7F1E6"
+      "body": "#D35C46",
+      "screen": "#0C1119",
+      "prompt": "#E7ECF3"
     },
     "nightly": {
       "body": "#7656E8",
-      "screen": "#011627",
-      "prompt": "#F7F1E6"
+      "screen": "#0C1119",
+      "prompt": "#E7ECF3"
     },
     "development": {
       "body": "#176BFF",
-      "screen": "#011627",
-      "prompt": "#F7F1E6"
+      "screen": "#0C1119",
+      "prompt": "#E7ECF3"
     }
   },
   "theme": {
-    "darkPane": "#011627",
-    "darkCanvas": "#0F1421",
-    "darkSurface": "#1A2032",
-    "darkElevated": "#202740",
-    "text": "#E6EAF2",
-    "mutedText": "#8B95A9",
-    "accent": "#D76159",
-    "accentStrong": "#F09B94",
-    "brandRed": "#C45145",
-    "lightCanvas": "#F7F1E6",
-    "lightText": "#171D2B"
+    "darkPane": "#0F1621",
+    "darkCanvas": "#0C1119",
+    "darkSurface": "#161D28",
+    "darkElevated": "#1F2835",
+    "text": "#E7ECF3",
+    "mutedText": "#8995A6",
+    "accent": "#D35C46",
+    "accentStrong": "#D35C46",
+    "brandRed": "#D35C46",
+    "lightCanvas": "#FAF8F5",
+    "lightText": "#1C1A17"
   },
   "initialVersion": "0.1.0-alpha.1"
 }

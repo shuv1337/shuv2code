@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="368" height="392" x="72" y="72" fill="#C45145" rx="90"/>
-  <path fill="#C45145" d="M118 96 80 36c-8-12-26-4-22 10l22 86 68-20-30-16Zm276 0 38-60c8-12 26-4 22 10l-22 86-68-20 30-16Zm24 234c31-2 52-17 60-42l28 9c-12 39-43 64-84 64l-14-2 10-29Z"/>
-  <rect width="296" height="294" x="108" y="122" fill="#011627" rx="48"/>
-  <rect width="248" height="246" x="132" y="146" fill="none" stroke="#F7F1E6" stroke-width="14" rx="32"/>
-  <rect width="80" height="12" x="216" y="94" fill="#F7F1E6" rx="6"/>
-  <path fill="none" stroke="#F7F1E6" stroke-linecap="round" stroke-linejoin="round" stroke-width="20" d="m172 226 54 40-54 40m80 18h66"/>
+  <rect width="368" height="392" x="72" y="72" fill="#D35C46" rx="90"/>
+  <path fill="#D35C46" d="M118 96 80 36c-8-12-26-4-22 10l22 86 68-20-30-16Zm276 0 38-60c8-12 26-4 22 10l-22 86-68-20 30-16Zm24 234c31-2 52-17 60-42l28 9c-12 39-43 64-84 64l-14-2 10-29Z"/>
+  <rect width="296" height="294" x="108" y="122" fill="#0C1119" rx="48"/>
+  <rect width="248" height="246" x="132" y="146" fill="none" stroke="#E7ECF3" stroke-width="14" rx="32"/>
+  <rect width="80" height="12" x="216" y="94" fill="#E7ECF3" rx="6"/>
+  <path fill="none" stroke="#E7ECF3" stroke-linecap="round" stroke-linejoin="round" stroke-width="20" d="m172 226 54 40-54 40m80 18h66"/>
 </svg>

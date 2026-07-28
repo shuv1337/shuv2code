@@ -237,7 +237,7 @@ function DevBlueprintArt({ compact = false }: { compact?: boolean }) {
           gradientTransform="translate(216 14) rotate(137) scale(120 84)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#C45145" stopOpacity="0.15" />
+          <stop stopColor="#D35C46" stopOpacity="0.15" />
           <stop offset="0.52" stopColor="#8B4A43" stopOpacity="0.06" />
           <stop offset="1" stopColor="#071624" stopOpacity="0" />
         </radialGradient>
@@ -261,7 +261,7 @@ function DevBlueprintArt({ compact = false }: { compact?: boolean }) {
           gradientTransform="translate(704 18) rotate(145) scale(132 88)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#C45145" stopOpacity="0.08" />
+          <stop stopColor="#D35C46" stopOpacity="0.08" />
           <stop offset="0.52" stopColor="#713B3A" stopOpacity="0.05" />
           <stop offset="1" stopColor="#071624" stopOpacity="0" />
         </radialGradient>

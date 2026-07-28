@@ -35,8 +35,8 @@ personality; the working interface should remain calm and precise.
 
 - Let the tool disappear into the task.
 - Reserve brand personality for a few recognizable moments.
-- Use muted red for interaction and identity, reserve stronger red for genuine
-  danger, and let navy and neutrals carry the rest.
+- Use the shared brick family for interaction and identity, reserve semantic
+  red for genuine danger, and let midnight navy or warm paper carry the rest.
 - Preserve familiar product affordances and readable state hierarchy.
 - Keep visual changes token-driven and sync-friendly with upstream.
 

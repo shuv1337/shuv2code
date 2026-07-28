@@ -33,17 +33,26 @@ body with a coding-agent terminal.
 
 ## Channel colors
 
-| Channel     | Body                      | Screen              | Prompt               |
-| ----------- | ------------------------- | ------------------- | -------------------- |
-| Production  | muted devil red `#C45145` | deep navy `#011627` | warm white `#F7F1E6` |
-| Nightly     | moonlit violet `#7656E8`  | deep navy `#011627` | warm white `#F7F1E6` |
-| Development | blueprint blue `#176BFF`  | deep navy `#011627` | warm white `#F7F1E6` |
+| Channel     | Body                     | Screen                  | Prompt               |
+| ----------- | ------------------------ | ----------------------- | -------------------- |
+| Production  | midnight brick `#D35C46` | midnight navy `#0C1119` | cool white `#E7ECF3` |
+| Nightly     | moonlit violet `#7656E8` | midnight navy `#0C1119` | cool white `#E7ECF3` |
+| Development | blueprint blue `#176BFF` | midnight navy `#0C1119` | cool white `#E7ECF3` |
 
-The application interface uses the same muted red family for focus, selection,
-links, and primary action: `#A83E35` on light surfaces and `#D76159` on dark
-surfaces. Navy remains dominant, while red stays below roughly ten percent of
-the working surface. Semantic warning amber remains available only for genuine
-warning states.
+The application uses the paired Midnight Brick palettes sampled from the
+approved dark and light references. Dark mode uses canvas `#0C1119`, sidebar
+`#0F1621`, muted surface `#161D28`, elevated surface `#1F2835`, muted text
+`#8995A6`, foreground `#E7ECF3`, and brick `#D35C46`. Light mode uses paper
+`#FAF8F5`, sidebar `#F1EEE9`, white `#FFFFFF`, selected surface `#DBD7CD`,
+muted text `#77736B`, ink `#1C1A17`, and brick `#B64E36`. Brick is the shared
+warm accent family for identity, focus, selection, links, and primary actions.
+Navy or paper remains dominant, while brick stays below roughly ten percent of
+the working surface. Semantic warning amber, danger red, and diff green remain
+available only for genuine status states.
+
+For small muted text on the paper canvas, use the one-step darker
+`#76726A` accessibility correction; it preserves the sampled hue while meeting
+WCAG AA against `#FAF8F5`.
 
 ## Source-of-truth policy
 

@@ -62,10 +62,10 @@ const RELEASE_ASSETS = {
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
   androidAdaptiveForeground: "./assets/android-icon-mark.png",
-  androidAdaptiveBackgroundColor: "#011627",
+  androidAdaptiveBackgroundColor: "#0C1119",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
-  androidNotificationColor: "#C45145",
+  androidNotificationColor: "#D35C46",
 } as const;
 
 const VARIANT_CONFIG = {
@@ -297,11 +297,11 @@ const config: ExpoConfig = {
       {
         image: variant.assets.splashIcon,
         resizeMode: "contain",
-        backgroundColor: "#F7F1E6",
+        backgroundColor: "#FAF8F5",
         imageWidth: 220,
         dark: {
           image: variant.assets.splashIcon,
-          backgroundColor: "#011627",
+          backgroundColor: "#0C1119",
         },
       },
     ],
