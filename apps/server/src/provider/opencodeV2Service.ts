@@ -2,8 +2,8 @@
 // @effect-diagnostics globalFetch:off
 // @effect-diagnostics globalTimers:off
 
-import * as NodeFs from "node:fs/promises";
-import * as NodeOs from "node:os";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 /**
@@ -38,7 +38,7 @@ const HEALTH_TIMEOUT_MS = 2_000;
 
 export function openCodeV2StateDirectory(environment: NodeJS.ProcessEnv = process.env): string {
   const stateHome =
-    environment.XDG_STATE_HOME?.trim() || NodePath.join(NodeOs.homedir(), ".local", "state");
+    environment.XDG_STATE_HOME?.trim() || NodePath.join(NodeOS.homedir(), ".local", "state");
   return NodePath.join(stateHome, "opencode");
 }
 
@@ -116,7 +116,7 @@ function basicAuthHeader(password: string): string {
 
 async function readRegistrationFile(path: string): Promise<OpenCodeV2ServiceRegistration | null> {
   try {
-    const raw = await NodeFs.readFile(path, "utf8");
+    const raw = await NodeFSP.readFile(path, "utf8");
     return parseOpenCodeV2ServiceRegistration(raw);
   } catch {
     return null;
@@ -173,18 +173,69 @@ async function probeRegistration(
   }
 }
 
+const SERVICE_REGISTRATION_FILE_RE = /^service(?:-[A-Za-z0-9._-]+)?\.json$/;
+
+/** @internal Order registration candidates: derived channel file first, then stable order. */
+export function orderOpenCodeV2RegistrationCandidates(
+  fileNames: ReadonlyArray<string>,
+  version: string | undefined,
+): ReadonlyArray<string> {
+  const preferred = openCodeV2ServiceRegistrationFileName(version);
+  return [...fileNames]
+    .filter((fileName) => SERVICE_REGISTRATION_FILE_RE.test(fileName))
+    .sort((a, b) => (a === preferred ? -1 : b === preferred ? 1 : a.localeCompare(b)));
+}
+
+async function scanOpenCodeV2ServiceRegistrations(
+  input: DiscoverOpenCodeV2ServiceInput,
+): Promise<OpenCodeV2ServiceEndpoint | null> {
+  const directory = openCodeV2StateDirectory(input.environment);
+  let entries: ReadonlyArray<string>;
+  try {
+    entries = await NodeFSP.readdir(directory);
+  } catch {
+    return null;
+  }
+  for (const fileName of orderOpenCodeV2RegistrationCandidates(entries, input.version)) {
+    const info = await readRegistrationFile(NodePath.join(directory, fileName));
+    if (!info) {
+      continue;
+    }
+    const endpoint = await probeRegistration(info);
+    if (endpoint) {
+      return endpoint;
+    }
+  }
+  return null;
+}
+
 export async function discoverOpenCodeV2Service(
   input: DiscoverOpenCodeV2ServiceInput = {},
 ): Promise<OpenCodeV2ServiceEndpoint | null> {
   const path = resolveOpenCodeV2ServiceRegistrationPath(input);
   const info = await readRegistrationFile(path);
-  if (!info) {
+  if (info) {
+    const exact = await probeRegistration(info, input.version);
+    if (exact) {
+      return exact;
+    }
+    // Dev builds version as 0.0.0-<channel>-<stamp>, so a service started from
+    // an older build of the same channel disagrees on the stamp while being
+    // fully compatible. Accept the healthy registration anyway.
+    const relaxed = await probeRegistration(info);
+    if (relaxed) {
+      return relaxed;
+    }
+  }
+  if (input.registrationFile?.trim()) {
+    // An explicit registration file is an exact target; never scan past it.
     return null;
   }
-  if (input.version !== undefined && info.version !== undefined && info.version !== input.version) {
-    return null;
-  }
-  return probeRegistration(info, input.version);
+  // The binary's channel can change between rebuilds (its derived registration
+  // file then does not exist) while an older service keeps running under the
+  // previous channel's registration. Fall back to any healthy registered
+  // service instead of hard-failing on the derived filename.
+  return scanOpenCodeV2ServiceRegistrations(input);
 }
 
 /**

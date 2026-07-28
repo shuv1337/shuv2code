@@ -1,4 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off
+
 import * as NodeAssert from "node:assert/strict";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeHttp from "node:http";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import { describe, it } from "vite-plus/test";
 
@@ -6,8 +12,10 @@ import { OPENCODE_MAINTENANCE_DEFINITION } from "./Drivers/OpenCodeDriver.ts";
 import { detectOpenCodeProtocolFromVersionOutput } from "./opencodeRuntime.ts";
 import { resolvePackageManagedProviderMaintenance } from "./providerMaintenance.ts";
 import {
+  discoverOpenCodeV2Service,
   openCodeV2ChannelFromVersion,
   openCodeV2ServiceRegistrationFileName,
+  orderOpenCodeV2RegistrationCandidates,
   resolveOpenCodeV2ServiceRegistrationPath,
 } from "./opencodeV2Service.ts";
 
@@ -79,5 +87,106 @@ describe("shuvcode OpenCode V2 fork compatibility", () => {
     );
     NodeAssert.equal(manualInstall.packageName, "shuvcode");
     NodeAssert.equal(manualInstall.update, null);
+  });
+
+  it("detects sync-upstream-v2 dev builds as V2", () => {
+    NodeAssert.equal(
+      detectOpenCodeProtocolFromVersionOutput("shuvcode v0.0.0-sync-upstream-v2-202607270949\n"),
+      "v2",
+    );
+    NodeAssert.equal(
+      openCodeV2ChannelFromVersion("0.0.0-sync-upstream-v2-202607270949"),
+      "sync-upstream-v2",
+    );
+  });
+
+  it("prefers the derived channel registration but keeps other services as candidates", () => {
+    NodeAssert.deepEqual(
+      orderOpenCodeV2RegistrationCandidates(
+        ["service-local.json", "frecency.jsonl", "service-integration-v2.json", "service.json"],
+        "0.0.0-integration-v2-202607241824",
+      ),
+      ["service-integration-v2.json", "service-local.json", "service.json"],
+    );
+  });
+
+  it("attaches to a healthy service registered under a previous dev channel", async () => {
+    // Reproduces the live-fork failure mode: the shuvcode binary was rebuilt
+    // onto a new channel (sync-upstream-v2) while the running background
+    // service still registers under the previous channel (integration-v2).
+    const stateHome = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "shuvcode-v2-state-"));
+    const serviceDir = NodePath.join(stateHome, "opencode");
+    await NodeFSP.mkdir(serviceDir, { recursive: true });
+
+    const staleVersion = "0.0.0-integration-v2-202607241824";
+    const server = NodeHttp.createServer((request, response) => {
+      if (request.url === "/api/health") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ healthy: true, version: staleVersion, pid: process.pid }));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    NodeAssert.ok(address && typeof address === "object");
+
+    try {
+      const url = `http://127.0.0.1:${address.port}`;
+      await NodeFSP.writeFile(
+        NodePath.join(serviceDir, "service-integration-v2.json"),
+        JSON.stringify({ url, pid: process.pid, version: staleVersion }),
+      );
+
+      const endpoint = await discoverOpenCodeV2Service({
+        version: "0.0.0-sync-upstream-v2-202607270949",
+        environment: { XDG_STATE_HOME: stateHome },
+      });
+      NodeAssert.ok(endpoint, "expected fallback discovery to find the stale-channel service");
+      NodeAssert.equal(endpoint.url, url);
+      NodeAssert.equal(endpoint.version, staleVersion);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await NodeFSP.rm(stateHome, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a same-channel registration whose dev stamp is older than the binary", async () => {
+    const stateHome = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "shuvcode-v2-stamp-"));
+    const serviceDir = NodePath.join(stateHome, "opencode");
+    await NodeFSP.mkdir(serviceDir, { recursive: true });
+
+    const serviceVersion = "0.0.0-sync-upstream-v2-202607260000";
+    const server = NodeHttp.createServer((request, response) => {
+      if (request.url === "/api/health") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ healthy: true, version: serviceVersion, pid: process.pid }));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    NodeAssert.ok(address && typeof address === "object");
+
+    try {
+      const url = `http://127.0.0.1:${address.port}`;
+      await NodeFSP.writeFile(
+        NodePath.join(serviceDir, "service-sync-upstream-v2.json"),
+        JSON.stringify({ url, pid: process.pid, version: serviceVersion }),
+      );
+
+      const endpoint = await discoverOpenCodeV2Service({
+        version: "0.0.0-sync-upstream-v2-202607270949",
+        environment: { XDG_STATE_HOME: stateHome },
+      });
+      NodeAssert.ok(endpoint, "expected stamp-mismatched same-channel service to be accepted");
+      NodeAssert.equal(endpoint.url, url);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await NodeFSP.rm(stateHome, { recursive: true, force: true });
+    }
   });
 });

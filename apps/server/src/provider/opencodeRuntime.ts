@@ -573,7 +573,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           Effect.flatMap((nextStdout) => {
             const parsed = parseOpenCodeServerUrl(nextStdout);
             const serverPassword = parseOpenCodeServerPassword(nextStdout);
-            if (!parsed || (protocol === "v2" && !serverPassword)) {
+            // V2 binaries never reach this spawn path (guarded above), so the
+            // URL alone marks readiness; a password is captured if printed.
+            if (!parsed) {
               return Effect.void;
             }
             return Deferred.succeed(readyDeferred, {
