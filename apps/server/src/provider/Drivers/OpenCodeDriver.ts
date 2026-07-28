@@ -44,7 +44,6 @@ import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   makePackageManagedProviderMaintenanceResolver,
-  normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
 import {
@@ -57,25 +56,18 @@ const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 const DRIVER_KIND = ProviderDriverKind.make("opencode");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 
-function isOpenCodeNativeCommandPath(commandPath: string): boolean {
-  const normalized = normalizeCommandPath(commandPath);
-  return (
-    normalized.endsWith("/.opencode/bin/opencode") ||
-    normalized.endsWith("/.opencode/bin/opencode.exe")
-  );
-}
-
-const UPDATE = makePackageManagedProviderMaintenanceResolver({
+// Fork note: this build tracks shuvcode (the OpenCode fork published to npm)
+// instead of upstream opencode-ai. Homebrew and the native `opencode upgrade`
+// self-updater are intentionally omitted because both would reinstall stock
+// OpenCode over the fork.
+export const OPENCODE_MAINTENANCE_DEFINITION = {
   provider: DRIVER_KIND,
-  npmPackageName: "opencode-ai",
-  homebrewFormula: "anomalyco/tap/opencode",
-  nativeUpdate: {
-    executable: "opencode",
-    args: ["upgrade"],
-    lockKey: "opencode-native",
-    isCommandPath: isOpenCodeNativeCommandPath,
-  },
-});
+  npmPackageName: "shuvcode",
+  homebrewFormula: null,
+  nativeUpdate: null,
+} as const;
+
+const UPDATE = makePackageManagedProviderMaintenanceResolver(OPENCODE_MAINTENANCE_DEFINITION);
 
 export type OpenCodeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
