@@ -237,8 +237,8 @@ function DevBlueprintArt({ compact = false }: { compact?: boolean }) {
           gradientTransform="translate(216 14) rotate(137) scale(120 84)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#FFB840" stopOpacity="0.34" />
-          <stop offset="0.52" stopColor="#F0442F" stopOpacity="0.14" />
+          <stop stopColor="#C45145" stopOpacity="0.15" />
+          <stop offset="0.52" stopColor="#8B4A43" stopOpacity="0.06" />
           <stop offset="1" stopColor="#071624" stopOpacity="0" />
         </radialGradient>
         <radialGradient
@@ -249,8 +249,8 @@ function DevBlueprintArt({ compact = false }: { compact?: boolean }) {
           gradientTransform="translate(474 44) rotate(166) scale(156 92)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#FFF0DE" stopOpacity="0.22" />
-          <stop offset="0.5" stopColor="#F90E0A" stopOpacity="0.14" />
+          <stop stopColor="#F5E7DA" stopOpacity="0.12" />
+          <stop offset="0.5" stopColor="#A75A48" stopOpacity="0.06" />
           <stop offset="1" stopColor="#071624" stopOpacity="0" />
         </radialGradient>
         <radialGradient
@@ -261,8 +261,8 @@ function DevBlueprintArt({ compact = false }: { compact?: boolean }) {
           gradientTransform="translate(704 18) rotate(145) scale(132 88)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#FFB840" stopOpacity="0.2" />
-          <stop offset="0.52" stopColor="#9A1D1D" stopOpacity="0.12" />
+          <stop stopColor="#C45145" stopOpacity="0.08" />
+          <stop offset="0.52" stopColor="#713B3A" stopOpacity="0.05" />
           <stop offset="1" stopColor="#071624" stopOpacity="0" />
         </radialGradient>
         <pattern id={minorGridId} width="8" height="8" patternUnits="userSpaceOnUse">
@@ -298,7 +298,7 @@ function DevBlueprintArt({ compact = false }: { compact?: boolean }) {
             <path d="M590 67V73M724 67V73" strokeOpacity="0.55" />
           </g>
 
-          <g stroke="#FFB840" strokeLinecap="round" strokeOpacity="0.32" strokeWidth="0.6">
+          <g stroke="#D68176" strokeLinecap="round" strokeOpacity="0.18" strokeWidth="0.6">
             <g>
               <path d="M34 60L38 64M38 60L34 64" />
             </g>

@@ -38,4 +38,13 @@ describe("SidebarStageBackdrop", () => {
       expect(new Set(ids).size).toBe(ids.length);
     },
   );
+
+  it("keeps development artwork restrained instead of using bright brand red", () => {
+    const markup = renderToStaticMarkup(<StageBackdropArt variant="dev" />);
+
+    expect(markup).toContain("#C45145");
+    expect(markup).not.toContain("#E7A64B");
+    expect(markup).not.toContain("#F90E0A");
+    expect(markup).not.toContain("#F0442F");
+  });
 });

@@ -13,12 +13,12 @@ export function AuthSurfaceShell({ children }: { readonly children: ReactNode })
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
       <div className="pointer-events-none absolute inset-0 opacity-80">
-        <div className="absolute inset-x-0 top-0 h-72 bg-[radial-gradient(48rem_20rem_at_top,color-mix(in_srgb,var(--color-red-500)_12%,transparent),transparent)]" />
+        <div className="absolute inset-x-0 top-0 h-72 bg-[radial-gradient(48rem_20rem_at_top,color-mix(in_srgb,var(--brand)_5%,transparent),transparent)]" />
         <div className="absolute inset-0 bg-[linear-gradient(145deg,color-mix(in_srgb,var(--background)_94%,var(--color-black))_0%,var(--background)_62%)]" />
       </div>
 
       <section className="relative w-full max-w-xl overflow-hidden rounded-2xl border border-border/80 bg-card/94 shadow-2xl shadow-black/20 backdrop-blur-md">
-        <header className="relative h-24 overflow-hidden bg-[linear-gradient(135deg,#32151a,#071624)] text-white">
+        <header className="relative h-24 overflow-hidden bg-[linear-gradient(135deg,#211a21,#071624)] text-white">
           {stageVariant ? (
             <div className="absolute inset-0" aria-hidden>
               <StageBackdropArt variant={stageVariant} />
@@ -26,7 +26,7 @@ export function AuthSurfaceShell({ children }: { readonly children: ReactNode })
           ) : (
             <div
               aria-hidden
-              className="absolute inset-0 bg-[radial-gradient(circle_at_75%_25%,rgba(249,14,10,0.34),transparent_38%),linear-gradient(135deg,#32151a,#071624)]"
+              className="absolute inset-0 bg-[radial-gradient(circle_at_75%_25%,rgba(196,81,69,0.14),transparent_38%),linear-gradient(135deg,#211a21,#071624)]"
             />
           )}
           <div className="absolute inset-0 bg-[linear-gradient(to_bottom,transparent_20%,rgba(7,18,55,0.46)_100%)]" />

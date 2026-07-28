@@ -33,15 +33,15 @@
       --color-inline-skill-foreground: #a21caf;
 
       /* Primary action */
-      --color-primary: #d88b18;
-      --color-primary-foreground: #17120a;
+      --color-primary: #a83e35;
+      --color-primary-foreground: #fffaf1;
       --color-primary-shadow: rgba(0, 0, 0, 0.18);
 
       /* Secondary action */
       --color-secondary: #ffffff;
       --color-secondary-foreground: #262626;
       --color-secondary-border: rgba(0, 0, 0, 0.08);
-      --color-switch-active: #34c759;
+      --color-switch-active: #a83e35;
 
       /* Danger */
       --color-danger: #fef2f2;
@@ -83,7 +83,7 @@
       --color-md-hr: rgba(0, 0, 0, 0.08);
 
       /* iMessage-style user bubble */
-      --color-user-bubble: #d88b18;
+      --color-user-bubble: #c45145;
       --color-user-bubble-foreground: #ffffff;
       --color-user-bubble-foreground-muted: rgba(255, 255, 255, 0.78);
 
@@ -127,15 +127,15 @@
       --color-inline-skill-foreground: #f0abfc;
 
       /* Primary action */
-      --color-primary: #f3b042;
-      --color-primary-foreground: #1a1410;
+      --color-primary: #d76159;
+      --color-primary-foreground: #0f1421;
       --color-primary-shadow: rgba(0, 0, 0, 0.22);
 
       /* Secondary action */
       --color-secondary: rgba(255, 255, 255, 0.04);
       --color-secondary-foreground: #f5f5f5;
       --color-secondary-border: rgba(255, 255, 255, 0.06);
-      --color-switch-active: #30d158;
+      --color-switch-active: #d76159;
 
       /* Danger */
       --color-danger: rgba(239, 68, 68, 0.14);
@@ -177,7 +177,7 @@
       --color-md-hr: rgba(255, 255, 255, 0.08);
 
       /* iMessage-style user bubble */
-      --color-user-bubble: #d88b18;
+      --color-user-bubble: #c45145;
       --color-user-bubble-foreground: #ffffff;
       --color-user-bubble-foreground-muted: rgba(255, 255, 255, 0.78);
 

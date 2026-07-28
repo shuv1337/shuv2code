@@ -24,19 +24,26 @@ body with a coding-agent terminal.
 - Preserve a near-square footprint and generous exterior padding.
 - Keep horns broad enough to survive 16 px rasterization.
 - Keep the prompt negative space open enough to remain legible at 32 px.
+- Make the dark terminal screen the dominant interior shape: approximately
+  58% of the view-box width, with a compact 28–36 unit red casing around it.
+- Keep the horns and tail subordinate to the screen rather than letting them
+  define the apparent size of the mark.
 - Do not add a face, rotary dial, flames, pitchfork, badge, or enclosing circle.
 - The tail is optional below 24 px when it would blur into the phone body.
 
 ## Channel colors
 
-| Channel     | Body                     | Screen              | Prompt               |
-| ----------- | ------------------------ | ------------------- | -------------------- |
-| Production  | devil red `#F90E0A`      | deep navy `#011627` | warm white `#F7F1E6` |
-| Nightly     | moonlit violet `#7656E8` | deep navy `#011627` | warm white `#F7F1E6` |
-| Development | blueprint blue `#176BFF` | deep navy `#011627` | warm white `#F7F1E6` |
+| Channel     | Body                      | Screen              | Prompt               |
+| ----------- | ------------------------- | ------------------- | -------------------- |
+| Production  | muted devil red `#C45145` | deep navy `#011627` | warm white `#F7F1E6` |
+| Nightly     | moonlit violet `#7656E8`  | deep navy `#011627` | warm white `#F7F1E6` |
+| Development | blueprint blue `#176BFF`  | deep navy `#011627` | warm white `#F7F1E6` |
 
-The application interface uses amber `#F3B042` for focus, selection, links,
-and primary action. Red is not a general interaction accent.
+The application interface uses the same muted red family for focus, selection,
+links, and primary action: `#A83E35` on light surfaces and `#D76159` on dark
+surfaces. Navy remains dominant, while red stays below roughly ten percent of
+the working surface. Semantic warning amber remains available only for genuine
+warning states.
 
 ## Source-of-truth policy
 

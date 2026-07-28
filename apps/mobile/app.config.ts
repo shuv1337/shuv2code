@@ -65,7 +65,7 @@ const RELEASE_ASSETS = {
   androidAdaptiveBackgroundColor: "#011627",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
-  androidNotificationColor: "#F90E0A",
+  androidNotificationColor: "#C45145",
 } as const;
 
 const VARIANT_CONFIG = {

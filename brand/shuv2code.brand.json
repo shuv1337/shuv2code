@@ -23,7 +23,7 @@
   },
   "channels": {
     "production": {
-      "body": "#F90E0A",
+      "body": "#C45145",
       "screen": "#011627",
       "prompt": "#F7F1E6"
     },
@@ -45,9 +45,9 @@
     "darkElevated": "#202740",
     "text": "#E6EAF2",
     "mutedText": "#8B95A9",
-    "accent": "#F3B042",
-    "accentStrong": "#FFC85F",
-    "brandRed": "#F90E0A",
+    "accent": "#D76159",
+    "accentStrong": "#F09B94",
+    "brandRed": "#C45145",
     "lightCanvas": "#F7F1E6",
     "lightText": "#171D2B"
   },
