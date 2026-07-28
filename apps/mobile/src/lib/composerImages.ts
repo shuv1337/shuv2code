@@ -2,7 +2,7 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type UploadChatImageAttachment,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import { estimateBase64ByteSize } from "./base64";
 import { uuidv4 } from "./uuid";
 
@@ -24,7 +24,7 @@ export function toUploadChatImageAttachments(
   }));
 }
 
-const OWNED_PASTED_IMAGE_DIRECTORY = "t3-composer-paste";
+const OWNED_PASTED_IMAGE_DIRECTORY = "shuv2code-composer-paste";
 
 async function loadImagePicker() {
   try {

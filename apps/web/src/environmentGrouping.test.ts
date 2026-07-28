@@ -1,4 +1,4 @@
-import { EnvironmentId, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

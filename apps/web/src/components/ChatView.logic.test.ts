@@ -5,7 +5,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { Thread } from "../types";

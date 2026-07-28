@@ -73,7 +73,7 @@ jobs:
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 60
     env:
-      T3_SHOWCASE_ANDROID_ABI: x86_64
+      SHUV2CODE_SHOWCASE_ANDROID_ABI: x86_64
     steps:
       - name: Checkout
         uses: actions/checkout@v6

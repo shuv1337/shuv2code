@@ -5,36 +5,36 @@ import {
   effectiveSettled,
   effectiveSnoozed,
   threadWokeAt,
-} from "@t3tools/client-runtime/state/thread-settled";
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+} from "@shuv2code/client-runtime/state/thread-settled";
+import type { EnvironmentThreadShell } from "@shuv2code/client-runtime/state/models";
 import {
   scopeProjectRef,
   scopeThreadRef,
   scopedThreadKey,
-} from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef, SidebarProjectGroupingMode } from "@t3tools/contracts";
+} from "@shuv2code/client-runtime/environment";
+import type { ScopedThreadRef, SidebarProjectGroupingMode } from "@shuv2code/contracts";
 import {
-  AlarmClockIcon,
-  AlarmClockOffIcon,
-  CheckIcon,
-  ChevronDownIcon,
-  CircleAlertIcon,
-  CircleCheckIcon,
-  CircleDashedIcon,
-  ClockIcon,
-  CopyIcon,
-  FolderIcon,
-  FolderPlusIcon,
-  GitBranchIcon,
-  EllipsisIcon,
-  MessageSquareIcon,
-  PlusIcon,
-  SearchIcon,
-  ServerIcon,
-  SquarePenIcon,
-  Trash2Icon,
-  Undo2Icon,
-} from "lucide-react";
+  Alarm as AlarmClockIcon,
+  Alarm as AlarmClockOffIcon,
+  Check as CheckIcon,
+  CaretDown as ChevronDownIcon,
+  WarningCircle as CircleAlertIcon,
+  CheckCircle as CircleCheckIcon,
+  CircleNotch as CircleDashedIcon,
+  Clock as ClockIcon,
+  Copy as CopyIcon,
+  Folder as FolderIcon,
+  FolderPlus as FolderPlusIcon,
+  GitBranch as GitBranchIcon,
+  DotsThree as EllipsisIcon,
+  ChatCircle as MessageSquareIcon,
+  Plus as PlusIcon,
+  MagnifyingGlass as SearchIcon,
+  HardDrives as ServerIcon,
+  NotePencil as SquarePenIcon,
+  Trash as Trash2Icon,
+  ArrowCounterClockwise as Undo2Icon,
+} from "@phosphor-icons/react";
 import {
   memo,
   useCallback,
@@ -52,7 +52,7 @@ import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@shuv2code/client-runtime/state/runtime";
 import { isElectron } from "../env";
 import {
   resolveShortcutCommand,

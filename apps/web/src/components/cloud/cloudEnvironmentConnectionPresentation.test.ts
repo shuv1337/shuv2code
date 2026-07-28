@@ -1,4 +1,4 @@
-import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
+import type { EnvironmentConnectionPresentation } from "@shuv2code/client-runtime/connection";
 import { describe, expect, it } from "vite-plus/test";
 
 import { presentSavedCloudEnvironmentConnection } from "./cloudEnvironmentConnectionPresentation";

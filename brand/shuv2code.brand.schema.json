@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:shuv2code:schema:brand-manifest",
+  "title": "shuv2code brand manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "displayName",
+    "stage",
+    "tagline",
+    "repository",
+    "upstreamRepository",
+    "packageName",
+    "binaries",
+    "privatePackageScope",
+    "environmentPrefix",
+    "projectFile",
+    "stateDirectory",
+    "applicationIds",
+    "schemes",
+    "channels",
+    "theme",
+    "initialVersion"
+  ],
+  "properties": {
+    "displayName": { "const": "shuv2code" },
+    "stage": { "const": "Alpha" },
+    "tagline": { "type": "string", "minLength": 1 },
+    "repository": { "const": "shuv1337/shuv2code" },
+    "upstreamRepository": { "const": "pingdotgg/t3code" },
+    "packageName": { "const": "shuv2code" },
+    "binaries": {
+      "type": "array",
+      "prefixItems": [{ "const": "shuv2code" }, { "const": "s2c" }],
+      "items": false
+    },
+    "privatePackageScope": { "const": "@shuv2code" },
+    "environmentPrefix": { "const": "SHUV2CODE_" },
+    "projectFile": { "const": "shuv2code.json" },
+    "stateDirectory": { "const": ".shuv2code" },
+    "applicationIds": { "$ref": "#/$defs/channelStrings" },
+    "schemes": { "$ref": "#/$defs/channelStrings" },
+    "channels": {
+      "type": "object",
+      "required": ["production", "nightly", "development"],
+      "additionalProperties": false,
+      "properties": {
+        "production": { "$ref": "#/$defs/channelColors" },
+        "nightly": { "$ref": "#/$defs/channelColors" },
+        "development": { "$ref": "#/$defs/channelColors" }
+      }
+    },
+    "theme": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/color" }
+    },
+    "initialVersion": { "const": "0.1.0-alpha.1" }
+  },
+  "$defs": {
+    "channelStrings": {
+      "type": "object",
+      "required": ["production", "nightly", "development"],
+      "additionalProperties": false,
+      "properties": {
+        "production": { "type": "string", "minLength": 1 },
+        "nightly": { "type": "string", "minLength": 1 },
+        "development": { "type": "string", "minLength": 1 }
+      }
+    },
+    "channelColors": {
+      "type": "object",
+      "required": ["body", "screen", "prompt"],
+      "additionalProperties": false,
+      "properties": {
+        "body": { "$ref": "#/$defs/color" },
+        "screen": { "$ref": "#/$defs/color" },
+        "prompt": { "$ref": "#/$defs/color" }
+      }
+    },
+    "color": {
+      "type": "string",
+      "pattern": "^#[0-9A-F]{6}$"
+    }
+  }
+}

@@ -13,22 +13,22 @@ import {
   HostProcessArguments,
   HostProcessExecutablePath,
   HostProcessPlatform,
-} from "@t3tools/shared/hostProcess";
+} from "@shuv2code/shared/hostProcess";
 
 import * as ProcessRunner from "../processRunner.ts";
 import { ensurePinnedRuntimeInstalled, pinnedRuntimePaths } from "./pinnedRuntime.ts";
 
 /**
- * Installs T3 Code as a per-user boot service. Linux-only for now: systemd
+ * Installs shuv2code as a per-user boot service. Linux-only for now: systemd
  * user unit + loginctl enable-linger. The service runs a stable or pinned
- * runtime — never an ephemeral `npx t3` cache whose eviction could break
+ * runtime — never an ephemeral `npx shuv2code` cache whose eviction could break
  * startup.
  */
 
-const BOOT_SERVICE_NAME = "t3code";
+const BOOT_SERVICE_NAME = "shuv2code";
 
 export const BOOT_SERVICE_UNIT_FILE = `${BOOT_SERVICE_NAME}.service`;
-export const BOOT_SERVICE_UNIT_ENV = "T3_BOOT_SERVICE_UNIT";
+export const BOOT_SERVICE_UNIT_ENV = "SHUV2CODE_BOOT_SERVICE_UNIT";
 
 const EPHEMERAL_CACHE_SEGMENTS = [
   "/_npx/", // npx
@@ -39,7 +39,7 @@ const EPHEMERAL_CACHE_SEGMENTS = [
 ];
 
 /**
- * `npx t3` (and pnpm dlx / bunx) run out of ephemeral package-manager
+ * `npx shuv2code` (and pnpm dlx / bunx) run out of ephemeral package-manager
  * caches that can be evicted at any time — a boot service must never point
  * there. Global installs, repo checkouts, and the pinned runtime below are
  * all stable.
@@ -71,8 +71,8 @@ export function quoteSystemdValue(value: string): string {
 export interface BootServicePlan {
   /** Absolute path of the node binary running this CLI. */
   readonly nodePath: string;
-  /** Absolute path of the pinned t3 entry point the unit will run. */
-  readonly t3EntryPath: string;
+  /** Absolute path of the pinned shuv2code entry point the unit will run. */
+  readonly shuv2codeEntryPath: string;
   readonly baseDir: string;
   readonly logPath: string;
   readonly unitPath: string;
@@ -90,7 +90,7 @@ export function renderBootServiceUnit(plan: BootServicePlan): string {
   // relay connection, and Restart=always covers early-boot failures.
   return [
     "[Unit]",
-    "Description=T3 Code server",
+    "Description=shuv2code server",
     // Give up after 5 crashes in 5 minutes so a persistently broken install
     // (deleted runtime, broken workspace) stops instead of restarting every
     // 5s forever and growing the unrotated append log without bound.
@@ -100,9 +100,9 @@ export function renderBootServiceUnit(plan: BootServicePlan): string {
     "[Service]",
     "Type=simple",
     "WorkingDirectory=%h",
-    `Environment=T3CODE_HOME=${quoteSystemdValue(plan.baseDir)}`,
+    `Environment=SHUV2CODE_HOME=${quoteSystemdValue(plan.baseDir)}`,
     `Environment=${BOOT_SERVICE_UNIT_ENV}=${BOOT_SERVICE_UNIT_FILE}`,
-    `ExecStart=${quoteSystemdValue(plan.nodePath)} ${quoteSystemdValue(plan.t3EntryPath)} serve`,
+    `ExecStart=${quoteSystemdValue(plan.nodePath)} ${quoteSystemdValue(plan.shuv2codeEntryPath)} serve`,
     "Restart=always",
     "RestartSec=5",
     `StandardOutput=append:${escapeSystemdSpecifiers(plan.logPath)}`,
@@ -145,7 +145,7 @@ export class BootServiceInstallError extends Schema.TaggedErrorClass<BootService
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Could not set up the T3 Code background service.";
+    return "Could not set up the shuv2code background service.";
   }
 }
 
@@ -175,7 +175,7 @@ export class BootService extends Context.Service<
     readonly uninstall: Effect.Effect<boolean, BootServiceError>;
     readonly status: Effect.Effect<BootServiceStatus, BootServiceError>;
   }
->()("t3/cloud/bootService") {}
+>()("shuv2code/cloud/bootService") {}
 
 export interface BootServiceHost {
   readonly execPath: string;
@@ -249,7 +249,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
    * install (global bin, repo checkout) is used as-is; an ephemeral cache
    * entry is replaced by `npm install --prefix`-ing the exact running
    * version into <baseDir>/runtime/versions/<v>. A real install (not a copy
-   * of bin.mjs) because t3 ships native deps like node-pty.
+   * of bin.mjs) because shuv2code ships native deps like node-pty.
    */
   const ensurePinnedRuntime = Effect.gen(function* () {
     if (!isEphemeralCacheEntry(host.cliEntryPath)) {
@@ -293,7 +293,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     : host.cliEntryPath;
   const plan: BootServicePlan = {
     nodePath: host.execPath,
-    t3EntryPath: plannedEntryPath,
+    shuv2codeEntryPath: plannedEntryPath,
     baseDir: input.baseDir,
     logPath,
     unitPath,
@@ -412,7 +412,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     const unit = yield* fs.readFileString(unitPath);
     // A unit is current only if it matches what install would write now (an
     // older CLI wrote a different runtime/node path) AND the entry point it
-    // references still exists (a pinned runtime under ~/.t3 can be deleted to
+    // references still exists (a pinned runtime under ~/.shuv2code can be deleted to
     // reclaim space). Either mismatch makes connect offer a repair.
     const entryExists = yield* fs.exists(plannedEntryPath);
     const current = unit === renderBootServiceUnit(plan) && entryExists;

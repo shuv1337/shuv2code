@@ -1,14 +1,14 @@
 included:
-  - ios/T3Code
-  - modules/t3-composer-editor/ios
-  - modules/t3-native-controls/ios
-  - modules/t3-terminal/ios
-  - modules/t3-review-diff/ios
+  - ios/Shuv2Code
+  - modules/shuv2code-composer-editor/ios
+  - modules/shuv2code-native-controls/ios
+  - modules/shuv2code-terminal/ios
+  - modules/shuv2code-review-diff/ios
 
 excluded:
   - ios/Pods
   - ios/build
-  - modules/t3-terminal/Vendor
+  - modules/shuv2code-terminal/Vendor
 
 reporter: xcode
 

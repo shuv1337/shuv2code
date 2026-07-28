@@ -1,7 +1,7 @@
 import {
   createVcsActionManager,
   createVcsEnvironmentAtoms,
-} from "@t3tools/client-runtime/state/vcs";
+} from "@shuv2code/client-runtime/state/vcs";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 

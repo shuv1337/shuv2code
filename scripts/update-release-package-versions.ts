@@ -10,7 +10,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag } from "effect/unstable/cli";
-import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
+import { fromJsonStringPretty } from "@shuv2code/shared/schemaJson";
 
 export class ReleasePackageManifestError extends Schema.TaggedErrorClass<ReleasePackageManifestError>()(
   "ReleasePackageManifestError",
@@ -51,6 +51,10 @@ export const releasePackageFiles = [
   "apps/desktop/package.json",
   "apps/web/package.json",
   "packages/contracts/package.json",
+  "packages/shared/package.json",
+  "packages/tailscale/package.json",
+  "packages/effect-acp/package.json",
+  "packages/effect-codex-app-server/package.json",
 ] as const;
 
 interface UpdateReleasePackageVersionsOptions {

@@ -566,7 +566,7 @@ function normalizeEvent(event: { readonly type: string; readonly data?: unknown 
 
 /**
  * Adapts the OpenCode V2 client to the subset of the V1 SDK surface consumed by
- * T3 Code. Keeping this boundary in one place lets the existing event projection
+ * shuv2code. Keeping this boundary in one place lets the existing event projection
  * and provider adapter continue to serve both protocol generations.
  */
 export function createOpenCodeV2CompatibilityClient(
@@ -633,7 +633,7 @@ export function createOpenCodeV2CompatibilityClient(
       get: async (request: { readonly sessionID: string }) => ({
         data: toV1Session(await client.session.get(request)),
       }),
-      // V2 has no per-session permission-ruleset update. T3 still calls this
+      // V2 has no per-session permission-ruleset update. shuv2code still calls this
       // after create/resume; keep a no-op so V1 call sites compile, and rely on
       // V2 agent defaults plus permission.asked / question.asked events.
       update: async () => ({ data: true }),

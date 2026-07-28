@@ -1,4 +1,4 @@
-import type { PreviewViewportSetting } from "@t3tools/contracts";
+import type { PreviewViewportSetting } from "@shuv2code/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {

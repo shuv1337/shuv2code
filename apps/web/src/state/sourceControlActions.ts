@@ -3,11 +3,11 @@ import type {
   AtomCommandFailure,
   AtomCommandResult,
   AtomCommandSuccess,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@shuv2code/client-runtime/state/runtime";
 import {
   VcsActionUnavailableError,
   type VcsActionOperation,
-} from "@t3tools/client-runtime/state/vcs";
+} from "@shuv2code/client-runtime/state/vcs";
 import type {
   EnvironmentId,
   GitActionProgressEvent,
@@ -16,7 +16,7 @@ import type {
   SourceControlCloneProtocol,
   SourceControlRepositoryVisibility,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";

@@ -1,12 +1,12 @@
 import { View } from "react-native";
 
-import { T3HeaderButton } from "../../native/T3HeaderButton.android";
+import { Shuv2CodeHeaderButton } from "../../native/Shuv2CodeHeaderButton.android";
 import type { SidebarHeaderActionsProps } from "./sidebar-header-actions";
 
 export function SidebarHeaderActions(props: SidebarHeaderActionsProps) {
   return (
     <View className="h-11 flex-row gap-1">
-      <T3HeaderButton
+      <Shuv2CodeHeaderButton
         accessibilityLabel="Open settings"
         icon="gearshape"
         onPress={props.onOpenSettings}

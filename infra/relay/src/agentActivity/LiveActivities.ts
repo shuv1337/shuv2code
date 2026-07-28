@@ -2,11 +2,11 @@ import type {
   RelayAgentActivityAggregateState,
   RelayDeliveryKind,
   RelayLiveActivityRegistrationRequest,
-} from "@t3tools/contracts/relay";
+} from "@shuv2code/contracts/relay";
 import {
   RelayAgentActivityAggregateState as RelayAgentActivityAggregateStateSchema,
   RelayDeliveryKind as RelayDeliveryKindSchema,
-} from "@t3tools/contracts/relay";
+} from "@shuv2code/contracts/relay";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -120,7 +120,7 @@ export class LiveActivities extends Context.Service<
       readonly invalidatedAt: string;
     }) => Effect.Effect<void, LiveActivityDeliveryMarkPersistenceError>;
   }
->()("t3code-relay/agentActivity/LiveActivities") {}
+>()("shuv2code-relay/agentActivity/LiveActivities") {}
 
 const decodeJsonString = Schema.decodeEffect(Schema.UnknownFromJsonString);
 const encodeJsonValue = Schema.encodeEffect(Schema.UnknownFromJsonString);

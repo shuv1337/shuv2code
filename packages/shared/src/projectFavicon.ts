@@ -4,7 +4,7 @@ export function isProjectFaviconFallbackUrl(url: string | null | undefined): boo
   if (!url) return false;
 
   try {
-    const pathname = new URL(url, "https://t3.invalid").pathname;
+    const pathname = new URL(url, "https://shuv2code.invalid").pathname;
     return pathname.slice(pathname.lastIndexOf("/") + 1) === PROJECT_FAVICON_FALLBACK_MARKER;
   } catch {
     return false;

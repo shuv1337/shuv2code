@@ -1,17 +1,17 @@
 import {
-  ArchiveIcon,
-  ArrowUpDownIcon,
-  ChevronRightIcon,
-  CloudIcon,
-  ContainerIcon,
-  FolderPlusIcon,
-  Globe2Icon,
-  LoaderIcon,
-  SearchIcon,
-  SquarePenIcon,
-  TerminalIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
+  Archive as ArchiveIcon,
+  ArrowsDownUp as ArrowUpDownIcon,
+  CaretRight as ChevronRightIcon,
+  Cloud as CloudIcon,
+  Cube as ContainerIcon,
+  FolderPlus as FolderPlusIcon,
+  Globe as Globe2Icon,
+  SpinnerGap as LoaderIcon,
+  MagnifyingGlass as SearchIcon,
+  NotePencil as SquarePenIcon,
+  TerminalWindow as TerminalIcon,
+  Warning as TriangleAlertIcon,
+} from "@phosphor-icons/react";
 import {
   ChangeRequestStatusIcon,
   prStatusIndicator,
@@ -48,20 +48,20 @@ import {
   type ResolvedKeybindingsConfig,
   type SidebarProjectGroupingMode,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import {
   parseScopedThreadKey,
   scopedProjectKey,
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
-import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+} from "@shuv2code/client-runtime/environment";
+import { safeErrorLogAttributes } from "@shuv2code/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@shuv2code/client-runtime/state/runtime";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import {
   MAX_SIDEBAR_THREAD_PREVIEW_COUNT,
@@ -69,7 +69,7 @@ import {
   type SidebarProjectSortOrder,
   type SidebarThreadPreviewCount,
   type SidebarThreadSortOrder,
-} from "@t3tools/contracts/settings";
+} from "@shuv2code/contracts/settings";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { isElectron } from "../env";

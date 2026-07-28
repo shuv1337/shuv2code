@@ -1,11 +1,11 @@
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { tokenCache } from "@clerk/expo/token-cache";
-import { ManagedRelay, setManagedRelaySession } from "@t3tools/client-runtime/relay";
+import { ManagedRelay, setManagedRelaySession } from "@shuv2code/client-runtime/relay";
 import {
   reportAtomCommandResult,
   settleAsyncResult,
   settlePromise,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@shuv2code/client-runtime/state/runtime";
 import * as Effect from "effect/Effect";
 import { type ReactNode, useEffect, useRef } from "react";
 
@@ -70,7 +70,7 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
 
     // Every sign-in or account switch that completes during this session (a
     // cold start observes undefined → account and must not re-prompt) requests
-    // the T3 Connect onboarding sheet — account transitions clear the
+    // the shuv2code connect onboarding sheet — account transitions clear the
     // connected environments, so each new session starts with no devices to
     // reach. The request itself is issued after the cleanup transition inside
     // activateSession, so the sheet never lists the previous account's

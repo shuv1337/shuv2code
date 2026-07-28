@@ -11,29 +11,29 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(root) {
   animation: none;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-composer) {
+html[data-mobile-composer-route-transition="true"]::view-transition-group(shuv2code-mobile-composer) {
   animation-duration: 180ms;
   animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-image-pair(t3-mobile-composer) {
+html[data-mobile-composer-route-transition="true"]::view-transition-image-pair(shuv2code-mobile-composer) {
   isolation: isolate;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-composer) {
-  animation: t3-mobile-composer-old 180ms linear both;
+html[data-mobile-composer-route-transition="true"]::view-transition-old(shuv2code-mobile-composer) {
+  animation: shuv2code-mobile-composer-old 180ms linear both;
   mix-blend-mode: normal;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobile-composer) {
-  animation: t3-mobile-composer-new 180ms linear both;
+html[data-mobile-composer-route-transition="true"]::view-transition-new(shuv2code-mobile-composer) {
+  animation: shuv2code-mobile-composer-new 180ms linear both;
   mix-blend-mode: normal;
 }
 
 /* The expanded and compact composers have different internal layouts. Use a
    brief crossfade while their shared wrapper moves so the layout change does
    not read as a single-frame cut. */
-@keyframes t3-mobile-composer-old {
+@keyframes shuv2code-mobile-composer-old {
   0%,
   35% {
     opacity: 1;
@@ -44,7 +44,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
   }
 }
 
-@keyframes t3-mobile-composer-new {
+@keyframes shuv2code-mobile-composer-new {
   0%,
   35% {
     opacity: 0;
@@ -55,16 +55,16 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
   }
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-draft-headline) {
+html[data-mobile-composer-route-transition="true"]::view-transition-group(shuv2code-mobile-draft-headline) {
   animation-duration: 130ms;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-draft-headline) {
-  animation: t3-mobile-draft-headline-exit 130ms cubic-bezier(0.4, 0, 1, 1) both;
+html[data-mobile-composer-route-transition="true"]::view-transition-old(shuv2code-mobile-draft-headline) {
+  animation: shuv2code-mobile-draft-headline-exit 130ms cubic-bezier(0.4, 0, 1, 1) both;
   mix-blend-mode: normal;
 }
 
-@keyframes t3-mobile-draft-headline-exit {
+@keyframes shuv2code-mobile-draft-headline-exit {
   from {
     opacity: 1;
     transform: translateY(0);
@@ -292,15 +292,15 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   .stage-blueprint {
-    --stage-bp-top: #67c2ff;
-    --stage-bp-mid: #347ff8;
-    --stage-bp-bottom: #1538d0;
+    --stage-bp-top: #f7e5d3;
+    --stage-bp-mid: #f0442f;
+    --stage-bp-bottom: #8f1818;
   }
 
   .dark .stage-blueprint {
-    --stage-bp-top: #3a7ad1;
-    --stage-bp-mid: #2050ae;
-    --stage-bp-bottom: #101f6e;
+    --stage-bp-top: #4a1b20;
+    --stage-bp-mid: #201821;
+    --stage-bp-bottom: #071624;
   }
 
   .workspace-topbar {
@@ -813,27 +813,27 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 :root {
   color-scheme: light;
   --radius: 0.625rem;
-  --background: var(--color-zinc-25);
+  --background: #f7f1e6;
   --app-chrome-background: var(--background);
   --surface-raised: color-mix(in srgb, var(--card) 20%, transparent);
-  --foreground: var(--color-zinc-800);
-  --card: var(--color-white);
-  --card-foreground: var(--color-zinc-800);
-  --popover: var(--color-white);
-  --popover-foreground: var(--color-zinc-800);
-  --primary: oklch(0.488 0.217 264);
-  --primary-foreground: var(--color-white);
-  --secondary: var(--color-zinc-50);
-  --secondary-foreground: var(--color-zinc-800);
-  --muted: var(--color-zinc-50);
-  --muted-foreground: var(--color-zinc-500);
-  --accent: var(--color-zinc-100);
-  --accent-foreground: var(--color-zinc-900);
-  --destructive: var(--color-red-500);
-  --border: var(--color-zinc-200);
-  --input: var(--color-zinc-300);
-  --ring: oklch(0.488 0.217 264);
-  --destructive-foreground: var(--color-red-700);
+  --foreground: #171d2b;
+  --card: #fffaf1;
+  --card-foreground: #171d2b;
+  --popover: #fffaf1;
+  --popover-foreground: #171d2b;
+  --primary: #d88b18;
+  --primary-foreground: #17120a;
+  --secondary: #eee5d6;
+  --secondary-foreground: #171d2b;
+  --muted: #eee5d6;
+  --muted-foreground: #667085;
+  --accent: #f3b042;
+  --accent-foreground: #1a1410;
+  --destructive: #f90e0a;
+  --border: #ddd1bf;
+  --input: #c7b9a5;
+  --ring: #d88b18;
+  --destructive-foreground: #a70906;
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
   --success: var(--color-emerald-500);
@@ -842,41 +842,39 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --warning-foreground: var(--color-amber-700);
   /* Keep every sidebar primitive on the same light surface hierarchy, including
      portaled mobile sheets and settings navigation outside the app sidebar. */
-  --sidebar: var(--color-zinc-50);
+  --sidebar: #f1e8da;
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);
-  --sidebar-control-surface: var(--color-zinc-100);
-  --sidebar-row-hover: var(--color-zinc-25);
-  --sidebar-row-active: var(--color-white);
-  --sidebar-row-selected: var(--color-white);
+  --sidebar-control-surface: #e7dccb;
+  --sidebar-row-hover: #f7f1e6;
+  --sidebar-row-active: #fffaf1;
+  --sidebar-row-selected: #fffaf1;
   --sidebar-border: var(--border);
   --sidebar-stage-fade: var(--sidebar);
 
   @variant dark {
     color-scheme: dark;
-    /* Keep the workspace in the same neutral-black family as sidebar v2.
-       Surfaces lift from this base instead of starting from a milky gray. */
-    --background: var(--color-neutral-950);
+    --background: #0f1421;
     --app-chrome-background: var(--background);
     --surface-raised: var(--secondary);
-    --foreground: var(--color-neutral-100);
-    --card: color-mix(in srgb, var(--background) 97%, var(--color-white));
-    --card-foreground: var(--color-neutral-100);
-    --popover: color-mix(in srgb, var(--background) 94%, var(--color-white));
-    --popover-foreground: var(--color-neutral-100);
-    --primary: oklch(0.588 0.217 264);
-    --primary-foreground: var(--color-white);
-    --secondary: --alpha(var(--color-white) / 4%);
-    --secondary-foreground: var(--color-neutral-100);
-    --muted: --alpha(var(--color-white) / 4%);
-    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
-    --accent: --alpha(var(--color-white) / 4%);
-    --accent-foreground: var(--color-neutral-100);
-    --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
-    --border: --alpha(var(--color-white) / 6%);
-    --input: --alpha(var(--color-white) / 8%);
-    --ring: oklch(0.588 0.217 264);
-    --destructive-foreground: var(--color-red-400);
+    --foreground: #e6eaf2;
+    --card: #1a2032;
+    --card-foreground: #e6eaf2;
+    --popover: #202740;
+    --popover-foreground: #e6eaf2;
+    --primary: #f3b042;
+    --primary-foreground: #1a1410;
+    --secondary: #202740;
+    --secondary-foreground: #e6eaf2;
+    --muted: #1a2032;
+    --muted-foreground: #8b95a9;
+    --accent: #2b334e;
+    --accent-foreground: #ffc85f;
+    --destructive: #f90e0a;
+    --border: rgb(230 234 242 / 10%);
+    --input: rgb(230 234 242 / 16%);
+    --ring: #f3b042;
+    --destructive-foreground: #ff7a76;
     --info: var(--color-blue-500);
     --info-foreground: var(--color-blue-400);
     --success: var(--color-emerald-500);
@@ -901,40 +899,40 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
    changing the color system when the beta is toggled. */
 [data-sidebar-version="v1"],
 [data-sidebar-version="v2"] {
-  --background: var(--color-zinc-25);
-  --foreground: var(--color-zinc-800);
-  --card: var(--color-white);
-  --card-foreground: var(--color-zinc-800);
-  --accent: var(--color-zinc-100);
-  --accent-foreground: var(--color-zinc-900);
-  --muted: var(--color-zinc-50);
-  --muted-foreground: var(--color-zinc-500);
-  --border: var(--color-zinc-200);
-  --input: var(--color-zinc-300);
-  --sidebar: var(--color-zinc-50);
-  --sidebar-foreground: var(--color-zinc-800);
-  --sidebar-muted-foreground: var(--color-zinc-500);
-  --sidebar-control-surface: var(--color-zinc-100);
-  --sidebar-row-hover: var(--color-zinc-25);
-  --sidebar-row-active: var(--color-white);
-  --sidebar-row-selected: var(--color-white);
-  --sidebar-border: var(--color-zinc-200);
+  --background: #f7f1e6;
+  --foreground: #171d2b;
+  --card: #fffaf1;
+  --card-foreground: #171d2b;
+  --accent: #f3b042;
+  --accent-foreground: #1a1410;
+  --muted: #eee5d6;
+  --muted-foreground: #667085;
+  --border: #ddd1bf;
+  --input: #c7b9a5;
+  --sidebar: #f1e8da;
+  --sidebar-foreground: #171d2b;
+  --sidebar-muted-foreground: #667085;
+  --sidebar-control-surface: #e7dccb;
+  --sidebar-row-hover: #f7f1e6;
+  --sidebar-row-active: #fffaf1;
+  --sidebar-row-selected: #fffaf1;
+  --sidebar-border: #ddd1bf;
   --sidebar-stage-fade: var(--sidebar);
   background-color: var(--sidebar);
 }
 
 .dark [data-sidebar-version="v1"],
 .dark [data-sidebar-version="v2"] {
-  --background: #000;
-  --foreground: #f1f3f7;
-  --card: #000;
+  --background: #0f1421;
+  --foreground: #e6eaf2;
+  --card: #011627;
   --card-foreground: var(--foreground);
-  --accent: #191a1d;
-  --accent-foreground: #f7f9ff;
-  --muted: #0a0a0a;
-  --muted-foreground: #a3a3a3;
-  --border: rgb(255 255 255 / 8%);
-  --input: rgb(255 255 255 / 18%);
+  --accent: #202740;
+  --accent-foreground: #ffc85f;
+  --muted: #1a2032;
+  --muted-foreground: #8b95a9;
+  --border: rgb(230 234 242 / 10%);
+  --input: rgb(230 234 242 / 16%);
   --sidebar: var(--card);
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);

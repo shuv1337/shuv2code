@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/client-runtime",
+  "name": "@shuv2code/client-runtime",
   "private": true,
   "type": "module",
   "exports": {
@@ -141,8 +141,8 @@
     "test": "vp test run"
   },
   "dependencies": {
-    "@t3tools/contracts": "workspace:*",
-    "@t3tools/shared": "workspace:*",
+    "@shuv2code/contracts": "workspace:*",
+    "@shuv2code/shared": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

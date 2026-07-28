@@ -34,11 +34,11 @@ export function CloudWaitlistEnrollment(props: { readonly onSignIn: () => void }
   if (waitlist.id) {
     return (
       <View className="gap-[18px]">
-        <Text className="text-center font-t3-bold text-xl text-foreground">
+        <Text className="text-center font-shuv2code-bold text-xl text-foreground">
           You are on the waitlist
         </Text>
         <Text className="text-center font-sans text-base text-foreground-secondary">
-          We will email you when your T3 Connect access is ready.
+          We will email you when your shuv2code connect access is ready.
         </Text>
         <SignInAction onPress={props.onSignIn} />
       </View>
@@ -52,7 +52,7 @@ export function CloudWaitlistEnrollment(props: { readonly onSignIn: () => void }
       </Text>
 
       <View className="gap-2">
-        <Text className="font-t3-bold text-sm text-foreground-secondary">Email address</Text>
+        <Text className="font-shuv2code-bold text-sm text-foreground-secondary">Email address</Text>
         <TextInput
           accessibilityLabel="Email address"
           autoCapitalize="none"
@@ -98,7 +98,7 @@ export function CloudWaitlistEnrollment(props: { readonly onSignIn: () => void }
         {isSubmitting ? (
           <ActivityIndicator colorClassName="accent-primary-foreground" size="small" />
         ) : null}
-        <Text className="font-t3-bold text-base text-primary-foreground">
+        <Text className="font-shuv2code-bold text-base text-primary-foreground">
           {isSubmitting ? "Joining" : "Join the waitlist"}
         </Text>
       </Pressable>
@@ -113,7 +113,7 @@ function SignInAction(props: { readonly onPress: () => void }) {
     <View className="flex-row items-center justify-center gap-1 pt-1">
       <Text className="font-sans text-base text-foreground-secondary">Already have access?</Text>
       <Pressable accessibilityRole="button" hitSlop={8} onPress={props.onPress}>
-        <Text className="font-t3-bold text-base text-foreground">Sign in</Text>
+        <Text className="font-shuv2code-bold text-base text-foreground">Sign in</Text>
       </Pressable>
     </View>
   );

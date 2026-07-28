@@ -6,7 +6,7 @@ import type {
   SourceControlDiscoveryResult,
   SourceControlProviderKind,
   SourceControlRepositoryInfo,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";

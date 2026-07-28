@@ -6,7 +6,7 @@ import * as Option from "effect/Option";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 
 import * as ProcessDiagnostics from "./ProcessDiagnostics.ts";
 
@@ -81,7 +81,7 @@ describe("ProcessDiagnostics", () => {
             cpuPercent: 0,
             rssBytes: 1_000,
             elapsed: "01:00",
-            command: "t3 server",
+            command: "shuv2code server",
           },
           {
             pid: 101,
@@ -196,7 +196,7 @@ describe("ProcessDiagnostics", () => {
           return Effect.succeed(
             mockHandle({
               stdout: [
-                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 t3 server`,
+                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 shuv2code server`,
                 ` 4242 ${process.pid} ${process.pid} S  1.5 2048 00:04 agent`,
               ].join("\n"),
             }),
@@ -266,7 +266,7 @@ describe("ProcessDiagnostics", () => {
           Effect.succeed(
             mockHandle({
               stdout: [
-                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 t3 server`,
+                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 shuv2code server`,
                 ` 4242 ${process.pid} ${process.pid} R  1.5 2048 00:00 ps -axo pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=`,
               ].join("\n"),
             }),
@@ -284,7 +284,7 @@ describe("ProcessDiagnostics", () => {
         pid: 4242,
         signal: "SIGINT",
         signaled: false,
-        message: Option.some("Process 4242 is not a live descendant of the T3 server."),
+        message: Option.some("Process 4242 is not a live descendant of the shuv2code server."),
       });
     }),
   );

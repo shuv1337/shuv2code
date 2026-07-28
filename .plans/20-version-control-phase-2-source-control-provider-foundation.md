@@ -123,7 +123,7 @@ Use Effect `Cache` for provider data:
 - repository metadata/default branch: key by provider repository stable ID or normalized remote URL; TTL around tens of minutes
 - change-request summary lists: key by provider repository, state/filter, source ref, target ref; short TTL with stale-while-revalidate
 - individual change-request summaries: key by provider repository and provider CR ID; short TTL, invalidated after create/update/comment operations
-- review threads/comments/diffs: key by provider CR ID and head SHA/version when available; fetch on demand for T3 Review
+- review threads/comments/diffs: key by provider CR ID and head SHA/version when available; fetch on demand for shuv2code Review
 
 Provider drivers should surface rate-limit signals when available:
 
@@ -210,7 +210,7 @@ The abstraction should let Phase 3 add:
 
 No provider should need to edit GitHub code to join the registry.
 
-## T3 Review Design Constraint
+## shuv2code Review Design Constraint
 
 Do not optimize only for creation/checkout. The provider layer must be able to support a future in-app review surface.
 
@@ -264,5 +264,5 @@ Required cases:
 - GitHub command execution does not depend on `processRunner.ts`.
 - Background provider reads are cached/coalesced and do not consume provider API quota on every status refresh.
 - Rate-limit responses become typed errors with retry/reset metadata where available.
-- The provider API includes the review operations needed by future T3 Review work, even if they are capability-gated.
+- The provider API includes the review operations needed by future shuv2code Review work, even if they are capability-gated.
 - `bun fmt`, `bun lint`, and `bun typecheck` pass.

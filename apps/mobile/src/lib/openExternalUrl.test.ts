@@ -22,7 +22,7 @@ describe("tryOpenExternalUrl", () => {
     openURL.mockResolvedValue(undefined);
 
     await expect(
-      tryOpenExternalUrl("https://github.com/pingdotgg/t3code", "pull-request"),
+      tryOpenExternalUrl("https://github.com/shuv1337/shuv2code", "pull-request"),
     ).resolves.toBe(true);
   });
 
@@ -32,7 +32,10 @@ describe("tryOpenExternalUrl", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     await expect(
-      tryOpenExternalUrl("https://github.com/pingdotgg/t3code/pull/1?token=secret", "pull-request"),
+      tryOpenExternalUrl(
+        "https://github.com/shuv1337/shuv2code/pull/1?token=secret",
+        "pull-request",
+      ),
     ).resolves.toBe(false);
 
     expect(consoleError).toHaveBeenCalledTimes(1);

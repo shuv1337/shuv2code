@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { EnvironmentId, type PersistedSavedEnvironmentRecord } from "@t3tools/contracts";
+import { EnvironmentId, type PersistedSavedEnvironmentRecord } from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -111,7 +111,7 @@ function makeLayer(
     runningUnderArm64Translation: false,
   }).pipe(
     Layer.provide(
-      Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ T3CODE_HOME: baseDir })),
+      Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ SHUV2CODE_HOME: baseDir })),
     ),
   );
 
@@ -143,7 +143,7 @@ const withSavedEnvironments = <A, E, R>(
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-      prefix: "t3-desktop-saved-environments-test-",
+      prefix: "shuv2code-desktop-saved-environments-test-",
     });
     return yield* effect.pipe(Effect.provide(makeLayer(baseDir, options)));
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
@@ -401,7 +401,7 @@ describe("DesktopSavedEnvironments", () => {
     Effect.gen(function* () {
       const baseFileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* baseFileSystem.makeTempDirectoryScoped({
-        prefix: "t3-desktop-saved-environments-test-",
+        prefix: "shuv2code-desktop-saved-environments-test-",
       });
       const registryPath = `${baseDir}/userdata/saved-environments.json`;
       const permissionError = PlatformError.systemError({
@@ -433,7 +433,7 @@ describe("DesktopSavedEnvironments", () => {
     Effect.gen(function* () {
       const baseFileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* baseFileSystem.makeTempDirectoryScoped({
-        prefix: "t3-desktop-saved-environments-test-",
+        prefix: "shuv2code-desktop-saved-environments-test-",
       });
       const permissionError = PlatformError.systemError({
         _tag: "PermissionDenied",

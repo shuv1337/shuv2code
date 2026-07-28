@@ -216,7 +216,7 @@ export function ConnectionsNewRouteScreen({
           ) : (
             <View collapsable={false} className="gap-4 rounded-[24px] bg-card p-4">
               <View collapsable={false} className="gap-1.5">
-                <Text className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted">
+                <Text className="text-2xs font-shuv2code-bold tracking-[0.8px] uppercase text-foreground-muted">
                   Host
                 </Text>
                 <TextInput
@@ -231,7 +231,7 @@ export function ConnectionsNewRouteScreen({
               </View>
 
               <View collapsable={false} className="gap-1.5">
-                <Text className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted">
+                <Text className="text-2xs font-shuv2code-bold tracking-[0.8px] uppercase text-foreground-muted">
                   Pairing code
                 </Text>
                 <TextInput

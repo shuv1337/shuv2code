@@ -1,4 +1,4 @@
-import type { EnvironmentId, SidebarThreadSortOrder } from "@t3tools/contracts";
+import type { EnvironmentId, SidebarThreadSortOrder } from "@shuv2code/contracts";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ControlPillMenu } from "../../components/ControlPill";
 import { SymbolView } from "../../components/AppSymbol";
-import { T3Wordmark } from "../../components/T3Wordmark";
+import { Shuv2CodeWordmark } from "../../components/Shuv2CodeWordmark";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
@@ -209,13 +209,13 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
         <View className="w-full max-w-[720px] self-center gap-3">
           <View className="flex-row items-center gap-2.5">
             <View className="flex-1 flex-row items-center gap-2">
-              {/* Mirrors the desktop SidebarBrand: T3 mark + muted "Code". */}
-              <T3Wordmark color={iconColor} height={15} />
-              <RNText className="-ml-0.5 text-[21px] font-t3-medium tracking-[-0.5px] text-foreground-muted">
+              {/* Mirrors the desktop SidebarBrand: shuv2code mark + muted "Code". */}
+              <Shuv2CodeWordmark color={iconColor} height={15} />
+              <RNText className="-ml-0.5 text-[21px] font-shuv2code-medium tracking-[-0.5px] text-foreground-muted">
                 Code
               </RNText>
               <View className="rounded-full bg-subtle px-2 py-0.75">
-                <RNText className="text-[11px] font-t3-bold tracking-[1.1px] text-foreground-muted uppercase">
+                <RNText className="text-[11px] font-shuv2code-bold tracking-[1.1px] text-foreground-muted uppercase">
                   Alpha
                 </RNText>
               </View>

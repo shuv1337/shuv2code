@@ -24,7 +24,7 @@ The existing `GitCore` implementation is a behavior reference and source of regr
 
 - No GitLab, Azure DevOps, or GitHub provider rewrite yet.
 - No Jujutsu driver yet, but every interface must be designed so a Jujutsu driver does not have to pretend to be Git.
-- No T3 Review implementation yet.
+- No shuv2code Review implementation yet.
 - No broad UI redesign.
 
 ## Driver Model

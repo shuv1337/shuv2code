@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 
-import { ProviderInstanceId } from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
+import { ProviderInstanceId } from "@shuv2code/contracts";
+import { createModelSelection } from "@shuv2code/shared/model";
 
 import { getCodexServiceTierOptionValue } from "./codexModelOptions.ts";
 

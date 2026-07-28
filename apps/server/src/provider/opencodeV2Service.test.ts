@@ -99,7 +99,7 @@ describe("openCodeV2Service discover/detect", () => {
   }
 
   it("discovers a healthy registered V2 service", async () => {
-    const stateDir = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "t3-oc-v2-"));
+    const stateDir = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "shuv2code-oc-v2-"));
     tempDirs.push(stateDir);
     const openCodeState = NodePath.join(stateDir, "opencode");
     await NodeFs.mkdir(openCodeState, { recursive: true });
@@ -168,7 +168,9 @@ describe("openCodeV2Service discover/detect", () => {
   });
 
   it("requireOpenCodeV2Service fails clearly when no service is registered", async () => {
-    const stateDir = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "t3-oc-v2-missing-"));
+    const stateDir = await NodeFs.mkdtemp(
+      NodePath.join(NodeOs.tmpdir(), "shuv2code-oc-v2-missing-"),
+    );
     tempDirs.push(stateDir);
     await NodeAssert.rejects(
       () =>

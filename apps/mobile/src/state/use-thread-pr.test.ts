@@ -1,4 +1,4 @@
-import type { VcsStatusResult } from "@t3tools/contracts";
+import type { VcsStatusResult } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { presentThreadPr } from "./thread-pr-presentation";
@@ -6,7 +6,7 @@ import { presentThreadPr } from "./thread-pr-presentation";
 const pullRequest: NonNullable<VcsStatusResult["pr"]> = {
   number: 3774,
   title: "Desktop-style pull request indicator",
-  url: "https://github.com/t3tools/t3code/pull/3774",
+  url: "https://github.com/shuv1337/shuv2code/pull/3774",
   baseRef: "main",
   headRef: "codex/desktop-style-pr-indicator",
   state: "merged",

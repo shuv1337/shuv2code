@@ -1,0 +1,28 @@
+pkgbase = shuv2code-bin
+	pkgdesc = The local-first control plane for coding agents (AppImage)
+	pkgver = 0.1.0.alpha.1
+	pkgrel = 1
+	url = https://github.com/shuv1337/shuv2code
+	arch = x86_64
+	license = MIT
+	depends = fuse2
+	depends = glibc
+	depends = gtk3
+	depends = nss
+	optdepends = gnome-keyring: GNOME keyring and secrets support
+	optdepends = kwallet: KDE wallet and secrets support
+	provides = shuv2code=0.1.0.alpha.1
+	conflicts = shuv2code
+	conflicts = shuv2code-git
+	options = !strip
+	options = !debug
+	source = shuv2code-0.1.0-alpha.1-x64.AppImage::https://github.com/shuv1337/shuv2code/releases/download/v0.1.0-alpha.1/shuv2code-0.1.0-alpha.1-x64.AppImage
+	source = shuv2code.sh
+	source = shuv2code.desktop
+	source = shuv2code.svg
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = shuv2code-bin

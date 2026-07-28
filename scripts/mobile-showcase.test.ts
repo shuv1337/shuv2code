@@ -103,7 +103,10 @@ it("parses validation-only mode", () => {
 it("selects an explicit CI Android ABI without changing the local default", () => {
   assert.equal(resolveShowcaseAndroidAbi(undefined), "arm64-v8a");
   assert.equal(resolveShowcaseAndroidAbi("x86_64"), "x86_64");
-  assert.throws(() => resolveShowcaseAndroidAbi("mips"), /Unsupported T3_SHOWCASE_ANDROID_ABI/u);
+  assert.throws(
+    () => resolveShowcaseAndroidAbi("mips"),
+    /Unsupported SHUV2CODE_SHOWCASE_ANDROID_ABI/u,
+  );
 });
 
 it("uses platform-correct default Android SDK roots", () => {
@@ -244,29 +247,29 @@ it("selects a reachable LAN IPv4 address", () => {
 });
 
 it("maps capture scenes to the real application routes", () => {
-  assert.equal(showcaseSceneUrl("threads", "environment-1"), "t3code-dev://");
+  assert.equal(showcaseSceneUrl("threads", "environment-1"), "shuv2code-dev://");
   assert.equal(
     showcaseSceneUrl("environments", "environment-1"),
-    "t3code-dev://settings/environments",
+    "shuv2code-dev://settings/environments",
   );
   assert.equal(
     showcaseSceneUrl("thread", "environment-1"),
-    "t3code-dev://threads/environment-1/remote-command-center",
+    "shuv2code-dev://threads/environment-1/remote-command-center",
   );
   assert.equal(
     showcaseSceneUrl("terminal", "environment-1"),
-    "t3code-dev://threads/environment-1/remote-command-center/terminal?terminalId=term-1",
+    "shuv2code-dev://threads/environment-1/remote-command-center/terminal?terminalId=term-1",
   );
   assert.equal(
     showcaseSceneUrl("review", "environment-1"),
-    "t3code-dev://threads/environment-1/remote-command-center/review",
+    "shuv2code-dev://threads/environment-1/remote-command-center/review",
   );
 });
 
 it("seeds a playful multi-environment project spectrum", () => {
   assert.deepStrictEqual(
     SHOWCASE_PROJECTS.map((project) => project.title),
-    ["T3 Code", "React", "Linux"],
+    ["shuv2code", "React", "Linux"],
   );
   assert.deepStrictEqual(
     SHOWCASE_ENVIRONMENTS.map((environment) => environment.label),

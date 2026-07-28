@@ -45,7 +45,10 @@ export function WorkspaceConnectionStatus(props: {
       ) : (
         <SymbolView name="wifi.slash" size={15} tintColor={iconColor} type="monochrome" />
       )}
-      <Text className="min-w-0 flex-1 text-sm font-t3-bold text-foreground" numberOfLines={1}>
+      <Text
+        className="min-w-0 flex-1 text-sm font-shuv2code-bold text-foreground"
+        numberOfLines={1}
+      >
         {workspaceConnectionStatusLabel(props.state)}
       </Text>
       {variant === "sidebar" ? (

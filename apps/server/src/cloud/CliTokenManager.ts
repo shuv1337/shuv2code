@@ -29,7 +29,7 @@ import {
   buildConnectClerkAuthorizeUrl,
   checkConnectAuthCode,
   connectCallbackUrl,
-} from "@t3tools/shared/connectAuth";
+} from "@shuv2code/shared/connectAuth";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ExternalLauncher from "../process/externalLauncher.ts";
@@ -47,7 +47,7 @@ const boldTerminalText = (value: string): string => `\u001b[1m${value}\u001b[22m
 
 export function formatLoopbackAuthorizationPrompt(authorizationUrl: string): string {
   return [
-    "Open this URL to authorize T3 Connect:",
+    "Open this URL to authorize shuv2code connect:",
     `  ${authorizationUrl}`,
     "",
     `Press ${boldTerminalText("Enter")} to open it in your browser.`,
@@ -169,7 +169,7 @@ export class CloudCliCredentialRemovalError extends Schema.TaggedErrorClass<Clou
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Could not remove the stored T3 Connect CLI credential.";
+    return "Could not remove the stored shuv2code connect CLI credential.";
   }
 }
 
@@ -178,7 +178,7 @@ export class CloudCliCredentialRefreshError extends Schema.TaggedErrorClass<Clou
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Could not refresh the T3 Connect CLI credential.";
+    return "Could not refresh the shuv2code connect CLI credential.";
   }
 }
 
@@ -187,7 +187,7 @@ export class CloudCliCredentialReadError extends Schema.TaggedErrorClass<CloudCl
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Could not read the stored T3 Connect CLI credential.";
+    return "Could not read the stored shuv2code connect CLI credential.";
   }
 }
 
@@ -196,7 +196,7 @@ export class CloudCliAuthorizationError extends Schema.TaggedErrorClass<CloudCli
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Could not authorize the T3 Connect CLI.";
+    return "Could not authorize the shuv2code connect CLI.";
   }
 }
 
@@ -205,7 +205,7 @@ export class CloudCliAuthorizationTimeoutError extends Schema.TaggedErrorClass<C
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Timed out waiting for T3 Connect authorization.";
+    return "Timed out waiting for shuv2code connect authorization.";
   }
 }
 
@@ -231,7 +231,7 @@ export class CloudCliTokenManager extends Context.Service<
     readonly store: (token: PersistedToken) => Effect.Effect<void, CloudCliTokenManagerError>;
     readonly clear: Effect.Effect<void, CloudCliTokenManagerError>;
   }
->()("t3/cloud/CliTokenManager/CloudCliTokenManager") {}
+>()("shuv2code/cloud/CliTokenManager/CloudCliTokenManager") {}
 
 function stringToBytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
@@ -377,7 +377,7 @@ export const make = Effect.gen(function* () {
         const url = new URL(request.originalUrl, metadata.redirectUri);
         const code = url.searchParams.get("code");
         if (url.searchParams.get("state") !== state || !code) {
-          return HttpServerResponse.text("Invalid T3 Connect authorization callback.", {
+          return HttpServerResponse.text("Invalid shuv2code connect authorization callback.", {
             status: 400,
           });
         }

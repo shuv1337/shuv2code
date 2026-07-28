@@ -1,6 +1,6 @@
 import * as NodeURL from "node:url";
 
-import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@t3tools/contracts";
+import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@shuv2code/contracts";
 import {
   createOpencodeClient,
   type Agent,
@@ -31,9 +31,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import { collectStreamAsString } from "./providerSnapshot.ts";
-import * as NetService from "@t3tools/shared/Net";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as NetService from "@shuv2code/shared/Net";
+import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
+import { resolveSpawnCommand } from "@shuv2code/shared/shell";
 import { createOpenCodeV2CompatibilityClient } from "./opencodeV2Compatibility.ts";
 import { detectOpenCodeServerProtocol, requireOpenCodeV2Service } from "./opencodeV2Service.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
@@ -63,7 +63,7 @@ export interface OpenCodeServerConnection {
   readonly protocol: OpenCodeProtocol;
   readonly serverPassword?: string;
   /**
-   * True when T3 did not spawn a private process for this connection
+   * True when shuv2code did not spawn a private process for this connection
    * (configured URL or discovered/ensured V2 background service).
    */
   readonly sharedService?: boolean;
@@ -724,7 +724,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           url: endpoint.url,
           exitCode: null,
           // Treat the user-managed background service like an external server
-          // for lifecycle (do not kill) while still allowing T3 MCP registration.
+          // for lifecycle (do not kill) while still allowing shuv2code MCP registration.
           external: false,
           sharedService: true,
           protocol: "v2" as const,
@@ -904,7 +904,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 });
 
 export class OpenCodeRuntime extends Context.Service<OpenCodeRuntime, OpenCodeRuntimeShape>()(
-  "t3/provider/opencodeRuntime",
+  "shuv2code/provider/opencodeRuntime",
 ) {}
 
 export const OpenCodeRuntimeLive = Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime).pipe(

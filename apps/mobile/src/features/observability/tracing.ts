@@ -1,5 +1,5 @@
 import Constants from "expo-constants";
-import { makeRelayClientTracingLayer } from "@t3tools/shared/relayTracing";
+import { makeRelayClientTracingLayer } from "@shuv2code/shared/relayTracing";
 
 import { hasTracingPublicConfig, resolveCloudPublicConfig } from "../cloud/publicConfig";
 
@@ -25,7 +25,7 @@ export function resolveTracingConfig(): TracingConfig | null {
 
 export function makeTracingLayer(config: TracingConfig | null, resource: TracingResource) {
   return makeRelayClientTracingLayer(config, {
-    serviceName: "t3-mobile-relay-client",
+    serviceName: "shuv2code-mobile-relay-client",
     serviceVersion: resource.serviceVersion,
     runtime: "react-native",
     client: `mobile-${resource.appVariant}`,

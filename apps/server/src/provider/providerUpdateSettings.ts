@@ -1,4 +1,4 @@
-import type { ServerSettings, ServerSettingsError } from "@t3tools/contracts";
+import type { ServerSettings, ServerSettingsError } from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Stream from "effect/Stream";

@@ -1,5 +1,5 @@
 import { useAuth, useClerk, useUser } from "@clerk/react";
-import { encodeConnectAuthCode, readConnectAuthorizeRequest } from "@t3tools/shared/connectAuth";
+import { encodeConnectAuthCode, readConnectAuthorizeRequest } from "@shuv2code/shared/connectAuth";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -38,7 +38,7 @@ const invalidLinkMessage = {
   eyebrow: "Authorization request",
   title: "This connect link is incomplete",
   description:
-    "The link is missing its authorization request. Re-run `t3 connect` in your terminal and open the freshly printed URL.",
+    "The link is missing its authorization request. Re-run `shuv2code connect` in your terminal and open the freshly printed URL.",
 } as const;
 
 /**
@@ -87,8 +87,8 @@ export function ConnectCliAuthorizeSurface() {
         title="Connecting your terminal"
         description={
           isSignedIn
-            ? "Redirecting to authorize T3 Connect for your CLI…"
-            : "Sign in to continue authorizing T3 Connect for your CLI."
+            ? "Redirecting to authorize shuv2code connect for your CLI…"
+            : "Sign in to continue authorizing shuv2code connect for your CLI."
         }
       />
       {isLoaded && !isSignedIn ? (
@@ -121,7 +121,7 @@ export function ConnectCliCallbackSurface() {
         <ConnectCliAuthMessage
           eyebrow="Step 2 of 2 · Terminal handoff"
           title="Authorization did not complete"
-          description="No authorization code was returned. Re-run `t3 connect` in your terminal and try again."
+          description="No authorization code was returned. Re-run `shuv2code connect` in your terminal and try again."
         />
       </AuthSurfaceShell>
     );
@@ -137,7 +137,7 @@ export function ConnectCliCallbackSurface() {
         <ConnectCliAuthMessage
           eyebrow="Step 2 of 2 · Terminal handoff"
           title="This code belongs to a different request"
-          description="This authorization response does not match a connect request started in this browser. Re-run `t3 connect` in your terminal and open the freshly printed URL in this browser."
+          description="This authorization response does not match a connect request started in this browser. Re-run `shuv2code connect` in your terminal and open the freshly printed URL in this browser."
         />
       </AuthSurfaceShell>
     );
@@ -181,7 +181,7 @@ export function ConnectCliCallbackSurface() {
 
       <p className="mt-6 text-xs leading-relaxed text-muted-foreground">
         Only enter this code in a terminal session you started yourself. Anyone holding it can link
-        their machine to your T3 Connect account while it is valid.
+        their machine to your shuv2code connect account while it is valid.
       </p>
     </AuthSurfaceShell>
   );

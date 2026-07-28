@@ -11,10 +11,10 @@
  * Polling is reference-counted via scoped `retain`. A single layer-scoped fiber
  * polls forever, but each tick is a no-op when the retain count is zero.
  */
-import { ThreadId, type DiscoveredLocalServer } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import * as Net from "@t3tools/shared/Net";
-import { LSOF_LOCAL_HOST_TOKENS } from "@t3tools/shared/preview";
+import { ThreadId, type DiscoveredLocalServer } from "@shuv2code/contracts";
+import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
+import * as Net from "@shuv2code/shared/Net";
+import { LSOF_LOCAL_HOST_TOKENS } from "@shuv2code/shared/preview";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -44,7 +44,7 @@ export class PortDiscovery extends Context.Service<
       readonly terminalId: string;
     }) => Effect.Effect<void>;
   }
->()("t3/preview/PortScanner/PortDiscovery") {}
+>()("shuv2code/preview/PortScanner/PortDiscovery") {}
 
 export const COMMON_DEV_PORTS: ReadonlyArray<number> = Object.freeze([
   3000, 3001, 3333, 4173, 4200, 4321, 5000, 5173, 5174, 5175, 5500, 8000, 8080, 8081, 8888, 9000,

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=shuv2code
+Comment=The local-first control plane for coding agents
+Exec=shuv2code %U
+Icon=shuv2code
+Type=Application
+StartupNotify=true
+StartupWMClass=shuv2code
+Categories=Development;IDE;
+Terminal=false
+MimeType=x-scheme-handler/shuv2code;
+Keywords=agents;coding;codex;claude;

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">shuv2code devil terminal mark</title>
+  <desc id="desc">A horned phone terminal with a command prompt and a small pointed tail.</desc>
+  <path fill="#F90E0A" d="M122 88 82 28c-7-10-22-3-19 9l18 80c-25 24-40 58-40 96v126c0 73 59 132 132 132h166c50 0 94-28 116-69 25-2 45-13 57-31 15-23 11-52-10-68l-21 28c7 6 9 15 4 23-5 7-13 11-22 12 1-9 2-18 2-27V213c0-38-15-72-40-96l18-80c3-12-12-19-19-9l-40 60c-14-5-29-8-45-8H167c-16 0-31 3-45 8Z"/>
+  <rect width="214" height="274" x="149" y="148" fill="#011627" rx="42"/>
+  <rect width="150" height="210" x="181" y="180" fill="none" stroke="#F7F1E6" stroke-width="16" rx="25"/>
+  <rect width="62" height="14" x="225" y="111" fill="#F7F1E6" rx="7"/>
+  <path fill="none" stroke="#F7F1E6" stroke-linecap="round" stroke-linejoin="round" stroke-width="22" d="m212 248 45 31-45 31m66 13h31"/>
+</svg>

@@ -5,7 +5,7 @@ import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Result from "effect/Result";
 
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@shuv2code/contracts";
 import {
   buildReviewCommentTarget,
   clearReviewCommentTarget,

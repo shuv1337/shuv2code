@@ -1,5 +1,6 @@
 {
-  "name": "@t3tools/tailscale",
+  "name": "@shuv2code/tailscale",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "type": "module",
   "exports": {
@@ -14,7 +15,7 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "@t3tools/shared": "workspace:*",
+    "@shuv2code/shared": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

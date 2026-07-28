@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@shuv2code/contracts";
 
 export interface VcsStatusTarget {
   readonly environmentId: EnvironmentId | null;

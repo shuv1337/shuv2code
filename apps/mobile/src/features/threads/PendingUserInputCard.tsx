@@ -1,4 +1,4 @@
-import type { ApprovalRequestId } from "@t3tools/contracts";
+import type { ApprovalRequestId } from "@shuv2code/contracts";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
@@ -26,17 +26,17 @@ export interface PendingUserInputCardProps {
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
   return (
     <View className="gap-2.5 rounded-[20px] border border-neutral-200 bg-neutral-100/80 p-4 dark:border-white/6 dark:bg-neutral-900/80">
-      <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-sky-700 dark:text-sky-300">
+      <Text className="font-shuv2code-bold text-2xs uppercase tracking-[1.1px] text-sky-700 dark:text-sky-300">
         User input needed
       </Text>
-      <Text className="font-t3-bold text-lg text-neutral-950 dark:text-neutral-50">
+      <Text className="font-shuv2code-bold text-lg text-neutral-950 dark:text-neutral-50">
         Fill in the pending answers
       </Text>
       {props.pendingUserInput.questions.map((question) => {
         const draft = props.drafts[question.id];
         return (
           <View key={question.id} className="gap-2 pt-1">
-            <Text className="font-t3-bold text-xs uppercase tracking-[1px] text-neutral-500 dark:text-neutral-500">
+            <Text className="font-shuv2code-bold text-xs uppercase tracking-[1px] text-neutral-500 dark:text-neutral-500">
               {question.header}
             </Text>
             <Text className="font-sans text-base leading-snug text-neutral-950 dark:text-neutral-50">
@@ -65,7 +65,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                   >
                     <Text
                       className={cn(
-                        "font-t3-bold text-sm",
+                        "font-shuv2code-bold text-sm",
                         selected
                           ? "text-sky-700 dark:text-sky-300"
                           : "text-neutral-600 dark:text-neutral-300",
@@ -98,7 +98,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         }
         onPress={() => void props.onSubmit()}
       >
-        <Text className="font-t3-extrabold text-sm text-white">Submit answers</Text>
+        <Text className="font-shuv2code-extrabold text-sm text-white">Submit answers</Text>
       </Pressable>
     </View>
   );
