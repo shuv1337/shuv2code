@@ -60,12 +60,14 @@ export function stepComposerPromptHistory(
 ): PromptHistoryStep {
   if (direction === "older") {
     if (entries.length === 0 || currentIndex === 0) return { kind: "boundary" };
+    if (currentIndex !== null && (currentIndex < 0 || currentIndex >= entries.length)) {
+      return { kind: "draft" };
+    }
     return { kind: "entry", index: currentIndex === null ? entries.length - 1 : currentIndex - 1 };
   }
 
   if (currentIndex === null) return { kind: "boundary" };
-  if (currentIndex === entries.length - 1) return { kind: "draft" };
-  if (currentIndex < 0 || currentIndex >= entries.length) return { kind: "boundary" };
+  if (currentIndex < 0 || currentIndex >= entries.length - 1) return { kind: "draft" };
   return { kind: "entry", index: currentIndex + 1 };
 }
 

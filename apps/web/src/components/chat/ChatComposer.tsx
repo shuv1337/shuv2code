@@ -1335,7 +1335,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
 
   const leavePromptHistory = useCallback(
-    (restoreDraft: boolean) => {
+    (restoreDraft: boolean, options?: { restoreActiveUi?: boolean }) => {
       const browse = promptHistoryBrowseRef.current;
       if (!browse) return;
       promptHistoryBrowseRef.current = null;
@@ -1344,7 +1344,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const currentValue = getComposerDraft(browse.target)?.prompt;
       if (currentValue !== browse.recalledValue) return;
       setComposerDraftPrompt(browse.target, browse.draft);
-      if (browse.target !== composerDraftTarget) return;
+      if (options?.restoreActiveUi === false || browse.target !== composerDraftTarget) return;
 
       promptRef.current = browse.draft;
       const cursor = collapseExpandedComposerCursor(browse.draft, browse.draft.length);
@@ -1455,7 +1455,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
   }, [composerDraftTarget, leavePromptHistory, prompt]);
 
-  useEffect(() => () => leavePromptHistory(true), [leavePromptHistory]);
+  useEffect(() => () => leavePromptHistory(true, { restoreActiveUi: false }), [leavePromptHistory]);
 
   useEffect(() => {
     composerImagesRef.current = composerImages;
@@ -2043,6 +2043,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         promptHistoryBrowseRef.current = null;
       }
       const activeBrowse = promptHistoryBrowseRef.current;
+      const selection = document.getSelection();
       if (
         isMobileViewport ||
         event.altKey ||
@@ -2054,7 +2055,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         isComposerApprovalState ||
         pendingUserInputs.length > 0 ||
         composerTerminalContexts.length > 0 ||
-        (!activeBrowse && trigger !== null)
+        (!activeBrowse && trigger !== null) ||
+        !selection?.isCollapsed
       ) {
         return false;
       }
@@ -2085,7 +2087,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return true;
       }
       const recalledValue = promptHistoryEntries[step.index];
-      if (recalledValue === undefined) return false;
+      if (recalledValue === undefined) {
+        recallPromptHistoryValue(activeBrowse?.draft ?? snapshot.value, null);
+        return true;
+      }
       recallPromptHistoryValue(recalledValue, step.index);
       return true;
     }

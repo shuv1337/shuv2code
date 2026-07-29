@@ -216,4 +216,10 @@ describe("stepComposerPromptHistory", () => {
       false,
     );
   });
+
+  it("restores the draft when the current index is out of range", () => {
+    expect(stepComposerPromptHistory(entries.slice(0, 2), 2, "newer")).toEqual({ kind: "draft" });
+    expect(stepComposerPromptHistory(entries.slice(0, 2), 2, "older")).toEqual({ kind: "draft" });
+    expect(stepComposerPromptHistory(entries, -1, "newer")).toEqual({ kind: "draft" });
+  });
 });
