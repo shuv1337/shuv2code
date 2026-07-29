@@ -152,19 +152,18 @@ export function normalizeOpenCodeSkills(
   });
 }
 
-export function loadOpenCodeSkills(
+export const loadOpenCodeSkills = Effect.fn("loadOpenCodeSkills")(function* (
   client: OpencodeClient,
-): Effect.Effect<ReadonlyArray<ServerProviderSkill>, OpenCodeRuntimeError> {
+): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, OpenCodeRuntimeError> {
   const skills = (
     client.app as unknown as {
       readonly skills?: () => Promise<{ readonly data?: ReadonlyArray<OpenCodeSkillInfo> }>;
     }
   ).skills;
-  if (typeof skills !== "function") return Effect.succeed([]);
-  return runOpenCodeSdk("app.skills", () => skills.call(client.app)).pipe(
-    Effect.map((result) => normalizeOpenCodeSkills(result.data ?? [])),
-  );
-}
+  if (typeof skills !== "function") return [];
+  const result = yield* runOpenCodeSdk("app.skills", () => skills.call(client.app));
+  return normalizeOpenCodeSkills(result.data ?? []);
+});
 
 export interface ParsedOpenCodeModelSlug {
   readonly providerID: string;
