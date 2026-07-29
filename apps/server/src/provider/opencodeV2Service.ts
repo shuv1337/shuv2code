@@ -46,7 +46,9 @@ export function openCodeV2StateDirectory(environment: NodeJS.ProcessEnv = proces
  * OpenCode V2 registration filenames:
  * - stable channels `latest`/`next` → `service.json`
  * - other channels → `service-<channel>.json`
- * Prerelease builds use `0.0.0-<channel>-<stamp>` (e.g. next, local).
+ * Dev builds use `0.0.0-<channel>-<stamp>` (e.g. next, local, integration-v2).
+ * Published prereleases like `2.0.0-alpha-4` share the stable `service.json`
+ * registration with plain `2.0.0` — they are not separate channels.
  */
 export function openCodeV2ServiceRegistrationFileName(version: string | undefined): string {
   const channel = openCodeV2ChannelFromVersion(version);
@@ -61,11 +63,13 @@ export function openCodeV2ChannelFromVersion(version: string | undefined): strin
   if (trimmed.length === 0) {
     return "latest";
   }
-  const prerelease = trimmed.match(/^0\.0\.0-([A-Za-z0-9._-]+)-\d+(?:\.\d+)?$/);
-  if (prerelease?.[1]) {
-    return prerelease[1];
+  // Dev/channel builds: 0.0.0-<channel>-<stamp>
+  const devChannel = trimmed.match(/^0\.0\.0-([A-Za-z0-9._-]+)-\d+(?:\.\d+)?$/);
+  if (devChannel?.[1]) {
+    return devChannel[1];
   }
-  if (/^\d+\.\d+\.\d+$/.test(trimmed)) {
+  // Published releases and prereleases (2.0.0, 2.0.0-alpha-4) share service.json.
+  if (/^\d+\.\d+\.\d+/.test(trimmed)) {
     return "latest";
   }
   return trimmed.replace(/[^a-zA-Z0-9._-]/g, "-");
@@ -174,8 +178,32 @@ async function probeRegistration(
 }
 
 const SERVICE_REGISTRATION_FILE_RE = /^service(?:-[A-Za-z0-9._-]+)?\.json$/;
+const STABLE_SERVICE_REGISTRATION = "service.json";
+const LOCAL_SERVICE_REGISTRATION = "service-local.json";
 
-/** @internal Order registration candidates: derived channel file first, then stable order. */
+/**
+ * Prefer the binary's derived channel file, then the stable shared service,
+ * then other channel registrations, and only then a local/dev service.
+ *
+ * Alphabetical fallback is unsafe: `service-local.json` sorts before
+ * `service.json` (`-` < `.`), which made shuv2code attach to a bare local
+ * OpenCode process that only exposes Zen models when the preferred channel
+ * registration was missing.
+ */
+function registrationCandidateRank(fileName: string, preferred: string): number {
+  if (fileName === preferred) {
+    return 0;
+  }
+  if (fileName === STABLE_SERVICE_REGISTRATION) {
+    return 1;
+  }
+  if (fileName === LOCAL_SERVICE_REGISTRATION) {
+    return 3;
+  }
+  return 2;
+}
+
+/** @internal Order registration candidates: preferred channel, stable, others, local. */
 export function orderOpenCodeV2RegistrationCandidates(
   fileNames: ReadonlyArray<string>,
   version: string | undefined,
@@ -183,7 +211,11 @@ export function orderOpenCodeV2RegistrationCandidates(
   const preferred = openCodeV2ServiceRegistrationFileName(version);
   return [...fileNames]
     .filter((fileName) => SERVICE_REGISTRATION_FILE_RE.test(fileName))
-    .sort((a, b) => (a === preferred ? -1 : b === preferred ? 1 : a.localeCompare(b)));
+    .sort((a, b) => {
+      const rankDelta =
+        registrationCandidateRank(a, preferred) - registrationCandidateRank(b, preferred);
+      return rankDelta !== 0 ? rankDelta : a.localeCompare(b);
+    });
 }
 
 async function scanOpenCodeV2ServiceRegistrations(

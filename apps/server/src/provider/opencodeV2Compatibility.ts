@@ -40,7 +40,7 @@ interface V2ModelInfo {
     readonly input: ReadonlyArray<string>;
     readonly output: ReadonlyArray<string>;
   };
-  readonly variants: ReadonlyArray<{ readonly id: string }>;
+  readonly variants?: ReadonlyArray<{ readonly id: string }>;
   readonly time: { readonly released: number };
   readonly limit: { readonly context: number; readonly input?: number; readonly output: number };
 }
@@ -402,7 +402,7 @@ async function loadV1ProviderList(
           model.capabilities.input.includes("image") ||
           model.capabilities.input.includes("pdf") ||
           model.capabilities.input.includes("video"),
-        reasoning: model.variants.length > 0,
+        reasoning: (model.variants?.length ?? 0) > 0,
         temperature: true,
         toolcall: model.capabilities.tools,
         input: {
@@ -557,11 +557,293 @@ function toV1MessageEntry(message: V2MessageInfo) {
   };
 }
 
-function normalizeEvent(event: { readonly type: string; readonly data?: unknown }) {
+interface V2StreamEvent {
+  readonly type: string;
+  readonly created?: number;
+  readonly data?: unknown;
+}
+
+interface V2StreamState {
+  readonly text: Map<
+    string,
+    { readonly partID: string; readonly started: number; text: string; initialized: boolean }
+  >;
+  readonly tools: Map<
+    string,
+    {
+      readonly partID: string;
+      readonly sessionID: string;
+      readonly messageID: string;
+      readonly callID: string;
+      readonly started: number;
+      name: string;
+      input: Record<string, unknown>;
+    }
+  >;
+}
+
+function eventData(event: V2StreamEvent): Record<string, unknown> {
+  return event.data && typeof event.data === "object"
+    ? (event.data as Record<string, unknown>)
+    : {};
+}
+
+function v2PartKey(input: {
+  readonly sessionID: string;
+  readonly messageID: string;
+  readonly kind: string;
+  readonly ordinal: number | string;
+}): string {
+  return `${input.sessionID}:${input.messageID}:${input.kind}:${input.ordinal}`;
+}
+
+function v2PartID(messageID: string, kind: string, ordinal: number | string): string {
+  return `prt_${messageID.replace(/^msg_?/, "")}_${kind}_${ordinal}`;
+}
+
+function assistantMessageUpdated(sessionID: string, messageID: string) {
   return {
-    type: event.type,
-    properties: event.data ?? {},
+    type: "message.updated",
+    properties: { sessionID, info: { id: messageID, role: "assistant" } },
   };
+}
+
+function normalizeV2Events(
+  event: V2StreamEvent,
+  state: V2StreamState,
+): ReadonlyArray<{ readonly type: string; readonly properties: Record<string, unknown> }> {
+  const data = eventData(event);
+  const sessionID = typeof data.sessionID === "string" ? data.sessionID : undefined;
+  const created = typeof event.created === "number" ? event.created : 0;
+
+  if (event.type === "session.execution.started" && sessionID) {
+    return [{ type: "session.status", properties: { sessionID, status: { type: "busy" } } }];
+  }
+  if (event.type === "session.execution.succeeded" && sessionID) {
+    return [{ type: "session.status", properties: { sessionID, status: { type: "idle" } } }];
+  }
+  if (event.type === "permission.asked" && sessionID) {
+    return [
+      {
+        type: event.type,
+        properties: {
+          ...data,
+          permission:
+            typeof data.action === "string"
+              ? data.action
+              : typeof data.permission === "string"
+                ? data.permission
+                : "unknown",
+          patterns: Array.isArray(data.resources)
+            ? data.resources
+            : Array.isArray(data.patterns)
+              ? data.patterns
+              : [],
+        },
+      },
+    ];
+  }
+
+  const textMatch = /^session\.(text|reasoning)\.(started|delta|ended)$/.exec(event.type);
+  if (textMatch && sessionID && typeof data.assistantMessageID === "string") {
+    const kind = textMatch[1]!;
+    const phase = textMatch[2]!;
+    const ordinal = typeof data.ordinal === "number" ? data.ordinal : 0;
+    const key = v2PartKey({
+      sessionID,
+      messageID: data.assistantMessageID,
+      kind,
+      ordinal,
+    });
+    let textState = state.text.get(key);
+    if (!textState) {
+      textState = {
+        partID: v2PartID(data.assistantMessageID, kind, ordinal),
+        started: created,
+        text: "",
+        initialized: false,
+      };
+      state.text.set(key, textState);
+    }
+    const initialize = () => {
+      if (textState!.initialized) return [];
+      textState!.initialized = true;
+      return [
+        assistantMessageUpdated(sessionID, data.assistantMessageID as string),
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: {
+              id: textState!.partID,
+              sessionID,
+              messageID: data.assistantMessageID,
+              type: kind,
+              text: textState!.text,
+              time: { start: textState!.started },
+            },
+          },
+        },
+      ];
+    };
+
+    if (phase === "started") {
+      return initialize();
+    }
+    if (phase === "delta" && typeof data.delta === "string") {
+      const events = initialize();
+      textState.text += data.delta;
+      return [
+        ...events,
+        {
+          type: "message.part.delta",
+          properties: { sessionID, partID: textState.partID, delta: data.delta },
+        },
+      ];
+    }
+    if (phase === "ended") {
+      const events = initialize();
+      if (typeof data.text === "string") textState.text = data.text;
+      return [
+        ...events,
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: {
+              id: textState.partID,
+              sessionID,
+              messageID: data.assistantMessageID,
+              type: kind,
+              text: textState.text,
+              time: { start: textState.started, end: created },
+            },
+          },
+        },
+      ];
+    }
+  }
+
+  const toolMatch = /^session\.tool\.(input\.started|called|progress|success|failed)$/.exec(
+    event.type,
+  );
+  if (
+    toolMatch &&
+    sessionID &&
+    typeof data.assistantMessageID === "string" &&
+    typeof data.callID === "string"
+  ) {
+    const key = v2PartKey({
+      sessionID,
+      messageID: data.assistantMessageID,
+      kind: "tool",
+      ordinal: data.callID,
+    });
+    let tool = state.tools.get(key);
+    if (!tool) {
+      tool = {
+        partID: v2PartID(data.assistantMessageID, "tool", data.callID),
+        sessionID,
+        messageID: data.assistantMessageID,
+        callID: data.callID,
+        started: created,
+        name: typeof data.name === "string" ? data.name : "tool",
+        input: {},
+      };
+      state.tools.set(key, tool);
+    }
+    if (typeof data.name === "string") tool.name = data.name;
+    if (data.input && typeof data.input === "object" && !Array.isArray(data.input)) {
+      tool.input = data.input as Record<string, unknown>;
+    }
+    const basePart = {
+      id: tool.partID,
+      sessionID,
+      messageID: tool.messageID,
+      type: "tool",
+      callID: tool.callID,
+      tool: tool.name,
+    };
+    const prefix = [assistantMessageUpdated(sessionID, tool.messageID)];
+    if (toolMatch[1] === "input.started") {
+      return [
+        ...prefix,
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: { ...basePart, state: { status: "pending", input: {}, raw: "" } },
+          },
+        },
+      ];
+    }
+    if (toolMatch[1] === "called" || toolMatch[1] === "progress") {
+      return [
+        ...prefix,
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: {
+              ...basePart,
+              state: {
+                status: "running",
+                input: tool.input,
+                title: tool.name,
+                metadata: data.metadata && typeof data.metadata === "object" ? data.metadata : {},
+                time: { start: tool.started },
+              },
+            },
+          },
+        },
+      ];
+    }
+    const content = Array.isArray(data.content) ? data.content : [];
+    const output = content
+      .flatMap((item) =>
+        item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
+          ? [(item as { text: string }).text]
+          : [],
+      )
+      .join("\n");
+    const failed = toolMatch[1] === "failed";
+    const error =
+      data.error &&
+      typeof data.error === "object" &&
+      typeof (data.error as { message?: unknown }).message === "string"
+        ? (data.error as { message: string }).message
+        : "OpenCode tool failed.";
+    return [
+      ...prefix,
+      {
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: {
+            ...basePart,
+            state: failed
+              ? {
+                  status: "error",
+                  input: tool.input,
+                  error,
+                  metadata: data.metadata ?? {},
+                  time: { start: tool.started, end: created },
+                }
+              : {
+                  status: "completed",
+                  input: tool.input,
+                  output,
+                  title: tool.name,
+                  metadata: data.metadata ?? {},
+                  time: { start: tool.started, end: created },
+                },
+          },
+        },
+      },
+    ];
+  }
+
+  return [{ type: event.type, properties: data }];
 }
 
 /**
@@ -594,6 +876,7 @@ export function createOpenCodeV2CompatibilityClient(
           options?.signal ? { signal: options.signal } : undefined,
         );
         async function* stream() {
+          const state: V2StreamState = { text: new Map(), tools: new Map() };
           for await (const event of source) {
             const eventData =
               event.data && typeof event.data === "object"
@@ -613,7 +896,9 @@ export function createOpenCodeV2CompatibilityClient(
             ) {
               questionSessions.set(eventData.id, eventData.sessionID);
             }
-            yield normalizeEvent(event);
+            for (const normalized of normalizeV2Events(event, state)) {
+              yield normalized;
+            }
           }
         }
         return { stream: stream() };

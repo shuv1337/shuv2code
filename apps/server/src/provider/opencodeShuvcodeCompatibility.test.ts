@@ -100,13 +100,29 @@ describe("shuvcode OpenCode V2 fork compatibility", () => {
     );
   });
 
-  it("prefers the derived channel registration but keeps other services as candidates", () => {
+  it("prefers the derived channel registration, then stable, then local last", () => {
     NodeAssert.deepEqual(
       orderOpenCodeV2RegistrationCandidates(
         ["service-local.json", "frecency.jsonl", "service-integration-v2.json", "service.json"],
         "0.0.0-integration-v2-202607241824",
       ),
-      ["service-integration-v2.json", "service-local.json", "service.json"],
+      ["service-integration-v2.json", "service.json", "service-local.json"],
+    );
+  });
+
+  it("maps published alpha builds to service.json and prefers it over service-local", () => {
+    // Live failure: shuvcode 2.0.0-alpha-4 derived service-2.0.0-alpha-4.json
+    // (missing), then alphabetical scan attached to a bare local service that
+    // only exposed OpenCode Zen models instead of the user's authenticated
+    // service.json inventory.
+    NodeAssert.equal(openCodeV2ChannelFromVersion("2.0.0-alpha-4"), "latest");
+    NodeAssert.equal(openCodeV2ServiceRegistrationFileName("2.0.0-alpha-4"), "service.json");
+    NodeAssert.deepEqual(
+      orderOpenCodeV2RegistrationCandidates(
+        ["service-local.json", "service.json", "frecency.jsonl"],
+        "2.0.0-alpha-4",
+      ),
+      ["service.json", "service-local.json"],
     );
   });
 
@@ -148,6 +164,66 @@ describe("shuvcode OpenCode V2 fork compatibility", () => {
       NodeAssert.equal(endpoint.version, staleVersion);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      await NodeFSP.rm(stateHome, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers the stable service for alpha builds instead of a zen-only local service", async () => {
+    const stateHome = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "shuvcode-v2-alpha-"));
+    const serviceDir = NodePath.join(stateHome, "opencode");
+    await NodeFSP.mkdir(serviceDir, { recursive: true });
+
+    const stableServer = NodeHttp.createServer((request, response) => {
+      if (request.url === "/api/health") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ healthy: true, version: "2.0.0-alpha-4", pid: process.pid }));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    const localServer = NodeHttp.createServer((request, response) => {
+      if (request.url === "/api/health") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ healthy: true, version: "local", pid: process.pid }));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await Promise.all([
+      new Promise<void>((resolve) => stableServer.listen(0, "127.0.0.1", resolve)),
+      new Promise<void>((resolve) => localServer.listen(0, "127.0.0.1", resolve)),
+    ]);
+    const stableAddress = stableServer.address();
+    const localAddress = localServer.address();
+    NodeAssert.ok(stableAddress && typeof stableAddress === "object");
+    NodeAssert.ok(localAddress && typeof localAddress === "object");
+
+    try {
+      const stableUrl = `http://127.0.0.1:${stableAddress.port}`;
+      const localUrl = `http://127.0.0.1:${localAddress.port}`;
+      await NodeFSP.writeFile(
+        NodePath.join(serviceDir, "service.json"),
+        JSON.stringify({ url: stableUrl, pid: process.pid, version: "2.0.0-alpha-4" }),
+      );
+      await NodeFSP.writeFile(
+        NodePath.join(serviceDir, "service-local.json"),
+        JSON.stringify({ url: localUrl, pid: process.pid, version: "local" }),
+      );
+
+      const endpoint = await discoverOpenCodeV2Service({
+        version: "2.0.0-alpha-4",
+        environment: { XDG_STATE_HOME: stateHome },
+      });
+      NodeAssert.ok(endpoint, "expected alpha build to discover the stable service");
+      NodeAssert.equal(endpoint.url, stableUrl);
+      NodeAssert.equal(endpoint.version, "2.0.0-alpha-4");
+    } finally {
+      await Promise.all([
+        new Promise<void>((resolve) => stableServer.close(() => resolve())),
+        new Promise<void>((resolve) => localServer.close(() => resolve())),
+      ]);
       await NodeFSP.rm(stateHome, { recursive: true, force: true });
     }
   });

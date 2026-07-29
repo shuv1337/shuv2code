@@ -2,9 +2,9 @@
 
 import * as NodeAssert from "node:assert/strict";
 import * as NodeHttp from "node:http";
-import * as NodeOs from "node:os";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeFs from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 
 import { afterEach, describe, it } from "vite-plus/test";
 
@@ -29,10 +29,14 @@ describe("openCodeV2Service registration helpers", () => {
     NodeAssert.equal(openCodeV2ServiceRegistrationFileName("0.0.0-local-1"), "service-local.json");
   });
 
-  it("uses service.json for latest/next and stable semver", () => {
+  it("uses service.json for latest/next, stable semver, and published prereleases", () => {
     NodeAssert.equal(openCodeV2ServiceRegistrationFileName("latest"), "service.json");
     NodeAssert.equal(openCodeV2ServiceRegistrationFileName("next"), "service.json");
     NodeAssert.equal(openCodeV2ServiceRegistrationFileName("2.0.0"), "service.json");
+    NodeAssert.equal(openCodeV2ChannelFromVersion("2.0.0-alpha-4"), "latest");
+    NodeAssert.equal(openCodeV2ServiceRegistrationFileName("2.0.0-alpha-4"), "service.json");
+    NodeAssert.equal(openCodeV2ChannelFromVersion("2.0.0-beta.1"), "latest");
+    NodeAssert.equal(openCodeV2ServiceRegistrationFileName("2.0.0-rc.3"), "service.json");
   });
 
   it("resolves under XDG_STATE_HOME/opencode", () => {
@@ -79,7 +83,7 @@ describe("openCodeV2Service discover/detect", () => {
       ),
     );
     await Promise.all(
-      tempDirs.splice(0).map((dir) => NodeFs.rm(dir, { recursive: true, force: true })),
+      tempDirs.splice(0).map((dir) => NodeFSP.rm(dir, { recursive: true, force: true })),
     );
   });
 
@@ -99,10 +103,10 @@ describe("openCodeV2Service discover/detect", () => {
   }
 
   it("discovers a healthy registered V2 service", async () => {
-    const stateDir = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "shuv2code-oc-v2-"));
+    const stateDir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "shuv2code-oc-v2-"));
     tempDirs.push(stateDir);
     const openCodeState = NodePath.join(stateDir, "opencode");
-    await NodeFs.mkdir(openCodeState, { recursive: true });
+    await NodeFSP.mkdir(openCodeState, { recursive: true });
 
     const authHeader = `Basic ${Buffer.from("opencode:test-password", "utf8").toString("base64")}`;
     const { url } = await listen((req, res) => {
@@ -120,7 +124,7 @@ describe("openCodeV2Service discover/detect", () => {
       res.end(JSON.stringify({ healthy: true, version: "0.0.0-beta-1", pid: process.pid }));
     });
 
-    await NodeFs.writeFile(
+    await NodeFSP.writeFile(
       NodePath.join(openCodeState, "service-beta.json"),
       JSON.stringify({
         version: "0.0.0-beta-1",
@@ -168,8 +172,8 @@ describe("openCodeV2Service discover/detect", () => {
   });
 
   it("requireOpenCodeV2Service fails clearly when no service is registered", async () => {
-    const stateDir = await NodeFs.mkdtemp(
-      NodePath.join(NodeOs.tmpdir(), "shuv2code-oc-v2-missing-"),
+    const stateDir = await NodeFSP.mkdtemp(
+      NodePath.join(NodeOS.tmpdir(), "shuv2code-oc-v2-missing-"),
     );
     tempDirs.push(stateDir);
     await NodeAssert.rejects(

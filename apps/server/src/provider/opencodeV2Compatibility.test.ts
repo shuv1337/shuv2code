@@ -77,6 +77,16 @@ describe("createOpenCodeV2CompatibilityClient", () => {
                 time: { released: 1 },
                 limit: { context: 100, output: 50 },
               },
+              {
+                id: "gpt-5.4-mini",
+                providerID: "openai",
+                name: "GPT-5.4 mini",
+                enabled: true,
+                status: "active",
+                capabilities: { tools: true, input: ["text"], output: ["text"] },
+                time: { released: 1 },
+                limit: { context: 100, output: 50 },
+              },
             ],
           }),
         );
@@ -95,6 +105,7 @@ describe("createOpenCodeV2CompatibilityClient", () => {
     NodeAssert.ok(list.data);
     NodeAssert.deepEqual(list.data.connected, ["openai"]);
     NodeAssert.equal(list.data.all[0]?.models["gpt-5.4"]?.name, "GPT-5.4");
+    NodeAssert.equal(list.data.all[0]?.models["gpt-5.4-mini"]?.capabilities.reasoning, false);
   });
 
   it("uses stable agent ids for selection, not display names", async () => {
@@ -169,8 +180,100 @@ describe("createOpenCodeV2CompatibilityClient", () => {
       id: "perm-1",
       sessionID: "ses_1",
       permission: "bash",
+      patterns: [],
     });
     await client.permission.reply({ requestID: "perm-1", reply: "once" });
+  });
+
+  it("projects native V2 streaming, completion, and permission events to the legacy adapter contract", async () => {
+    const nativeEvents = [
+      {
+        id: "evt_1",
+        created: 100,
+        type: "session.execution.started",
+        data: { sessionID: "ses_1" },
+      },
+      {
+        id: "evt_2",
+        created: 101,
+        type: "session.text.started",
+        data: { sessionID: "ses_1", assistantMessageID: "msg_1", ordinal: 0 },
+      },
+      {
+        id: "evt_3",
+        created: 102,
+        type: "session.text.delta",
+        data: {
+          sessionID: "ses_1",
+          assistantMessageID: "msg_1",
+          ordinal: 0,
+          delta: "hello",
+        },
+      },
+      {
+        id: "evt_4",
+        created: 103,
+        type: "session.text.ended",
+        data: {
+          sessionID: "ses_1",
+          assistantMessageID: "msg_1",
+          ordinal: 0,
+          text: "hello",
+        },
+      },
+      {
+        id: "evt_5",
+        created: 104,
+        type: "permission.asked",
+        data: {
+          id: "per_1",
+          sessionID: "ses_1",
+          action: "bash",
+          resources: ["npm test"],
+        },
+      },
+      {
+        id: "evt_6",
+        created: 105,
+        type: "session.execution.succeeded",
+        data: { sessionID: "ses_1" },
+      },
+    ];
+    const baseUrl = await listen((req, res) => {
+      if (req.url === "/api/event") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        for (const event of nativeEvents) {
+          res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+        }
+        res.end();
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+    });
+    const subscription = await client.event.subscribe();
+    const events: Array<{ type: string; properties: Record<string, unknown> }> = [];
+    for await (const event of subscription.stream) {
+      events.push(event as { type: string; properties: Record<string, unknown> });
+    }
+
+    NodeAssert.equal(events[0]?.type, "session.status");
+    NodeAssert.deepEqual(events[0]?.properties.status, { type: "busy" });
+    NodeAssert.ok(events.some((event) => event.type === "message.updated"));
+    NodeAssert.ok(events.some((event) => event.type === "message.part.updated"));
+    const delta = events.find((event) => event.type === "message.part.delta");
+    NodeAssert.equal(delta?.properties.delta, "hello");
+    NodeAssert.equal(typeof delta?.properties.partID, "string");
+    const permission = events.find((event) => event.type === "permission.asked");
+    NodeAssert.equal(permission?.properties.permission, "bash");
+    NodeAssert.deepEqual(permission?.properties.patterns, ["npm test"]);
+    NodeAssert.equal(events.at(-1)?.type, "session.status");
+    NodeAssert.deepEqual(events.at(-1)?.properties.status, { type: "idle" });
   });
 
   it("converts prompt parts and waits for history", async () => {
