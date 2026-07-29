@@ -39,6 +39,7 @@ const runtimeMock = {
     inventory: {
       providerList: { connected: [] as string[], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
+      skills: [],
     } as unknown,
   },
   reset() {
@@ -49,6 +50,7 @@ const runtimeMock = {
     this.state.inventory = {
       providerList: { connected: [], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
+      skills: [],
     };
   },
 };
@@ -176,6 +178,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
           default: {},
         },
         agents: [{ name: "build", hidden: false, mode: "primary" }],
+        skills: [],
       };
 
       const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
@@ -224,6 +227,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
           { name: "build", hidden: false, mode: "primary" },
           { name: "plan", hidden: false, mode: "primary" },
         ],
+        skills: [],
       };
 
       const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
@@ -254,6 +258,39 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
       yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
 
       NodeAssert.equal(runtimeMock.state.closeCalls, 0);
+    }),
+  );
+
+  it.effect("publishes OpenCode inventory skills in the provider snapshot", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: ["openai"],
+          all: [{ id: "openai", name: "OpenAI", models: {} }],
+          default: {},
+        },
+        agents: [],
+        skills: [
+          {
+            name: "review",
+            description: "Review the current changes",
+            path: "/tmp/project/.opencode/skills/review/SKILL.md",
+            enabled: true,
+          },
+        ],
+      };
+
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+
+      NodeAssert.equal(snapshot.status, "ready");
+      NodeAssert.deepEqual(snapshot.skills, [
+        {
+          name: "review",
+          description: "Review the current changes",
+          path: "/tmp/project/.opencode/skills/review/SKILL.md",
+          enabled: true,
+        },
+      ]);
     }),
   );
 

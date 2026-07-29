@@ -139,6 +139,45 @@ describe("createOpenCodeV2CompatibilityClient", () => {
     NodeAssert.equal(agents.data?.[0]?.name, "build");
   });
 
+  it("lists skills for the configured V2 location through the legacy app surface", async () => {
+    const baseUrl = await listen((req, res) => {
+      const url = new URL(req.url ?? "", "http://localhost");
+      NodeAssert.equal(url.pathname, "/api/skill");
+      NodeAssert.equal(url.searchParams.get("location[directory]"), "/tmp/project");
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          location: { directory: "/tmp/project", project: { id: "project", directory: "/tmp" } },
+          data: [
+            {
+              id: "review",
+              name: "review",
+              description: "Review the current changes",
+              location: "/tmp/project/.opencode/skills/review/SKILL.md",
+              content: "Review carefully.",
+            },
+          ],
+        }),
+      );
+    });
+
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+    });
+    const skills = await client.app.skills();
+
+    NodeAssert.deepEqual(skills.data, [
+      {
+        id: "review",
+        name: "review",
+        description: "Review the current changes",
+        location: "/tmp/project/.opencode/skills/review/SKILL.md",
+        content: "Review carefully.",
+      },
+    ]);
+  });
+
   it("normalizes event data into legacy properties and tracks permission sessions", async () => {
     const baseUrl = await listen((req, res) => {
       if (req.url === "/api/event") {

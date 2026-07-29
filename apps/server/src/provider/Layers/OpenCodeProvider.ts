@@ -447,6 +447,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     enabled: true,
     checkedAt,
     models,
+    skills: inventoryExit.value.skills,
     probe: {
       installed: true,
       version,
