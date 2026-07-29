@@ -154,14 +154,19 @@ export function normalizeOpenCodeSkills(
 
 export const loadOpenCodeSkills = Effect.fn("loadOpenCodeSkills")(function* (
   client: OpencodeClient,
-): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, OpenCodeRuntimeError> {
+): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>> {
   const skills = (
     client.app as unknown as {
       readonly skills?: () => Promise<{ readonly data?: ReadonlyArray<OpenCodeSkillInfo> }>;
     }
   ).skills;
   if (typeof skills !== "function") return [];
-  const result = yield* runOpenCodeSdk("app.skills", () => skills.call(client.app));
+  const result = yield* runOpenCodeSdk("app.skills", () => skills.call(client.app)).pipe(
+    // Skill enumeration is additive; do not fail provider inventory when it is unavailable.
+    Effect.orElseSucceed((): { readonly data?: ReadonlyArray<OpenCodeSkillInfo> } => ({
+      data: [],
+    })),
+  );
   return normalizeOpenCodeSkills(result.data ?? []);
 });
 

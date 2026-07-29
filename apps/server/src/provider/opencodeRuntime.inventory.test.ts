@@ -71,4 +71,19 @@ describe("OpenCode skill inventory", () => {
       ]);
     }),
   );
+
+  effectIt.effect("returns no skills when app.skills fails", () =>
+    Effect.gen(function* () {
+      const client = {
+        app: {
+          skills: async () => {
+            throw new Error("skill list unavailable");
+          },
+        },
+      } as unknown as OpencodeClient;
+      const skills = yield* loadOpenCodeSkills(client);
+
+      NodeAssert.deepEqual(skills, []);
+    }),
+  );
 });
