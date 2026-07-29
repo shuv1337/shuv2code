@@ -206,6 +206,65 @@ describe("ServerSettings.sourceControlWritingStyle", () => {
   });
 });
 
+describe("ServerSettings.textToSpeech", () => {
+  it("defaults legacy configs to a disabled OpenAI-compatible provider", () => {
+    expect(decodeServerSettings({}).textToSpeech).toEqual({
+      enabled: false,
+      endpoint: "",
+      apiKey: "",
+      apiKeyRedacted: false,
+      model: "tts-1",
+      voice: "alloy",
+      responseFormat: "mp3",
+      speed: 1,
+    });
+  });
+
+  it("decodes and trims a custom provider configuration", () => {
+    expect(
+      decodeServerSettings({
+        textToSpeech: {
+          enabled: true,
+          endpoint: "  http://127.0.0.1:8880/v1/audio/speech  ",
+          apiKey: "  test-key  ",
+          model: "  kokoro  ",
+          voice: "  af_heart  ",
+          responseFormat: "  wav  ",
+          speed: 1.25,
+        },
+      }).textToSpeech,
+    ).toEqual({
+      enabled: true,
+      endpoint: "http://127.0.0.1:8880/v1/audio/speech",
+      apiKey: "test-key",
+      apiKeyRedacted: false,
+      model: "kokoro",
+      voice: "af_heart",
+      responseFormat: "wav",
+      speed: 1.25,
+    });
+  });
+
+  it("allows partial provider updates", () => {
+    expect(
+      decodeServerSettingsPatch({
+        textToSpeech: {
+          voice: "  en-US-AvaNeural  ",
+          speed: 0.75,
+        },
+      }).textToSpeech,
+    ).toEqual({
+      voice: "en-US-AvaNeural",
+      speed: 0.75,
+    });
+  });
+
+  it.each([0, 0.24, 4.01, 5])("rejects an unsupported playback speed: %s", (speed) => {
+    expect(() => decodeServerSettings({ textToSpeech: { speed } })).toThrow();
+    expect(() => decodeServerSettingsPatch({ textToSpeech: { speed } })).toThrow();
+  });
+});
+
 describe("ServerSettingsPatch.providerInstances", () => {
   it("treats providerInstances as an optional whole-map replacement", () => {
     const patch = decodeServerSettingsPatch({});

@@ -1,6 +1,7 @@
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { remoteHttpClientLayer } from "@shuv2code/client-runtime/rpc";
@@ -36,6 +37,7 @@ export const remoteHttpRuntime = ManagedRuntime.make(httpClientLayer);
 const primaryHttpRuntime = ManagedRuntime.make(
   PrimaryEnvironmentHttpClient.layer.pipe(Layer.provide(primaryEnvironmentHttpLayer)),
 );
+const primaryRawHttpRuntime = ManagedRuntime.make(primaryEnvironmentHttpLayer);
 
 export type PrimaryHttpEffectRunner = <A, E>(
   effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
@@ -49,6 +51,11 @@ let primaryHttpRunner = livePrimaryHttpRunner;
 export const runPrimaryHttp = <A, E>(
   effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
 ) => primaryHttpRunner(effect);
+
+export const runPrimaryRawHttp = <A, E>(
+  effect: Effect.Effect<A, E, HttpClient.HttpClient>,
+  options?: Effect.RunOptions,
+) => primaryRawHttpRuntime.runPromise(effect, options);
 
 export function __setPrimaryHttpRunnerForTests(runner?: PrimaryHttpEffectRunner): void {
   primaryHttpRunner = runner ?? livePrimaryHttpRunner;

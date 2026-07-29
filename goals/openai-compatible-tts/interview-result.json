@@ -1,0 +1,18 @@
+{
+  "decision": "submitted",
+  "stage": "interview",
+  "result": {
+    "stage": "interview",
+    "title": "OpenAI-compatible text-to-speech",
+    "goalSlug": "openai-compatible-tts",
+    "answers": [
+      {
+        "questionId": "v1-product-shape",
+        "selectedOptionIds": ["manual-only", "speech-settings", "single-playback", "lean-v1"],
+        "customAnswer": "",
+        "answer": "Manual read-aloud only\nDedicated Speech settings\nOne active clip at a time\nNo queues, cache, or auto-read",
+        "completed": true
+      }
+    ]
+  }
+}
