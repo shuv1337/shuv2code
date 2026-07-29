@@ -194,7 +194,7 @@ import {
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
 import type { UnifiedSettings } from "@shuv2code/contracts/settings";
-import type { SessionPhase, Thread } from "../../types";
+import type { ChatMessage, SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import type { PendingApproval, PendingUserInput } from "../../session-logic";
 import {
@@ -205,6 +205,11 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
+import {
+  isComposerPromptHistoryPositionValid,
+  projectComposerPromptHistory,
+  stepComposerPromptHistory,
+} from "./composerPromptHistory";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
@@ -253,6 +258,58 @@ const extendReplacementRangeForTrailingSpace = (
   }
   return text[rangeEnd] === " " ? rangeEnd + 1 : rangeEnd;
 };
+
+function readRangeEdgeRect(range: Range, edge: "start" | "end"): DOMRect | null {
+  const rects = range.getClientRects();
+  if (rects.length > 0) return rects[edge === "start" ? 0 : rects.length - 1] ?? null;
+  const rect = range.getBoundingClientRect();
+  return rect.width > 0 || rect.height > 0 ? rect : null;
+}
+
+function readAdjacentTextRect(range: Range, direction: "older" | "newer"): DOMRect | null {
+  if (!(range.startContainer instanceof Text)) return null;
+  const textLength = range.startContainer.data.length;
+  if (textLength === 0) return null;
+  const offset = Math.min(range.startOffset, textLength);
+  const start = direction === "older" ? Math.min(offset, textLength - 1) : Math.max(0, offset - 1);
+  const characterRange = document.createRange();
+  characterRange.setStart(range.startContainer, start);
+  characterRange.setEnd(range.startContainer, start + 1);
+  return readRangeEdgeRect(characterRange, direction === "older" ? "start" : "end");
+}
+
+function readEditorBoundaryRect(editor: HTMLElement, direction: "older" | "newer"): DOMRect | null {
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+  let textNode: Text | null = null;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!(node instanceof Text) || node.data.length === 0) continue;
+    textNode = node;
+    if (direction === "older") break;
+  }
+  if (!textNode) return null;
+
+  const range = document.createRange();
+  const start = direction === "older" ? 0 : textNode.data.length - 1;
+  range.setStart(textNode, start);
+  range.setEnd(textNode, start + 1);
+  return readRangeEdgeRect(range, direction === "older" ? "start" : "end");
+}
+
+function isDomCaretAtVisualEdge(editor: HTMLElement, direction: "older" | "newer"): boolean {
+  const selection = document.getSelection();
+  if (!selection?.isCollapsed || selection.rangeCount === 0) return false;
+  const caretRange = selection.getRangeAt(0);
+  if (!editor.contains(caretRange.commonAncestorContainer)) return false;
+
+  const caretRect =
+    readRangeEdgeRect(caretRange, direction === "older" ? "start" : "end") ??
+    readAdjacentTextRect(caretRange, direction);
+  const boundaryRect = readEditorBoundaryRect(editor, direction);
+  if (!caretRect || !boundaryRect) return editor.textContent?.length === 0;
+
+  const lineHeight = Number.parseFloat(window.getComputedStyle(editor).lineHeight) || 20;
+  return Math.abs(caretRect.top - boundaryRect.top) < lineHeight / 2;
+}
 
 const syncTerminalContextsByIds = (
   contexts: ReadonlyArray<TerminalContextDraft>,
@@ -519,6 +576,7 @@ export interface ChatComposerProps {
   activeThreadId: ThreadId | null;
   activeThreadEnvironmentId: EnvironmentId | undefined;
   activeThread: Thread | undefined;
+  promptHistoryMessages: ReadonlyArray<ChatMessage>;
   isServerThread: boolean;
   isLocalDraftThread: boolean;
   forceExpandedOnMobile: boolean;
@@ -633,6 +691,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
+    promptHistoryMessages,
     isServerThread: _isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     forceExpandedOnMobile,
@@ -982,6 +1041,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const isMobileViewport = useMediaQuery("max-sm");
   const isComposerCollapsedMobile =
     isMobileViewport && !forceExpandedOnMobile && !isComposerFocused;
+  const promptHistoryEntries = useMemo(
+    () => projectComposerPromptHistory(promptHistoryMessages),
+    [promptHistoryMessages],
+  );
 
   // ------------------------------------------------------------------
   // Refs
@@ -1006,6 +1069,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
    * thread) can still be stashed while an earlier encode is running.
    */
   const stashInFlightRef = useRef<Set<string>>(new Set());
+  const promptHistoryBrowseRef = useRef<{
+    target: ScopedThreadRef | DraftId;
+    index: number;
+    draft: string;
+    recalledValue: string;
+  } | null>(null);
 
   // ------------------------------------------------------------------
   // Derived: composer send state
@@ -1264,6 +1333,50 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [composerDraftTarget, setComposerDraftPrompt],
   );
 
+  const leavePromptHistory = useCallback(
+    (restoreDraft: boolean) => {
+      const browse = promptHistoryBrowseRef.current;
+      if (!browse) return;
+      promptHistoryBrowseRef.current = null;
+      if (!restoreDraft) return;
+
+      const currentValue = getComposerDraft(browse.target)?.prompt;
+      if (currentValue !== browse.recalledValue) return;
+      setComposerDraftPrompt(browse.target, browse.draft);
+      if (browse.target !== composerDraftTarget) return;
+
+      promptRef.current = browse.draft;
+      const cursor = collapseExpandedComposerCursor(browse.draft, browse.draft.length);
+      setComposerCursor(cursor);
+      setComposerTrigger(null);
+    },
+    [composerDraftTarget, getComposerDraft, promptRef, setComposerDraftPrompt],
+  );
+
+  const recallPromptHistoryValue = useCallback(
+    (value: string, index: number | null) => {
+      const existing = promptHistoryBrowseRef.current;
+      if (index === null) {
+        promptHistoryBrowseRef.current = null;
+      } else {
+        promptHistoryBrowseRef.current = {
+          target: composerDraftTarget,
+          index,
+          draft: existing?.draft ?? promptRef.current,
+          recalledValue: value,
+        };
+      }
+      promptRef.current = value;
+      setPrompt(value);
+      const cursor = collapseExpandedComposerCursor(value, value.length);
+      setComposerCursor(cursor);
+      setComposerTrigger(null);
+      setComposerHighlightedItemId(null);
+      window.requestAnimationFrame(() => composerEditorRef.current?.focusAt(cursor));
+    },
+    [composerDraftTarget, promptRef, setPrompt],
+  );
+
   const addComposerImage = useCallback(
     (image: ComposerImageAttachment) => {
       addComposerDraftImage(composerDraftTarget, image);
@@ -1315,6 +1428,33 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     promptRef.current = prompt;
     setComposerCursor((existing) => clampCollapsedComposerCursor(prompt, existing));
   }, [prompt, promptRef]);
+
+  useEffect(() => {
+    const browse = promptHistoryBrowseRef.current;
+    if (!browse) return;
+    if (browse.target !== composerDraftTarget) {
+      leavePromptHistory(true);
+      return;
+    }
+    if (
+      !isComposerPromptHistoryPositionValid(
+        promptHistoryEntries,
+        browse.index,
+        browse.recalledValue,
+      )
+    ) {
+      leavePromptHistory(true);
+    }
+  }, [composerDraftTarget, leavePromptHistory, promptHistoryEntries]);
+
+  useEffect(() => {
+    const browse = promptHistoryBrowseRef.current;
+    if (browse?.target === composerDraftTarget && prompt !== browse.recalledValue) {
+      leavePromptHistory(false);
+    }
+  }, [composerDraftTarget, leavePromptHistory, prompt]);
+
+  useEffect(() => () => leavePromptHistory(true), [leavePromptHistory]);
 
   useEffect(() => {
     composerImagesRef.current = composerImages;
@@ -1538,6 +1678,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       cursorAdjacentToMention: boolean,
       terminalContextIds: string[],
     ) => {
+      const browse = promptHistoryBrowseRef.current;
+      if (browse && nextPrompt !== browse.recalledValue) {
+        promptHistoryBrowseRef.current = null;
+      }
       if (activePendingProgress?.activeQuestion && pendingUserInputs.length > 0) {
         setComposerCursor(nextCursor);
         setComposerTrigger(
@@ -1870,7 +2014,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     const { trigger } = resolveActiveComposerTrigger();
     const menuIsActive = composerMenuOpenRef.current || trigger !== null;
-    if (menuIsActive) {
+    const browse = promptHistoryBrowseRef.current;
+    if (menuIsActive && (!browse || composerMenuItemsRef.current.length > 0)) {
       const currentItems = composerMenuItemsRef.current;
       const selectedItem = activeComposerMenuItemRef.current ?? currentItems[0];
       if (key === "ArrowDown" && currentItems.length > 0) {
@@ -1885,6 +2030,59 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onSelectComposerItem(selectedItem);
         return true;
       }
+      if ((key === "ArrowDown" || key === "ArrowUp") && !browse) {
+        return true;
+      }
+    }
+    if (key === "ArrowDown" || key === "ArrowUp") {
+      const direction = key === "ArrowUp" ? "older" : "newer";
+      const snapshot = readComposerSnapshot();
+      const currentBrowse = promptHistoryBrowseRef.current;
+      if (currentBrowse && snapshot.value !== currentBrowse.recalledValue) {
+        promptHistoryBrowseRef.current = null;
+      }
+      const activeBrowse = promptHistoryBrowseRef.current;
+      if (
+        isMobileViewport ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.isComposing ||
+        event.keyCode === 229 ||
+        isComposerApprovalState ||
+        pendingUserInputs.length > 0 ||
+        composerTerminalContexts.length > 0 ||
+        (!activeBrowse && trigger !== null)
+      ) {
+        return false;
+      }
+
+      const logicalEdge =
+        direction === "older"
+          ? snapshot.value.lastIndexOf("\n", Math.max(0, snapshot.expandedCursor - 1)) < 0
+          : snapshot.value.indexOf("\n", snapshot.expandedCursor) < 0;
+      const editor = composerSurfaceRef.current?.querySelector<HTMLElement>(
+        '[data-testid="composer-editor"]',
+      );
+      if (!logicalEdge || !editor || !isDomCaretAtVisualEdge(editor, direction)) {
+        return false;
+      }
+
+      const step = stepComposerPromptHistory(
+        promptHistoryEntries,
+        activeBrowse?.index ?? null,
+        direction,
+      );
+      if (step.kind === "boundary") return false;
+      if (step.kind === "draft") {
+        recallPromptHistoryValue(activeBrowse?.draft ?? snapshot.value, null);
+        return true;
+      }
+      const recalledValue = promptHistoryEntries[step.index];
+      if (recalledValue === undefined) return false;
+      recallPromptHistoryValue(recalledValue, step.index);
+      return true;
     }
     if (
       key === "Enter" &&
@@ -2507,6 +2705,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         prompt?: string;
         detectTrigger?: boolean;
       }) => {
+        promptHistoryBrowseRef.current = null;
         const promptForState = options?.prompt ?? promptRef.current;
         const cursor = clampCollapsedComposerCursor(promptForState, options?.cursor ?? 0);
         setComposerHighlightedItemId(null);
