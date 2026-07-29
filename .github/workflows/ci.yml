@@ -22,6 +22,12 @@ jobs:
           cache: true
           run-install: true
 
+      - name: Validate brand identity inputs
+        run: |
+          vp run brand:check
+          vp run schema:check
+          vp run icons:check
+
       - name: Ensure Electron runtime is installed
         run: vp run --filter @shuv2code/desktop ensure:electron
 
