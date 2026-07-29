@@ -13,7 +13,7 @@ import type {
   RelayManagedEndpoint,
   RelayManagedEndpointOrigin,
   RelayManagedEndpointRuntimeConfig,
-} from "@t3tools/contracts/relay";
+} from "@shuv2code/contracts/relay";
 
 import * as RelayConfiguration from "../Config.ts";
 import {
@@ -77,6 +77,7 @@ export class ManagedEndpointProvisioningFailed extends Schema.TaggedErrorClass<M
 const ManagedEndpointDeprovisioningStage = Schema.Literals([
   "load-allocation",
   "claim-release",
+  "claim-deprovision",
   "delete-dns-record",
   "delete-tunnel",
   "remove-allocation",
@@ -123,6 +124,8 @@ export interface ManagedEndpointProvisioningResult {
   readonly runtime: RelayManagedEndpointRuntimeConfig;
 }
 
+export type ManagedEndpointDeprovisionTarget = ManagedEndpointAllocations.ManagedEndpointAllocation;
+
 export class ManagedEndpointProvider extends Context.Service<
   ManagedEndpointProvider,
   {
@@ -131,9 +134,22 @@ export class ManagedEndpointProvider extends Context.Service<
       readonly environmentId: string;
       readonly origin: RelayManagedEndpointOrigin;
     }) => Effect.Effect<ManagedEndpointProvisioningResult, ManagedEndpointProviderError>;
+    /**
+     * Captures the allocation generation owned by an unlink before its link
+     * revocation commits. Passing this target to `deprovision` prevents a
+     * concurrent relink from having its newer allocation torn down.
+     */
+    readonly prepareDeprovision: (input: {
+      readonly userId: string;
+      readonly environmentId: string;
+    }) => Effect.Effect<
+      ManagedEndpointDeprovisionTarget | null,
+      ManagedEndpointDeprovisioningFailed
+    >;
     readonly deprovision: (input: {
       readonly userId: string;
       readonly environmentId: string;
+      readonly target?: ManagedEndpointDeprovisionTarget | null;
     }) => Effect.Effect<void, ManagedEndpointDeprovisioningFailed>;
     /**
      * Deletes the provisioned Cloudflare tunnel while keeping the allocation
@@ -152,7 +168,7 @@ export class ManagedEndpointProvider extends Context.Service<
       readonly environmentId: string;
     }) => Effect.Effect<boolean, ManagedEndpointDeprovisioningFailed>;
   }
->()("t3code-relay/environments/ManagedEndpointProvider") {}
+>()("shuv2code-relay/environments/ManagedEndpointProvider") {}
 
 interface ManagedEndpointTunnel {
   readonly id?: string | null;
@@ -210,7 +226,7 @@ export class ManagedEndpointTunnelClient extends Context.Service<
     ) => Effect.Effect<string, ManagedEndpointTunnelClientError>;
     readonly delete: (tunnelId: string) => Effect.Effect<unknown, ManagedEndpointTunnelClientError>;
   }
->()("t3code-relay/environments/ManagedEndpointProvider/ManagedEndpointTunnelClient") {}
+>()("shuv2code-relay/environments/ManagedEndpointProvider/ManagedEndpointTunnelClient") {}
 
 export const layerTunnelClient = (client: ManagedEndpointTunnelClient["Service"]) =>
   Layer.succeed(ManagedEndpointTunnelClient, client);
@@ -262,7 +278,7 @@ export class ManagedEndpointDnsClient extends Context.Service<
       dnsRecordId: string,
     ) => Effect.Effect<unknown, ManagedEndpointDnsClientError>;
   }
->()("t3code-relay/environments/ManagedEndpointProvider/ManagedEndpointDnsClient") {}
+>()("shuv2code-relay/environments/ManagedEndpointProvider/ManagedEndpointDnsClient") {}
 
 export const layerDnsClient = (client: ManagedEndpointDnsClient["Service"]) =>
   Layer.succeed(ManagedEndpointDnsClient, client);
@@ -424,13 +440,9 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  return ManagedEndpointProvider.of({
-    deprovision: Effect.fn("relay.managed_endpoint_provider.deprovision")(function* (input) {
-      yield* Effect.annotateCurrentSpan({
-        "relay.user_id": input.userId,
-        "relay.environment_id": input.environmentId,
-      });
-      const allocation = yield* allocations.get(input).pipe(
+  const prepareDeprovision = Effect.fn("relay.managed_endpoint_provider.prepare_deprovision")(
+    function* (input: { readonly userId: string; readonly environmentId: string }) {
+      return yield* allocations.get(input).pipe(
         Effect.mapError(
           (cause) =>
             new ManagedEndpointDeprovisioningFailed({
@@ -440,7 +452,40 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
+    },
+  );
+
+  return ManagedEndpointProvider.of({
+    prepareDeprovision,
+    deprovision: Effect.fn("relay.managed_endpoint_provider.deprovision")(function* (input) {
+      yield* Effect.annotateCurrentSpan({
+        "relay.user_id": input.userId,
+        "relay.environment_id": input.environmentId,
+      });
+      const allocation =
+        input.target === undefined ? yield* prepareDeprovision(input) : input.target;
       if (allocation === null) {
+        return;
+      }
+      const claimedAt = yield* allocations
+        .claimDeprovision({
+          userId: input.userId,
+          environmentId: input.environmentId,
+          updatedAt: allocation.updatedAt,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointDeprovisioningFailed({
+                ...input,
+                stage: "claim-deprovision",
+                ...(allocation.tunnelId === null ? {} : { tunnelId: allocation.tunnelId }),
+                ...(allocation.dnsRecordId === null ? {} : { dnsRecordId: allocation.dnsRecordId }),
+                cause,
+              }),
+          ),
+        );
+      if (claimedAt === null) {
         return;
       }
       const dnsRecordId = allocation.dnsRecordId;
@@ -471,18 +516,24 @@ export const make = Effect.gen(function* () {
           ),
         );
       }
-      yield* allocations.remove(input).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ManagedEndpointDeprovisioningFailed({
-              ...input,
-              stage: "remove-allocation",
-              ...(allocation.tunnelId === null ? {} : { tunnelId: allocation.tunnelId }),
-              ...(allocation.dnsRecordId === null ? {} : { dnsRecordId: allocation.dnsRecordId }),
-              cause,
-            }),
-        ),
-      );
+      yield* allocations
+        .removeClaimed({
+          userId: input.userId,
+          environmentId: input.environmentId,
+          updatedAt: claimedAt,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointDeprovisioningFailed({
+                ...input,
+                stage: "remove-allocation",
+                ...(allocation.tunnelId === null ? {} : { tunnelId: allocation.tunnelId }),
+                ...(allocation.dnsRecordId === null ? {} : { dnsRecordId: allocation.dnsRecordId }),
+                cause,
+              }),
+          ),
+        );
     }),
     release: Effect.fn("relay.managed_endpoint_provider.release")(function* (input) {
       yield* Effect.annotateCurrentSpan({

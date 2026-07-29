@@ -1,0 +1,37 @@
+# Maintainer: shuv1337 <https://github.com/shuv1337>
+
+pkgname=shuv2code-bin
+_pkgname=shuv2code
+_releasever=0.1.0-alpha.1
+pkgver=0.1.0.alpha.1
+pkgrel=1
+pkgdesc="The local-first control plane for coding agents (AppImage)"
+arch=('x86_64')
+url="https://github.com/shuv1337/shuv2code"
+license=('MIT')
+depends=('fuse2' 'glibc' 'gtk3' 'nss')
+optdepends=(
+  'gnome-keyring: GNOME keyring and secrets support'
+  'kwallet: KDE wallet and secrets support'
+)
+provides=("shuv2code=${pkgver}")
+conflicts=('shuv2code' 'shuv2code-git')
+options=('!strip' '!debug')
+source=(
+  "${_pkgname}-${_releasever}-x64.AppImage::${url}/releases/download/v${_releasever}/${_pkgname}-${_releasever}-x64.AppImage"
+  'shuv2code.sh'
+  'shuv2code.desktop'
+  'shuv2code.svg'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "${srcdir}/${_pkgname}-${_releasever}-x64.AppImage" \
+    "${pkgdir}/opt/${_pkgname}/${_pkgname}.AppImage"
+  install -Dm755 "${srcdir}/shuv2code.sh" "${pkgdir}/usr/bin/shuv2code"
+  ln -s shuv2code "${pkgdir}/usr/bin/s2c"
+  install -Dm644 "${srcdir}/shuv2code.desktop" \
+    "${pkgdir}/usr/share/applications/shuv2code.desktop"
+  install -Dm644 "${srcdir}/shuv2code.svg" \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/shuv2code.svg"
+}

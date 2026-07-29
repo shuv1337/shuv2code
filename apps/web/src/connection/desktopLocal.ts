@@ -1,9 +1,9 @@
-import type { ConnectionTarget } from "@t3tools/client-runtime/connection";
+import type { ConnectionTarget } from "@shuv2code/client-runtime/connection";
 import {
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   type DesktopBridge,
   type DesktopEnvironmentBootstrap,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 
 /**
  * Desktop-local secondary backends (e.g. a parallel WSL backend) are registered

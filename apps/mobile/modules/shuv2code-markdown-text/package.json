@@ -1,0 +1,51 @@
+{
+  "name": "@shuv2code/mobile-markdown-text",
+  "version": "0.0.0",
+  "private": true,
+  "source": "./index.ts",
+  "files": [
+    "assets",
+    "ios",
+    "src",
+    "index.ts",
+    "LICENSE",
+    "UPSTREAM.md",
+    "Shuv2CodeMarkdownText.podspec",
+    "react-native.config.js"
+  ],
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "react-native": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./file-icons": "./src/markdownFileIcons.ts",
+    "./links": "./src/markdownLinks.ts",
+    "./markdown": "./src/nativeMarkdownText.ts",
+    "./primitive": "./src/MarkdownTextPrimitive.tsx",
+    "./renderer": "./src/SelectableMarkdownText.ios.tsx",
+    "./types": "./src/SelectableMarkdownText.types.ts"
+  },
+  "peerDependencies": {
+    "expo-asset": "*",
+    "expo-clipboard": "*",
+    "expo-haptics": "*",
+    "expo-symbols": "*",
+    "react": "*",
+    "react-native": "*",
+    "react-native-nitro-markdown": "*"
+  },
+  "codegenConfig": {
+    "name": "Shuv2CodeMarkdownTextSpec",
+    "type": "all",
+    "jsSrcsDir": "src",
+    "ios": {
+      "componentProvider": {
+        "Shuv2CodeMarkdownText": "Shuv2CodeMarkdownText",
+        "Shuv2CodeMarkdownTextRun": "Shuv2CodeMarkdownTextRun"
+      }
+    },
+    "outputDir": {
+      "ios": "ios/generated"
+    }
+  }
+}

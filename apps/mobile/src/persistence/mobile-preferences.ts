@@ -10,10 +10,11 @@ import * as MobileDatabase from "./mobile-database";
 import * as MobileSecureStorage from "./mobile-secure-storage";
 import { MobileStorageDecodeError, MobileStorageEncodeError } from "./mobile-storage";
 
-const PREFERENCES_KEY = "t3code.preferences";
-const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
+const PREFERENCES_KEY = "shuv2code.preferences";
+const PREFERENCES_FALLBACK_KEY = "shuv2code.preferences.fallback";
 
 export interface Preferences {
+  readonly colorScheme?: "dark" | "light" | "system";
   readonly liveActivitiesEnabled?: boolean;
   readonly baseFontSize?: number;
   readonly terminalFontSize?: number | null;
@@ -25,8 +26,9 @@ export interface Preferences {
   readonly projectGroupingEnabled?: boolean;
   /**
    * Device-local mirror of the web beta's `sidebarV2Enabled`. Mobile has no
-   * client-settings sync, so the flat v2 thread list is opted into per
-   * device.
+   * client-settings sync, so the flat v2 thread list is opted out of per
+   * device. Undefined means the user has never chosen, which resolves to on —
+   * see `resolveThreadListV2Enabled`.
    */
   readonly threadListV2Enabled?: boolean;
 }
@@ -66,10 +68,11 @@ export class MobilePreferencesStore extends Context.Service<
       transform: (current: Preferences) => Partial<Preferences>,
     ) => Effect.Effect<Preferences, MobilePreferencesSaveError>;
   }
->()("@t3tools/mobile/persistence/MobilePreferencesStore") {}
+>()("@shuv2code/mobile/persistence/MobilePreferencesStore") {}
 
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
+    colorScheme?: "dark" | "light" | "system";
     liveActivitiesEnabled?: boolean;
     baseFontSize?: number;
     terminalFontSize?: number | null;
@@ -82,6 +85,13 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListV2Enabled?: boolean;
   } = {};
 
+  if (
+    parsed.colorScheme === "dark" ||
+    parsed.colorScheme === "light" ||
+    parsed.colorScheme === "system"
+  ) {
+    preferences.colorScheme = parsed.colorScheme;
+  }
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
   }

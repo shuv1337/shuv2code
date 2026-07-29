@@ -1,0 +1,17 @@
+{
+  "name": "@shuv2code/mobile-review-diff-native",
+  "version": "0.0.0",
+  "private": true,
+  "expo-module": {
+    "ios": {
+      "modules": [
+        "Shuv2CodeReviewDiffModule"
+      ]
+    },
+    "android": {
+      "modules": [
+        "expo.modules.shuv2codereviewdiff.Shuv2CodeReviewDiffModule"
+      ]
+    }
+  }
+}

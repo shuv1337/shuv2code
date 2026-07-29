@@ -19,7 +19,7 @@ import {
   PreviewAnnotationPayloadSchema,
   PreviewAutomationSnapshot,
   PreviewAutomationStatus,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as NodeURL from "node:url";

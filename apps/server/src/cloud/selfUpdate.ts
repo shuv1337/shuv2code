@@ -7,13 +7,13 @@ import {
   type ServerSelfUpdateCapability,
   type ServerSelfUpdateInput,
   type ServerSelfUpdateResult,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import {
   HostProcessArguments,
   HostProcessEnvironment,
   HostProcessExecutablePath,
   HostProcessPlatform,
-} from "@t3tools/shared/hostProcess";
+} from "@shuv2code/shared/hostProcess";
 import * as NodeChildProcess from "node:child_process";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -35,7 +35,7 @@ import {
 import { ensurePinnedRuntimeInstalled, removePinnedRuntimeInstallation } from "./pinnedRuntime.ts";
 
 /**
- * Lets a connected client replace this server with another published `t3`
+ * Lets a connected client replace this server with another published `shuv2code`
  * version over RPC — the only update path that works when the user is not at
  * the machine (phone against a home server, relay-managed box). The target
  * version is npm-installed into the pinned runtime and verified before
@@ -75,12 +75,12 @@ function normalizeEntryPath(entryPath: string): string {
  * npm identity, and the desktop manages its own updates.
  */
 export function isPublishedCliEntry(entryPath: string): boolean {
-  return normalizeEntryPath(entryPath).includes("/node_modules/t3/dist/");
+  return normalizeEntryPath(entryPath).includes("/node_modules/shuv2code/dist/");
 }
 
 /**
  * The update path this process can offer, or null when only a manual
- * relaunch works. "desktop-managed" — the T3 Code desktop app spawned this
+ * relaunch works. "desktop-managed" — the shuv2code desktop app spawned this
  * backend and owns its version; only updating the app updates it.
  * "boot-service" — this is the systemd-supervised process from
  * bootService.ts: rewrite the unit and let systemd swap it. "respawn" — a
@@ -117,7 +117,7 @@ export const resolveServerSelfUpdateCapability = Effect.fn(
       Effect.orElseSucceed(() => false),
     );
     // INVOCATION_ID only proves that some systemd unit launched us. The
-    // explicit marker written into t3code.service identifies this unit as the
+    // explicit marker written into shuv2code.service identifies this unit as the
     // supervisor that will replace the current process when restarted.
     if (
       unitReferencesEntry &&
@@ -149,7 +149,7 @@ export class ServerSelfUpdate extends Context.Service<
       input: ServerSelfUpdateInput,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
   }
->()("t3/cloud/selfUpdate/ServerSelfUpdate") {}
+>()("shuv2code/cloud/selfUpdate/ServerSelfUpdate") {}
 
 export const make = Effect.fn("cloud.server_self_update.make")(function* (options?: {
   readonly host?: Partial<ServerSelfUpdateHost>;
@@ -230,7 +230,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
   )(function* (input) {
     if (capability === "desktop-managed") {
       return yield* failWith(
-        "This server is managed by the T3 Code desktop app on its machine; update the desktop app to update it.",
+        "This server is managed by the shuv2code desktop app on its machine; update the desktop app to update it.",
       );
     }
     if (capability === null) {
@@ -241,7 +241,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
     const activeMethod = capability;
     const targetVersion = input.targetVersion.trim();
     if (!EXACT_VERSION_PATTERN.test(targetVersion)) {
-      return yield* failWith(`'${targetVersion}' is not an exact t3 version.`);
+      return yield* failWith(`'${targetVersion}' is not an exact shuv2code version.`);
     }
 
     const alreadyRunning = yield* Ref.getAndSet(inFlight, true);
@@ -257,7 +257,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
         path,
         runner,
       }).pipe(
-        Effect.mapError((error) => failWith("Could not install the requested t3 version.", error)),
+        Effect.mapError((error) =>
+          failWith("Could not install the requested shuv2code version.", error),
+        ),
       );
 
       // A broken artifact (failed native build, incompatible node) must be
@@ -270,7 +272,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
         })
         .pipe(
           Effect.mapError((cause) =>
-            failWith(`Could not verify the installed t3@${targetVersion}.`, cause),
+            failWith(`Could not verify the installed shuv2code@${targetVersion}.`, cause),
           ),
         );
       // Effect CLI's unstable formatVersion currently emits `${name} v${version}`.
@@ -287,13 +289,13 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
           path,
         }).pipe(
           Effect.mapError((error) =>
-            failWith(`Could not remove the failed t3@${targetVersion} installation.`, error),
+            failWith(`Could not remove the failed shuv2code@${targetVersion} installation.`, error),
           ),
         );
         return yield* failWith(
           preflight.code !== 0
-            ? `The installed t3@${targetVersion} failed its version check (exit code ${String(preflight.code)}).`
-            : `The installed runtime did not report the requested t3@${targetVersion} version.`,
+            ? `The installed shuv2code@${targetVersion} failed its version check (exit code ${String(preflight.code)}).`
+            : `The installed runtime did not report the requested shuv2code@${targetVersion} version.`,
         );
       }
 
@@ -309,7 +311,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
         // still recognize the unit as current.
         const unit = renderBootServiceUnit({
           nodePath: host.execPath,
-          t3EntryPath: runtimePaths.entryPath,
+          shuv2codeEntryPath: runtimePaths.entryPath,
           baseDir: serverConfig.baseDir,
           logPath: path.join(serverConfig.logsDir, "boot-service.log"),
           unitPath,
@@ -392,21 +394,21 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* (option
           .spawnDetached("/bin/sh", [
             "-c",
             'sleep 3; exec "$@"',
-            "t3-self-update",
+            "shuv2code-self-update",
             host.execPath,
             runtimePaths.entryPath,
             ...host.cliArgs,
           ])
           .pipe(
             Effect.mapError((cause) =>
-              failWith("Could not start the replacement t3 process.", cause),
+              failWith("Could not start the replacement shuv2code process.", cause),
             ),
           );
         yield* Effect.logInfo("Server self-update installed; respawning.", { targetVersion });
         yield* scheduleRestart(
           Effect.try({
             try: () => host.exitProcess(),
-            catch: (cause) => failWith("Could not exit the replaced t3 process.", cause),
+            catch: (cause) => failWith("Could not exit the replaced shuv2code process.", cause),
           }).pipe(
             Effect.catch((error) =>
               Effect.logError("Server self-update could not exit the replaced process.").pipe(

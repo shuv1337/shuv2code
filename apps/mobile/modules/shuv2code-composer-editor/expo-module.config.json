@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["Shuv2CodeComposerEditorModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.shuv2codecomposereditor.Shuv2CodeComposerEditorModule"]
+  }
+}

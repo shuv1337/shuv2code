@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off - This host-side fixture creates an isolated local T3 environment.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - This host-side fixture creates an isolated local shuv2code environment.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -7,7 +7,7 @@ import * as NodeUtil from "node:util";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
-export const SHOWCASE_PROJECT_ID = "t3code";
+export const SHOWCASE_PROJECT_ID = "shuv2code";
 export const SHOWCASE_THREAD_ID = "remote-command-center";
 export const SHOWCASE_TERMINAL_ID = "term-1";
 
@@ -45,16 +45,16 @@ const PROJECT_SCRIPTS = JSON.stringify([
 ]);
 
 export const SHOWCASE_TERMINAL_BUFFER = [
-  "\u001b[38;5;75m~/Code/t3code\u001b[0m \u001b[38;5;212mfeat/remote-command-center\u001b[0m",
+  "\u001b[38;5;75m~/Code/shuv2code\u001b[0m \u001b[38;5;212mfeat/remote-command-center\u001b[0m",
   "$ vp test run --changed",
   "",
-  "  \u001b[38;5;117mt3code-mobile\u001b[0m       184 passed",
+  "  \u001b[38;5;117mshuv2code-mobile\u001b[0m       184 passed",
   "  \u001b[38;5;213mclient-runtime\u001b[0m      263 passed",
   "  \u001b[38;5;221mserver\u001b[0m              165 passed",
   "",
   "\u001b[32m✨ 612 tests passed\u001b[0m  ·  3 environments online",
   "",
-  "\u001b[38;5;75m~/Code/t3code\u001b[0m \u001b[38;5;212mfeat/remote-command-center\u001b[0m $ ",
+  "\u001b[38;5;75m~/Code/shuv2code\u001b[0m \u001b[38;5;212mfeat/remote-command-center\u001b[0m $ ",
 ].join("\r\n");
 
 const BASE_ENVIRONMENT_PRESENCE = `export function environmentLabel(count: number): string {
@@ -83,7 +83,7 @@ export function RemoteHandoffCard(props: { machine: string; latencyMs: number })
 `;
 
 const PROJECT_FAVICONS = {
-  t3code: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  shuv2code: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <rect width="128" height="128" rx="10" fill="#000"/>
   <path d="M33.4509 93V47.56H15.5309V37H64.3309V47.56H46.4109V93H33.4509ZM86.7253 93.96C82.832 93.96 78.9653 93.4533 75.1253 92.44C71.2853 91.3733 68.032 89.88 65.3653 87.96L70.4053 78.04C72.5386 79.5867 75.0186 80.8133 77.8453 81.72C80.672 82.6267 83.5253 83.08 86.4053 83.08C89.6586 83.08 92.2186 82.44 94.0853 81.16C95.952 79.88 96.8853 78.12 96.8853 75.88C96.8853 73.7467 96.0586 72.0667 94.4053 70.84C92.752 69.6133 90.0853 69 86.4053 69H80.4853V60.44L96.0853 42.76L97.5253 47.4H68.1653V37H107.365V45.4L91.8453 63.08L85.2853 59.32H89.0453C95.9253 59.32 101.125 60.8667 104.645 63.96C108.165 67.0533 109.925 71.0267 109.925 75.88C109.925 79.0267 109.099 81.9867 107.445 84.76C105.792 87.48 103.259 89.6933 99.8453 91.4C96.432 93.1067 92.0586 93.96 86.7253 93.96Z" fill="#fff"/>
 </svg>`,
@@ -104,11 +104,11 @@ const PROJECT_FAVICONS = {
 
 export const SHOWCASE_PROJECTS = [
   {
-    id: "t3code",
-    title: "T3 Code",
-    directory: "t3code",
-    repositoryUrl: "https://github.com/pingdotgg/t3code.git",
-    favicon: PROJECT_FAVICONS.t3code,
+    id: "shuv2code",
+    title: "shuv2code",
+    directory: "shuv2code",
+    repositoryUrl: "https://github.com/shuv1337/shuv2code.git",
+    favicon: PROJECT_FAVICONS.shuv2code,
   },
   {
     id: "react",
@@ -130,7 +130,7 @@ export const SHOWCASE_ENVIRONMENTS = [
   {
     id: "moonbase-terminal",
     label: "Moonbase Terminal",
-    projectIds: ["t3code"],
+    projectIds: ["shuv2code"],
   },
   {
     id: "suspense-station",
@@ -147,18 +147,18 @@ export const SHOWCASE_ENVIRONMENTS = [
 export const SHOWCASE_THREADS = [
   {
     id: SHOWCASE_THREAD_ID,
-    projectId: "t3code",
+    projectId: "shuv2code",
     title: "Make remote coding feel local ✦",
     branch: "feat/remote-command-center",
     minutesAgo: 3,
     request:
-      "Give T3 Code a remote-first command center. Make three machines feel one tap away, keep agent work in sync, and make every handoff feel instant.",
+      "Give shuv2code a remote-first command center. Make three machines feel one tap away, keep agent work in sync, and make every handoff feel instant.",
     response:
-      "T3 Code now treats every machine like it is right here in the room. ✦\n\n- Moonbase, Suspense Station, and Kernel Cabin stay live together\n- Terminal state follows you without losing a single line\n- Agent work remains perfectly in sync across devices\n- Handoffs land before your train of thought can wander\n\nI also ran the changed workspace: **612 tests passed**.",
+      "shuv2code now treats every machine like it is right here in the room. ✦\n\n- Moonbase, Suspense Station, and Kernel Cabin stay live together\n- Terminal state follows you without losing a single line\n- Agent work remains perfectly in sync across devices\n- Handoffs land before your train of thought can wander\n\nI also ran the changed workspace: **612 tests passed**.",
   },
   {
     id: "pocket-command-center",
-    projectId: "t3code",
+    projectId: "shuv2code",
     title: "Put the command center in your pocket",
     branch: "feat/pocket-command-center",
     minutesAgo: 21,
@@ -201,16 +201,42 @@ export const SHOWCASE_THREADS = [
     response:
       "The plan groups milestones without changing the underlying log stream, preserves plain-text output, and adds zero work to the hot path.",
   },
+  // Finished work, settled by hand: the list keeps it as a receded tail so
+  // the active block above reads as everything still in flight. The active
+  // block stays small enough that the settled tail begins above the fold —
+  // a store screenshot has to show that history exists, not just imply it.
   {
-    id: "scheduler-breathe",
-    projectId: "linux",
-    title: "Let the scheduler breathe",
-    branch: "perf/scheduler-breathe",
-    minutesAgo: 76,
-    request:
-      "Find a calmer balancing strategy for bursty mixed workloads without hurting tail latency.",
+    id: "handoff-haptics",
+    projectId: "shuv2code",
+    title: "Tune the handoff haptics",
+    branch: "feat/handoff-haptics",
+    minutesAgo: 5 * 60,
+    settled: true,
+    request: "Give the desktop-to-phone handoff a haptic that lands with the animation.",
     response:
-      "The new heuristic reduces needless migrations during short bursts while preserving the existing latency guardrails.",
+      "The handoff now taps once as the thread lands and stays silent on failure, so the phone never celebrates a handoff that did not happen.",
+  },
+  {
+    id: "streaming-shell",
+    projectId: "react",
+    title: "Stream the shell before the data",
+    branch: "feat/streaming-shell",
+    minutesAgo: 28 * 60,
+    settled: true,
+    request: "Get the app shell painted before any data request resolves.",
+    response:
+      "The shell now flushes on first byte and the data boundaries hydrate underneath it, so the first paint no longer waits on the slowest query.",
+  },
+  {
+    id: "quieter-oom",
+    projectId: "linux",
+    title: "Make the OOM killer explain itself",
+    branch: "feat/quieter-oom",
+    minutesAgo: 2 * 24 * 60,
+    settled: true,
+    request: "Make out-of-memory kills legible without adding a single allocation to the hot path.",
+    response:
+      "Kills now report the winning heuristic and the runner-up alongside the usual dump, assembled entirely from data the path already had.",
   },
 ] as const;
 
@@ -242,22 +268,22 @@ async function initializeRepository(input: {
   await runGit(input.workspaceRoot, ["commit", "-m", input.commitMessage]);
 }
 
-async function seedT3CodeWorkspace(workspaceRoot: string): Promise<void> {
+async function seedShuv2CodeWorkspace(workspaceRoot: string): Promise<void> {
   await NodeFSP.mkdir(NodePath.join(workspaceRoot, "apps/mobile/src/features/home"), {
     recursive: true,
   });
   await NodeFSP.writeFile(
     NodePath.join(workspaceRoot, "package.json"),
-    `${JSON.stringify({ name: "t3code", private: true, scripts: { test: "vp test" } }, null, 2)}\n`,
+    `${JSON.stringify({ name: "shuv2code", private: true, scripts: { test: "vp test" } }, null, 2)}\n`,
   );
-  await NodeFSP.writeFile(NodePath.join(workspaceRoot, "favicon.svg"), PROJECT_FAVICONS.t3code);
+  await NodeFSP.writeFile(NodePath.join(workspaceRoot, "favicon.svg"), PROJECT_FAVICONS.shuv2code);
   await NodeFSP.writeFile(
     NodePath.join(workspaceRoot, "apps/mobile/src/features/home/environmentPresence.ts"),
     BASE_ENVIRONMENT_PRESENCE,
   );
   await initializeRepository({
     workspaceRoot,
-    repositoryUrl: "https://github.com/pingdotgg/t3code.git",
+    repositoryUrl: "https://github.com/shuv1337/shuv2code.git",
     commitMessage: "Show connected environments",
   });
   await runGit(workspaceRoot, ["checkout", "-b", "feat/remote-command-center"]);
@@ -281,7 +307,7 @@ async function seedCompanionWorkspace(input: {
   await NodeFSP.writeFile(NodePath.join(input.workspaceRoot, "favicon.svg"), input.favicon);
   await NodeFSP.writeFile(
     NodePath.join(input.workspaceRoot, "README.md"),
-    `# ${input.title}\n\nSeeded by the T3 Code mobile screenshot harness.\n`,
+    `# ${input.title}\n\nSeeded by the shuv2code mobile screenshot harness.\n`,
   );
   await initializeRepository({
     workspaceRoot: input.workspaceRoot,
@@ -300,6 +326,7 @@ function insertThread(
     readonly branch: string;
     readonly minutesAgo: number;
     readonly state?: "working" | "approval" | "plan";
+    readonly settled?: boolean;
     readonly workspaceRoot: string;
   },
 ): void {
@@ -312,8 +339,8 @@ function insertThread(
         thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
         branch, worktree_path, latest_turn_id, latest_user_message_at, pending_approval_count,
         pending_user_input_count, has_actionable_proposed_plan, created_at, updated_at,
-        archived_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, NULL)`,
+        archived_at, deleted_at, settled_override, settled_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, NULL, ?, ?)`,
     )
     .run(
       input.id,
@@ -330,6 +357,8 @@ function insertThread(
       input.state === "plan" ? 1 : 0,
       minutesBefore(now, input.minutesAgo + 120),
       updatedAt,
+      input.settled ? "settled" : null,
+      input.settled ? updatedAt : null,
     );
   database
     .prepare(
@@ -365,7 +394,11 @@ function seedDatabase(
   threads: ReadonlyArray<(typeof SHOWCASE_THREADS)[number]>,
   now: number,
 ): void {
-  const database = new NodeSqlite.DatabaseSync(dbPath);
+  // The environment server is already running against this file and keeps
+  // writing (migrations, projections) while we seed, so the write lock is
+  // genuinely contended — without a busy timeout `BEGIN IMMEDIATE` fails
+  // instantly with SQLITE_BUSY on a loaded machine.
+  const database = new NodeSqlite.DatabaseSync(dbPath, { timeout: 30_000 });
   try {
     database.exec("BEGIN IMMEDIATE");
     for (const table of [
@@ -506,7 +539,14 @@ function seedDatabase(
     }
     database.exec("COMMIT");
   } catch (error) {
-    database.exec("ROLLBACK");
+    // A failed BEGIN (or an error SQLite already auto-rolled back) leaves no
+    // transaction, and the rollback's own "cannot rollback" error would then
+    // replace the one that actually explains the failure.
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // Nothing to roll back.
+    }
     throw error;
   } finally {
     database.close();
@@ -538,7 +578,7 @@ export async function seedShowcaseEnvironment(input: {
   if (!workspaceRoot) throw new Error("The primary showcase workspace is not configured.");
   const dbPath = NodePath.join(input.baseDir, "userdata", "state.sqlite");
   if (primaryProject.id === SHOWCASE_PROJECT_ID) {
-    await seedT3CodeWorkspace(workspaceRoot);
+    await seedShuv2CodeWorkspace(workspaceRoot);
   }
   await Promise.all(
     projects

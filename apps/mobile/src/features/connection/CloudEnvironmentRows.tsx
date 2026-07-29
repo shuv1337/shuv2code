@@ -3,8 +3,8 @@ import { SymbolView } from "../../components/AppSymbol";
 import {
   connectionStatusText,
   type EnvironmentConnectionPhase,
-} from "@t3tools/client-runtime/connection";
-import type { EnvironmentId } from "@t3tools/contracts";
+} from "@shuv2code/client-runtime/connection";
+import type { EnvironmentId } from "@shuv2code/contracts";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
@@ -24,25 +24,42 @@ import { availableCloudEnvironmentPresentation } from "../cloud/cloudEnvironment
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
 import { type RelayEnvironmentView, useConnectionController } from "./useConnectionController";
 
-/**
- * "T3 Connect" section: every environment published to the signed-in account,
- * with connect switches, availability status, refresh, and loading/error
- * states. Shared between the Settings environments screen and the T3 Connect
- * onboarding sheet.
- */
-export function CloudEnvironmentRows(props: {
+interface CloudEnvironmentRowsProps {
   readonly connectedCloudEnvironments: ReadonlyArray<ConnectedEnvironmentSummary>;
   readonly onReconnectEnvironment: (environmentId: EnvironmentId) => void;
   readonly showcaseAvailableEnvironments?: ReadonlyArray<RelayEnvironmentView>;
   readonly showcaseSignedIn?: boolean;
   /**
-   * Hide the "T3 Connect" section title + refresh button for hosts that
+   * Hide the "shuv2code connect" section title + refresh button for hosts that
    * provide their own chrome (the onboarding sheet's native header and
    * pull-to-refresh).
    */
   readonly showHeader?: boolean;
-}) {
+}
+
+/**
+ * "shuv2code connect" section: every environment published to the signed-in account,
+ * with connect switches, availability status, refresh, and loading/error
+ * states. Shared between the Settings environments screen and the shuv2code connect
+ * onboarding sheet.
+ */
+export function CloudEnvironmentRows(props: CloudEnvironmentRowsProps) {
+  // Showcase captures run without a Clerk publishable key, so `ClerkProvider`
+  // is never mounted and any `useAuth` call throws — the fixture states whether
+  // the rows are signed in instead of asking Clerk.
+  if (props.showcaseSignedIn !== undefined) {
+    return props.showcaseSignedIn ? <CloudEnvironmentRowsContent {...props} /> : null;
+  }
+  return <SignedInCloudEnvironmentRows {...props} />;
+}
+
+function SignedInCloudEnvironmentRows(props: CloudEnvironmentRowsProps) {
   const { isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
+  if (!isSignedIn) return null;
+  return <CloudEnvironmentRowsContent {...props} />;
+}
+
+function CloudEnvironmentRowsContent(props: CloudEnvironmentRowsProps) {
   const controller = useConnectionController();
   const iconColor = useThemeColor("--color-icon");
   const availableCloudEnvironments =
@@ -67,13 +84,13 @@ export function CloudEnvironmentRows(props: {
 
   const showHeader = props.showHeader ?? true;
 
-  if (!(props.showcaseSignedIn ?? isSignedIn)) return null;
-
   return (
     <View collapsable={false} className={cn("gap-3", showHeader && "mt-5")}>
       {showHeader ? (
         <View className="flex-row items-center justify-between px-1">
-          <Text className="text-sm font-t3-bold uppercase text-foreground-muted">T3 Connect</Text>
+          <Text className="text-sm font-shuv2code-bold uppercase text-foreground-muted">
+            shuv2code connect
+          </Text>
           <Pressable
             accessibilityRole="button"
             disabled={controller.relayDiscovery.isRefreshing}
@@ -139,8 +156,8 @@ export function CloudEnvironmentRows(props: {
           hide behind an otherwise-healthy list. */}
       {controller.relayDiscovery.error && !controller.relayDiscovery.isRefreshing ? (
         <View collapsable={false} className="gap-3 rounded-[24px] bg-card p-5">
-          <Text className="text-base font-t3-bold text-foreground">
-            Could not load T3 Connect environments
+          <Text className="text-base font-shuv2code-bold text-foreground">
+            Could not load shuv2code connect environments
           </Text>
           <Text className="text-sm text-foreground-muted">{controller.relayDiscovery.error}</Text>
           {controller.relayDiscovery.errorTraceId ? (
@@ -153,7 +170,7 @@ export function CloudEnvironmentRows(props: {
             }}
             className="self-start rounded-full bg-subtle px-3.5 py-2 active:opacity-70"
           >
-            <Text className="text-xs font-t3-bold text-foreground">Try again</Text>
+            <Text className="text-xs font-shuv2code-bold text-foreground">Try again</Text>
           </Pressable>
         </View>
       ) : null}
@@ -291,7 +308,7 @@ function CloudEnvironmentRowShell(props: {
         <View className="min-w-0 flex-row items-center gap-2">
           <ConnectionStatusDot state={props.connectionState} pulse={shouldPulse} size={7} />
           <Text
-            className="min-w-0 flex-shrink text-base font-t3-bold leading-snug text-foreground"
+            className="min-w-0 flex-shrink text-base font-shuv2code-bold leading-snug text-foreground"
             numberOfLines={1}
           >
             {props.label}
@@ -374,7 +391,7 @@ function CopyTraceIdButton(props: { readonly traceId: string }) {
       className="self-start flex-row items-center gap-1.5 rounded-full bg-subtle px-3 py-2 active:opacity-70"
     >
       <SymbolView name="doc.on.doc" size={12} tintColor={iconColor} type="monochrome" />
-      <Text className="text-xs font-t3-bold text-foreground">Copy trace ID</Text>
+      <Text className="text-xs font-shuv2code-bold text-foreground">Copy trace ID</Text>
     </Pressable>
   );
 }

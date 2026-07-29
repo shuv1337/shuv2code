@@ -9,9 +9,9 @@
 - User guides
   - [Background service](./user/background-service.md)
   - [Remote access](./user/remote-access.md)
-  - [Keeping T3 Code in sync](./user/server-updates.md)
+  - [Keeping shuv2code in sync](./user/server-updates.md)
   - [Keybindings](./user/keybindings.md)
-- [T3 Connect](./cloud/t3-connect-clerk.md)
+- [shuv2code connect](./cloud/shuv2code-connect-clerk.md)
 - [Integrations](./integrations/source-control-providers.md)
 - [Mobile](./mobile/app.md)
 - [Operations](./operations/ci.md)

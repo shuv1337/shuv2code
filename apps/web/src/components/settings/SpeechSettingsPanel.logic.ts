@@ -2,7 +2,7 @@ import {
   MAX_TEXT_TO_SPEECH_SPEED,
   MIN_TEXT_TO_SPEECH_SPEED,
   type ServerSettingsPatch,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 
 export function parseTextToSpeechSpeed(value: string): number | null {
   const speed = Number(value.trim());

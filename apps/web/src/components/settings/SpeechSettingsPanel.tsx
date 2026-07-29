@@ -2,7 +2,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   MAX_TEXT_TO_SPEECH_SPEED,
   MIN_TEXT_TO_SPEECH_SPEED,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import { KeyRoundIcon, Volume2Icon } from "lucide-react";
 import { useCallback, useState } from "react";
 
@@ -231,7 +231,7 @@ export function SpeechSettingsPanel() {
       <SettingsSection title="Provider contract" icon={<KeyRoundIcon className="size-5" />}>
         <SettingsRow
           title="OpenAI Audio API"
-          description="T3 Code sends model, voice, input, response_format, and speed from the server. It does not require an OpenAI account or SDK."
+          description="shuv2code sends model, voice, input, response_format, and speed from the server. It does not require an OpenAI account or SDK."
         />
       </SettingsSection>
     </SettingsPageContainer>

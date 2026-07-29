@@ -1,0 +1,10 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["Shuv2CodeTerminalModule"],
+    "podspecPath": "Shuv2CodeTerminalNative.podspec"
+  },
+  "android": {
+    "modules": ["expo.modules.shuv2codeterminal.Shuv2CodeTerminalModule"]
+  }
+}

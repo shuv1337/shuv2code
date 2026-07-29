@@ -1,11 +1,11 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@shuv2code/contracts";
 
 import type { RelayEnvironmentView } from "../connection/useConnectionController";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 
 const SHOWCASE_LOCAL_ENVIRONMENT_DISPLAY_URLS: Readonly<Record<string, string>> = {
   "Moonbase Terminal": "https://moonbase.tail9f3a.ts.net/",
-  "Suspense Station": "https://suspense-vps.hel1.t3.sh/",
+  "Suspense Station": "https://suspense-vps.hel1.shuv2code.sh/",
   "Kernel Cabin": "http://100.82.16.5:3773/",
 };
 
@@ -32,16 +32,16 @@ export function resolveShowcaseEnvironmentUpdateDisplayUrl(input: {
 
 const pocketPiId = EnvironmentId.make("showcase-pocket-pi");
 const pocketPiEndpoint = {
-  httpBaseUrl: "https://pocket-pi.t3.sh",
-  wsBaseUrl: "wss://pocket-pi.t3.sh",
-  providerKind: "t3_relay" as const,
+  httpBaseUrl: "https://pocket-pi.shuv2code.sh",
+  wsBaseUrl: "wss://pocket-pi.shuv2code.sh",
+  providerKind: "shuv2code_relay" as const,
 };
 
 export const SHOWCASE_CONNECTED_CLOUD_ENVIRONMENTS: ReadonlyArray<ConnectedEnvironmentSummary> = [
   {
     environmentId: EnvironmentId.make("showcase-aurora-gpu"),
     environmentLabel: "Aurora GPU Pod",
-    displayUrl: "https://aurora-gpu.t3.sh",
+    displayUrl: "https://aurora-gpu.shuv2code.sh",
     isRelayManaged: true,
     connectionState: "connected",
     connectionError: null,

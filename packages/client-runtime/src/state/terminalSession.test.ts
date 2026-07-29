@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { EnvironmentId, TerminalSessionSnapshot, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, TerminalSessionSnapshot, ThreadId } from "@shuv2code/contracts";
 
 import {
   applyTerminalAttachStreamEvent,

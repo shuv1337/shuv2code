@@ -1,14 +1,14 @@
-import { ManagedRelay } from "@t3tools/client-runtime/relay";
+import { ManagedRelay } from "@shuv2code/client-runtime/relay";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SecureStore from "expo-secure-store";
 
-const MANAGED_RELAY_TOKEN_CACHE_KEY = "t3code.cloud.relay-access-tokens";
+const MANAGED_RELAY_TOKEN_CACHE_KEY = "shuv2code.cloud.relay-access-tokens";
 const MANAGED_RELAY_TOKEN_CACHE_VERSION = 1;
 
 const ManagedRelayAccessTokenCacheEntrySchema = Schema.Struct({
   accountId: Schema.String,
-  clientId: Schema.Literals(["t3-mobile", "t3-web"]),
+  clientId: Schema.Literals(["shuv2code-mobile", "shuv2code-web"]),
   relayUrl: Schema.String,
   thumbprint: Schema.String,
   scopes: Schema.Array(

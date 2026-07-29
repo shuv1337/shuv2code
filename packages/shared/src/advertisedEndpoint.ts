@@ -5,7 +5,7 @@ import type {
   AdvertisedEndpointReachability,
   AdvertisedEndpointSource,
   AdvertisedEndpointStatus,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 
 export interface CreateAdvertisedEndpointInput {
   readonly id: string;

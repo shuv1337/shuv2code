@@ -6,7 +6,7 @@ index 03d8d9f3a5c403c93282d53cbacf1a339e877e85..54d5eabc6c8a408e711a5be97286fdbb
          config.setTitle(title)
      }
  
-+    // The t3 patch adds these iOS glass-chrome props to the native spec; they have
++    // The shuv2code patch adds these iOS glass-chrome props to the native spec; they have
 +    // no Android implementation, but the codegen-generated interface requires the
 +    // setters to exist. No-ops keep the Android build compiling.
 +    override fun setSubtitle(

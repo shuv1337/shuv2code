@@ -1,0 +1,17 @@
+{
+  "name": "@shuv2code/mobile-terminal-native",
+  "version": "0.0.0",
+  "private": true,
+  "expo-module": {
+    "ios": {
+      "modules": [
+        "Shuv2CodeTerminalModule"
+      ]
+    },
+    "android": {
+      "modules": [
+        "expo.modules.shuv2codeterminal.Shuv2CodeTerminalModule"
+      ]
+    }
+  }
+}

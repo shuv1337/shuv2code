@@ -1,0 +1,12 @@
+{
+  "$schema": "./schemas/shuv2code.schema.json",
+  "iconPath": "assets/dev/blueprint-web-apple-touch-180.png",
+  "scripts": [
+    {
+      "name": "Setup Worktree",
+      "command": "vp i && ln -sf $SHUV2CODE_PROJECT_ROOT/.env .env && ln -sf $SHUV2CODE_PROJECT_ROOT/infra/relay/.env infra/relay/.env",
+      "icon": "configure",
+      "runOnWorktreeCreate": true
+    }
+  ]
+}

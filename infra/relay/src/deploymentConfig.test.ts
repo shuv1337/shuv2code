@@ -66,11 +66,11 @@ describe("relayOwnsManagedEndpointZone", () => {
 
 describe("relayResourceNameForStage", () => {
   it("isolates production and personal stages", () => {
-    expect(relayResourceNameForStage("t3-code-relay-traces", "prod")).toBe(
-      "t3-code-relay-traces-prod",
+    expect(relayResourceNameForStage("shuv2code-relay-traces", "prod")).toBe(
+      "shuv2code-relay-traces-prod",
     );
-    expect(relayResourceNameForStage("t3-code-relay-traces", "dev_julius")).toBe(
-      "t3-code-relay-traces-dev-julius",
+    expect(relayResourceNameForStage("shuv2code-relay-traces", "dev_julius")).toBe(
+      "shuv2code-relay-traces-dev-julius",
     );
   });
 });
@@ -85,11 +85,11 @@ describe("managed endpoint names", () => {
     expect(managedEndpointHostname("dev_julius", ".example.com.", hash)).toBe(
       "dev-julius-abcdef0123456789.example.com",
     );
-    expect(managedEndpointHostname("prod", "t3coderelay.com", hash)).toBe(
-      "prod-abcdef0123456789.t3coderelay.com",
+    expect(managedEndpointHostname("prod", "shuv2coderelay.com", hash)).toBe(
+      "prod-abcdef0123456789.shuv2coderelay.com",
     );
     expect(managedEndpointTunnelName("dev_julius", hash)).toBe(
-      "t3coderelay-managedendpoint-dev-julius-abcdef0123456789",
+      "shuv2coderelay-managedendpoint-dev-julius-abcdef0123456789",
     );
   });
 

@@ -1,4 +1,4 @@
-import type { EnvironmentId, OrchestrationThread, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, OrchestrationThread, ThreadId } from "@shuv2code/contracts";
 import * as Option from "effect/Option";
 import { useEffect, useMemo, useState } from "react";
 

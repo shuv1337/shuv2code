@@ -1,6 +1,6 @@
 import * as NodeCryptoLayer from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
-import { PgDialect, QueryBuilder } from "drizzle-orm/pg-core";
+import { PgDialect } from "drizzle-orm/pg-core";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -57,14 +57,18 @@ describe("EnvironmentCredentials", () => {
 
   it.effect("does not retain credential tokens when lookup persistence fails", () => {
     const cause = new Error("database unavailable");
-    const token = "t3env_sensitive-credential-token";
+    const token = "shuv2code_env_sensitive-credential-token";
+    const whereConditions: Array<unknown> = [];
     const fakeDb = {
       select: () => ({
         from: (table: unknown) => {
           expect(table).toBe(relayEnvironmentCredentials);
           return {
-            where: () => ({
-              limit: () => Effect.fail(cause),
+            where: (condition: unknown) => ({
+              limit: () => {
+                whereConditions.push(condition);
+                return Effect.fail(cause);
+              },
             }),
           };
         },
@@ -81,6 +85,13 @@ describe("EnvironmentCredentials", () => {
       });
       expect(error.cause).toBe(cause);
       expect(error).not.toHaveProperty("token");
+      expect(whereConditions).toHaveLength(1);
+
+      const query = new PgDialect().sqlToQuery(whereConditions[0] as never);
+      expect(query.sql).toContain("exists");
+      expect(query.sql).toContain('"relay_environment_links"."environment_id"');
+      expect(query.sql).toContain('"relay_environment_links"."environment_public_key"');
+      expect(query.sql).toContain('"relay_environment_links"."revoked_at" is null');
     }).pipe(
       Effect.provide(
         EnvironmentCredentials.layer.pipe(
@@ -137,9 +148,9 @@ describe("EnvironmentCredentials", () => {
           environmentId: "env_test",
           environmentPublicKey: "environment-public-key",
         });
-        const [, credentialId, secret] = token.split("_");
+        const [, , credentialId, secret] = token.split("_");
 
-        expect(token).toMatch(/^t3env_[0-9a-f]{64}_[0-9a-f]{96}$/);
+        expect(token).toMatch(/^shuv2code_env_[0-9a-f]{64}_[0-9a-f]{96}$/);
         expect(credentialId).toHaveLength(64);
         expect(secret).toHaveLength(96);
         expect(insertedValues).toHaveLength(1);
@@ -180,7 +191,6 @@ describe("EnvironmentCredentials", () => {
     const updateValues: Array<Record<string, unknown>> = [];
     const whereConditions: Array<unknown> = [];
     const fakeDb = {
-      select: (fields: Parameters<QueryBuilder["select"]>[0]) => new QueryBuilder().select(fields),
       update: (table: unknown) => {
         expect(table).toBe(relayEnvironmentCredentials);
         return {

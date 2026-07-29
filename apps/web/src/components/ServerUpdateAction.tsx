@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { EnvironmentId, ServerSelfUpdateCapability } from "@t3tools/contracts";
+import type { EnvironmentId, ServerSelfUpdateCapability } from "@shuv2code/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@shuv2code/client-runtime/state/runtime";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { serverEnvironment } from "~/state/server";
@@ -28,7 +28,7 @@ function updateFailureMessage(error: unknown): string {
  * The call-to-action for a version-skewed server, matched to the update path
  * it advertises: a one-click install-and-restart for servers that can update
  * themselves, an update-the-desktop-app hint for desktop-managed backends
- * (running `npx t3` there would start a second server, not update this one),
+ * (running `npx shuv2code` there would start a second server, not update this one),
  * and copying the manual relaunch command for everything else — so the skew
  * warning always offers a way out.
  */
@@ -147,7 +147,7 @@ export function ServerUpdateAction({
         toastManager.add({
           type: "success",
           title: `Updating ${serverLabel}`,
-          description: `t3@${result.value.targetVersion} is installed — the server is restarting and will reconnect shortly.`,
+          description: `shuv2code@${result.value.targetVersion} is installed — the server is restarting and will reconnect shortly.`,
         });
       })
       .catch((error: unknown) => {

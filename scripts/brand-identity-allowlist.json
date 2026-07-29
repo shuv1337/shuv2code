@@ -1,0 +1,74 @@
+{
+  "entries": [
+    {
+      "path": ".gitignore",
+      "patternId": "legacy-state",
+      "reason": "Keep the legacy state directory ignored so it remains preserved and untracked."
+    },
+    {
+      "path": "LICENSE",
+      "patternId": "upstream-owner",
+      "reason": "Preserve the upstream copyright notice required by the MIT license."
+    },
+    {
+      "path": "LICENSE",
+      "patternId": "legacy-visible-word",
+      "reason": "The upstream owner name is part of the required copyright notice."
+    },
+    {
+      "path": "brand/shuv2code.brand.json",
+      "patternId": "legacy-slug",
+      "reason": "The canonical manifest records the upstream repository for provenance and sync."
+    },
+    {
+      "path": "brand/shuv2code.brand.schema.json",
+      "patternId": "legacy-slug",
+      "reason": "The schema constrains the explicit upstream provenance field."
+    },
+    {
+      "path": "apps/server/src/provider/Layers/ClaudeAdapter.ts",
+      "patternId": "legacy-slug",
+      "reason": "The comment links to the exact upstream issue that explains the compatibility behavior."
+    },
+    {
+      "path": "README.md",
+      "patternId": "legacy-state",
+      "reason": "The fresh-start policy names legacy state only to promise it is never touched."
+    },
+    {
+      "path": "README.md",
+      "patternId": "legacy-display",
+      "reason": "The provenance section identifies the upstream project."
+    },
+    {
+      "path": "README.md",
+      "patternId": "legacy-visible-word",
+      "reason": "The provenance section identifies the upstream project."
+    },
+    {
+      "path": "README.md",
+      "patternId": "legacy-slug",
+      "reason": "The provenance link points to the upstream repository."
+    },
+    {
+      "path": "apps/marketing/src/pages/terms-of-service.astro",
+      "patternId": "legacy-display",
+      "reason": "The legal provenance notice identifies the upstream project."
+    },
+    {
+      "path": "apps/marketing/src/pages/terms-of-service.astro",
+      "patternId": "legacy-visible-word",
+      "reason": "The legal provenance notice identifies the upstream project."
+    },
+    {
+      "path": "docs/operations/legacy-state-cleanup.md",
+      "patternId": "legacy-state",
+      "reason": "The manual cleanup guide must identify the untouched legacy directory."
+    },
+    {
+      "path": "docs/operations/upstream-sync.md",
+      "patternId": "legacy-slug",
+      "reason": "The sync policy identifies the exact upstream repository."
+    }
+  ]
+}

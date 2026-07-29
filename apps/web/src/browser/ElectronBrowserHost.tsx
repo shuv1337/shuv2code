@@ -1,7 +1,7 @@
 "use client";
 
-import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
-import { FILL_PREVIEW_VIEWPORT } from "@t3tools/contracts";
+import { parseScopedThreadKey } from "@shuv2code/client-runtime/environment";
+import { FILL_PREVIEW_VIEWPORT } from "@shuv2code/contracts";
 import { useEffect, useMemo } from "react";
 
 import { isElectron } from "~/env";

@@ -2,7 +2,7 @@ import {
   EnvironmentId,
   type GitActionProgressEvent,
   type GitRunStackedActionResult,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";

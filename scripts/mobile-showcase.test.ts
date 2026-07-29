@@ -103,7 +103,10 @@ it("parses validation-only mode", () => {
 it("selects an explicit CI Android ABI without changing the local default", () => {
   assert.equal(resolveShowcaseAndroidAbi(undefined), "arm64-v8a");
   assert.equal(resolveShowcaseAndroidAbi("x86_64"), "x86_64");
-  assert.throws(() => resolveShowcaseAndroidAbi("mips"), /Unsupported T3_SHOWCASE_ANDROID_ABI/u);
+  assert.throws(
+    () => resolveShowcaseAndroidAbi("mips"),
+    /Unsupported SHUV2CODE_SHOWCASE_ANDROID_ABI/u,
+  );
 });
 
 it("uses platform-correct default Android SDK roots", () => {
@@ -244,36 +247,51 @@ it("selects a reachable LAN IPv4 address", () => {
 });
 
 it("maps capture scenes to the real application routes", () => {
-  assert.equal(showcaseSceneUrl("threads", "environment-1"), "t3code-dev://");
+  assert.equal(showcaseSceneUrl("threads", "environment-1"), "shuv2code-dev://");
   assert.equal(
     showcaseSceneUrl("environments", "environment-1"),
-    "t3code-dev://settings/environments",
+    "shuv2code-dev://settings/environments",
   );
   assert.equal(
     showcaseSceneUrl("thread", "environment-1"),
-    "t3code-dev://threads/environment-1/remote-command-center",
+    "shuv2code-dev://threads/environment-1/remote-command-center",
   );
   assert.equal(
     showcaseSceneUrl("terminal", "environment-1"),
-    "t3code-dev://threads/environment-1/remote-command-center/terminal?terminalId=term-1",
+    "shuv2code-dev://threads/environment-1/remote-command-center/terminal?terminalId=term-1",
   );
   assert.equal(
     showcaseSceneUrl("review", "environment-1"),
-    "t3code-dev://threads/environment-1/remote-command-center/review",
+    "shuv2code-dev://threads/environment-1/remote-command-center/review",
   );
 });
 
 it("seeds a playful multi-environment project spectrum", () => {
   assert.deepStrictEqual(
     SHOWCASE_PROJECTS.map((project) => project.title),
-    ["T3 Code", "React", "Linux"],
+    ["shuv2code", "React", "Linux"],
   );
   assert.deepStrictEqual(
     SHOWCASE_ENVIRONMENTS.map((environment) => environment.label),
     ["Moonbase Terminal", "Suspense Station", "Kernel Cabin"],
   );
-  assert.equal(SHOWCASE_THREADS.length, 6);
+  assert.equal(SHOWCASE_THREADS.length, 8);
   assert.equal(new Set(SHOWCASE_THREADS.map((thread) => thread.projectId)).size, 3);
+  // Every project contributes to both the active block and the settled tail,
+  // so each list scope screenshots with the same two-part structure.
+  for (const project of SHOWCASE_PROJECTS) {
+    const projectThreads = SHOWCASE_THREADS.filter((thread) => thread.projectId === project.id);
+    assert.equal(
+      projectThreads.some((thread) => "settled" in thread && thread.settled),
+      true,
+      `${project.title} has no settled thread`,
+    );
+    assert.equal(
+      projectThreads.some((thread) => !("settled" in thread && thread.settled)),
+      true,
+      `${project.title} has no active thread`,
+    );
+  }
   assert.equal(
     SHOWCASE_PROJECTS.every((project) => project.favicon.includes("<svg")),
     true,

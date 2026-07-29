@@ -1,26 +1,14 @@
-import * as NodeOS from "node:os";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
 
-const CodexAuthJsonSchema = Schema.Struct({
-  tokens: Schema.Struct({
-    account_id: Schema.String,
-  }),
-});
-
-const ClaudeJsonSchema = Schema.Struct({
-  userID: Schema.String,
-});
-
-export const TelemetryIdentitySource = Schema.Literals(["codex", "claude", "anonymous"]);
+export const TelemetryIdentitySource = Schema.Literal("anonymous");
 export type TelemetryIdentitySource = typeof TelemetryIdentitySource.Type;
 
 export class TelemetryIdentityReadError extends Schema.TaggedErrorClass<TelemetryIdentityReadError>()(
@@ -33,19 +21,6 @@ export class TelemetryIdentityReadError extends Schema.TaggedErrorClass<Telemetr
 ) {
   override get message(): string {
     return `Failed to read ${this.source} telemetry identity at '${this.filePath}'.`;
-  }
-}
-
-export class TelemetryIdentityDecodeError extends Schema.TaggedErrorClass<TelemetryIdentityDecodeError>()(
-  "TelemetryIdentityDecodeError",
-  {
-    source: Schema.Literals(["codex", "claude"]),
-    filePath: Schema.String,
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return `Failed to decode ${this.source} telemetry identity at '${this.filePath}'.`;
   }
 }
 
@@ -90,13 +65,9 @@ export class TelemetryIdentityHashError extends Schema.TaggedErrorClass<Telemetr
 
 type TelemetryIdentityError =
   | TelemetryIdentityReadError
-  | TelemetryIdentityDecodeError
   | TelemetryAnonymousIdGenerationError
   | TelemetryAnonymousIdPersistenceError
   | TelemetryIdentityHashError;
-
-const decodeCodexAuthJson = Schema.decodeEffect(Schema.fromJsonString(CodexAuthJsonSchema));
-const decodeClaudeJson = Schema.decodeEffect(Schema.fromJsonString(ClaudeJsonSchema));
 
 function isNotFoundError(error: PlatformError.PlatformError): boolean {
   return error.reason._tag === "NotFound";
@@ -108,9 +79,6 @@ const getTelemetryIdentityCauseAnnotations = (cause: unknown) => {
       causeKind: "platform",
       platformReason: cause.reason._tag,
     };
-  }
-  if (cause instanceof Schema.SchemaError) {
-    return { causeKind: "schema" };
   }
   return { causeKind: "other" };
 };
@@ -161,56 +129,6 @@ const hash = (source: TelemetryIdentitySource, value: string) =>
     ),
   );
 
-const getCodexAccountId = Effect.fn("TelemetryIdentity.getCodexAccountId")(function* (
-  homeDirectory: string,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-
-  const authJsonPath = path.join(homeDirectory, ".codex", "auth.json");
-  const encoded = yield* readIdentityFile(fileSystem, "codex", authJsonPath);
-  if (Option.isNone(encoded)) {
-    return Option.none<string>();
-  }
-  const authJson = yield* decodeCodexAuthJson(encoded.value).pipe(
-    Effect.mapError(
-      (cause) =>
-        new TelemetryIdentityDecodeError({
-          source: "codex",
-          filePath: authJsonPath,
-          cause,
-        }),
-    ),
-  );
-
-  return Option.some(authJson.tokens.account_id);
-});
-
-const getClaudeUserId = Effect.fn("TelemetryIdentity.getClaudeUserId")(function* (
-  homeDirectory: string,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-
-  const claudeJsonPath = path.join(homeDirectory, ".claude.json");
-  const encoded = yield* readIdentityFile(fileSystem, "claude", claudeJsonPath);
-  if (Option.isNone(encoded)) {
-    return Option.none<string>();
-  }
-  const claudeJson = yield* decodeClaudeJson(encoded.value).pipe(
-    Effect.mapError(
-      (cause) =>
-        new TelemetryIdentityDecodeError({
-          source: "claude",
-          filePath: claudeJsonPath,
-          cause,
-        }),
-    ),
-  );
-
-  return Option.some(claudeJson.userID);
-});
-
 const upsertAnonymousId = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const { anonymousIdPath } = yield* ServerConfig.ServerConfig;
@@ -245,38 +163,9 @@ const upsertAnonymousId = Effect.gen(function* () {
   return anonymousId;
 });
 
-/**
- * getTelemetryIdentifier - Users are "identified" by finding the first match of the following, then hashing the value.
- * 1. ~/.codex/auth.json tokens.account_id
- * 2. ~/.claude.json userID
- * 3. ~/.t3/telemetry/anonymous-id
- */
-export const getTelemetryIdentifierForHome = Effect.fn("getTelemetryIdentifierForHome")(
-  function* (homeDirectory: string) {
-    const codexAccountId = yield* getCodexAccountId(homeDirectory).pipe(
-      Effect.catchTags({
-        TelemetryIdentityReadError: (error) =>
-          logTelemetryIdentityError(error).pipe(Effect.as(Option.none<string>())),
-        TelemetryIdentityDecodeError: (error) =>
-          logTelemetryIdentityError(error).pipe(Effect.as(Option.none<string>())),
-      }),
-    );
-    if (Option.isSome(codexAccountId)) {
-      return yield* hash("codex", codexAccountId.value);
-    }
-
-    const claudeUserId = yield* getClaudeUserId(homeDirectory).pipe(
-      Effect.catchTags({
-        TelemetryIdentityReadError: (error) =>
-          logTelemetryIdentityError(error).pipe(Effect.as(Option.none<string>())),
-        TelemetryIdentityDecodeError: (error) =>
-          logTelemetryIdentityError(error).pipe(Effect.as(Option.none<string>())),
-      }),
-    );
-    if (Option.isSome(claudeUserId)) {
-      return yield* hash("claude", claudeUserId.value);
-    }
-
+/** Get a hashed, installation-scoped anonymous telemetry identifier. */
+export const getTelemetryIdentifier = Effect.fn("getTelemetryIdentifier")(
+  function* () {
     const anonymousId = yield* upsertAnonymousId.pipe(
       Effect.map(Option.some),
       Effect.catchTags({
@@ -296,8 +185,4 @@ export const getTelemetryIdentifierForHome = Effect.fn("getTelemetryIdentifierFo
   },
   Effect.tapError(logTelemetryIdentityError),
   Effect.orElseSucceed(() => null),
-);
-
-export const getTelemetryIdentifier = Effect.suspend(() =>
-  getTelemetryIdentifierForHome(NodeOS.homedir()),
 );

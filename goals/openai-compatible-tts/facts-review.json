@@ -13,7 +13,7 @@
     },
     {
       "id": "fact-2",
-      "text": "T3 Code sends speech requests from the server as OpenAI Audio API-shaped POST requests containing model, voice, input, response_format, and speed, so the browser never calls the configured provider directly.",
+      "text": "shuv2code sends speech requests from the server as OpenAI Audio API-shaped POST requests containing model, voice, input, response_format, and speed, so the browser never calls the configured provider directly.",
       "accepted": false,
       "removed": false,
       "recommendedAutomatedVerification": true,

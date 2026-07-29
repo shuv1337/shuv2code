@@ -1,6 +1,6 @@
 # OpenAI-compatible text-to-speech
 
-Implement a first-class, lightweight TTS provider option in T3 Code for any OpenAI Audio API-shaped speech endpoint, and let users manually read aloud any completed agent message in chat. Verify the provider-neutral path with local Kokoro on port 8880 and a remote Microsoft Edge TTS-backed OpenAI-compatible provider.
+Implement a first-class, lightweight TTS provider option in shuv2code for any OpenAI Audio API-shaped speech endpoint, and let users manually read aloud any completed agent message in chat. Verify the provider-neutral path with local Kokoro on port 8880 and a remote Microsoft Edge TTS-backed OpenAI-compatible provider.
 
 The shared, testable product understanding is in [facts.md](facts.md). The approved execution path is in [plan.md](plan.md).
 

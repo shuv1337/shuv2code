@@ -1,0 +1,10 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["Shuv2CodeReviewDiffModule"],
+    "podspecPath": "Shuv2CodeReviewDiffNative.podspec"
+  },
+  "android": {
+    "modules": ["expo.modules.shuv2codereviewdiff.Shuv2CodeReviewDiffModule"]
+  }
+}

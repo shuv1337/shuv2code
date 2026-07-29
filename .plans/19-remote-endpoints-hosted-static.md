@@ -6,12 +6,12 @@ Make remote access feel first-class while keeping the free DIY path open.
 
 The immediate product goal is:
 
-- users can expose a backend through LAN, their own Tailscale, MagicDNS, a manual HTTPS endpoint, or later T3 Tunnel
-- users can generate a hosted pairing link for `app.t3.codes`
+- users can expose a backend through LAN, their own Tailscale, MagicDNS, a manual HTTPS endpoint, or later shuv2code Tunnel
+- users can generate a hosted pairing link for `app.shuv2code.example`
 - the hosted app can pair, persist, reconnect, and operate against saved environments without requiring a backend at the hosted app origin
 - all transports reuse the same backend auth, WebSocket runtime, saved environment registry, and pairing UX
 
-This plan intentionally leaves the paid T3 cloud tunnel fabric out of scope. It defines the OSS foundation that T3 Tunnel should later plug into.
+This plan intentionally leaves the paid shuv2code cloud tunnel fabric out of scope. It defines the OSS foundation that shuv2code Tunnel should later plug into.
 
 ## Current State
 
@@ -58,7 +58,7 @@ Examples:
 - Tailscale IP URL
 - MagicDNS/Serve URL
 - manual URL
-- future T3 Tunnel URL
+- future shuv2code Tunnel URL
 - browser compatibility and exposure level
 
 Those are different lifecycles. One environment can have many endpoints, endpoints can appear/disappear as network interfaces change, and the same descriptor is returned regardless of which endpoint the client used. Extending the descriptor would blur environment identity with transport reachability and make saved environments harder to reason about.
@@ -74,7 +74,7 @@ type AdvertisedEndpointProvider =
   | "tailscale-ip"
   | "tailscale-magicdns"
   | "manual"
-  | "t3-tunnel";
+  | "shuv2code-tunnel";
 
 type AdvertisedEndpointVisibility = "local" | "private-network" | "tailnet" | "public";
 
@@ -113,7 +113,7 @@ What is ready:
 
 What is not solved by code alone:
 
-- `https://app.t3.codes` cannot reliably call `http://...` or `ws://...` endpoints because browsers block mixed content.
+- `https://app.shuv2code.example` cannot reliably call `http://...` or `ws://...` endpoints because browsers block mixed content.
 - `wss://100.x.y.z:3773` needs a certificate the browser trusts. A raw Tailscale IP does not solve certificate trust.
 - LAN `http://192.168.x.y:3773` is usable from another desktop/native context but not from the hosted HTTPS app.
 - The UI needs to explain why an endpoint is copyable for desktop pairing but not hosted-app compatible.
@@ -122,7 +122,7 @@ Policy:
 
 - Support both HTTP/WS and HTTPS/WSS at the runtime layer.
 - Mark endpoint compatibility at the product layer.
-- Generate `app.t3.codes` links only from endpoints that are likely hosted-browser compatible, or show a warning with an explicit fallback.
+- Generate `app.shuv2code.example` links only from endpoints that are likely hosted-browser compatible, or show a warning with an explicit fallback.
 
 ## Architecture
 
@@ -146,7 +146,7 @@ Endpoint records can come from several providers:
    - hidden/disabled endpoints
 
 4. **Future cloud provider**
-   - T3 Tunnel endpoint
+   - shuv2code Tunnel endpoint
    - billing/account status
    - tunnel lifecycle state
 
@@ -176,7 +176,7 @@ buildHostedPairingUrl({
 Generated URL:
 
 ```text
-https://app.t3.codes/pair?host=<encoded endpoint httpBaseUrl>#token=<one-time token>
+https://app.shuv2code.example/pair?host=<encoded endpoint httpBaseUrl>#token=<one-time token>
 ```
 
 Use fragment tokens by default. Continue accepting `?token=` for compatibility.
@@ -218,7 +218,7 @@ Use fragment tokens by default. Continue accepting `?token=` for compatibility.
 - Existing LAN/network access UI still works.
 - Pairing links are generated from endpoint records.
 - Loopback endpoints never produce hosted pairing links silently.
-- HTTP private-network endpoints are marked incompatible with `app.t3.codes`.
+- HTTP private-network endpoints are marked incompatible with `app.shuv2code.example`.
 - No remote environment runtime changes are required for existing saved environments.
 
 ## Phase 2: BYO Tailscale/MagicDNS
@@ -262,7 +262,7 @@ Use fragment tokens by default. Continue accepting `?token=` for compatibility.
 
 ### Goals
 
-- `app.t3.codes` works as a real client shell.
+- `app.shuv2code.example` works as a real client shell.
 - It can pair, persist, reconnect, and clearly explain offline/incompatible states.
 
 ### Tasks
@@ -306,25 +306,25 @@ Use fragment tokens by default. Continue accepting `?token=` for compatibility.
 
 ### Acceptance Criteria
 
-- `app.t3.codes` can pair a reachable HTTPS backend and reconnect after reload.
-- A saved environment can be used without any backend at `app.t3.codes`.
+- `app.shuv2code.example` can pair a reachable HTTPS backend and reconnect after reload.
+- A saved environment can be used without any backend at `app.shuv2code.example`.
 - Offline machines show a useful state instead of a generic boot error.
 - HTTP endpoints are still supported in desktop/native/local contexts.
 - Hosted HTTPS app only promises compatibility for HTTPS/WSS endpoints.
 
-## Phase 4: Future T3 Tunnel Provider
+## Phase 4: Future shuv2code Tunnel Provider
 
 Not part of the current implementation, but the endpoint abstraction should make it straightforward.
 
 Future tunnel provider responsibilities:
 
-- create endpoint with `provider: "t3-tunnel"`
+- create endpoint with `provider: "shuv2code-tunnel"`
 - surface tunnel status
 - provide stable HTTPS URL
 - use existing backend pairing/session auth
 - never bypass server auth
 
-The tunnel fabric can later be Pipenet-derived, Tailscale-derived, or another reverse tunnel implementation. The rest of T3 Code should only see an `AdvertisedEndpoint`.
+The tunnel fabric can later be Pipenet-derived, Tailscale-derived, or another reverse tunnel implementation. The rest of shuv2code should only see an `AdvertisedEndpoint`.
 
 ## Security Checklist
 

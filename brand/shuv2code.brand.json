@@ -1,0 +1,55 @@
+{
+  "$schema": "./shuv2code.brand.schema.json",
+  "displayName": "shuv2code",
+  "stage": "Alpha",
+  "tagline": "The local-first control plane for coding agents.",
+  "repository": "shuv1337/shuv2code",
+  "upstreamRepository": "pingdotgg/t3code",
+  "packageName": "shuv2code",
+  "binaries": ["shuv2code", "s2c"],
+  "privatePackageScope": "@shuv2code",
+  "environmentPrefix": "SHUV2CODE_",
+  "projectFile": "shuv2code.json",
+  "stateDirectory": ".shuv2code",
+  "applicationIds": {
+    "production": "dev.shuv.shuv2code",
+    "nightly": "dev.shuv.shuv2code.nightly",
+    "development": "dev.shuv.shuv2code.dev"
+  },
+  "schemes": {
+    "production": "shuv2code",
+    "nightly": "shuv2code-nightly",
+    "development": "shuv2code-dev"
+  },
+  "channels": {
+    "production": {
+      "body": "#D35C46",
+      "screen": "#0C1119",
+      "prompt": "#E7ECF3"
+    },
+    "nightly": {
+      "body": "#7656E8",
+      "screen": "#0C1119",
+      "prompt": "#E7ECF3"
+    },
+    "development": {
+      "body": "#176BFF",
+      "screen": "#0C1119",
+      "prompt": "#E7ECF3"
+    }
+  },
+  "theme": {
+    "darkPane": "#0F1621",
+    "darkCanvas": "#0C1119",
+    "darkSurface": "#161D28",
+    "darkElevated": "#1F2835",
+    "text": "#E7ECF3",
+    "mutedText": "#8995A6",
+    "accent": "#D35C46",
+    "accentStrong": "#D35C46",
+    "brandRed": "#D35C46",
+    "lightCanvas": "#FAF8F5",
+    "lightText": "#1C1A17"
+  },
+  "initialVersion": "0.1.0-alpha.1"
+}

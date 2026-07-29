@@ -9,7 +9,7 @@ import * as NodePath from "node:path";
 /**
  * Minimal local reimplementation of `@opencode-ai/client/service` discover/ensure.
  * The published client package's Node ESM entry is currently broken
- * (`ERR_MODULE_NOT_FOUND` on extensionless generated imports), so T3 keeps this
+ * (`ERR_MODULE_NOT_FOUND` on extensionless generated imports), so shuv2code keeps this
  * isolated helper instead of depending on that entrypoint.
  */
 
@@ -240,7 +240,7 @@ export async function discoverOpenCodeV2Service(
 
 /**
  * Connect to an already-running OpenCode V2 background service.
- * Never spawns `serve` / `serve --service` — T3 attaches to the user's
+ * Never spawns `serve` / `serve --service` — shuv2code attaches to the user's
  * existing service (via `opencode service start`) so credentials and model
  * inventory stay shared.
  */

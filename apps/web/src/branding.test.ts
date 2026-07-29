@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveServerBackedAppDisplayName,
   resolveServerBackedAppStageLabel,
+  resolveSidebarV2Default,
+  resolveSidebarV2Enabled,
 } from "./branding.logic";
 
 const originalWindow = globalThis.window;
@@ -24,9 +26,9 @@ describe("branding", () => {
       value: {
         desktopBridge: {
           getAppBranding: () => ({
-            baseName: "T3 Code",
+            baseName: "shuv2code",
             stageLabel: "Nightly",
-            displayName: "T3 Code (Nightly)",
+            displayName: "shuv2code (Nightly)",
           }),
         },
       },
@@ -34,9 +36,9 @@ describe("branding", () => {
 
     const branding = await import("./branding");
 
-    expect(branding.APP_BASE_NAME).toBe("T3 Code");
+    expect(branding.APP_BASE_NAME).toBe("shuv2code");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
-    expect(branding.APP_DISPLAY_NAME).toBe("T3 Code (Nightly)");
+    expect(branding.APP_DISPLAY_NAME).toBe("shuv2code (Nightly)");
   });
 
   it("normalizes hosted app channel metadata", async () => {
@@ -47,7 +49,7 @@ describe("branding", () => {
     expect(branding.HOSTED_APP_CHANNEL).toBe("nightly");
     expect(branding.HOSTED_APP_CHANNEL_LABEL).toBe("Nightly");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
-    expect(branding.APP_DISPLAY_NAME).toBe("T3 Code (Nightly)");
+    expect(branding.APP_DISPLAY_NAME).toBe("shuv2code (Nightly)");
   });
 
   it("does not label the latest hosted app channel", async () => {
@@ -58,7 +60,7 @@ describe("branding", () => {
     expect(branding.HOSTED_APP_CHANNEL).toBe("latest");
     expect(branding.HOSTED_APP_CHANNEL_LABEL).toBe("Latest");
     expect(branding.APP_STAGE_LABEL).toBe("Latest");
-    expect(branding.APP_DISPLAY_NAME).toBe("T3 Code");
+    expect(branding.APP_DISPLAY_NAME).toBe("shuv2code");
   });
 
   it("ignores unknown hosted app channels", async () => {
@@ -84,33 +86,104 @@ describe("branding logic", () => {
   it("updates the display name for nightly primary server versions", () => {
     expect(
       resolveServerBackedAppDisplayName({
-        baseName: "T3 Code",
-        fallbackDisplayName: "T3 Code (Alpha)",
+        baseName: "shuv2code",
+        fallbackDisplayName: "shuv2code (Alpha)",
         fallbackStageLabel: "Alpha",
         primaryServerVersion: "0.0.28-nightly.20260616.12",
       }),
-    ).toBe("T3 Code (Nightly)");
+    ).toBe("shuv2code (Nightly)");
   });
 
   it("keeps the fallback display name for stable primary server versions", () => {
     expect(
       resolveServerBackedAppDisplayName({
-        baseName: "T3 Code",
-        fallbackDisplayName: "T3 Code (Alpha)",
+        baseName: "shuv2code",
+        fallbackDisplayName: "shuv2code (Alpha)",
         fallbackStageLabel: "Alpha",
         primaryServerVersion: "0.0.27",
       }),
-    ).toBe("T3 Code (Alpha)");
+    ).toBe("shuv2code (Alpha)");
   });
 
   it("keeps the fallback display name for malformed nightly primary server versions", () => {
     expect(
       resolveServerBackedAppDisplayName({
-        baseName: "T3 Code",
-        fallbackDisplayName: "T3 Code (Alpha)",
+        baseName: "shuv2code",
+        fallbackDisplayName: "shuv2code (Alpha)",
         fallbackStageLabel: "Alpha",
         primaryServerVersion: "0.0.28-nightly.20260616",
       }),
-    ).toBe("T3 Code (Alpha)");
+    ).toBe("shuv2code (Alpha)");
+  });
+});
+
+describe("resolveSidebarV2Default", () => {
+  it.each(["Nightly", "Dev", "nightly", " dev "])("enables the beta for %s builds", (stage) => {
+    expect(resolveSidebarV2Default(stage)).toBe(true);
+  });
+
+  it.each(["Alpha", "Latest", ""])("leaves the beta off for %s builds", (stage) => {
+    expect(resolveSidebarV2Default(stage)).toBe(false);
+  });
+});
+
+describe("resolveSidebarV2Enabled", () => {
+  const hydrated = { settingsHydrated: true } as const;
+
+  it.each(["Alpha", "Latest"])(
+    "keeps a legacy opt-in on %s builds even without the companion flag",
+    (stageLabel) => {
+      // `true` was never the schema default, so it can only be an explicit
+      // opt-in from settings written before `sidebarV2ConfiguredByUser` existed.
+      expect(
+        resolveSidebarV2Enabled({
+          ...hydrated,
+          enabled: true,
+          configuredByUser: false,
+          stageLabel,
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it("applies the stage default when the beta was never enabled or configured", () => {
+    expect(
+      resolveSidebarV2Enabled({
+        ...hydrated,
+        enabled: false,
+        configuredByUser: false,
+        stageLabel: "Nightly",
+      }),
+    ).toBe(true);
+    expect(
+      resolveSidebarV2Enabled({
+        ...hydrated,
+        enabled: false,
+        configuredByUser: false,
+        stageLabel: "Latest",
+      }),
+    ).toBe(false);
+  });
+
+  it("honors an explicit opt-out over the stage default", () => {
+    expect(
+      resolveSidebarV2Enabled({
+        ...hydrated,
+        enabled: false,
+        configuredByUser: true,
+        stageLabel: "Nightly",
+      }),
+    ).toBe(false);
+  });
+
+  it("holds v1 until settings hydrate so the sidebar does not remount", () => {
+    expect(
+      resolveSidebarV2Enabled({
+        enabled: true,
+        configuredByUser: true,
+        settingsHydrated: false,
+        stageLabel: "Nightly",
+      }),
+    ).toBe(false);
   });
 });

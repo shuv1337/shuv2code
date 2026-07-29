@@ -22,6 +22,7 @@ export const CODE_FONT_SIZE_STEP = 1;
  * "automatic": the value is derived from the base font size.
  */
 export interface AppearancePreferences {
+  readonly colorScheme: "dark" | "light" | "system";
   readonly baseFontSize: number;
   readonly terminalFontSize: number | null;
   readonly codeFontSize: number | null;
@@ -100,6 +101,7 @@ export function deriveCodeFontSize(baseFontSize: number): number {
 }
 
 interface StoredAppearancePreferences {
+  readonly colorScheme?: "dark" | "light" | "system" | null | undefined;
   readonly baseFontSize?: number | null | undefined;
   /** Legacy key from before base font size existed; migrated to baseFontSize. */
   readonly markdownFontSize?: number | null | undefined;
@@ -112,6 +114,10 @@ export function resolveAppearancePreferences(
   stored: StoredAppearancePreferences | null | undefined,
 ): AppearancePreferences {
   return {
+    colorScheme:
+      stored?.colorScheme === "light" || stored?.colorScheme === "system"
+        ? stored.colorScheme
+        : "dark",
     baseFontSize: normalizeBaseFontSize(stored?.baseFontSize ?? stored?.markdownFontSize),
     terminalFontSize:
       typeof stored?.terminalFontSize === "number" && Number.isFinite(stored.terminalFontSize)

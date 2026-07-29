@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the long-term server auth architecture for T3 Code before first-class remote environments ship.
+Define the long-term server auth architecture for shuv2code before first-class remote environments ship.
 
 This plan is deliberately broader than the current WebSocket token check and narrower than a complete remote collaboration system. The goal is to make the server secure by default, keep local desktop UX frictionless, and leave clean integration points for future remote access methods.
 
@@ -29,7 +29,7 @@ This document is written in terms of Effect-native services and layers because a
 
 ### 1. Auth is a server concern
 
-Every privileged surface of the T3 server must go through the same auth policy engine:
+Every privileged surface of the shuv2code server must go through the same auth policy engine:
 
 - HTTP routes
 - WebSocket upgrades
@@ -291,7 +291,7 @@ export interface ServerAuthShape {
 }
 
 export class ServerAuth extends ServiceMap.Service<ServerAuth, ServerAuthShape>()(
-  "t3/ServerAuth",
+  "shuv2code/ServerAuth",
 ) {}
 ```
 
@@ -571,7 +571,7 @@ T3Server -> T3Server : validate cookie session
 T3Server --> Frontend : websocket accepted
 ```
 
-### `npx t3` user
+### `npx shuv2code` user
 
 This is the standalone local server flow.
 
@@ -579,7 +579,7 @@ There is no trusted desktop shell here, so pairing should be explicit.
 
 ```text
 Participants:
-  UserShell     = npx t3 launcher
+  UserShell     = npx shuv2code launcher
   T3Server      = standalone local server
   Browser       = browser tab
 
@@ -619,12 +619,12 @@ Participants:
   DesktopUser   = user at the host machine
   DesktopMain   = desktop app
   Tunnel        = tunnel provider
-  T3Server      = T3 server
+  T3Server      = shuv2code server
   PhoneBrowser  = mobile browser
 
 DesktopUser -> DesktopMain : enable remote access via tunnel
 DesktopMain -> T3Server : switch policy to RemoteReachablePolicy
-DesktopMain -> Tunnel : publish local T3 endpoint
+DesktopMain -> Tunnel : publish local shuv2code endpoint
 Tunnel --> DesktopMain : public https/wss URL
 
 DesktopMain -> T3Server : issue one-time pairing token
@@ -653,7 +653,7 @@ The auth flow should stay the same.
 ```text
 Participants:
   DesktopUser   = user at the host machine
-  T3Server      = T3 server
+  T3Server      = shuv2code server
   PrivateNet    = tailscale / private LAN
   PhoneBrowser  = mobile browser
 
@@ -687,14 +687,14 @@ Participants:
   DesktopMain   = desktop app
   SSH           = ssh transport/session
   RemoteHost    = remote machine
-  RemoteT3      = remote T3 server
+  RemoteT3      = remote shuv2code server
   Frontend      = desktop renderer
 
 DesktopUser -> DesktopMain : add SSH host
 DesktopMain -> SSH : connect to remote host
-SSH -> RemoteHost : probe environment / verify t3 availability
+SSH -> RemoteHost : probe environment / verify shuv2code availability
 DesktopMain -> SSH : run remote launch command
-SSH -> RemoteHost : t3 remote launch --json
+SSH -> RemoteHost : shuv2code remote launch --json
 RemoteHost -> RemoteT3 : start or reuse server
 RemoteT3 --> RemoteHost : port + environment metadata
 RemoteHost --> SSH : launch result JSON
@@ -779,7 +779,7 @@ Remote access is one reason this auth model matters, but the auth model should n
 
 Keep the design focused on:
 
-- one T3 server
+- one shuv2code server
 - one auth policy
 - multiple credential types
 - multiple future access methods

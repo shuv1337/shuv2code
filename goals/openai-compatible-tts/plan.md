@@ -2,7 +2,7 @@
 
 ## Solution approach
 
-Add one server-authoritative `textToSpeech` configuration rather than treating speech as an agent-runtime provider instance. The browser will submit only message text to an authenticated same-origin T3 Code route; the server will apply the configured OpenAI Audio API request shape, attach an optional secret Bearer token, and proxy the resulting audio bytes back. A small timeline-owned playback controller will guarantee one active request or clip at a time and expose the state to read-aloud buttons on terminal assistant messages.
+Add one server-authoritative `textToSpeech` configuration rather than treating speech as an agent-runtime provider instance. The browser will submit only message text to an authenticated same-origin shuv2code route; the server will apply the configured OpenAI Audio API request shape, attach an optional secret Bearer token, and proxy the resulting audio bytes back. A small timeline-owned playback controller will guarantee one active request or clip at a time and expose the state to read-aloud buttons on terminal assistant messages.
 
 ## Ordered implementation
 
@@ -38,10 +38,10 @@ Add one server-authoritative `textToSpeech` configuration rather than treating s
 
 6. Run scoped static checks and integrated provider verification.
    - Run formatting, lint, and type checks only for the affected packages/files; do not run the repo-wide suites.
-   - Use the required `test-t3-app` workflow to launch one isolated web environment and authenticate through its pairing URL.
+   - Use the required shuv2code web verification workflow to launch one isolated web environment and authenticate through its pairing URL.
    - Configure `http://127.0.0.1:8880/v1/audio/speech` with the installed Kokoro model/voice, generate and audibly inspect a short prior agent message, stop it, and start a different message.
    - Reconfigure the same page to a reachable remote deployment of the OpenAI-compatible `openai-edge-tts` implementation backed by Microsoft Edge TTS, repeat playback, and confirm no API key is required or that a configured test key is sent only from the server.
-   - Stop the isolated T3 Code environment and any temporary remote/local test process after verification.
+   - Stop the isolated shuv2code environment and any temporary remote/local test process after verification.
 
 ## Risks and open questions
 

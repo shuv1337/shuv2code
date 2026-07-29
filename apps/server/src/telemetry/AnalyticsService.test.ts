@@ -3,13 +3,14 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
-import { getTelemetryIdentifier } from "./Identify.ts";
 import * as AnalyticsService from "./AnalyticsService.ts";
 
 interface RecordedBatchRequest {
@@ -20,6 +21,8 @@ interface RecordedBatchRequest {
       readonly properties?: {
         readonly index?: number;
         readonly clientType?: string;
+        readonly shuv2codeVersion?: string;
+        readonly t3CodeVersion?: string;
       };
     }>;
   } | null;
@@ -31,25 +34,82 @@ interface RecordedBatchBody {
     readonly properties?: {
       readonly index?: number;
       readonly clientType?: string;
+      readonly shuv2codeVersion?: string;
+      readonly t3CodeVersion?: string;
     };
   }>;
 }
 
 it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
+  it.effect("does not create an id or send requests without complete explicit opt-in", () =>
+    Effect.gen(function* () {
+      const capturedRequests: Array<RecordedBatchRequest> = [];
+      const configurations = [
+        { name: "default", values: { SHUV2CODE_POSTHOG_HOST: "http://localhost" } },
+        {
+          name: "enabled-only",
+          values: {
+            SHUV2CODE_TELEMETRY_ENABLED: true,
+            SHUV2CODE_POSTHOG_HOST: "http://localhost",
+          },
+        },
+        {
+          name: "key-only",
+          values: {
+            SHUV2CODE_POSTHOG_KEY: "phc_test_key",
+            SHUV2CODE_POSTHOG_HOST: "http://localhost",
+          },
+        },
+      ] as const;
+
+      yield* Effect.forEach(configurations, ({ name, values }) => {
+        const serverConfigLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
+          prefix: `shuv2code-telemetry-disabled-${name}-`,
+        });
+        const telemetryLayer = AnalyticsService.layer.pipe(Layer.provideMerge(serverConfigLayer));
+        const configLayer = ConfigProvider.layer(ConfigProvider.fromUnknown(values));
+        const batchServerLayer = HttpServer.serve(
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            capturedRequests.push({ path: request.url, body: null });
+            return HttpServerResponse.jsonUnsafe({});
+          }),
+        );
+        const runtimeLayer = telemetryLayer.pipe(
+          Layer.provide(configLayer),
+          Layer.provideMerge(NodeHttpServer.layerTest),
+        );
+
+        return Effect.gen(function* () {
+          yield* Layer.launch(batchServerLayer).pipe(Effect.forkScoped);
+          const config = yield* ServerConfig.ServerConfig;
+          const analytics = yield* AnalyticsService.AnalyticsService;
+          yield* analytics.record("test.disabled");
+          yield* analytics.flush;
+
+          const fileSystem = yield* FileSystem.FileSystem;
+          assert.isFalse(yield* fileSystem.exists(config.anonymousIdPath));
+        }).pipe(Effect.provide(runtimeLayer));
+      });
+
+      assert.deepEqual(capturedRequests, []);
+    }),
+  );
+
   it.effect("flush drains all buffered events across multiple batches", () =>
     Effect.gen(function* () {
       const capturedRequests: Array<RecordedBatchRequest> = [];
       const serverConfigLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
-        prefix: "t3-telemetry-base-",
+        prefix: "shuv2code-telemetry-base-",
       });
 
       const telemetryLayer = AnalyticsService.layer.pipe(Layer.provideMerge(serverConfigLayer));
       const configLayer = ConfigProvider.layer(
         ConfigProvider.fromUnknown({
-          T3CODE_TELEMETRY_ENABLED: true,
-          T3CODE_POSTHOG_KEY: "phc_test_key",
-          T3CODE_POSTHOG_HOST: "http://localhost",
-          T3CODE_TELEMETRY_FLUSH_BATCH_SIZE: 20,
+          SHUV2CODE_TELEMETRY_ENABLED: true,
+          SHUV2CODE_POSTHOG_KEY: "phc_test_key",
+          SHUV2CODE_POSTHOG_HOST: "http://localhost",
+          SHUV2CODE_TELEMETRY_FLUSH_BATCH_SIZE: 20,
         }),
       );
       const batchServerLayer = HttpServer.serve(
@@ -76,8 +136,6 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
 
       yield* Effect.gen(function* () {
         yield* Layer.launch(batchServerLayer).pipe(Effect.forkScoped);
-        const telemetryIdentifier = yield* getTelemetryIdentifier;
-        assert.equal(telemetryIdentifier !== null, true);
         const analytics = yield* AnalyticsService.AnalyticsService;
 
         for (let index = 0; index < 45; index += 1) {
@@ -113,7 +171,12 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       );
       assert.equal(
         batchRequests.every((request) =>
-          request.body.batch.every((event) => event.properties?.clientType === "cli-web-client"),
+          request.body.batch.every(
+            (event) =>
+              event.properties?.clientType === "cli-web-client" &&
+              event.properties.shuv2codeVersion === packageJson.version &&
+              event.properties.t3CodeVersion === undefined,
+          ),
         ),
         true,
       );

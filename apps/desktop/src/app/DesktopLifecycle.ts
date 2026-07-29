@@ -46,7 +46,7 @@ export class DesktopLifecycle extends Context.Service<
     ) => Effect.Effect<void, never, DesktopLifecycleRuntimeServices>;
     readonly register: Effect.Effect<void, never, Scope.Scope | DesktopLifecycleRuntimeServices>;
   }
->()("@t3tools/desktop/app/DesktopLifecycle") {}
+>()("@shuv2code/desktop/app/DesktopLifecycle") {}
 
 const { logInfo: logLifecycleInfo, logError: logLifecycleError } =
   makeComponentLogger("desktop-lifecycle");
@@ -176,16 +176,28 @@ export const make = DesktopLifecycle.of({
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
     const runEffect = Effect.runPromiseWith(context);
     let quitAllowed = false;
+    let updaterQuitAllowed = false;
     yield* electronTheme.onUpdated(() => {
       void runEffect(
         desktopWindow.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")),
+      );
+    });
+    yield* electronApp.onBeforeQuitForUpdate(() => {
+      // Electron's updater owns the remaining quit/install/relaunch sequence.
+      // Cancelling the following app "before-quit" event breaks that sequence,
+      // most visibly on macOS where the native updater performs the relaunch.
+      updaterQuitAllowed = true;
+      void runEffect(
+        logLifecycleInfo("allowing updater-controlled quit").pipe(
+          Effect.withSpan("desktop.lifecycle.beforeQuitForUpdate"),
+        ),
       );
     });
     yield* electronApp.on("before-quit", (event: Electron.Event) => {
       handleBeforeQuit(
         event,
         runEffect,
-        () => quitAllowed,
+        () => quitAllowed || updaterQuitAllowed,
         () => {
           quitAllowed = true;
         },

@@ -19,6 +19,8 @@ interface AppearancePreferencesContextValue {
   /** Effective values with base-size derivation applied. Use this for rendering. */
   readonly appearance: ResolvedAppearance;
   readonly isReady: boolean;
+  readonly colorScheme: "dark" | "light" | "system";
+  readonly setColorScheme: (value: "dark" | "light" | "system") => void;
   readonly setBaseFontSize: (value: number) => void;
   /** Pass null to clear the override and follow the base font size. */
   readonly setTerminalFontSize: (value: number | null) => void;
@@ -57,6 +59,14 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
     [preferencesResult],
   );
   const isReady = AsyncResult.isSuccess(preferencesResult) && !preferencesResult.waiting;
+  const colorScheme =
+    AsyncResult.isSuccess(preferencesResult) && !preferencesResult.waiting
+      ? (preferencesResult.value.colorScheme ?? "dark")
+      : "dark";
+
+  useEffect(() => {
+    Uniwind.setTheme(colorScheme);
+  }, [colorScheme]);
 
   useEffect(() => {
     applyTextScaleVariables(preferences.baseFontSize);
@@ -73,6 +83,13 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
   const setBaseFontSize = useCallback(
     (value: number) => {
       updatePreferences({ baseFontSize: value });
+    },
+    [updatePreferences],
+  );
+
+  const setColorScheme = useCallback(
+    (value: "dark" | "light" | "system") => {
+      updatePreferences({ colorScheme: value });
     },
     [updatePreferences],
   );
@@ -102,12 +119,23 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
     (): AppearancePreferencesContextValue => ({
       appearance: resolveAppearance(preferences),
       isReady,
+      colorScheme,
+      setColorScheme,
       setBaseFontSize,
       setTerminalFontSize,
       setCodeFontSize,
       setCodeWordBreak,
     }),
-    [preferences, isReady, setBaseFontSize, setTerminalFontSize, setCodeFontSize, setCodeWordBreak],
+    [
+      preferences,
+      isReady,
+      colorScheme,
+      setColorScheme,
+      setBaseFontSize,
+      setTerminalFontSize,
+      setCodeFontSize,
+      setCodeWordBreak,
+    ],
   );
 
   return (

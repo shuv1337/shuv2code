@@ -20,15 +20,15 @@ const config = RelayConfiguration.RelayConfiguration.of({
     teamId: "team-id",
     keyId: "key-id",
     privateKey: Redacted.make("private-key"),
-    bundleId: "com.t3tools.t3code.dev",
+    bundleId: "dev.shuv.shuv2code.dev",
   },
   apnsDeliveryJobSigningSecret: Redacted.make("job-secret"),
   clerkSecretKey: Redacted.make("clerk-secret"),
   clerkPublishableKey: "pk_test_test",
-  clerkJwtAudience: "t3-code-relay",
+  clerkJwtAudience: "shuv2code-relay",
   cloudMintPrivateKey: Redacted.make("cloud-private-key"),
   cloudMintPublicKey: "cloud-public-key",
-  managedEndpointBaseDomain: "t3code.test",
+  managedEndpointBaseDomain: "shuv2code.test",
   managedEndpointNamespace: "dev_julius",
 });
 
@@ -50,7 +50,9 @@ interface AllocationCall {
     | "recordDns"
     | "markReady"
     | "claimRelease"
-    | "remove";
+    | "claimDeprovision"
+    | "remove"
+    | "removeClaimed";
   readonly input: unknown;
 }
 
@@ -226,10 +228,30 @@ function makeAllocations(calls: AllocationCall[] = []) {
         mutate(allocationKey(input), (current) => current);
         return true;
       }),
+    claimDeprovision: (input) =>
+      Effect.sync(() => {
+        calls.push({ operation: "claimDeprovision", input });
+        const allocation = allocations.get(allocationKey(input));
+        if (allocation === undefined || allocation.updatedAt !== input.updatedAt) {
+          return null;
+        }
+        mutate(allocationKey(input), (current) => current);
+        return allocations.get(allocationKey(input))?.updatedAt ?? null;
+      }),
     remove: (input) =>
       Effect.sync(() => {
         calls.push({ operation: "remove", input });
         allocations.delete(allocationKey(input));
+      }),
+    removeClaimed: (input) =>
+      Effect.sync(() => {
+        calls.push({ operation: "removeClaimed", input });
+        const allocation = allocations.get(allocationKey(input));
+        if (allocation === undefined || allocation.updatedAt !== input.updatedAt) {
+          return false;
+        }
+        allocations.delete(allocationKey(input));
+        return true;
       }),
   });
 }
@@ -270,7 +292,7 @@ function expectedManagedHostname(environmentId: string, userId = "user_ABC"): st
     .update(`dev_julius:${userId}:${environmentId}`)
     .digest("hex")
     .slice(0, 16);
-  return `dev-julius-${hash}.t3code.test`;
+  return `dev-julius-${hash}.shuv2code.test`;
 }
 
 function expectedManagedTunnelName(environmentId: string, userId = "user_ABC"): string {
@@ -278,7 +300,7 @@ function expectedManagedTunnelName(environmentId: string, userId = "user_ABC"): 
     .update(`dev_julius:${userId}:${environmentId}`)
     .digest("hex")
     .slice(0, 16);
-  return `t3coderelay-managedendpoint-dev-julius-${hash}`;
+  return `shuv2coderelay-managedendpoint-dev-julius-${hash}`;
 }
 
 describe("ManagedEndpointProvider", () => {
@@ -479,7 +501,7 @@ describe("ManagedEndpointProvider", () => {
           | { readonly name?: string }
           | undefined
       )?.name;
-      expect(requestedName).toMatch(/^t3coderelay-managedendpoint-dev-julius-[a-f0-9]{16}$/);
+      expect(requestedName).toMatch(/^shuv2coderelay-managedendpoint-dev-julius-[a-f0-9]{16}$/);
       const configBody = (
         tunnelCalls.find((call) => call.operation === "putConfiguration")?.input as
           | { readonly tunnelConfig?: unknown }
@@ -488,7 +510,7 @@ describe("ManagedEndpointProvider", () => {
       expect(configBody).toMatchObject({
         ingress: [
           {
-            hostname: expect.stringMatching(/^dev-julius-[a-f0-9]{16}\.t3code\.test$/),
+            hostname: expect.stringMatching(/^dev-julius-[a-f0-9]{16}\.shuv2code\.test$/),
           },
           { service: "http_status:404" },
         ],
@@ -774,11 +796,53 @@ describe("ManagedEndpointProvider", () => {
           "recordDns",
           "markReady",
           "get",
-          "remove",
+          "claimDeprovision",
+          "removeClaimed",
         ]);
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("does not deprovision an allocation superseded by a concurrent relink", () => {
+    const tunnelCalls: TunnelCall[] = [];
+    const dnsCalls: DnsCall[] = [];
+    const allocationCalls: AllocationCall[] = [];
+    const layer = providerLayer(
+      makePersistentTunnelClient(tunnelCalls),
+      makeDnsClient(dnsCalls),
+      makeAllocations(allocationCalls),
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+      const request = {
+        ...key,
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      } as const;
+      yield* provider.provision(request);
+      const unlinkTarget = yield* provider.prepareDeprovision(key);
+      expect(unlinkTarget).not.toBeNull();
+      if (unlinkTarget === null) {
+        return;
+      }
+
+      // A relink refreshes the allocation generation after unlink captured its
+      // target but before unlink begins external teardown.
+      yield* provider.provision(request);
+      const tunnelCallCount = tunnelCalls.length;
+      const dnsCallCount = dnsCalls.length;
+      const allocationCallCount = allocationCalls.length;
+
+      yield* provider.deprovision({ ...key, target: unlinkTarget });
+
+      expect(tunnelCalls).toHaveLength(tunnelCallCount);
+      expect(dnsCalls).toHaveLength(dnsCallCount);
+      expect(allocationCalls.slice(allocationCallCount).map((call) => call.operation)).toEqual([
+        "claimDeprovision",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("releases the tunnel while keeping the allocation, DNS record, and hostname", () => {
     const tunnelCalls: TunnelCall[] = [];
@@ -1004,8 +1068,10 @@ describe("ManagedEndpointProvider", () => {
         "recordDns",
         "markReady",
         "get",
+        "claimDeprovision",
         "get",
-        "remove",
+        "claimDeprovision",
+        "removeClaimed",
       ]);
     }).pipe(Effect.provide(layer));
   });
@@ -1046,7 +1112,7 @@ describe("ManagedEndpointProvider", () => {
       });
       yield* provider.deprovision(key);
 
-      expect(allocationCalls.map((call) => call.operation)).toContain("remove");
+      expect(allocationCalls.map((call) => call.operation)).toContain("removeClaimed");
     }).pipe(Effect.provide(layer));
   });
 

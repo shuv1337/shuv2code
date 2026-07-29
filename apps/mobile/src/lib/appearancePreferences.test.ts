@@ -21,6 +21,7 @@ import {
 describe("appearancePreferences", () => {
   it("resolves defaults for empty stored preferences", () => {
     expect(resolveAppearancePreferences({})).toEqual({
+      colorScheme: "dark",
       baseFontSize: DEFAULT_BASE_FONT_SIZE,
       terminalFontSize: null,
       codeFontSize: null,

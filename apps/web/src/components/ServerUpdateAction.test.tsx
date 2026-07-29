@@ -2,7 +2,7 @@ import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@shuv2code/contracts";
 
 const testState = vi.hoisted(() => ({
   updateServer: vi.fn(),

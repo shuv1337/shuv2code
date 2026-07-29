@@ -25,7 +25,7 @@ const requestSpeechAudioEffect = (input: string) =>
       Effect.mapError(
         () =>
           new SpeechRequestError({
-            message: "Could not reach the T3 Code speech service.",
+            message: "Could not reach the shuv2code speech service.",
           }),
       ),
     );

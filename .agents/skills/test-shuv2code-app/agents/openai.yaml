@@ -1,0 +1,4 @@
+interface:
+  display_name: "shuv2code App Testing"
+  short_description: "Launch and retain isolated shuv2code test environments"
+  default_prompt: "Use $test-shuv2code-app to launch an isolated shuv2code environment and iteratively test it in the browser while preserving state."

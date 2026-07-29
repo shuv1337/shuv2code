@@ -1,5 +1,5 @@
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
+import type { EnvironmentProject } from "@shuv2code/client-runtime/state/shell";
+import { EnvironmentId, ProjectId, ProviderInstanceId } from "@shuv2code/contracts";
 import { assert, it } from "@effect/vitest";
 
 import {
@@ -10,9 +10,9 @@ import {
 const projects: ReadonlyArray<EnvironmentProject> = [
   {
     environmentId: EnvironmentId.make("moonbase-terminal"),
-    id: ProjectId.make("t3code"),
-    title: "T3 Code",
-    workspaceRoot: "/workspace/t3code",
+    id: ProjectId.make("shuv2code"),
+    title: "shuv2code",
+    workspaceRoot: "/workspace/shuv2code",
     repositoryIdentity: null,
     defaultModelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
     scripts: [],
@@ -47,8 +47,8 @@ it("builds sendable-looking pending tasks against real showcase projects", () =>
     [
       {
         environmentId: "moonbase-terminal",
-        projectId: "t3code",
-        title: "T3 Code",
+        projectId: "shuv2code",
+        title: "shuv2code",
         branch: "feat/offline-launchpad",
         createdAt: "2026-07-16T08:52:00.000Z",
       },

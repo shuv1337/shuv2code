@@ -1,4 +1,4 @@
-import { DEFAULT_SERVER_SETTINGS, type ServerSettingsError } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, type ServerSettingsError } from "@shuv2code/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -80,7 +80,7 @@ it.effect("sends optional bearer auth and returns provider audio", () => {
   );
 
   return Effect.gen(function* () {
-    const audio = yield* synthesizeTextToSpeech("Hello from T3 Code.");
+    const audio = yield* synthesizeTextToSpeech("Hello from shuv2code.");
     assert.deepEqual(Array.from(audio.bytes), [1, 2, 3]);
     assert.equal(audio.contentType, "audio/mpeg");
     assert.isNotNull(observedRequest);
@@ -89,7 +89,7 @@ it.effect("sends optional bearer auth and returns provider audio", () => {
     const requestBody = yield* Effect.promise(() => observedRequest!.clone().json());
     assert.deepEqual(requestBody, {
       model: "tts-1",
-      input: "Hello from T3 Code.",
+      input: "Hello from shuv2code.",
       voice: "alloy",
       response_format: "mp3",
       speed: 1,

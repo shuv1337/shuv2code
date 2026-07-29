@@ -3,7 +3,7 @@ import {
   type ProviderDriverKind,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
-} from "@t3tools/contracts";
+} from "@shuv2code/contracts";
 import { BotIcon } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef } from "react";
 
@@ -139,7 +139,10 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         );
       }}
     >
-      <div ref={listRef} className="dropdown-glass relative w-full overflow-hidden rounded-[20px]">
+      <div
+        ref={listRef}
+        className="dropdown-glass relative w-full overflow-hidden rounded-[20px] **:data-[slot=scroll-area-scrollbar]:data-[orientation=vertical]:my-4"
+      >
         {props.items.length > 0 ? (
           <CommandList className="max-h-72">
             {groups.map((group, groupIndex) => (
