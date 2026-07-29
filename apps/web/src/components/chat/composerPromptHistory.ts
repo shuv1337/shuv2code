@@ -13,6 +13,16 @@ export type PromptHistoryStep =
   | { kind: "draft" }
   | { kind: "boundary" };
 
+export function isComposerPromptHistoryBlankHardEdge(
+  value: string,
+  cursor: number,
+  direction: PromptHistoryDirection,
+): boolean {
+  return direction === "older"
+    ? cursor === 0 && value.startsWith("\n")
+    : cursor === value.length && value.endsWith("\n");
+}
+
 export function projectComposerPromptHistory(
   messages: ReadonlyArray<ChatMessage>,
 ): ReadonlyArray<string> {
@@ -33,7 +43,10 @@ export function projectComposerPromptHistory(
     }
 
     prompt = deriveDisplayedUserMessageState(prompt).visibleText.trim();
-    if (!prompt || prompt === IMAGE_ONLY_BOOTSTRAP_PROMPT) continue;
+    const isAttachedImageFallback =
+      (message.attachments?.length ?? 0) > 0 &&
+      prompt === `Ultrathink:\n${IMAGE_ONLY_BOOTSTRAP_PROMPT}`;
+    if (!prompt || prompt === IMAGE_ONLY_BOOTSTRAP_PROMPT || isAttachedImageFallback) continue;
     if (entries.at(-1) !== prompt) entries.push(prompt);
   }
 

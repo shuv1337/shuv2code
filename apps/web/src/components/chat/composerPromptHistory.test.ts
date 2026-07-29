@@ -9,6 +9,7 @@ import {
 } from "../../reviewCommentContext";
 import {
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
+  isComposerPromptHistoryBlankHardEdge,
   isComposerPromptHistoryPositionValid,
   projectComposerPromptHistory,
   stepComposerPromptHistory,
@@ -134,6 +135,34 @@ describe("projectComposerPromptHistory", () => {
     ).toEqual([]);
   });
 
+  it("filters the exact Ultrathink image-only fallback only when attachments prove it", () => {
+    const prefixedFallback = `Ultrathink:\n${IMAGE_ONLY_BOOTSTRAP_PROMPT}`;
+    const attachedFallback = {
+      ...message(prefixedFallback),
+      attachments: [
+        {
+          type: "image" as const,
+          id: "image-1",
+          name: "screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 42,
+        },
+      ],
+    };
+    const authoredUltrathink = {
+      ...message("Ultrathink:\nDescribe this image"),
+      attachments: attachedFallback.attachments,
+    };
+
+    expect(
+      projectComposerPromptHistory([
+        attachedFallback,
+        message(prefixedFallback),
+        authoredUltrathink,
+      ]),
+    ).toEqual([prefixedFallback, "Ultrathink:\nDescribe this image"]);
+  });
+
   it("includes optimistic input and collapses only consecutive duplicates", () => {
     const alreadyMergedTimeline = [
       message("one"),
@@ -148,6 +177,17 @@ describe("projectComposerPromptHistory", () => {
       "one",
       "optimistic prompt",
     ]);
+  });
+});
+
+describe("isComposerPromptHistoryBlankHardEdge", () => {
+  it("recognizes only blank leading and trailing hard lines", () => {
+    expect(isComposerPromptHistoryBlankHardEdge("\ntext", 0, "older")).toBe(true);
+    expect(isComposerPromptHistoryBlankHardEdge("text\n", 5, "newer")).toBe(true);
+    expect(isComposerPromptHistoryBlankHardEdge("\ntext", 1, "older")).toBe(false);
+    expect(isComposerPromptHistoryBlankHardEdge("text\n", 4, "newer")).toBe(false);
+    expect(isComposerPromptHistoryBlankHardEdge("text", 0, "older")).toBe(false);
+    expect(isComposerPromptHistoryBlankHardEdge("text", 4, "newer")).toBe(false);
   });
 });
 

@@ -206,6 +206,7 @@ import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 import {
+  isComposerPromptHistoryBlankHardEdge,
   isComposerPromptHistoryPositionValid,
   projectComposerPromptHistory,
   stepComposerPromptHistory,
@@ -2065,7 +2066,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const editor = composerSurfaceRef.current?.querySelector<HTMLElement>(
         '[data-testid="composer-editor"]',
       );
-      if (!logicalEdge || !editor || !isDomCaretAtVisualEdge(editor, direction)) {
+      const isVisualEdge =
+        editor &&
+        (isDomCaretAtVisualEdge(editor, direction) ||
+          isComposerPromptHistoryBlankHardEdge(snapshot.value, snapshot.expandedCursor, direction));
+      if (!logicalEdge || !isVisualEdge) {
         return false;
       }
 
