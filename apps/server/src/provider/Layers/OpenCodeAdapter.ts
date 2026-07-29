@@ -171,12 +171,32 @@ interface OpenCodeTurnSnapshot {
   readonly items: Array<unknown>;
 }
 
-type OpenCodeSubscribedEvent =
+type OpenCodeSdkSubscribedEvent =
   Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>> extends {
     readonly stream: AsyncIterable<infer TEvent>;
   }
     ? TEvent
     : never;
+
+// Shuvcode's durable execution lifecycle is newer than the OpenCode SDK
+// event union bundled here, but these events already arrive on the stream.
+type OpenCodeExecutionTerminalEvent =
+  | {
+      readonly type: "session.execution.failed";
+      readonly properties: {
+        readonly sessionID: string;
+        readonly error: unknown;
+      };
+    }
+  | {
+      readonly type: "session.execution.interrupted";
+      readonly properties: {
+        readonly sessionID: string;
+        readonly reason: "user" | "shutdown" | "superseded";
+      };
+    };
+
+type OpenCodeSubscribedEvent = OpenCodeSdkSubscribedEvent | OpenCodeExecutionTerminalEvent;
 
 function trimText(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim();
@@ -506,6 +526,10 @@ function toolStateCreatedAt(part: Extract<Part, { type: "tool" }>): string | und
 function sessionErrorMessage(error: unknown): string {
   if (!error || typeof error !== "object") {
     return "OpenCode session failed.";
+  }
+  const directMessage = "message" in error ? error.message : null;
+  if (typeof directMessage === "string" && directMessage.trim().length > 0) {
+    return directMessage;
   }
   const data = "data" in error && error.data && typeof error.data === "object" ? error.data : null;
   const message = data && "message" in data ? data.message : null;
@@ -1077,7 +1101,8 @@ export function makeOpenCodeAdapter(
           break;
         }
 
-        case "session.error": {
+        case "session.error":
+        case "session.execution.failed": {
           const message = sessionErrorMessage(event.properties.error);
           const activeTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
@@ -1115,6 +1140,27 @@ export function makeOpenCodeAdapter(
               detail: event.properties.error,
             },
           });
+          break;
+        }
+
+        case "session.execution.interrupted": {
+          const activeTurnId = context.activeTurnId;
+          context.activeTurnId = undefined;
+          yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+          if (activeTurnId) {
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId: activeTurnId,
+                raw: event,
+              })),
+              type: "turn.completed",
+              payload: {
+                state: "interrupted",
+                stopReason: event.properties.reason,
+              },
+            });
+          }
           break;
         }
 
@@ -1545,14 +1591,17 @@ export function makeOpenCodeAdapter(
     const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
       function* (threadId, turnId) {
         const context = yield* ensureSessionContext(sessions, threadId);
+        const interruptedTurnId = turnId ?? context.activeTurnId;
         yield* runOpenCodeSdk("session.abort", () =>
           context.client.session.abort({ sessionID: context.openCodeSessionId }),
         ).pipe(Effect.mapError(toRequestError));
-        if (turnId ?? context.activeTurnId) {
+        context.activeTurnId = undefined;
+        yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+        if (interruptedTurnId) {
           yield* emit({
             ...(yield* buildEventBase({
               threadId,
-              turnId: turnId ?? context.activeTurnId,
+              turnId: interruptedTurnId,
             })),
             type: "turn.aborted",
             payload: {
