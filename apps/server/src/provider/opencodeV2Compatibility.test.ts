@@ -224,6 +224,77 @@ describe("createOpenCodeV2CompatibilityClient", () => {
     await client.permission.reply({ requestID: "perm-1", reply: "once" });
   });
 
+  it("normalizes V2 question events and routes replies to their owning session", async () => {
+    let replyBody: unknown;
+    const baseUrl = await listen(async (req, res) => {
+      if (req.url === "/api/event") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(
+          `data: ${JSON.stringify({
+            type: "question.v2.asked",
+            data: {
+              id: "que_1",
+              sessionID: "ses_1",
+              questions: [
+                {
+                  header: "Repository access",
+                  question: "Which repositories should the token access?",
+                  options: [
+                    { label: "Selected", description: "Only selected repositories" },
+                    { label: "All", description: "All current repositories" },
+                  ],
+                  multiple: false,
+                  custom: true,
+                },
+              ],
+            },
+          })}\n\n`,
+        );
+        res.end();
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/session/ses_1/question/que_1/reply") {
+        replyBody = JSON.parse(await readBody(req));
+        res.statusCode = 204;
+        res.end();
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+    });
+    const subscription = await client.event.subscribe();
+    const events: Array<{ type: string; properties: unknown }> = [];
+    for await (const event of subscription.stream) {
+      events.push(event as { type: string; properties: unknown });
+    }
+
+    NodeAssert.equal(events[0]?.type, "question.asked");
+    NodeAssert.deepEqual(events[0]?.properties, {
+      id: "que_1",
+      sessionID: "ses_1",
+      questions: [
+        {
+          header: "Repository access",
+          question: "Which repositories should the token access?",
+          options: [
+            { label: "Selected", description: "Only selected repositories" },
+            { label: "All", description: "All current repositories" },
+          ],
+          multiple: false,
+          custom: true,
+        },
+      ],
+    });
+
+    await client.question.reply({ requestID: "que_1", answers: [["Selected"]] });
+    NodeAssert.deepEqual(replyBody, { answers: [["Selected"]] });
+  });
+
   it("projects native V2 streaming, completion, and permission events to the legacy adapter contract", async () => {
     const nativeEvents = [
       {

@@ -630,6 +630,22 @@ function normalizeV2Events(
   const sessionID = typeof data.sessionID === "string" ? data.sessionID : undefined;
   const created = typeof event.created === "number" ? event.created : 0;
 
+  const questionEventType = (() => {
+    switch (event.type) {
+      case "question.v2.asked":
+        return "question.asked";
+      case "question.v2.replied":
+        return "question.replied";
+      case "question.v2.rejected":
+        return "question.rejected";
+      default:
+        return undefined;
+    }
+  })();
+  if (questionEventType) {
+    return [{ type: questionEventType, properties: data }];
+  }
+
   if (event.type === "session.execution.started" && sessionID) {
     return [{ type: "session.status", properties: { sessionID, status: { type: "busy" } } }];
   }
