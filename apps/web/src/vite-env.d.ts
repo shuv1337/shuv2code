@@ -1,6 +1,6 @@
 /// <reference types="vite-plus/client" />
 
-import type { DesktopBridge, LocalApi } from "@shuv2code/contracts";
+import type { DesktopBridge } from "@shuv2code/contracts";
 
 interface ImportMetaEnv {
   readonly VITE_HTTP_URL: string;
@@ -22,7 +22,6 @@ interface ImportMeta {
 
 declare global {
   interface Window {
-    nativeApi?: LocalApi;
     desktopBridge?: DesktopBridge;
   }
 }

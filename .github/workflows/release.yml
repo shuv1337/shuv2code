@@ -48,6 +48,11 @@ jobs:
           cache: true
           run-install: true
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
       - name: Validate release request
         shell: bash
         run: |
@@ -75,6 +80,8 @@ jobs:
           vp check
           vp run typecheck
           vp run test
+          cargo fmt --manifest-path native/resource-monitor/Cargo.toml -- --check
+          cargo test --locked --manifest-path native/resource-monitor/Cargo.toml
 
       - name: Validate mobile release configurations
         run: |
@@ -129,6 +136,10 @@ jobs:
           node-version-file: package.json
           cache: true
           run-install: true
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
       - run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
       - name: Build AppImage
         run: vp run dist:desktop:artifact --platform linux --target AppImage --arch x64 --build-version "${{ inputs.version }}"
@@ -164,6 +175,10 @@ jobs:
           node-version-file: package.json
           cache: true
           run-install: true
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
       - run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
       - name: Require signing inputs for publication
         if: inputs.mode == 'publish'

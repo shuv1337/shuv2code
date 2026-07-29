@@ -31,7 +31,7 @@ export const config: VercelConfig = {
     deploymentEnabled: false,
   },
   installCommand:
-    "npm install -g vite-plus && vp install --filter '@shuv2code/scripts...' --filter '@shuv2code/web...'",
+    "npm install -g vite-plus && vp install --ignore-scripts --filter '@shuv2code/scripts...' --filter '@shuv2code/web...'",
   routes: hostedRouterConfigured
     ? [
         {

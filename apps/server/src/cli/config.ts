@@ -87,7 +87,7 @@ const EnvServerConfig = Config.all({
   ),
   traceMaxBytes: Config.int("SHUV2CODE_TRACE_MAX_BYTES").pipe(Config.withDefault(10 * 1024 * 1024)),
   traceMaxFiles: Config.int("SHUV2CODE_TRACE_MAX_FILES").pipe(Config.withDefault(10)),
-  traceBatchWindowMs: Config.int("SHUV2CODE_TRACE_BATCH_WINDOW_MS").pipe(Config.withDefault(200)),
+  traceBatchWindowMs: Config.int("SHUV2CODE_TRACE_BATCH_WINDOW_MS").pipe(Config.withDefault(1_000)),
   otlpTracesUrl: Config.string("SHUV2CODE_OTLP_TRACES_URL").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -310,6 +310,9 @@ export const resolveServerConfig = (
       () => mode === "desktop",
     );
     const desktopBootstrapToken = bootstrap?.desktopBootstrapToken;
+    const desktopTelemetryFd = bootstrap?.desktopTelemetryFd;
+    const desktopTelemetryControlFd = bootstrap?.desktopTelemetryControlFd;
+    const resourceMonitorPath = bootstrap?.resourceMonitorPath;
     const autoBootstrapProjectFromCwd = Option.getOrElse(
       resolveOptionPrecedence(
         Option.fromUndefinedOr(options?.forceAutoBootstrapProjectFromCwd),
@@ -383,6 +386,9 @@ export const resolveServerConfig = (
       noBrowser,
       startupPresentation,
       desktopBootstrapToken,
+      desktopTelemetryFd,
+      desktopTelemetryControlFd,
+      resourceMonitorPath,
       autoBootstrapProjectFromCwd,
       logWebSocketEvents,
       tailscaleServeEnabled,

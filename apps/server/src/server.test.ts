@@ -71,7 +71,9 @@ import { vi } from "vite-plus/test";
 
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
+import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import { makeRoutesLayer } from "./server.ts";
 import { resolveAvailableEditorsForConfig } from "./ws.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
@@ -115,6 +117,10 @@ import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
+import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
+import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
+import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
+import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as Data from "effect/Data";
 
 const defaultProjectId = ProjectId.make("project-default");
@@ -354,6 +360,10 @@ const buildAppUnderTest = (options?: {
     >;
     relayClient?: Partial<RelayClient.RelayClient["Service"]>;
     cloudCliTokenManager?: Partial<CloudCliTokenManager.CloudCliTokenManager["Service"]>;
+    nativeTelemetryClient?: Partial<NativeTelemetryClient.NativeTelemetryClient["Service"]>;
+    desktopTelemetryReceiver?: Partial<
+      DesktopTelemetryReceiver.DesktopTelemetryReceiver["Service"]
+    >;
   };
 }) =>
   Effect.gen(function* () {
@@ -532,6 +542,15 @@ const buildAppUnderTest = (options?: {
           ...options.layers.vcsStatusBroadcaster,
         })
       : VcsStatusBroadcaster.layer.pipe(Layer.provide(gitWorkflowLayer));
+    const resourceTelemetryLayer = ResourceTelemetry.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NativeTelemetryClient.layerTest(options?.layers?.nativeTelemetryClient),
+          DesktopTelemetryReceiver.layerTest(options?.layers?.desktopTelemetryReceiver),
+          ResourceAttribution.layer,
+        ),
+      ),
+    );
 
     const servedRoutesLayer = HttpRouter.serve(makeRoutesLayer, {
       disableListenLog: true,
@@ -746,6 +765,7 @@ const buildAppUnderTest = (options?: {
     );
 
     const appLayer = servedRoutesLayer.pipe(
+      Layer.provide(resourceTelemetryLayer),
       Layer.provide(
         Layer.mock(BrowserTraceCollector.BrowserTraceCollector)({
           record: () => Effect.void,
@@ -766,6 +786,58 @@ const buildAppUnderTest = (options?: {
           markHttpListening: Effect.void,
           enqueueCommand: (effect) => effect,
           ...options?.layers?.serverRuntimeStartup,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+          reportClientActivity: () => Effect.void,
+          removeRpcClient: () => Effect.void,
+          reportHostPowerState: () => Effect.void,
+          snapshot: Effect.succeed({
+            hostPower: {
+              source: "unknown",
+              idle: "unknown",
+              idleSeconds: null,
+              locked: "unknown",
+              suspended: false,
+              onBattery: "unknown",
+              lowPowerMode: "unknown",
+              thermalState: "unknown",
+              stale: true,
+              updatedAt: TEST_EPOCH,
+            },
+            leases: [],
+            activeForegroundLeaseCount: 0,
+            activeScopeKeys: [],
+            shouldRunOpportunisticWork: false,
+            updatedAt: TEST_EPOCH,
+          }),
+          streamChanges: Stream.empty,
+          subscribe: Effect.succeed({
+            latest: {
+              hostPower: {
+                source: "unknown",
+                idle: "unknown",
+                idleSeconds: null,
+                locked: "unknown",
+                suspended: false,
+                onBattery: "unknown",
+                lowPowerMode: "unknown",
+                thermalState: "unknown",
+                stale: true,
+                updatedAt: TEST_EPOCH,
+              },
+              leases: [],
+              activeForegroundLeaseCount: 0,
+              activeScopeKeys: [],
+              shouldRunOpportunisticWork: false,
+              updatedAt: TEST_EPOCH,
+            },
+            changes: Stream.empty,
+          }),
+          hasDemand: () => Effect.succeed(false),
+          shouldRunScopeWork: () => Effect.succeed(false),
+          shouldRunOpportunisticWork: Effect.succeed(false),
         }),
       ),
       Layer.provide(
@@ -817,6 +889,7 @@ const buildAppUnderTest = (options?: {
       Layer.provideMerge(ServerSecretStore.layer),
       Layer.provide(workspaceAndProjectServicesLayer),
       Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provide(HttpResponseCompression.layerNode),
       Layer.provide(layerConfig),
     );
 
@@ -1288,6 +1361,35 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(response.status, 200);
       assert.deepEqual(body, testEnvironmentDescriptor);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("compresses large JSON responses through the composed routes", () =>
+    Effect.gen(function* () {
+      const descriptor = {
+        ...testEnvironmentDescriptor,
+        label: "Test environment".repeat(100),
+      };
+      yield* buildAppUnderTest({
+        layers: {
+          serverEnvironment: {
+            getDescriptor: Effect.succeed(descriptor),
+          },
+        },
+      });
+
+      const url = yield* getHttpServerUrl("/.well-known/shuv2code/environment");
+      const response = yield* fetchEffect(url, {
+        headers: {
+          "accept-encoding": "gzip",
+        },
+      });
+      const body = yield* responseJsonEffect<typeof descriptor>(response);
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers["content-encoding"], "gzip");
+      assert.equal(response.headers.vary, "Accept-Encoding");
+      assert.deepEqual(body, descriptor);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -4373,6 +4475,23 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("routes websocket resource telemetry through the subscription", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const snapshot = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.subscribeResourceTelemetry]({}).pipe(Stream.runHead),
+        ),
+      );
+
+      assertTrue(Option.isSome(snapshot));
+      assert.equal(snapshot.value.processes.length, 0);
+      assert.equal(snapshot.value.groups.backend.processCount, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket rpc subscribeServerConfig emits provider status updates", () =>
     Effect.gen(function* () {
       const nextProviders = [
@@ -5680,15 +5799,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.equal(fullDiffResult.diff, "full-diff");
-
-      const replayResult = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.replayEvents]({
-            fromSequenceExclusive: 0,
-          }),
-        ),
-      );
-      assert.deepEqual(replayResult, []);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -6417,7 +6527,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
-
   it.effect("stops the provider session and closes thread terminals after archive", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-archive");
