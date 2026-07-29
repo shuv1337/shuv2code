@@ -29,13 +29,11 @@ interface BufferedAnalyticsEvent {
 }
 
 const TelemetryEnvConfig = Config.all({
-  posthogKey: Config.string("SHUV2CODE_POSTHOG_KEY").pipe(
-    Config.withDefault("phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m"),
-  ),
+  posthogKey: Config.string("SHUV2CODE_POSTHOG_KEY").pipe(Config.withDefault("")),
   posthogHost: Config.string("SHUV2CODE_POSTHOG_HOST").pipe(
     Config.withDefault("https://us.i.posthog.com"),
   ),
-  enabled: Config.boolean("SHUV2CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(true)),
+  enabled: Config.boolean("SHUV2CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(false)),
   flushBatchSize: Config.number("SHUV2CODE_TELEMETRY_FLUSH_BATCH_SIZE").pipe(
     Config.withDefault(20),
   ),
@@ -70,9 +68,16 @@ export class AnalyticsService extends Context.Service<
 
 export const make = Effect.gen(function* () {
   const telemetryConfig = yield* TelemetryEnvConfig;
+  if (!telemetryConfig.enabled || telemetryConfig.posthogKey.trim().length === 0) {
+    return AnalyticsService.of({
+      record: () => Effect.void,
+      flush: Effect.void,
+    });
+  }
+
   const httpClient = yield* HttpClient.HttpClient;
   const serverConfig = yield* ServerConfig.ServerConfig;
-  const identifier = yield* getTelemetryIdentifier;
+  const identifier = yield* getTelemetryIdentifier();
   const bufferRef = yield* Ref.make<ReadonlyArray<BufferedAnalyticsEvent>>([]);
   const clientType = serverConfig.mode === "desktop" ? "desktop-app" : "cli-web-client";
   const hostPlatform = yield* HostProcessPlatform;
@@ -108,7 +113,7 @@ export const make = Effect.gen(function* () {
   const sendBatch = Effect.fn("AnalyticsService.sendBatch")(function* (
     events: ReadonlyArray<BufferedAnalyticsEvent>,
   ) {
-    if (!telemetryConfig.enabled || !identifier) return;
+    if (!identifier) return;
 
     const payload = {
       api_key: telemetryConfig.posthogKey,
@@ -121,7 +126,7 @@ export const make = Effect.gen(function* () {
           platform: hostPlatform,
           wsl: Option.getOrUndefined(telemetryConfig.wslDistroName),
           arch: hostArchitecture,
-          t3CodeVersion: packageJson.version,
+          shuv2codeVersion: packageJson.version,
           clientType,
         },
         timestamp: event.capturedAt,
@@ -162,7 +167,7 @@ export const make = Effect.gen(function* () {
 
   const record: AnalyticsService["Service"]["record"] = Effect.fn("AnalyticsService.record")(
     function* (event, properties) {
-      if (!telemetryConfig.enabled || !identifier) return;
+      if (!identifier) return;
 
       const enqueueResult = yield* enqueueBufferedEvent(event, properties);
       if (enqueueResult.dropped) {
