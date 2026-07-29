@@ -15,8 +15,10 @@ import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as DesktopBackendConfiguration from "../backend/DesktopBackendConfiguration.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
+import * as DesktopLocalServerAttach from "../backend/DesktopLocalServerAttach.ts";
 import * as DesktopObservability from "./DesktopObservability.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
@@ -151,15 +153,32 @@ const bootstrap = Effect.gen(function* () {
     return yield* new DesktopDevelopmentBackendPortRequiredError();
   }
 
-  const backendPortSelection = yield* resolveDesktopBackendPort(environment.configuredBackendPort);
+  const reusableServer = yield* DesktopLocalServerAttach.discoverReusableLocalServer();
+  const backendPortSelection = yield* Option.match(reusableServer, {
+    onSome: (server) =>
+      Effect.succeed({
+        port: server.port,
+        selectedByScan: false,
+        reused: true as const,
+      }),
+    onNone: () =>
+      resolveDesktopBackendPort(environment.configuredBackendPort).pipe(
+        Effect.map((selection) => ({ ...selection, reused: false as const })),
+      ),
+  });
   const backendPort = backendPortSelection.port;
   yield* logBootstrapInfo(
-    backendPortSelection.selectedByScan
-      ? "selected backend port via sequential scan"
-      : "using configured backend port",
+    backendPortSelection.reused
+      ? "reusing healthy local backend"
+      : backendPortSelection.selectedByScan
+        ? "selected backend port via sequential scan"
+        : "using configured backend port",
     {
       port: backendPort,
       ...(backendPortSelection.selectedByScan ? { startPort: DEFAULT_DESKTOP_BACKEND_PORT } : {}),
+      ...(backendPortSelection.reused && Option.isSome(reusableServer)
+        ? { origin: reusableServer.value.origin }
+        : {}),
     },
   );
 
@@ -175,14 +194,18 @@ const bootstrap = Effect.gen(function* () {
   const rendererTarget = environment.isDevelopment
     ? Option.getOrThrow(environment.devServerUrl)
     : backendConfig.httpBaseUrl;
+  const backendOrigin = Option.match(reusableServer, {
+    onSome: (server) => server.httpBaseUrl,
+    onNone: () => backendConfig.httpBaseUrl,
+  });
   yield* electronProtocol.registerDesktopProtocol({
     scheme: ElectronProtocol.getDesktopScheme(environment.isDevelopment),
     targetOrigin: rendererTarget,
-    backendOrigin: backendConfig.httpBaseUrl,
+    backendOrigin,
     clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
   });
   yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
-    baseUrl: backendConfig.httpBaseUrl.href,
+    baseUrl: backendOrigin.href,
   });
   if (serverExposureState.endpointUrl) {
     yield* logBootstrapInfo("bootstrap enabled network access", {
@@ -205,8 +228,21 @@ const bootstrap = Effect.gen(function* () {
     if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
       yield* desktopWindow.showConnectingSplash;
     }
-    yield* primaryBackend.start;
-    yield* logBootstrapInfo("bootstrap backend start requested");
+    if (Option.isSome(reusableServer)) {
+      const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+      const attachConfig = yield* configuration.resolveExternal({
+        httpBaseUrl: reusableServer.value.httpBaseUrl,
+        port: reusableServer.value.port,
+        bootstrapToken: reusableServer.value.bootstrapToken,
+      });
+      yield* primaryBackend.startWithConfig(attachConfig);
+      yield* logBootstrapInfo("bootstrap attached to existing local backend", {
+        origin: reusableServer.value.origin,
+      });
+    } else {
+      yield* primaryBackend.start;
+      yield* logBootstrapInfo("bootstrap backend start requested");
+    }
     // Bring up the WSL backend if the user previously enabled it. The
     // primary is already starting; reconcile fires off the WSL register
     // in parallel rather than blocking primary readiness on a possibly

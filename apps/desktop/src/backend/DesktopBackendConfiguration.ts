@@ -55,6 +55,11 @@ export class DesktopBackendConfiguration extends Context.Service<
       DesktopBackendManager.DesktopBackendStartConfig,
       PlatformError.PlatformError
     >;
+    readonly resolveExternal: (input: {
+      readonly httpBaseUrl: URL;
+      readonly port: number;
+      readonly bootstrapToken: string;
+    }) => Effect.Effect<DesktopBackendManager.DesktopBackendStartConfig>;
     // The renderer-facing label for the primary instance, derived from the
     // same decision resolvePrimary makes (including the WSL-availability
     // fall-back to Windows), so the env switcher can't show "WSL" for a
@@ -734,6 +739,37 @@ export const make = Effect.gen(function* () {
           attributes: { port: input.port, distro: input.distro ?? null },
         }),
       ),
+    resolveExternal: (input) =>
+      Effect.gen(function* () {
+        const observabilitySettings = yield* readPersistedBackendObservabilitySettings.pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
+        );
+        return {
+          executablePath: process.execPath,
+          args: [],
+          entryPath: environment.backendEntryPath,
+          cwd: environment.backendCwd,
+          env: {},
+          extendEnv: false,
+          bootstrap: {
+            mode: "desktop" as const,
+            noBrowser: true,
+            port: input.port,
+            shuv2codeHome: environment.baseDir,
+            host: "127.0.0.1",
+            desktopBootstrapToken: input.bootstrapToken,
+            tailscaleServeEnabled: false,
+            tailscaleServePort: 443,
+            ...buildObservabilityFragment(observabilitySettings),
+          },
+          bootstrapDelivery: "fd3" as const,
+          httpBaseUrl: input.httpBaseUrl,
+          captureOutput: false,
+          preflightFailure: Option.none(),
+          owned: false,
+        } satisfies DesktopBackendManager.DesktopBackendStartConfig;
+      }).pipe(Effect.withSpan("desktop.backendConfiguration.resolveExternal")),
   });
 });
 

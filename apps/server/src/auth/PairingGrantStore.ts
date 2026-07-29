@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
+import * as LocalDesktopAttach from "../localDesktopAttach.ts";
 import * as AuthPairingLinks from "../persistence/AuthPairingLinks.ts";
 
 export interface BootstrapGrant {
@@ -327,6 +328,35 @@ export const make = Effect.gen(function* () {
       // implicitly trusts.
       remainingUses: "unbounded",
     });
+  }
+
+  {
+    const localAttachCredential = yield* LocalDesktopAttach.ensureLocalDesktopAttachCredential(
+      config.localDesktopAttachPath,
+    ).pipe(
+      Effect.catchTag("LocalDesktopAttachError", (error) =>
+        Effect.logWarning(error.message).pipe(
+          Effect.annotateLogs({
+            operation: error.operation,
+            statePath: error.statePath,
+            cause: error,
+          }),
+          Effect.as(null as string | null),
+        ),
+      ),
+    );
+    if (localAttachCredential) {
+      const now = yield* DateTime.now;
+      yield* seedGrant(localAttachCredential, {
+        method: "desktop-bootstrap",
+        scopes: AuthAdministrativeScopes,
+        subject: "local-desktop-attach",
+        expiresAt: DateTime.add(now, {
+          milliseconds: Duration.toMillis(Duration.days(3650)),
+        }),
+        remainingUses: "unbounded",
+      });
+    }
   }
 
   const listActive: PairingGrantStore["Service"]["listActive"] = Effect.fn(
