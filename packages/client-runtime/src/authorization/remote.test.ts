@@ -5,7 +5,10 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
-import { EnvironmentAuthInvalidError } from "@shuv2code/contracts";
+import {
+  AuthEnvironmentBootstrapTokenType,
+  EnvironmentAuthInvalidError,
+} from "@shuv2code/contracts";
 import {
   bootstrapRemoteBearerSession,
   exchangeRemoteDpopAccessToken,
@@ -50,6 +53,18 @@ const hangingFetch = () => {
 };
 
 const provideRemoteHttp = (fetchFn: typeof fetch) => Effect.provide(remoteHttpClientLayer(fetchFn));
+
+const tokenExchangeBody = (
+  subjectToken: string,
+  additionalParams: Record<string, string> = {},
+): string =>
+  new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+    subject_token: subjectToken,
+    subject_token_type: AuthEnvironmentBootstrapTokenType,
+    requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+    ...additionalParams,
+  }).toString();
 
 const expectFetchCall = (
   calls: ReadonlyArray<FetchCall>,
@@ -121,7 +136,7 @@ describe("remote environment authorization", () => {
         headers: {
           "content-type": "application/x-www-form-urlencoded",
         },
-        body: "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token=pairing-token&subject_token_type=urn%3At3%3Aparams%3Aoauth%3Atoken-type%3Aenvironment-bootstrap&requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token",
+        body: tokenExchangeBody("pairing-token"),
       });
     }),
   );
@@ -162,7 +177,11 @@ describe("remote environment authorization", () => {
         url: "https://remote.example.com/oauth/token",
         method: "POST",
         headers: { dpop: "token-proof", "content-type": "application/x-www-form-urlencoded" },
-        body: "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token=one-time-credential&subject_token_type=urn%3At3%3Aparams%3Aoauth%3Atoken-type%3Aenvironment-bootstrap&requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token&client_label=shuv2code+Code+Mobile&client_device_type=mobile&client_os=iOS",
+        body: tokenExchangeBody("one-time-credential", {
+          client_label: "shuv2code Mobile",
+          client_device_type: "mobile",
+          client_os: "iOS",
+        }),
       });
       expectFetchCall(fetch.calls, 2, {
         url: "https://remote.example.com/api/auth/websocket-ticket",
@@ -204,7 +223,11 @@ describe("remote environment authorization", () => {
       expectFetchCall(fetch.calls, 1, {
         url: "https://remote.example.com/oauth/token",
         method: "POST",
-        body: "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token=pairing-token&subject_token_type=urn%3At3%3Aparams%3Aoauth%3Atoken-type%3Aenvironment-bootstrap&requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token&client_label=shuv2code+Code+Mobile&client_device_type=mobile&client_os=iOS",
+        body: tokenExchangeBody("pairing-token", {
+          client_label: "shuv2code Mobile",
+          client_device_type: "mobile",
+          client_os: "iOS",
+        }),
       });
     }),
   );
@@ -233,7 +256,9 @@ describe("remote environment authorization", () => {
       expectFetchCall(fetch.calls, 1, {
         url: "https://remote.example.com/oauth/token",
         method: "POST",
-        body: "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token=pairing-token&subject_token_type=urn%3At3%3Aparams%3Aoauth%3Atoken-type%3Aenvironment-bootstrap&requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token&scope=orchestration%3Aread",
+        body: tokenExchangeBody("pairing-token", {
+          scope: "orchestration:read",
+        }),
       });
     }),
   );
