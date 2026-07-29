@@ -1,6 +1,11 @@
 import * as NodeURL from "node:url";
 
-import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@shuv2code/contracts";
+import type {
+  ChatAttachment,
+  ProviderApprovalDecision,
+  RuntimeMode,
+  ServerProviderSkill,
+} from "@shuv2code/contracts";
 import {
   createOpencodeClient,
   type Agent,
@@ -119,7 +124,51 @@ export interface OpenCodeCommandResult {
 export interface OpenCodeInventory {
   readonly providerList: ProviderListResponse;
   readonly agents: ReadonlyArray<Agent>;
+  readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
+
+interface OpenCodeSkillInfo {
+  readonly name: string;
+  readonly description?: string;
+  readonly location: string;
+}
+
+export function normalizeOpenCodeSkills(
+  skills: ReadonlyArray<OpenCodeSkillInfo>,
+): ReadonlyArray<ServerProviderSkill> {
+  return skills.flatMap((skill) => {
+    const name = skill.name.trim();
+    const path = skill.location.trim();
+    if (!name || !path) return [];
+    const description = skill.description?.trim();
+    return [
+      {
+        name,
+        path,
+        enabled: true,
+        ...(description ? { description } : {}),
+      },
+    ];
+  });
+}
+
+export const loadOpenCodeSkills = Effect.fn("loadOpenCodeSkills")(function* (
+  client: OpencodeClient,
+): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>> {
+  const skills = (
+    client.app as unknown as {
+      readonly skills?: () => Promise<{ readonly data?: ReadonlyArray<OpenCodeSkillInfo> }>;
+    }
+  ).skills;
+  if (typeof skills !== "function") return [];
+  const result = yield* runOpenCodeSdk("app.skills", () => skills.call(client.app)).pipe(
+    // Skill enumeration is additive; do not fail provider inventory when it is unavailable.
+    Effect.orElseSucceed((): { readonly data?: ReadonlyArray<OpenCodeSkillInfo> } => ({
+      data: [],
+    })),
+  );
+  return normalizeOpenCodeSkills(result.data ?? []);
+});
 
 export interface ParsedOpenCodeModelSlug {
   readonly providerID: string;
@@ -788,9 +837,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     );
 
   const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client) =>
-    Effect.all([loadProviders(client), loadAgents(client)], { concurrency: "unbounded" }).pipe(
-      Effect.map(([providerList, agents]) => ({ providerList, agents })),
-    );
+    Effect.all([loadProviders(client), loadAgents(client), loadOpenCodeSkills(client)], {
+      concurrency: "unbounded",
+    }).pipe(Effect.map(([providerList, agents, skills]) => ({ providerList, agents, skills })));
 
   const loadInventoryFromCli: OpenCodeRuntimeShape["loadInventoryFromCli"] = (input) =>
     Effect.gen(function* () {
@@ -890,6 +939,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       return {
         providerList: { all: allProviders, default: {}, connected },
         agents,
+        skills: [],
       };
     });
 

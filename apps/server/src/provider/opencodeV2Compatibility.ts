@@ -27,6 +27,14 @@ interface V2AgentInfo {
   readonly hidden: boolean;
 }
 
+interface V2SkillInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly location: string;
+  readonly content: string;
+}
+
 interface V2ModelInfo {
   readonly id: string;
   readonly providerID: string;
@@ -241,6 +249,12 @@ function makeOpenCodeV2Client(options: {
     agent: {
       list: (input?: { readonly location?: unknown }) =>
         request<{ data: V2AgentInfo[] }>("GET", "/api/agent", {
+          query: locationQuery(input?.location),
+        }),
+    },
+    skill: {
+      list: (input?: { readonly location?: unknown }) =>
+        request<{ data: V2SkillInfo[] }>("GET", "/api/skill", {
           query: locationQuery(input?.location),
         }),
     },
@@ -869,6 +883,10 @@ export function createOpenCodeV2CompatibilityClient(
     },
     app: {
       agents: async () => ({ data: await loadV1Agents(client, input.directory) }),
+      skills: async () => {
+        const result = await client.skill.list({ location: { directory: input.directory } });
+        return { data: result.data };
+      },
     },
     event: {
       subscribe: async (_input?: unknown, options?: { readonly signal?: AbortSignal }) => {
