@@ -133,6 +133,7 @@ it.layer(NodeServices.layer)("readDesktopBaseVersion", (it) => {
       yield* fs.makeDirectory(path.dirname(packageJsonPath), { recursive: true });
       yield* fs.writeFileString(
         packageJsonPath,
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - Static JSON fixture content.
         `${JSON.stringify({ name: "shuv2code", version: "0.1.0-alpha.1" }, null, 2)}\n`,
       );
 

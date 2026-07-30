@@ -209,6 +209,7 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
         rootDir: baseDir,
       }).pipe(Effect.flip);
 
+      assert.instanceOf(error, ReleasePackageManifestError);
       assert.equal(error.operation, "decode");
       assert.equal(error.filePath, filePath);
       assert.isTrue(Schema.isSchemaError(error.cause));
@@ -232,6 +233,7 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
         rootDir: baseDir,
       }).pipe(Effect.flip, Effect.ensuring(fs.chmod(filePath, 0o600).pipe(Effect.orDie)));
 
+      assert.instanceOf(error, ReleasePackageManifestError);
       assert.equal(error.operation, "write");
       assert.equal(error.filePath, filePath);
       assert.instanceOf(error.cause, PlatformError.PlatformError);

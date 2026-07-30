@@ -1,6 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { ServerCliBuildAssetMissingError, ServerCliCommandExitError } from "./cliErrors.ts";
+import {
+  ServerCliCommandExitError,
+  ServerCliDevelopmentIconTargetMissingError,
+} from "./cliErrors.ts";
 
 describe("server CLI errors", () => {
   it("preserves failed command context without changing its message", () => {
@@ -19,13 +22,15 @@ describe("server CLI errors", () => {
     assert.equal(error.message, "Command exited with non-zero exit code (17)");
   });
 
-  it("preserves a representative missing asset path", () => {
-    const error = new ServerCliBuildAssetMissingError({ assetPath: "/repo/server.mjs" });
+  it("preserves a representative missing development icon path", () => {
+    const error = new ServerCliDevelopmentIconTargetMissingError({
+      targetPath: "/repo/dist/client/favicon.ico",
+    });
 
-    assert.equal(error.assetPath, "/repo/server.mjs");
+    assert.equal(error.targetPath, "/repo/dist/client/favicon.ico");
     assert.equal(
       error.message,
-      "Missing build asset: /repo/server.mjs. Run the build subcommand first.",
+      "Missing development icon target: /repo/dist/client/favicon.ico. Build web first.",
     );
   });
 });

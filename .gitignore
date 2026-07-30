@@ -14,6 +14,7 @@ build/
 .logs/
 release/
 release-mock/
+release-server/
 .shuv2code
 # Preserve legacy fork state without reading or migrating it.
 .t3
