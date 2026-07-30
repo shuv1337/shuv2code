@@ -199,8 +199,8 @@ describe("serializeRelayClientTracingEnvironment", () => {
   });
 });
 
-describe("release workflow tracing config propagation", () => {
-  it.effect("uses an artifact instead of a masked cross-job token output", () =>
+describe("release workflow stays separate from optional relay deploy", () => {
+  it.effect("does not embed relay deploy or client tracing token plumbing", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -209,11 +209,14 @@ describe("release workflow tracing config propagation", () => {
       );
       const workflow = yield* fileSystem.readFileString(workflowPath);
 
+      // npm/desktop release must not smuggle relay deploy secrets or masked
+      // cross-job tracing tokens; optional relay has its own workflow.
       expect(workflow).not.toContain("client_tracing_token:");
       expect(workflow).not.toContain("needs.relay_public_config.outputs.client_tracing_token");
-      expect(workflow).toContain('--github-env-file "$RUNNER_TEMP/relay-client-tracing.env"');
-      expect(workflow).toContain("name: relay-client-tracing-config");
-      expect(workflow).toContain('cat "$config_path" >> "$GITHUB_ENV"');
+      expect(workflow).not.toContain("optional-hosted-relay");
+      expect(workflow).not.toContain("deploy-optional-relay");
+      expect(workflow).not.toContain("relay-client-tracing-config");
+      expect(workflow).not.toContain('--github-env-file "$RUNNER_TEMP/relay-client-tracing.env"');
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

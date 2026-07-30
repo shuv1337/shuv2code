@@ -4,21 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Prepare artifacts or perform external publication"
+        description: "Prepare reviewable artifacts or perform protected external publication"
         required: true
         default: prepare
         type: choice
         options: [prepare, publish]
       channel:
-        description: "npm and release channel"
+        description: "Release channel; named releases use the committed server version"
         required: true
-        default: latest
+        default: next
         type: choice
-        options: [latest, nightly]
-      version:
-        description: "Exact semver (initial release: 0.1.0-alpha.1)"
+        options: [latest, next, nightly]
+      release_summary:
+        description: "Short operator-written summary prepended to generated GitHub release notes"
         required: true
-        default: 0.1.0-alpha.1
         type: string
       ios_sqim_release_confirmed:
         description: "Confirm the matching iOS build was released through Sqim before desktop publication"
@@ -30,44 +29,169 @@ permissions:
   contents: read
 
 concurrency:
-  group: shuv2code-release-${{ inputs.version }}-${{ inputs.mode }}
+  group: shuv2code-release-${{ github.sha }}-${{ inputs.channel }}-${{ inputs.mode }}
   cancel-in-progress: false
 
 jobs:
-  preflight:
+  resolve:
+    name: Resolve immutable release identity
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      npm_dist_tag: ${{ steps.release.outputs.npm_dist_tag }}
+      github_prerelease: ${{ steps.release.outputs.github_prerelease }}
+      github_make_latest: ${{ steps.release.outputs.github_make_latest }}
+      release_class: ${{ steps.release.outputs.release_class }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      tag: ${{ steps.release.outputs.tag }}
+      previous_tag: ${{ steps.release.outputs.previous_tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: false
           run-install: true
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Validate release request
+      - name: Print and validate release toolchain
         shell: bash
         run: |
           set -euo pipefail
-          version="${{ inputs.version }}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid semantic version: $version" >&2
+          echo "node=$(node --version)"
+          echo "npm=$(npm --version)"
+          NPM_VERSION="$(npm --version)" node <<'NODE'
+          const compare = (actual, minimum) => {
+            const left = actual.split(".").map(Number)
+            const right = minimum.split(".").map(Number)
+            return left[0] > right[0] ||
+              (left[0] === right[0] && left[1] > right[1]) ||
+              (left[0] === right[0] && left[1] === right[1] && left[2] >= right[2])
+          }
+          if (!compare(process.versions.node, "22.14.0")) throw new Error("Node >=22.14.0 is required")
+          if (!compare(process.env.NPM_VERSION, "11.5.1")) throw new Error("npm >=11.5.1 is required")
+          NODE
+
+      - name: Resolve version, channel, source, and duplicate gates
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="${{ inputs.channel }}"
+
+          if [[ "${{ inputs.mode }}" == "publish" && "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Publication must run from the main branch; received ${GITHUB_REF}." >&2
             exit 1
           fi
           if [[ "${{ inputs.mode }}" == "publish" && "${{ inputs.ios_sqim_release_confirmed }}" != "true" ]]; then
             echo "Publishing is blocked until the matching iOS Sqim release is confirmed." >&2
             exit 1
           fi
+
+          if [[ "$channel" == "nightly" ]]; then
+            metadata="$(node scripts/resolve-nightly-release.ts \
+              --date "$(date -u +%Y%m%d)" \
+              --run-number "${GITHUB_RUN_NUMBER}" \
+              --sha "${GITHUB_SHA}")"
+            version="$(printf '%s\n' "$metadata" | awk -F= '$1 == "version" { print $2 }')"
+            test -n "$version"
+          else
+            version="$(node -p "require('./apps/server/package.json').version")"
+          fi
+
+          node scripts/validate-release-request.ts "$version" --channel "$channel" --github-output
+          echo "source_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
           node scripts/update-release-package-versions.ts "$version"
-          test "$(node -p "require('./apps/server/package.json').version")" = "$version"
+          if [[ "$channel" != "nightly" ]] && ! git diff --quiet -- \
+            apps/server/package.json \
+            apps/desktop/package.json \
+            apps/web/package.json \
+            apps/mobile/app.config.ts \
+            packages/contracts/package.json \
+            packages/shared/package.json \
+            packages/tailscale/package.json \
+            packages/effect-acp/package.json \
+            packages/effect-codex-app-server/package.json; then
+            echo "Named release metadata must already match committed server version ${version}." >&2
+            git diff -- \
+              apps/server/package.json \
+              apps/desktop/package.json \
+              apps/web/package.json \
+              apps/mobile/app.config.ts \
+              packages/contracts/package.json \
+              packages/shared/package.json \
+              packages/tailscale/package.json \
+              packages/effect-acp/package.json \
+              packages/effect-codex-app-server/package.json
+            exit 1
+          fi
+
+          if git rev-parse --verify --quiet "refs/tags/v${version}" >/dev/null; then
+            echo "Git tag v${version} already exists." >&2
+            exit 1
+          fi
+
+          if [[ "$channel" == "nightly" ]]; then
+            release_notes_channel=nightly
+          else
+            release_notes_channel=stable
+          fi
+          node scripts/resolve-previous-release-tag.ts \
+            --channel "$release_notes_channel" \
+            --current-tag "v${version}" \
+            --github-output
+
+          set +e
+          npm_lookup="$(npm view "shuv2code@${version}" version --json 2>&1)"
+          npm_status=$?
+          set -e
+          if [[ $npm_status -eq 0 ]]; then
+            echo "npm version shuv2code@${version} already exists." >&2
+            exit 1
+          fi
+          if ! grep -q "E404" <<<"$npm_lookup"; then
+            echo "Unable to prove shuv2code@${version} is absent from npm:" >&2
+            printf '%s\n' "$npm_lookup" >&2
+            exit 1
+          fi
+
+          {
+            echo "### Resolved release"
+            echo "- Version: \`${version}\`"
+            echo "- npm dist-tag: \`${channel}\`"
+            echo "- Source SHA: \`${GITHUB_SHA}\`"
+            echo "- Mode: \`${{ inputs.mode }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: Verify resolved source once
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          fetch-depth: 0
+
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: rustfmt
+
+      - name: Align resolved release metadata
+        run: node scripts/update-release-package-versions.ts "${{ needs.resolve.outputs.version }}"
 
       - name: Validate identity and generated inputs
         run: |
@@ -75,114 +199,167 @@ jobs:
           vp run schema:check
           vp run icons:check
 
-      - name: Full CI verification
+      - name: Release preflight verification
         run: |
+          set -euo pipefail
           vp check
           vp run typecheck
           vp run test
+          node scripts/release-smoke.ts
           cargo fmt --manifest-path native/resource-monitor/Cargo.toml -- --check
           cargo test --locked --manifest-path native/resource-monitor/Cargo.toml
 
       - name: Validate mobile release configurations
         run: |
+          set -euo pipefail
           APP_VARIANT=production vp run --filter @shuv2code/mobile config:prod
           APP_VARIANT=preview vp run --filter @shuv2code/mobile config:preview
 
-  npm_server:
-    name: Build and optionally publish exact npm server
-    needs: preflight
+  pack_npm:
+    name: Build, inspect, and digest npm tarball once
+    needs: [resolve, verify]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
 
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: false
           run-install: true
 
       - name: Align exact release version
-        run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
+        run: node scripts/update-release-package-versions.ts "${{ needs.resolve.outputs.version }}"
 
-      - name: Build and pack server
+      - name: Build complete server and web package
         run: |
-          vp run --filter shuv2code build:bundle
+          set -euo pipefail
+          vp run --filter shuv2code build
+          if [[ "${{ needs.resolve.outputs.npm_dist_tag }}" == "nightly" ]]; then
+            asset_brand=nightly
+          else
+            asset_brand=production
+          fi
+          node scripts/apply-web-brand-assets.ts "$asset_brand" apps/server/dist/client
+          test -f apps/server/dist/bin.mjs
+          test -f apps/server/dist/client/index.html
+
+      - name: Pack and inspect exact tarball
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p release-server
-          pnpm --filter shuv2code pack --pack-destination "$GITHUB_WORKSPACE/release-server"
+          node scripts/prepare-release-package.ts \
+            --output release-server/package \
+            --version "${{ needs.resolve.outputs.version }}"
+          (
+            cd release-server/package
+            pnpm pack --pack-destination "$GITHUB_WORKSPACE/release-server"
+          )
 
-      - uses: actions/upload-artifact@v7
+          mapfile -t tarballs < <(find release-server -maxdepth 1 -type f -name '*.tgz' -print)
+          if [[ ${#tarballs[@]} -ne 1 ]]; then
+            echo "Expected exactly one npm tarball, found ${#tarballs[@]}." >&2
+            exit 1
+          fi
+          tarball="${tarballs[0]}"
+          digest="${tarball}.sha256"
+          node scripts/inspect-release-package.ts \
+            --tarball "$tarball" \
+            --version "${{ needs.resolve.outputs.version }}" \
+            --digest-output "$digest"
+          (cd release-server && sha256sum --check "$(basename "$digest")")
+          {
+            echo "### npm artifact ready for review"
+            echo "- Tarball: \`$(basename "$tarball")\`"
+            echo "- SHA-256: \`$(cut -d' ' -f1 "$digest")\`"
+            echo "- Source SHA: \`${{ needs.resolve.outputs.source_sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: shuv2code-npm-${{ inputs.version }}
-          path: release-server/*.tgz
+          name: shuv2code-npm-${{ needs.resolve.outputs.version }}
+          path: |
+            release-server/*.tgz
+            release-server/*.sha256
           if-no-files-found: error
-
-      - name: Publish server before clients
-        if: inputs.mode == 'publish'
-        run: pnpm --filter shuv2code publish --no-git-checks --tag "${{ inputs.channel }}" --provenance
 
   linux:
     name: Linux x64 AppImage
-    needs: npm_server
+    needs: [resolve, pack_npm]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: false
           run-install: true
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           targets: x86_64-unknown-linux-gnu
-      - run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
+      - run: node scripts/update-release-package-versions.ts "${{ needs.resolve.outputs.version }}"
       - name: Build AppImage
-        run: vp run dist:desktop:artifact --platform linux --target AppImage --arch x64 --build-version "${{ inputs.version }}"
-      - name: Collect artifact
+        run: vp run dist:desktop:artifact --platform linux --target AppImage --arch x64 --build-version "${{ needs.resolve.outputs.version }}"
+      - name: Collect and digest artifact
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p release-linux
           find release -maxdepth 1 -type f -name '*.AppImage*' -exec cp {} release-linux/ \;
           test -n "$(find release-linux -type f -print -quit)"
-      - uses: actions/upload-artifact@v7
+          (
+            cd release-linux
+            find . -maxdepth 1 -type f ! -name '*.sha256' -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              > "shuv2code-linux-x64-${{ needs.resolve.outputs.version }}.sha256"
+          )
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: shuv2code-linux-x64-${{ inputs.version }}
+          name: shuv2code-linux-x64-${{ needs.resolve.outputs.version }}
           path: release-linux/*
           if-no-files-found: error
 
   macos_arm64:
     name: Signed Apple silicon DMG and ZIP
-    needs: npm_server
+    needs: [resolve, pack_npm]
     runs-on: macos-15
     timeout-minutes: 40
     env:
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      SHUV2CODE_APPLE_TEAM_ID: ${{ vars.SHUV2CODE_APPLE_TEAM_ID }}
-      MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
       SHUV2CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.SHUV2CODE_CLERK_PASSKEY_RP_DOMAINS }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: false
           run-install: true
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           targets: aarch64-apple-darwin
-      - run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
+      - run: node scripts/update-release-package-versions.ts "${{ needs.resolve.outputs.version }}"
       - name: Require signing inputs for publication
         if: inputs.mode == 'publish'
         shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          SHUV2CODE_APPLE_TEAM_ID: ${{ vars.SHUV2CODE_APPLE_TEAM_ID }}
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
         run: |
           set -euo pipefail
           for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER SHUV2CODE_APPLE_TEAM_ID MACOS_PROVISIONING_PROFILE; do
@@ -191,7 +368,12 @@ jobs:
       - name: Prepare signing inputs
         if: inputs.mode == 'publish'
         shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
         run: |
+          set -euo pipefail
           key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
           printf '%s' "$APPLE_API_KEY" > "$key_path"
           echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
@@ -199,47 +381,168 @@ jobs:
           printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
           security cms -D -i "$profile_path" >/dev/null
           echo "SHUV2CODE_MACOS_PROVISIONING_PROFILE=$profile_path" >> "$GITHUB_ENV"
-      - name: Build DMG and ZIP
+      - name: Build unsigned DMG and ZIP
+        if: inputs.mode == 'prepare'
+        run: vp run dist:desktop:artifact --platform mac --target dmg --arch arm64 --build-version "${{ needs.resolve.outputs.version }}"
+      - name: Build signed DMG and ZIP
+        if: inputs.mode == 'publish'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          SHUV2CODE_APPLE_TEAM_ID: ${{ vars.SHUV2CODE_APPLE_TEAM_ID }}
+        run: vp run dist:desktop:artifact --platform mac --target dmg --arch arm64 --build-version "${{ needs.resolve.outputs.version }}" --signed
+      - name: Collect and digest artifacts
         shell: bash
         run: |
-          args=(--platform mac --target dmg --arch arm64 --build-version "${{ inputs.version }}")
-          if [[ "${{ inputs.mode }}" == "publish" ]]; then args+=(--signed); fi
-          vp run dist:desktop:artifact "${args[@]}"
-      - name: Collect artifacts
-        run: |
+          set -euo pipefail
           mkdir -p release-macos
           find release -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.yml' \) -exec cp {} release-macos/ \;
-          test -n "$(find release-macos -type f -print -quit)"
-      - uses: actions/upload-artifact@v7
+          test -n "$(find release-macos -type f -name '*.dmg' -print -quit)"
+          test -n "$(find release-macos -type f -name '*.zip' -print -quit)"
+          test -n "$(find release-macos -type f -name '*.yml' -print -quit)"
+          (
+            cd release-macos
+            find . -maxdepth 1 -type f ! -name '*.sha256' -print0 \
+              | sort -z \
+              | xargs -0 shasum -a 256 \
+              > "shuv2code-macos-arm64-${{ needs.resolve.outputs.version }}.sha256"
+          )
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: shuv2code-macos-arm64-${{ inputs.version }}
+          name: shuv2code-macos-arm64-${{ needs.resolve.outputs.version }}
           path: release-macos/*
           if-no-files-found: error
 
-  github_release:
-    name: Publish GitHub prerelease after npm, iOS, Linux, and macOS
+  publish_npm:
+    name: Publish approved immutable npm tarball
     if: inputs.mode == 'publish'
-    needs: [npm_server, linux, macos_arm64]
+    needs: [resolve, pack_npm, linux, macos_arm64]
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.13.1
+          # Required for npm trusted publishing / OIDC: writes the registry .npmrc
+          # that participates in the token exchange. Do not add NPM_TOKEN.
+          registry-url: https://registry.npmjs.org
+
+      - name: Print and validate trusted-publishing client
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "node=$(node --version)"
+          echo "npm=$(npm --version)"
+          NPM_VERSION="$(npm --version)" node <<'NODE'
+          const compare = (actual, minimum) => {
+            const left = actual.split(".").map(Number)
+            const right = minimum.split(".").map(Number)
+            return left[0] > right[0] ||
+              (left[0] === right[0] && left[1] > right[1]) ||
+              (left[0] === right[0] && left[1] === right[1] && left[2] >= right[2])
+          }
+          if (!compare(process.versions.node, "22.14.0")) throw new Error("Node >=22.14.0 is required")
+          if (!compare(process.env.NPM_VERSION, "11.5.1")) throw new Error("npm >=11.5.1 is required")
+          NODE
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: shuv2code-npm-${{ needs.resolve.outputs.version }}
+          path: release-server
+
+      - name: Verify digest and publish exact tarball with npm OIDC
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t tarballs < <(find release-server -maxdepth 1 -type f -name '*.tgz' -print)
+          mapfile -t digests < <(find release-server -maxdepth 1 -type f -name '*.sha256' -print)
+          [[ ${#tarballs[@]} -eq 1 && ${#digests[@]} -eq 1 ]]
+          (cd release-server && sha256sum --check "$(basename "${digests[0]}")")
+          npm publish "${tarballs[0]}" \
+            --access public \
+            --tag "${{ needs.resolve.outputs.npm_dist_tag }}"
+
+      - name: Wait for exact npm version and verify dist-tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.resolve.outputs.version }}"
+          channel="${{ needs.resolve.outputs.npm_dist_tag }}"
+          observed=""
+          for attempt in $(seq 1 18); do
+            observed="$(npm view "shuv2code@${version}" version --json 2>/dev/null | tr -d '"[:space:]' || true)"
+            [[ "$observed" == "$version" ]] && break
+            sleep 10
+          done
+          [[ "$observed" == "$version" ]] || {
+            echo "shuv2code@${version} was not observable after publication." >&2
+            exit 1
+          }
+          npm view shuv2code dist-tags --json > dist-tags.json
+          CHANNEL="$channel" VERSION="$version" node <<'NODE'
+          const fs = require("node:fs")
+          const tags = JSON.parse(fs.readFileSync("dist-tags.json", "utf8"))
+          const channel = process.env.CHANNEL
+          const version = process.env.VERSION
+          if (tags[channel] !== version) {
+            throw new Error(`Expected ${channel} -> ${version}`)
+          }
+          // Prereleases and nightlies must never become the default install target.
+          if (channel !== "latest" && tags.latest === version) {
+            throw new Error(`npm dist-tag latest unexpectedly points at non-stable ${version}`)
+          }
+          NODE
+
+  publish_github:
+    name: Publish GitHub release after exact npm version exists
+    if: inputs.mode == 'publish'
+    needs: [resolve, publish_npm, linux, macos_arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          pattern: shuv2code-*-${{ inputs.version }}
+          node-version: 24.13.1
+
+      - name: Prove exact npm version exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.resolve.outputs.version }}"
+          observed="$(npm view "shuv2code@${version}" version --json | tr -d '"[:space:]')"
+          [[ "$observed" == "$version" ]]
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: shuv2code-linux-x64-${{ needs.resolve.outputs.version }}
           path: release-assets
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          tag_name: v${{ inputs.version }}
-          target_commitish: ${{ github.sha }}
-          name: shuv2code v${{ inputs.version }}
+          name: shuv2code-macos-arm64-${{ needs.resolve.outputs.version }}
+          path: release-assets
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          target_commitish: ${{ needs.resolve.outputs.source_sha }}
+          name: shuv2code v${{ needs.resolve.outputs.version }}
+          body: ${{ inputs.release_summary }}
           generate_release_notes: true
-          prerelease: true
-          make_latest: false
+          previous_tag: ${{ needs.resolve.outputs.previous_tag }}
+          prerelease: ${{ needs.resolve.outputs.github_prerelease == 'true' }}
+          make_latest: ${{ needs.resolve.outputs.github_make_latest == 'true' }}
           files: |
             release-assets/*.AppImage
             release-assets/*.dmg
             release-assets/*.zip
             release-assets/*.yml
+            release-assets/*.sha256
           fail_on_unmatched_files: true

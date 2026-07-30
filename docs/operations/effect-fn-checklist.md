@@ -147,12 +147,11 @@ Effect.fn("name")(
 - [ ] [close](../../apps/server/src/provider/Layers/EventNdjsonLogger.ts#L247)
 - [ ] Flush and writer-resolution callback wrappers in this file
 
-### `apps/server/scripts/cli.ts` (`8`)
+### `apps/server/scripts/cli.ts` (`3`)
 
-- [ ] Command handlers around [cli.ts](../../apps/server/scripts/cli.ts#L125)
-- [ ] Command handlers around [cli.ts](../../apps/server/scripts/cli.ts#L170)
-- [ ] Resource callbacks around [cli.ts](../../apps/server/scripts/cli.ts#L221)
-- [ ] Resource callbacks around [cli.ts](../../apps/server/scripts/cli.ts#L239)
+- [ ] [runCommand](../../apps/server/scripts/cli.ts#L22)
+- [ ] [applyDevelopmentIconOverrides](../../apps/server/scripts/cli.ts#L37)
+- [ ] Build command handler around [cli.ts](../../apps/server/scripts/cli.ts#L70)
 
 ### `apps/server/src/orchestration/Layers/OrchestrationEngine.ts` (`7`)
 

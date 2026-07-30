@@ -1,10 +1,21 @@
 {
   "name": "shuv2code",
   "version": "0.1.0-alpha.1",
+  "description": "Local-first coding agent server and CLI for shuv2code",
+  "keywords": [
+    "cli",
+    "coding-agent",
+    "devtools",
+    "shuv2code"
+  ],
+  "homepage": "https://github.com/shuv1337/shuv2code",
+  "bugs": {
+    "url": "https://github.com/shuv1337/shuv2code/issues"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shuv1337/shuv2code",
+    "url": "git+https://github.com/shuv1337/shuv2code.git",
     "directory": "apps/server"
   },
   "bin": {
@@ -12,7 +23,9 @@
     "shuv2code": "./dist/bin.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "type": "module",
   "publishConfig": {

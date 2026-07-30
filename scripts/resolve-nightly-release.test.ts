@@ -9,33 +9,28 @@ import * as PlatformError from "effect/PlatformError";
 
 import {
   readDesktopBaseVersion,
-  resolveNightlyBaseVersion,
   resolveNightlyReleaseMetadata,
   resolveNightlyTargetVersion,
   writeNightlyReleaseOutput,
 } from "./resolve-nightly-release.ts";
 
-it("strips prerelease and build metadata when deriving the nightly base version", () => {
-  assert.equal(resolveNightlyBaseVersion("0.0.17"), "0.0.17");
-  assert.equal(resolveNightlyBaseVersion("9.9.9-smoke.0"), "9.9.9");
-  assert.equal(resolveNightlyBaseVersion("1.2.3-beta.4+build.9"), "1.2.3");
-});
-
-it.effect("bumps the patch version before deriving nightly prerelease versions", () =>
+it.effect("keeps prerelease cores and bumps only stable committed versions", () =>
   Effect.gen(function* () {
     assert.equal(yield* resolveNightlyTargetVersion("0.0.17"), "0.0.18");
-    assert.equal(yield* resolveNightlyTargetVersion("9.9.9-smoke.0"), "9.9.10");
-    assert.equal(yield* resolveNightlyTargetVersion("1.2.3-beta.4+build.9"), "1.2.4");
+    assert.equal(yield* resolveNightlyTargetVersion("0.1.0"), "0.1.1");
+    assert.equal(yield* resolveNightlyTargetVersion("0.1.0-alpha.1"), "0.1.0");
+    assert.equal(yield* resolveNightlyTargetVersion("9.9.9-smoke.0"), "9.9.9");
+    assert.equal(yield* resolveNightlyTargetVersion("1.2.3-beta.4+build.9"), "1.2.3");
   }),
 );
 
-it.effect("reports the invalid desktop package version", () =>
+it.effect("reports the invalid product package version", () =>
   Effect.gen(function* () {
     const error = yield* resolveNightlyTargetVersion("nightly").pipe(Effect.flip);
 
     assert.equal(error._tag, "InvalidDesktopPackageVersionError");
     assert.equal(error.version, "nightly");
-    assert.equal(error.message, "Invalid desktop package version 'nightly'.");
+    assert.equal(error.message, "Invalid product package version 'nightly'.");
   }),
 );
 
@@ -76,14 +71,14 @@ it.effect("preserves the GITHUB_OUTPUT configuration cause", () => {
 });
 
 it.layer(NodeServices.layer)("readDesktopBaseVersion", (it) => {
-  it.effect("preserves desktop package read context and its platform cause", () =>
+  it.effect("preserves server package read context and its platform cause", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const rootDir = yield* fs.makeTempDirectoryScoped({
         prefix: "resolve-nightly-release-read-",
       });
-      const packageJsonPath = path.join(rootDir, "apps/desktop/package.json");
+      const packageJsonPath = path.join(rootDir, "apps/server/package.json");
 
       const error = yield* readDesktopBaseVersion(rootDir).pipe(Effect.flip);
 
@@ -97,14 +92,14 @@ it.layer(NodeServices.layer)("readDesktopBaseVersion", (it) => {
     }),
   );
 
-  it.effect("preserves desktop package decode context and its schema cause", () =>
+  it.effect("preserves server package decode context and its schema cause", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const rootDir = yield* fs.makeTempDirectoryScoped({
         prefix: "resolve-nightly-release-decode-",
       });
-      const packageJsonPath = path.join(rootDir, "apps/desktop/package.json");
+      const packageJsonPath = path.join(rootDir, "apps/server/package.json");
       yield* fs.makeDirectory(path.dirname(packageJsonPath), { recursive: true });
       yield* fs.writeFileString(packageJsonPath, "{");
 
@@ -117,6 +112,25 @@ it.layer(NodeServices.layer)("readDesktopBaseVersion", (it) => {
       assert.equal(error.packageJsonPath, packageJsonPath);
       assert.ok(error.cause !== undefined);
       assert.notInclude(error.message, String((error.cause as Error).message));
+    }),
+  );
+
+  it.effect("derives nightly core from the committed server version", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const rootDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "resolve-nightly-release-server-",
+      });
+      const packageJsonPath = path.join(rootDir, "apps/server/package.json");
+      yield* fs.makeDirectory(path.dirname(packageJsonPath), { recursive: true });
+      yield* fs.writeFileString(
+        packageJsonPath,
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - Static JSON fixture content.
+        `${JSON.stringify({ name: "shuv2code", version: "0.1.0-alpha.1" }, null, 2)}\n`,
+      );
+
+      assert.equal(yield* readDesktopBaseVersion(rootDir), "0.1.0");
     }),
   );
 });

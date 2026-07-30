@@ -18,6 +18,7 @@ import {
 } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
+import { classifyReleaseVersion } from "./lib/release-version.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -1451,7 +1452,7 @@ export function resolveDesktopRuntimeDependencies(
 }
 
 export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
-  updateChannel: "latest" | "nightly",
+  version: string,
 ) {
   const env = yield* Config.all({
     updateRepository: Config.string("SHUV2CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
@@ -1467,17 +1468,24 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   const [owner, repo, ...rest] = rawRepo.split("/");
   if (!owner || !repo || rest.length > 0) return undefined;
 
+  const updateChannel = resolveDesktopUpdateChannel(version);
   return {
     provider: "github",
     owner,
     repo,
-    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
+    releaseType: resolveDesktopGitHubReleaseType(version),
     ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
   };
 });
 
 export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
-  return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
+  // Desktop branding/updater only distinguishes nightly vs production artwork.
+  // npm `next` prereleases share production desktop branding.
+  return classifyReleaseVersion(version).class === "nightly" ? "nightly" : "latest";
+}
+
+export function resolveDesktopGitHubReleaseType(version: string): "release" | "prerelease" {
+  return classifyReleaseVersion(version).githubPrerelease ? "prerelease" : "release";
 }
 
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
@@ -1553,7 +1561,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     extraResources: DESKTOP_EXTRA_RESOURCES,
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
-  const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
+  const publishConfig = yield* resolveGitHubPublishConfig(version);
   if (publishConfig) {
     buildConfig.publish = [publishConfig];
   } else if (mockUpdates) {

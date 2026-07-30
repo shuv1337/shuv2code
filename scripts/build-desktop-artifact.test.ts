@@ -32,6 +32,7 @@ import {
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
+  resolveDesktopGitHubReleaseType,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
   resolveResourceMonitorRustTargets,
@@ -88,6 +89,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("resolves the dedicated nightly updater channel from nightly versions", () => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42"), "nightly");
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
+    assert.equal(resolveDesktopUpdateChannel("0.1.0-alpha.1"), "latest");
+  });
+
+  it("marks any prerelease version as a GitHub prerelease", () => {
+    assert.equal(resolveDesktopGitHubReleaseType("0.1.0"), "release");
+    assert.equal(resolveDesktopGitHubReleaseType("0.1.0-alpha.1"), "prerelease");
+    assert.equal(resolveDesktopGitHubReleaseType("0.1.0-nightly.20260730.1"), "prerelease");
   });
 
   it("switches desktop packaging product names to nightly for nightly builds", () => {
@@ -116,7 +124,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it.effect("resolves GitHub desktop publish config from Effect config", () =>
     Effect.gen(function* () {
-      const latestConfig = yield* resolveGitHubPublishConfig("latest").pipe(
+      const latestConfig = yield* resolveGitHubPublishConfig("0.1.0").pipe(
         Effect.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
@@ -127,7 +135,18 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           ),
         ),
       );
-      const nightlyConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
+      const nextConfig = yield* resolveGitHubPublishConfig("0.1.0-alpha.1").pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                SHUV2CODE_DESKTOP_UPDATE_REPOSITORY: "shuv1337/shuv2code",
+              },
+            }),
+          ),
+        ),
+      );
+      const nightlyConfig = yield* resolveGitHubPublishConfig("0.1.0-nightly.20260730.1").pipe(
         Effect.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
@@ -144,6 +163,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         owner: "shuv1337",
         repo: "shuv2code",
         releaseType: "release",
+      });
+      assert.deepStrictEqual(nextConfig, {
+        provider: "github",
+        owner: "shuv1337",
+        repo: "shuv2code",
+        releaseType: "prerelease",
       });
       assert.deepStrictEqual(nightlyConfig, {
         provider: "github",

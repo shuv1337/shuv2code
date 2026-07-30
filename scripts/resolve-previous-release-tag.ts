@@ -164,12 +164,27 @@ const parseStableTag = (tag: string): StableVersion | undefined => {
   };
 };
 
+const SHUV2CODE_STABLE_BASELINE: StableVersion = {
+  major: 0,
+  minor: 1,
+  patch: 0,
+  prerelease: ["alpha", "1"],
+};
+
 const compareNightlyVersions = (left: NightlyVersion, right: NightlyVersion): number => {
   if (left.major !== right.major) return left.major - right.major;
   if (left.minor !== right.minor) return left.minor - right.minor;
   if (left.patch !== right.patch) return left.patch - right.patch;
   if (left.date !== right.date) return left.date - right.date;
   return left.runNumber - right.runNumber;
+};
+
+const SHUV2CODE_NIGHTLY_BASELINE: NightlyVersion = {
+  major: 0,
+  minor: 1,
+  patch: 0,
+  date: 0,
+  runNumber: 0,
 };
 
 const parseNightlyTag = (tag: string): NightlyVersion | undefined => {
@@ -207,7 +222,11 @@ export const resolvePreviousReleaseTag = (
         .filter(
           (entry): entry is { tag: string; parsed: StableVersion } => entry.parsed !== undefined,
         )
-        .filter((entry) => compareStableVersions(entry.parsed, current) < 0)
+        .filter(
+          (entry) =>
+            compareStableVersions(entry.parsed, SHUV2CODE_STABLE_BASELINE) >= 0 &&
+            compareStableVersions(entry.parsed, current) < 0,
+        )
         .toSorted((left, right) => compareStableVersions(right.parsed, left.parsed));
 
       return candidates[0]?.tag;
@@ -223,7 +242,11 @@ export const resolvePreviousReleaseTag = (
       .filter(
         (entry): entry is { tag: string; parsed: NightlyVersion } => entry.parsed !== undefined,
       )
-      .filter((entry) => compareNightlyVersions(entry.parsed, current) < 0)
+      .filter(
+        (entry) =>
+          compareNightlyVersions(entry.parsed, SHUV2CODE_NIGHTLY_BASELINE) >= 0 &&
+          compareNightlyVersions(entry.parsed, current) < 0,
+      )
       .toSorted((left, right) => compareNightlyVersions(right.parsed, left.parsed));
 
     return candidates[0]?.tag;

@@ -23,7 +23,10 @@ class Shuv2CodeReviewDiffModule : Module() {
       Prop("selectedRowIdsJson") { view: Shuv2CodeReviewDiffView, selectedRowIdsJson: String ->
         view.setSelectedRowIdsJson(selectedRowIdsJson)
       }
-      Prop("collapsedCommentIdsJson") { view: Shuv2CodeReviewDiffView, collapsedCommentIdsJson: String ->
+      Prop("collapsedCommentIdsJson") {
+          view: Shuv2CodeReviewDiffView,
+          collapsedCommentIdsJson: String
+        ->
         view.setCollapsedCommentIdsJson(collapsedCommentIdsJson)
       }
       Prop("appearanceScheme") { view: Shuv2CodeReviewDiffView, appearanceScheme: String ->
@@ -54,7 +57,11 @@ class Shuv2CodeReviewDiffModule : Module() {
         "onToggleComment",
       )
 
-      AsyncFunction("scrollToFile") { view: Shuv2CodeReviewDiffView, fileId: String, animated: Boolean ->
+      AsyncFunction("scrollToFile") {
+          view: Shuv2CodeReviewDiffView,
+          fileId: String,
+          animated: Boolean
+        ->
         view.scrollToFile(fileId, animated)
       }
       AsyncFunction("scrollToTop") { view: Shuv2CodeReviewDiffView, animated: Boolean ->
@@ -66,7 +73,10 @@ class Shuv2CodeReviewDiffModule : Module() {
       AsyncFunction("setTokensJson") { view: Shuv2CodeReviewDiffView, tokensJson: String ->
         view.setTokensJson(tokensJson)
       }
-      AsyncFunction("setTokensPatchJson") { view: Shuv2CodeReviewDiffView, tokensPatchJson: String ->
+      AsyncFunction("setTokensPatchJson") {
+          view: Shuv2CodeReviewDiffView,
+          tokensPatchJson: String
+        ->
         view.setTokensPatchJson(tokensPatchJson)
       }
 

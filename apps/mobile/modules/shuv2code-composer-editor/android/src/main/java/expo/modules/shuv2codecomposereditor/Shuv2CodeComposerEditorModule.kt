@@ -26,7 +26,10 @@ class Shuv2CodeComposerEditorModule : Module() {
       Prop("lineHeight") { view: Shuv2CodeComposerEditorView, lineHeight: Double ->
         view.setLineHeight(lineHeight.toFloat())
       }
-      Prop("contentInsetVertical") { view: Shuv2CodeComposerEditorView, contentInsetVertical: Double ->
+      Prop("contentInsetVertical") {
+          view: Shuv2CodeComposerEditorView,
+          contentInsetVertical: Double
+        ->
         view.setContentInsetVertical(contentInsetVertical.toInt())
       }
 

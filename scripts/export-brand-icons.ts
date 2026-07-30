@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off - Deterministic build-time asset generator uses direct filesystem and CLI output.
 
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import * as NodeProcess from "node:process";
 
 import sharp from "sharp";
 
@@ -17,9 +18,12 @@ interface BrandManifest {
   >;
 }
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const checkOnly = process.argv.includes("--check");
-const sourcePath = resolve(repositoryRoot, "assets/brand/shuv2code-devil-terminal.svg");
+const repositoryRoot = NodePath.resolve(
+  NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
+  "..",
+);
+const checkOnly = NodeProcess.argv.includes("--check");
+const sourcePath = NodePath.resolve(repositoryRoot, "assets/brand/shuv2code-devil-terminal.svg");
 
 const outputs = {
   production: {
@@ -94,8 +98,8 @@ async function renderMac(source: Buffer, background: string): Promise<Buffer> {
 
 async function generate() {
   const [manifestText, source] = await Promise.all([
-    readFile(resolve(repositoryRoot, "brand/shuv2code.brand.json"), "utf8"),
-    readFile(sourcePath, "utf8"),
+    NodeFSP.readFile(NodePath.resolve(repositoryRoot, "brand/shuv2code.brand.json"), "utf8"),
+    NodeFSP.readFile(sourcePath, "utf8"),
   ]);
   const manifest = JSON.parse(manifestText) as BrandManifest;
   const generated = new Map<string, Buffer>();
@@ -153,8 +157,8 @@ async function generate() {
     }
   }
 
-  const monochromeSource = await readFile(
-    resolve(repositoryRoot, "assets/brand/shuv2code-devil-terminal-monochrome.svg"),
+  const monochromeSource = await NodeFSP.readFile(
+    NodePath.resolve(repositoryRoot, "assets/brand/shuv2code-devil-terminal-monochrome.svg"),
   );
   generated.set(
     "apps/mobile/assets/android-icon-mark.png",
@@ -173,12 +177,12 @@ async function generate() {
 
   const stale: string[] = [];
   for (const [relativePath, expected] of generated) {
-    const absolutePath = resolve(repositoryRoot, relativePath);
+    const absolutePath = NodePath.resolve(repositoryRoot, relativePath);
     if (checkOnly) {
-      const actual = await readFile(absolutePath).catch(() => null);
+      const actual = await NodeFSP.readFile(absolutePath).catch(() => null);
       if (!actual?.equals(expected)) stale.push(relativePath);
     } else {
-      await writeFile(absolutePath, expected);
+      await NodeFSP.writeFile(absolutePath, expected);
     }
   }
 

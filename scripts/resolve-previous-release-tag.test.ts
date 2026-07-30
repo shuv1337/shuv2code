@@ -54,6 +54,18 @@ it.effect("selects the latest earlier stable tag and ignores nightlies", () =>
   }),
 );
 
+it.effect("does not use inherited v0.0 tags as the named-release comparison base", () =>
+  Effect.gen(function* () {
+    const previous = yield* resolvePreviousReleaseTag("stable", "v0.1.0-alpha.2", [
+      "v0.0.99",
+      "v0.1.0-alpha.1",
+    ]);
+
+    assert.equal(previous, "v0.1.0-alpha.1");
+    assert.isUndefined(yield* resolvePreviousReleaseTag("stable", "v0.1.0-alpha.1", ["v0.0.99"]));
+  }),
+);
+
 it.effect("accepts legacy nightly tags when selecting the previous nightly", () =>
   Effect.gen(function* () {
     const previous = yield* resolvePreviousReleaseTag("nightly", "v1.2.0-nightly.20260620.2", [
@@ -62,6 +74,17 @@ it.effect("accepts legacy nightly tags when selecting the previous nightly", () 
     ]);
 
     assert.equal(previous, "nightly-v1.2.0-nightly.20260620.1");
+  }),
+);
+
+it.effect("does not use inherited v0.0 nightlies as the comparison base", () =>
+  Effect.gen(function* () {
+    const previous = yield* resolvePreviousReleaseTag("nightly", "v0.1.0-nightly.20260730.2", [
+      "v0.0.99-nightly.20260729.9",
+      "v0.1.0-nightly.20260730.1",
+    ]);
+
+    assert.equal(previous, "v0.1.0-nightly.20260730.1");
   }),
 );
 

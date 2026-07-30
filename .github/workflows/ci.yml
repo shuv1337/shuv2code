@@ -6,11 +6,16 @@ on:
     branches:
       - main
 
+# Personal-project gate: one fast self-hosted job (brand/schema/icons + vp check).
+# Deeper verification lives on the manual release workflow's verify job:
+# typecheck, full unit/integration tests, release-smoke, and resource-monitor
+# cargo fmt/test. Desktop package builds, mobile native lint, and signed macOS
+# builds still run only on the release pack/platform jobs, not on every PR.
 jobs:
-  check:
-    name: Check
+  ci:
+    name: CI
     runs-on: [self-hosted, Linux, X64, shuv-ci, shuv2code-ci]
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -28,94 +33,5 @@ jobs:
           vp run schema:check
           vp run icons:check
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Ensure Electron runtime is installed
-        run: vp run --filter @shuv2code/desktop ensure:electron
-
-      - name: Check
+      - name: Lint
         run: vp check
-
-      - name: Typecheck
-        run: vpr typecheck
-
-      - name: Check resource monitor formatting
-        run: cargo fmt --manifest-path native/resource-monitor/Cargo.toml -- --check
-
-      - name: Build desktop pipeline
-        run: vp run build:desktop
-
-      - name: Verify preload bundle output
-        run: |
-          test -f apps/desktop/dist-electron/preload.cjs
-          grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
-          grep -n "__clerk_internal_electron_passkeys" apps/desktop/dist-electron/preload.cjs
-
-  test:
-    name: Test
-    runs-on: [self-hosted, Linux, X64, shuv-ci, shuv2code-ci]
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
-        with:
-          node-version-file: package.json
-          cache: true
-          run-install: true
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Ensure Electron runtime is installed
-        run: vp run --filter @shuv2code/desktop ensure:electron
-
-      - name: Test
-        run: vp run test
-
-      - name: Test resource monitor
-        run: cargo test --locked --manifest-path native/resource-monitor/Cargo.toml
-
-  mobile_native_static_analysis:
-    name: Mobile Native Static Analysis
-    runs-on: macos-15
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
-        with:
-          node-version-file: package.json
-          cache: true
-          run-install: true
-
-      - name: Install mobile native static analysis tools
-        run: brew bundle install --file apps/mobile/Brewfile
-
-      - name: Lint mobile native sources
-        run: vp run lint:mobile
-
-  release_smoke:
-    name: Release Smoke
-    runs-on: [self-hosted, Linux, X64, shuv-ci, shuv2code-ci]
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
-        with:
-          node-version-file: package.json
-          cache: true
-          run-install: true
-
-      - name: Exercise release-only workflow steps
-        run: node scripts/release-smoke.ts

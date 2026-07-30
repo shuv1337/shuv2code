@@ -69,6 +69,16 @@
       "path": "docs/operations/upstream-sync.md",
       "patternId": "legacy-slug",
       "reason": "The sync policy identifies the exact upstream repository."
+    },
+    {
+      "path": "apps/server/LICENSE",
+      "patternId": "upstream-owner",
+      "reason": "Preserve the upstream copyright notice required by the MIT license in the packed npm package."
+    },
+    {
+      "path": "apps/server/LICENSE",
+      "patternId": "legacy-visible-word",
+      "reason": "The upstream owner name is part of the required copyright notice copied into the npm package."
     }
   ]
 }
