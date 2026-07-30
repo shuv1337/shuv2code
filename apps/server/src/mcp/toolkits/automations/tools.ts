@@ -1,6 +1,8 @@
 import {
   AutomationConcurrencyPolicy,
   AutomationError,
+  AutomationListCursor,
+  AutomationListLimit,
   AutomationListResult,
   AutomationRun,
   AutomationListRunsResult,
@@ -74,6 +76,16 @@ export const AutomationListInput = Schema.Struct({
     description:
       "Optional enabled-state filter. Omit to return both active and paused automations.",
   }),
+  limit: Schema.optional(
+    AutomationListLimit.annotate({
+      description: "Maximum summaries to return in this page (1-100). Defaults to 50.",
+    }),
+  ).annotate({ description: "Maximum summaries to return in this page (1-100). Defaults to 50." }),
+  cursor: Schema.optional(
+    AutomationListCursor.annotate({
+      description: "Opaque nextCursor from a previous automation_list response.",
+    }),
+  ).annotate({ description: "Opaque nextCursor from a previous automation_list response." }),
 });
 
 const AutomationModelSelectionInput = Schema.Struct({
@@ -88,7 +100,7 @@ const AutomationModelSelectionInput = Schema.Struct({
 
 export const AutomationListTool = Tool.make("automation_list", {
   description:
-    "List the scheduled automations owned by this chat's current project. Returns complete configuration, enabled state, next-run time, and identifiers for follow-up actions.",
+    "List a bounded page of scheduled automation summaries owned by this chat's current project. Prompts are represented by a short preview and length; use automation_get for the complete prompt. Pass nextCursor back as cursor to continue.",
   parameters: AutomationListInput,
   success: AutomationListResult,
   failure: AutomationError,

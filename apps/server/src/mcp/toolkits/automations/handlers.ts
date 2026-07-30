@@ -104,14 +104,12 @@ export const automationHandlers = {
     Effect.gen(function* () {
       const context = yield* resolveCurrentAutomationContext();
       const service = yield* AutomationService.AutomationService;
-      const result = yield* service.list({ projectId: context.projectId });
-      return input.enabled === undefined
-        ? result
-        : {
-            automations: result.automations.filter(
-              (automation) => automation.enabled === input.enabled,
-            ),
-          };
+      return yield* service.list({
+        projectId: context.projectId,
+        enabled: input.enabled,
+        cursor: input.cursor,
+        limit: input.limit,
+      });
     }),
   automation_get: (input) =>
     Effect.gen(function* () {
