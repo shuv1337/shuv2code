@@ -143,6 +143,7 @@ export class PreviewAutomationResultTooLargeHostError extends Schema.TaggedError
     environmentId: EnvironmentId,
     threadId: ThreadId,
     tabId: Schema.NullOr(PreviewTabId),
+    budget: Schema.Literals(["metadata", "screenshot", "evaluation"]),
     actualBytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     maximumBytes: Schema.Int.check(Schema.isGreaterThan(0)),
   },
@@ -152,7 +153,13 @@ export class PreviewAutomationResultTooLargeHostError extends Schema.TaggedError
   }
 
   override get message(): string {
-    return `Preview automation ${this.operation} request ${this.requestId} produced ${this.actualBytes} bytes in tab ${this.tabId ?? "unassigned"}; maximum is ${this.maximumBytes} bytes.`;
+    const remedy =
+      this.budget === "screenshot"
+        ? " Retry without includeScreenshot or use a smaller viewport."
+        : this.budget === "metadata"
+          ? " Use preview_evaluate to inspect a specific selector or region."
+          : " Narrow the preview_evaluate expression or return less data.";
+    return `Preview automation ${this.operation} request ${this.requestId} exceeded the ${this.budget} budget in tab ${this.tabId ?? "unassigned"}: ${this.actualBytes} bytes, maximum ${this.maximumBytes}.${remedy}`;
   }
 }
 

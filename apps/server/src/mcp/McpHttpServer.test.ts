@@ -216,6 +216,63 @@ it.effect("returns bounded structural preview snapshot failures", () =>
   ).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("returns actionable producer screenshot budget failures", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const events = yield* broker.connect({
+        clientId: "mcp-budget-failure-client",
+        environmentId,
+      });
+      yield* Stream.runForEach(events, (event) =>
+        event.type === "connected"
+          ? Effect.void
+          : broker.respond({
+              clientId: "mcp-budget-failure-client",
+              connectionId: event.connectionId,
+              requestId: event.request.requestId,
+              ok: false,
+              error: {
+                _tag: "PreviewAutomationResultTooLargeError",
+                message: "requested screenshot exceeded its budget",
+                detail: {
+                  budget: "screenshot",
+                  actualBytes: 2_100_000,
+                  maximumBytes: 2_000_000,
+                },
+              },
+            }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const result = yield* server
+        .callTool({
+          name: "preview_snapshot",
+          arguments: { includeScreenshot: true },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0]).toMatchObject({
+        type: "text",
+        text: expect.stringContaining("Retry without includeScreenshot"),
+      });
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          _tag: McpHttpServer.PREVIEW_SNAPSHOT_BUDGET_ERROR_TAG,
+          budget: "screenshot",
+          actualBytes: 2_100_000,
+          maximumBytes: 2_000_000,
+        },
+      });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("terminates HTTP MCP sessions with DELETE", () =>
   Effect.scoped(
     Effect.gen(function* () {

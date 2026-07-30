@@ -59,6 +59,40 @@ const budgetDroppedAccessibilityTree = (tree: unknown): CompactAccessibilityTree
   };
 };
 
+const fitAccessibilityTreeToAllowance = (
+  tree: unknown,
+  allowance: number,
+): CompactAccessibilityTree => {
+  const compacted = compactAccessibilityTree(tree);
+  const { unavailableReason: _, ...summary } = compacted;
+  const empty = {
+    ...summary,
+    includedNodeCount: 0,
+    truncated: true,
+    nodes: [],
+  } satisfies CompactAccessibilityTree;
+  const fixedBytes = encodedByteLength(empty) - 2;
+  let nodesBytes = 2;
+  let includedNodeCount = 0;
+  for (const node of compacted.nodes) {
+    const nextNodeCount = includedNodeCount + 1;
+    const nextNodesBytes = nodesBytes + encodedByteLength(node) + (includedNodeCount === 0 ? 0 : 1);
+    // The empty summary already accounts for the single digit in
+    // includedNodeCount=0; count any additional digits before admitting a node.
+    const countWidthGrowth = String(nextNodeCount).length - 1;
+    if (fixedBytes + nextNodesBytes + countWidthGrowth > allowance) break;
+    nodesBytes = nextNodesBytes;
+    includedNodeCount = nextNodeCount;
+  }
+  const nodes = compacted.nodes.slice(0, includedNodeCount);
+  if (nodes.length === 0) return budgetDroppedAccessibilityTree(compacted);
+  return {
+    ...empty,
+    includedNodeCount,
+    nodes,
+  };
+};
+
 const fitTextToAllowance = (text: string, allowance: number): string => {
   if (allowance <= 0) return "";
   let candidate = text;
@@ -168,9 +202,15 @@ export const boundPreviewAutomationSnapshot = (
     }
   }
   if (overBudget()) {
-    const dropped = budgetDroppedAccessibilityTree(current.accessibilityTree);
-    if (encodedByteLength(dropped) < encodedByteLength(current.accessibilityTree)) {
-      reduce("accessibilityTree", { accessibilityTree: dropped });
+    const empty = budgetDroppedAccessibilityTree(current.accessibilityTree);
+    const allowance = allowanceFor(
+      "accessibilityTree",
+      { accessibilityTree: empty },
+      encodedByteLength(empty),
+    );
+    const fitted = fitAccessibilityTreeToAllowance(current.accessibilityTree, allowance);
+    if (encodedByteLength(fitted) < encodedByteLength(current.accessibilityTree)) {
+      reduce("accessibilityTree", { accessibilityTree: fitted });
     }
   }
   if (overBudget() && current.visibleText.length > 0) {

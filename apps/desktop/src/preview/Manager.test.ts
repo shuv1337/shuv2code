@@ -1,5 +1,8 @@
 import { it as effectIt } from "@effect/vitest";
-import type { DesktopPreviewRecordingFrame } from "@shuv2code/contracts";
+import {
+  type DesktopPreviewRecordingFrame,
+  parsePreviewAutomationResultTooLargeBytes,
+} from "@shuv2code/contracts";
 import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -20,6 +23,28 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import * as PreviewManager from "./Manager.ts";
+
+describe("PreviewAutomationResultTooLargeError transport", () => {
+  it("keeps generated desktop diagnostics parseable after IPC adds a prefix", () => {
+    for (const budget of ["screenshot", "evaluation"] as const) {
+      const error = new PreviewManager.PreviewAutomationResultTooLargeError({
+        tabId: "tab-1",
+        budget,
+        actualBytes: 2_100_000,
+        maximumBytes: 2_000_000,
+      });
+      const flattened = new Error(
+        `Error invoking remote method 'preview:automation:snapshot': ${error.message}`,
+      );
+
+      expect(parsePreviewAutomationResultTooLargeBytes(flattened)).toEqual({
+        budget,
+        actualBytes: 2_100_000,
+        maximumBytes: 2_000_000,
+      });
+    }
+  });
+});
 
 describe("fitPictureInPictureContentSize", () => {
   it("preserves the PiP content area across aspect-ratio changes", () => {

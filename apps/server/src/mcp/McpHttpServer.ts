@@ -201,6 +201,31 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   }
   const failures = cause.reasons.filter(Cause.isFailReason);
   const firstFailure = failures[0]?.error;
+  if (
+    typeof firstFailure === "object" &&
+    firstFailure !== null &&
+    "_tag" in firstFailure &&
+    firstFailure._tag === "PreviewAutomationResultTooLargeError" &&
+    "budget" in firstFailure &&
+    (firstFailure.budget === "metadata" || firstFailure.budget === "screenshot") &&
+    "actualBytes" in firstFailure &&
+    typeof firstFailure.actualBytes === "number" &&
+    "maximumBytes" in firstFailure &&
+    typeof firstFailure.maximumBytes === "number"
+  ) {
+    const text =
+      firstFailure.budget === "screenshot"
+        ? `Preview screenshot exceeded the ${firstFailure.maximumBytes}-byte safety budget (${firstFailure.actualBytes} bytes). Retry without includeScreenshot or use a smaller viewport.`
+        : `Preview snapshot metadata exceeded the ${firstFailure.maximumBytes}-byte safety budget (${firstFailure.actualBytes} bytes). Use preview_evaluate to inspect a specific selector or region instead of the whole page.`;
+    return Effect.succeed(
+      previewSnapshotBudgetError(
+        firstFailure.budget,
+        firstFailure.actualBytes,
+        firstFailure.maximumBytes,
+        text,
+      ),
+    );
+  }
   const errorTag =
     typeof firstFailure === "object" &&
     firstFailure !== null &&

@@ -6,6 +6,7 @@ import {
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationResultTooLargeError,
   PreviewAutomationTargetNotEditableError,
   PreviewTabId,
   ProviderInstanceId,
@@ -400,6 +401,48 @@ it.effect("classifies a remote non-editable target without collapsing it to exec
         remoteTag: "PreviewAutomationTargetNotEditableError",
       });
       expect(error.message).toBe("Preview automation type requires an editable focused element.");
+    }),
+  );
+});
+
+it.effect("preserves the remote evaluation budget kind and byte counts", () => {
+  const remoteError = {
+    _tag: "PreviewAutomationResultTooLargeError",
+    message: "evaluation budget exceeded",
+    detail: { budget: "evaluation", actualBytes: 70_000, maximumBytes: 64_000 },
+  } as const;
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: remoteError,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "evaluate",
+          input: { expression: "globalThis.largeValue" },
+          tabId: PreviewTabId.make("tab-1"),
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(PreviewAutomationResultTooLargeError);
+      expect(error).toMatchObject({
+        budget: "evaluation",
+        actualBytes: 70_000,
+        maximumBytes: 64_000,
+      });
+      expect(error.message).toContain("Narrow the preview_evaluate expression");
     }),
   );
 });
