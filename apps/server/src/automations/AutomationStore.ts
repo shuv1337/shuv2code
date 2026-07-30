@@ -393,7 +393,17 @@ export const make = Effect.gen(function* () {
               Result: AutomationDbRow,
               execute: () =>
                 sql.unsafe(
-                  `SELECT ${automationColumns} FROM project_automations WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at ASC, automation_id ASC`,
+                  `SELECT ${automationColumns}
+                   FROM project_automations
+                   WHERE enabled = 1
+                     AND next_run_at IS NOT NULL
+                     AND next_run_at <= ?
+                     AND EXISTS (
+                       SELECT 1 FROM projection_projects
+                       WHERE projection_projects.project_id = project_automations.project_id
+                         AND projection_projects.deleted_at IS NULL
+                     )
+                   ORDER BY next_run_at ASC, automation_id ASC`,
                   [now],
                 ),
             })();

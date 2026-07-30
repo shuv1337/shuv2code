@@ -67,18 +67,28 @@ const serviceLayer = it.layer(
     Layer.provideMerge(AutomationStore.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
     Layer.provideMerge(
       Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
-        dispatch: (command) =>
-          failedCommandType === command.type
-            ? Effect.fail(
-                new OrchestrationCommandInvariantError({
-                  commandType: command.type,
-                  detail: "Injected automation dispatch failure.",
-                }),
-              )
-            : Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
+        dispatch: (command) => {
+          if (failedCommandType === command.type) {
+            return Effect.fail(
+              new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "Injected automation dispatch failure.",
               }),
+            );
+          }
+          if (command.type === "thread.create" && projectedThreads.has(command.threadId)) {
+            return Effect.fail(
+              new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "Thread already exists.",
+              }),
+            );
+          }
+          return Effect.sync(() => {
+            dispatchedCommands.push(command);
+            return { sequence: dispatchedCommands.length };
+          });
+        },
       }),
     ),
     Layer.provideMerge(
@@ -332,7 +342,7 @@ serviceLayer("AutomationService", (it) => {
     }),
   );
 
-  it.effect("reconciles interrupted, completed, active, and awaiting-turn runs", () =>
+  it.effect("reconciles runs without recreating an existing queued thread", () =>
     Effect.gen(function* () {
       const service = yield* AutomationService;
       const store = yield* AutomationStore.AutomationStore;
@@ -444,7 +454,6 @@ serviceLayer("AutomationService", (it) => {
         [
           `automation:${noThread.id}:thread-create`,
           `automation:${noThread.id}:turn-start`,
-          `automation:${noTurn.id}:thread-create`,
           `automation:${noTurn.id}:turn-start`,
         ],
       );

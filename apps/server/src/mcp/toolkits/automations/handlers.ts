@@ -139,7 +139,7 @@ export const automationHandlers = {
       });
       const nextEnabled = input.enabled ?? existing.enabled;
       const nextRuntimeMode = input.runtimeMode ?? existing.runtimeMode;
-      if (nextEnabled) {
+      if (input.runtimeMode !== undefined || nextEnabled) {
         yield* requireAllowedAutomationRuntime(context.runtimeMode, nextRuntimeMode);
       }
       const { modelSelection, ...updates } = input;

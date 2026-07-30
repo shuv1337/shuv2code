@@ -123,6 +123,45 @@ export const make = Effect.gen(function* () {
     error: string | null,
   ) => store.updateRun({ runId, status, completedAt, error }).pipe(Effect.asVoid);
 
+  const recordRunFailure = (runId: AutomationRunId, error: AutomationError) =>
+    Effect.gen(function* () {
+      const completedAt = DateTime.formatIso(yield* DateTime.now);
+      yield* store
+        .updateRun({
+          runId,
+          status: "failed",
+          completedAt,
+          error: error.message,
+        })
+        .pipe(Effect.ignoreCause({ log: true }));
+    });
+
+  const dispatchAutomationTurn = Effect.fn("AutomationService.dispatchAutomationTurn")(function* (
+    automation: ProjectAutomation,
+    queued: AutomationRun,
+    threadId: ThreadId,
+    createdAt: string,
+  ) {
+    yield* engine
+      .dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`automation:${queued.id}:turn-start`),
+        threadId,
+        message: {
+          messageId: MessageId.make(`automation:${queued.id}:prompt`),
+          role: "user",
+          text: automation.prompt,
+          attachments: [],
+        },
+        modelSelection: automation.modelSelection,
+        titleSeed: automation.name,
+        runtimeMode: automation.runtimeMode,
+        interactionMode: automation.interactionMode,
+        createdAt,
+      })
+      .pipe(Effect.mapError(dispatchError));
+  });
+
   const dispatchAutomation = Effect.fn("AutomationService.dispatchAutomation")(function* (
     automation: ProjectAutomation,
     queued: AutomationRun,
@@ -131,7 +170,6 @@ export const make = Effect.gen(function* () {
       const project = yield* requireProject(automation.projectId);
       const createdAt = queued.startedAt ?? DateTime.formatIso(yield* DateTime.now);
       const threadId = queued.threadId ?? ThreadId.make(queued.id);
-      const messageId = MessageId.make(`automation:${queued.id}:prompt`);
       const commandId = (tag: string) => CommandId.make(`automation:${queued.id}:${tag}`);
 
       const starting = yield* store.updateRun({
@@ -159,35 +197,17 @@ export const make = Effect.gen(function* () {
         })
         .pipe(Effect.mapError(dispatchError));
 
-      yield* engine
-        .dispatch({
-          type: "thread.turn.start",
-          commandId: commandId("turn-start"),
-          threadId,
-          message: {
-            messageId,
-            role: "user",
-            text: automation.prompt,
-            attachments: [],
-          },
-          modelSelection: automation.modelSelection,
-          titleSeed: automation.name,
-          runtimeMode: automation.runtimeMode,
-          interactionMode: automation.interactionMode,
-          createdAt,
-        })
-        .pipe(
-          Effect.mapError(dispatchError),
-          Effect.tapError(() =>
-            engine
-              .dispatch({
-                type: "thread.delete",
-                commandId: commandId("thread-delete"),
-                threadId,
-              })
-              .pipe(Effect.ignoreCause({ log: true })),
-          ),
-        );
+      yield* dispatchAutomationTurn(automation, queued, threadId, createdAt).pipe(
+        Effect.tapError(() =>
+          engine
+            .dispatch({
+              type: "thread.delete",
+              commandId: commandId("thread-delete"),
+              threadId,
+            })
+            .pipe(Effect.ignoreCause({ log: true })),
+        ),
+      );
 
       const running = yield* store.updateRun({
         runId: starting.id,
@@ -195,27 +215,40 @@ export const make = Effect.gen(function* () {
       });
       yield* store.setLastRunAt(automation.id, createdAt);
       return running;
-    }).pipe(
-      Effect.tapError((error) =>
-        Effect.gen(function* () {
-          const completedAt = DateTime.formatIso(yield* DateTime.now);
-          yield* store
-            .updateRun({
-              runId: queued.id,
-              status: "failed",
-              completedAt,
-              error: error.message,
-            })
-            .pipe(Effect.ignoreCause({ log: true }));
-        }),
-      ),
-    );
+    }).pipe(Effect.tapError((error) => recordRunFailure(queued.id, error)));
+  });
+
+  const resumeQueuedAutomation = Effect.fn("AutomationService.resumeQueuedAutomation")(function* (
+    automation: ProjectAutomation,
+    queued: AutomationRun,
+  ) {
+    if (queued.threadId === null) {
+      return yield* dispatchAutomation(automation, queued);
+    }
+    const threadId = queued.threadId;
+
+    const thread = yield* snapshots
+      .getThreadShellById(threadId)
+      .pipe(Effect.mapError(dispatchError));
+    if (Option.isNone(thread)) {
+      return yield* dispatchAutomation(automation, queued);
+    }
+
+    return yield* Effect.gen(function* () {
+      const createdAt = queued.startedAt ?? DateTime.formatIso(yield* DateTime.now);
+      if (thread.value.latestTurn === null) {
+        yield* dispatchAutomationTurn(automation, queued, threadId, createdAt);
+      }
+      const running = yield* store.updateRun({ runId: queued.id, status: "running" });
+      yield* store.setLastRunAt(automation.id, createdAt);
+      return running;
+    }).pipe(Effect.tapError((error) => recordRunFailure(queued.id, error)));
   });
 
   const reconcileRun = Effect.fn("AutomationService.reconcileRun")(function* (run: AutomationRun) {
     if (run.status === "queued") {
       const automation = yield* requireAutomation(run.automationId, run.projectId);
-      yield* dispatchAutomation(automation, run);
+      yield* resumeQueuedAutomation(automation, run);
       return;
     }
     if (run.threadId === null) {

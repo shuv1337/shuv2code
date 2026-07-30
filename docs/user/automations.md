@@ -14,6 +14,8 @@ manage them from **Settings → Automations**. New automations are paused until 
   **Parallel** policy allows both runs to proceed.
 - Pausing an automation preserves its configuration and history. Deleting it also deletes its run
   history.
+- Deletion is blocked while one of the automation's runs is queued or running. Wait for the run to
+  finish before deleting the automation.
 
 ## Permissions
 

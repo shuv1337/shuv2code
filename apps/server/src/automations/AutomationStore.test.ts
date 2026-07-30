@@ -87,6 +87,18 @@ storeLayer("AutomationStore", (it) => {
       });
       assert.strictEqual((yield* store.listRuns(created.id, 50))[0]?.id, run.id);
 
+      yield* sql`
+        UPDATE projection_projects
+        SET deleted_at = '2026-07-30T08:06:00.000Z'
+        WHERE project_id = ${projectId}
+      `;
+      yield* sql`
+        UPDATE project_automations
+        SET next_run_at = '2026-07-30T08:06:00.000Z'
+        WHERE automation_id = ${created.id}
+      `;
+      assert.deepStrictEqual(yield* store.claimDue("2026-07-30T08:06:01.000Z"), []);
+
       assert.strictEqual(yield* store.delete(created.id), "deleted");
       assert.strictEqual((yield* store.listRuns(created.id, 50)).length, 0);
     }),

@@ -202,4 +202,77 @@ describe("automation MCP authority", () => {
       expect(yield* Ref.get(delegatedProject)).toBe(context.projectId);
     }),
   );
+
+  effectIt.effect("rejects permission escalation while an automation is paused", () =>
+    Effect.gen(function* () {
+      const automationId = AutomationId.make("paused-automation");
+      const updateCalls = yield* Ref.make(0);
+      const automation = {
+        id: automationId,
+        projectId: context.projectId,
+        name: "Paused report",
+        prompt: "Create the report.",
+        enabled: false,
+        cronExpression: "0 9 * * *",
+        timeZone: "Europe/London",
+        modelSelection: context.modelSelection,
+        runtimeMode: "approval-required" as const,
+        interactionMode: context.interactionMode,
+        concurrencyPolicy: "skip" as const,
+        nextRunAt: null,
+        lastRunAt: null,
+        createdAt: "2026-07-30T00:00:00.000Z",
+        updatedAt: "2026-07-30T00:00:00.000Z",
+      };
+      const layer = Layer.mergeAll(
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("environment-1"),
+          threadId: ThreadId.make("approval-thread"),
+          providerSessionId: "provider-session-1",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          capabilities: new Set<McpInvocationContext.McpCapability>(["preview", "automations"]),
+          issuedAt: 1,
+        }),
+        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+          getThreadShellById: () =>
+            Effect.succeed(
+              Option.some({
+                id: ThreadId.make("approval-thread"),
+                projectId: context.projectId,
+                title: "Approval-required chat",
+                modelSelection: context.modelSelection,
+                runtimeMode: "approval-required",
+                interactionMode: context.interactionMode,
+                branch: null,
+                worktreePath: "/tmp/project-1",
+                latestTurn: null,
+                createdAt: "2026-07-30T00:00:00.000Z",
+                updatedAt: "2026-07-30T00:00:00.000Z",
+                archivedAt: null,
+                settledOverride: null,
+                settledAt: null,
+                session: null,
+                latestUserMessageAt: null,
+                hasPendingApprovals: false,
+                hasPendingUserInput: false,
+                hasActionableProposedPlan: false,
+              }),
+            ),
+        }),
+        Layer.mock(AutomationService.AutomationService)({
+          get: () => Effect.succeed(automation),
+          update: () =>
+            Ref.update(updateCalls, (count) => count + 1).pipe(
+              Effect.andThen(Effect.die("update must not be called")),
+            ),
+        }),
+      );
+
+      const error = yield* automationHandlers
+        .automation_update({ automationId, runtimeMode: "full-access" })
+        .pipe(Effect.provide(layer), Effect.flip);
+      expect(error).toMatchObject({ reason: "unauthorized" });
+      expect(yield* Ref.get(updateCalls)).toBe(0);
+    }),
+  );
 });
