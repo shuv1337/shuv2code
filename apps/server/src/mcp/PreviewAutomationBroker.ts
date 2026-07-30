@@ -8,6 +8,7 @@ import {
   PreviewAutomationNoAvailableHostError,
   PreviewAutomationRemoteUnavailableError,
   PreviewAutomationRequestQueueClosedError,
+  PreviewAutomationRequestQueueFullError,
   PreviewAutomationResultTooLargeError,
   PreviewAutomationTabNotFoundError,
   PreviewAutomationTargetNotEditableError,
@@ -34,6 +35,9 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
+/** Maximum correlated requests admitted per desktop host connection. */
+export const PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY = 64;
+
 export interface PreviewAutomationInvokeInput {
   readonly scope: McpInvocationContext.McpInvocationScope;
   readonly operation: PreviewAutomationOperation;
@@ -41,6 +45,11 @@ export interface PreviewAutomationInvokeInput {
   readonly tabId?: PreviewTabId;
   readonly timeoutMs?: number;
 }
+
+type PreviewAutomationRequestStreamEvent = Extract<
+  PreviewAutomationStreamEvent,
+  { readonly type: "request" }
+>;
 
 export class PreviewAutomationBroker extends Context.Service<
   PreviewAutomationBroker,
@@ -65,7 +74,7 @@ interface ClientConnection {
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
   readonly focused: boolean;
   readonly focusOrder: number;
-  readonly queue: Queue.Queue<PreviewAutomationStreamEvent>;
+  readonly queue: Queue.Queue<PreviewAutomationRequestStreamEvent>;
 }
 
 interface PendingRequest {
@@ -112,6 +121,20 @@ interface BrokerState {
   readonly requestSequence: number;
   readonly focusSequence: number;
 }
+
+type InvocationRoute =
+  | {
+      readonly _tag: "routed";
+      readonly connection: ClientConnection;
+      readonly requestId: string;
+      readonly requestContext: PreviewAutomationRequestErrorContext;
+      readonly requestSequence: number;
+    }
+  | {
+      readonly _tag: "overloaded";
+      readonly requestContext: PreviewAutomationRequestErrorContext;
+      readonly outstandingRequests: number;
+    };
 
 const removeConnectionFromState = (
   current: BrokerState,
@@ -323,9 +346,10 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     host: PreviewAutomationHost,
   ) {
     const clientId = host.clientId;
-    const queue = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
+    const queue = yield* Queue.dropping<PreviewAutomationRequestStreamEvent>(
+      PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY,
+    );
     const connectionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-    yield* Queue.offer(queue, { type: "connected", connectionId });
     const connection: ClientConnection = {
       clientId,
       connectionId,
@@ -366,7 +390,26 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       Stream.unwrap(
         Effect.acquireRelease(acquireConnection(host), (connection) =>
           disconnect(connection.clientId, connection.queue),
-        ).pipe(Effect.map((connection) => Stream.fromQueue(connection.queue))),
+        ).pipe(
+          Effect.map((connection) =>
+            Stream.concat(
+              Stream.make({ type: "connected" as const, connectionId: connection.connectionId }),
+              Stream.fromQueue(connection.queue).pipe(
+                // Timed-out/interrupted callers remove their pending entry.
+                // Never deliver such stale commands later when a slow host
+                // eventually resumes draining its queue.
+                Stream.filterEffect((event) =>
+                  SynchronizedRef.get(state).pipe(
+                    Effect.map(
+                      (current) =>
+                        current.pending.get(event.request.requestId)?.queue === connection.queue,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     ),
   );
@@ -428,85 +471,116 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   ): Effect.fn.Return<A, PreviewAutomationError> {
     const timeoutMs = input.timeoutMs ?? 15_000;
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
-    const route = yield* SynchronizedRef.modify(state, (current) => {
-      const assignments = new Map(
-        Array.from(current.assignments).filter(([, assignment]) => {
-          const connection = current.clients.get(assignment.clientId);
-          return (
-            connection?.connectionId === assignment.connectionId &&
-            connection.queue === assignment.queue
+    const route = yield* SynchronizedRef.modify(
+      state,
+      (current): readonly [InvocationRoute | undefined, BrokerState] => {
+        const assignments = new Map(
+          Array.from(current.assignments).filter(([, assignment]) => {
+            const connection = current.clients.get(assignment.clientId);
+            return (
+              connection?.connectionId === assignment.connectionId &&
+              connection.queue === assignment.queue
+            );
+          }),
+        );
+        const assignmentKey = hostAssignmentKey(input.scope);
+        const assigned = assignments.get(assignmentKey);
+        const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
+        const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
+        const pendingCountFor = (candidate: ClientConnection): number =>
+          Array.from(current.pending.values()).filter(
+            (pendingRequest) => pendingRequest.queue === candidate.queue,
+          ).length;
+        // Keep one provider session on one physical desktop runtime so a
+        // multi-step browser interaction cannot jump between independent
+        // Electron cookie/DOM state. A live assignment that predates an
+        // operation is not silently moved to a newer client: the caller gets a
+        // capability failure and can deliberately start a fresh provider
+        // session. A dead lease is pruned above and may fail over.
+        const eligibleConnections = Array.from(current.clients.values())
+          .filter(
+            (host) =>
+              host.environmentId === input.scope.environmentId &&
+              supportsOperation(host, input.operation),
+          )
+          .sort(
+            (left, right) =>
+              right.supportedOperations.size - left.supportedOperations.size ||
+              Number(right.focused) - Number(left.focused) ||
+              right.focusOrder - left.focusOrder,
           );
-        }),
-      );
-      const assignmentKey = hostAssignmentKey(input.scope);
-      const assigned = assignments.get(assignmentKey);
-      const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
-      const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
-      // Keep one provider session on one physical desktop runtime so a
-      // multi-step browser interaction cannot jump between independent
-      // Electron cookie/DOM state. A live assignment that predates an
-      // operation is not silently moved to a newer client: the caller gets a
-      // capability failure and can deliberately start a fresh provider
-      // session. A dead lease is pruned above and may fail over.
-      const connection =
-        hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
-          ? assignedConnection
-          : hasLiveAssignment
-            ? undefined
-            : Array.from(current.clients.values())
-                .filter(
-                  (host) =>
-                    host.environmentId === input.scope.environmentId &&
-                    supportsOperation(host, input.operation),
-                )
-                .sort(
-                  (left, right) =>
-                    right.supportedOperations.size - left.supportedOperations.size ||
-                    Number(right.focused) - Number(left.focused) ||
-                    right.focusOrder - left.focusOrder,
-                )[0];
-      if (!connection) {
-        if (!hasLiveAssignment) assignments.delete(assignmentKey);
-        return [undefined, { ...current, assignments }] as const;
-      }
-      const canReuseAssignedTab =
-        assigned !== undefined &&
-        assigned.connectionId === connection.connectionId &&
-        assigned.queue === connection.queue;
-      assignments.set(assignmentKey, {
-        clientId: connection.clientId,
-        connectionId: connection.connectionId,
-        queue: connection.queue,
-        ...(canReuseAssignedTab && assigned.tabId !== undefined ? { tabId: assigned.tabId } : {}),
-        ...(canReuseAssignedTab && assigned.tabSequence !== undefined
-          ? { tabSequence: assigned.tabSequence }
-          : {}),
-      });
-
-      const requestSequence = current.requestSequence;
-      const requestId = `preview-${requestSequence}`;
-      const tabId = input.tabId ?? (canReuseAssignedTab ? assigned.tabId : undefined);
-      const selectorDiagnostics = selectorDiagnosticsFromInput(input.input);
-      const context: PreviewAutomationRequestErrorContext = {
-        operation: input.operation,
-        environmentId: input.scope.environmentId,
-        threadId: input.scope.threadId,
-        providerSessionId: input.scope.providerSessionId,
-        providerInstanceId: input.scope.providerInstanceId,
-        clientId: connection.clientId,
-        connectionId: connection.connectionId,
-        requestId,
-        ...(tabId === undefined ? {} : { tabId }),
-        timeoutMs,
-        ...selectorDiagnostics,
-      };
-      const pending = new Map(current.pending);
-      pending.set(requestId, { queue: connection.queue, deferred, context });
-      return [
-        { connection, requestId, requestContext: context, requestSequence },
-        { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },
-      ] as const;
-    });
+        const connection =
+          hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
+            ? assignedConnection
+            : hasLiveAssignment
+              ? undefined
+              : (eligibleConnections.find(
+                  (candidate) =>
+                    pendingCountFor(candidate) < PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY,
+                ) ?? eligibleConnections[0]);
+        if (!connection) {
+          if (!hasLiveAssignment) assignments.delete(assignmentKey);
+          return [undefined, { ...current, assignments }] as const;
+        }
+        const canReuseAssignedTab =
+          assigned !== undefined &&
+          assigned.connectionId === connection.connectionId &&
+          assigned.queue === connection.queue;
+        const requestSequence = current.requestSequence;
+        const requestId = `preview-${requestSequence}`;
+        const tabId = input.tabId ?? (canReuseAssignedTab ? assigned.tabId : undefined);
+        const selectorDiagnostics = selectorDiagnosticsFromInput(input.input);
+        const context: PreviewAutomationRequestErrorContext = {
+          operation: input.operation,
+          environmentId: input.scope.environmentId,
+          threadId: input.scope.threadId,
+          providerSessionId: input.scope.providerSessionId,
+          providerInstanceId: input.scope.providerInstanceId,
+          clientId: connection.clientId,
+          connectionId: connection.connectionId,
+          requestId,
+          ...(tabId === undefined ? {} : { tabId }),
+          timeoutMs,
+          ...selectorDiagnostics,
+        };
+        const outstandingRequests = pendingCountFor(connection);
+        if (outstandingRequests >= PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY) {
+          return [
+            {
+              _tag: "overloaded" as const,
+              requestContext: context,
+              outstandingRequests,
+            },
+            {
+              ...current,
+              assignments,
+              requestSequence: current.requestSequence + 1,
+            },
+          ] as const;
+        }
+        assignments.set(assignmentKey, {
+          clientId: connection.clientId,
+          connectionId: connection.connectionId,
+          queue: connection.queue,
+          ...(canReuseAssignedTab && assigned.tabId !== undefined ? { tabId: assigned.tabId } : {}),
+          ...(canReuseAssignedTab && assigned.tabSequence !== undefined
+            ? { tabSequence: assigned.tabSequence }
+            : {}),
+        });
+        const pending = new Map(current.pending);
+        pending.set(requestId, { queue: connection.queue, deferred, context });
+        return [
+          {
+            _tag: "routed" as const,
+            connection,
+            requestId,
+            requestContext: context,
+            requestSequence,
+          },
+          { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },
+        ] as const;
+      },
+    );
     if (!route) {
       return yield* new PreviewAutomationNoAvailableHostError({
         operation: input.operation,
@@ -514,6 +588,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         threadId: input.scope.threadId,
         providerSessionId: input.scope.providerSessionId,
         providerInstanceId: input.scope.providerInstanceId,
+      });
+    }
+    if (route._tag === "overloaded") {
+      return yield* new PreviewAutomationRequestQueueFullError({
+        ...route.requestContext,
+        capacity: PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY,
+        outstandingRequests: route.outstandingRequests,
       });
     }
     const { connection, requestId, requestContext, requestSequence } = route;
@@ -542,7 +623,15 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         if (Option.isSome(completion)) {
           return (yield* completion.value) as A;
         }
-        return yield* new PreviewAutomationRequestQueueClosedError(requestContext);
+        const queueOfferError =
+          connection.queue.state._tag === "Open"
+            ? new PreviewAutomationRequestQueueFullError({
+                ...requestContext,
+                capacity: PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY,
+                outstandingRequests: PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY,
+              })
+            : new PreviewAutomationRequestQueueClosedError(requestContext);
+        return yield* queueOfferError;
       }
       const result = yield* Deferred.await(deferred).pipe(Effect.timeoutOption(timeoutMs));
       return yield* Option.match(result, {

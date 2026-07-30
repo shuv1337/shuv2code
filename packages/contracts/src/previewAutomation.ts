@@ -840,6 +840,19 @@ export class PreviewAutomationRequestQueueClosedError extends Schema.TaggedError
   }
 }
 
+export class PreviewAutomationRequestQueueFullError extends Schema.TaggedErrorClass<PreviewAutomationRequestQueueFullError>()(
+  "PreviewAutomationRequestQueueFullError",
+  {
+    ...PreviewAutomationRequestErrorFields,
+    capacity: Schema.Int.check(Schema.isGreaterThan(0)),
+    outstandingRequests: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  },
+) {
+  override get message(): string {
+    return `Preview automation client ${this.clientId} is at its ${this.capacity}-request capacity.`;
+  }
+}
+
 export class PreviewAutomationRemoteUnavailableError extends Schema.TaggedErrorClass<PreviewAutomationRemoteUnavailableError>()(
   "PreviewAutomationRemoteUnavailableError",
   {
@@ -874,6 +887,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationResultTooLargeError,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationRequestQueueClosedError,
+  PreviewAutomationRequestQueueFullError,
   PreviewAutomationRemoteUnavailableError,
   PreviewAutomationMalformedResponseError,
 ]);

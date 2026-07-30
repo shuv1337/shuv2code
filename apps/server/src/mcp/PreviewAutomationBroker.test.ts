@@ -6,6 +6,7 @@ import {
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationRequestQueueFullError,
   PreviewAutomationTargetNotEditableError,
   PreviewTabId,
   ProviderInstanceId,
@@ -15,7 +16,9 @@ import {
   type PreviewAutomationStreamEvent,
 } from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -80,6 +83,151 @@ it.effect("atomically registers a connected host and correlates its response", (
       });
 
       expect(result).toEqual({ available: true });
+    }),
+  ),
+);
+
+it.effect("bounds burst admission and accounts for every correlated request", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const releaseConsumer = yield* Deferred.make<void>();
+      const connected = yield* Deferred.make<void>();
+      const routedRequestIds: Array<string> = [];
+      const events = yield* broker.connect(makeHost());
+      yield* Stream.runForEach(events, (event) => {
+        if (event.type === "connected") {
+          return Deferred.succeed(connected, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseConsumer)),
+          );
+        }
+        routedRequestIds.push(event.request.requestId);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: event.connectionId,
+          requestId: event.request.requestId,
+          ok: true,
+          result: event.request.requestId,
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(connected);
+
+      const admitted = yield* Effect.forEach(
+        Array.from(
+          { length: PreviewAutomationBroker.PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY },
+          (_, index) => index,
+        ),
+        (index) =>
+          Effect.gen(function* () {
+            const fiber = yield* broker
+              .invoke<string>({
+                scope,
+                operation: "evaluate",
+                input: { expression: String(index) },
+                timeoutMs: 60_000,
+              })
+              .pipe(Effect.forkScoped);
+            yield* Effect.yieldNow;
+            return fiber;
+          }),
+        { concurrency: 1 },
+      );
+
+      const burstSize = 512;
+      const rejected = yield* Effect.forEach(
+        Array.from(
+          {
+            length:
+              burstSize - PreviewAutomationBroker.PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY,
+          },
+          (_, index) => index,
+        ),
+        (index) =>
+          broker
+            .invoke<string>({
+              scope,
+              operation: "evaluate",
+              input: { expression: `overflow-${index}` },
+              timeoutMs: 60_000,
+            })
+            .pipe(Effect.exit),
+        { concurrency: "unbounded" },
+      );
+      const overloadErrors = rejected.map((result) => {
+        expect(Exit.isFailure(result)).toBe(true);
+        if (Exit.isSuccess(result)) throw new Error("Expected preview broker overload rejection.");
+        const error = Cause.squash(result.cause);
+        expect(error).toBeInstanceOf(PreviewAutomationRequestQueueFullError);
+        return error as PreviewAutomationRequestQueueFullError;
+      });
+
+      expect(overloadErrors).toHaveLength(448);
+      expect(new Set(overloadErrors.map((error) => error.requestId)).size).toBe(448);
+      for (const error of overloadErrors) {
+        expect(error.capacity).toBe(
+          PreviewAutomationBroker.PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY,
+        );
+        expect(error.outstandingRequests).toBe(
+          PreviewAutomationBroker.PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY,
+        );
+      }
+      expect(routedRequestIds).toHaveLength(0);
+
+      yield* Deferred.succeed(releaseConsumer, undefined);
+      const admittedResults = yield* Effect.forEach(admitted, Fiber.join, {
+        concurrency: "unbounded",
+      });
+      expect(routedRequestIds).toHaveLength(
+        PreviewAutomationBroker.PREVIEW_AUTOMATION_OUTSTANDING_REQUEST_CAPACITY,
+      );
+      expect(new Set(routedRequestIds).size).toBe(routedRequestIds.length);
+      expect(admittedResults).toEqual(routedRequestIds);
+
+      // Capacity is released by correlated responses, not merely by queue
+      // delivery, so the host can immediately accept more work afterward.
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
+        `preview-${burstSize}`,
+      );
+    }),
+  ),
+);
+
+it.effect("does not deliver an interrupted queued request after the host resumes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const releaseConsumer = yield* Deferred.make<void>();
+      const connected = yield* Deferred.make<void>();
+      const routedRequestIds: Array<string> = [];
+      const events = yield* broker.connect(makeHost());
+      yield* Stream.runForEach(events, (event) => {
+        if (event.type === "connected") {
+          return Deferred.succeed(connected, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseConsumer)),
+          );
+        }
+        routedRequestIds.push(event.request.requestId);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: event.connectionId,
+          requestId: event.request.requestId,
+          ok: true,
+          result: event.request.requestId,
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(connected);
+
+      const abandoned = yield* broker
+        .invoke<string>({ scope, operation: "status", input: {}, timeoutMs: 60_000 })
+        .pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(abandoned);
+      yield* Deferred.succeed(releaseConsumer, undefined);
+
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
+        "preview-1",
+      );
+      expect(routedRequestIds).toEqual(["preview-1"]);
     }),
   ),
 );
