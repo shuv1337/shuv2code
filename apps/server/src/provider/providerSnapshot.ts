@@ -21,6 +21,7 @@ import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 export const DEFAULT_TIMEOUT_MS = 4_000;
 // Auth status checks involve disk/network lookups and can be slow on first run (especially Windows)
 export const AUTH_PROBE_TIMEOUT_MS = 10_000;
+export const PROVIDER_PROCESS_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
 
 export interface CommandResult {
   readonly stdout: string;
@@ -39,6 +40,18 @@ export class ProviderCommandNotFoundError extends Schema.TaggedErrorClass<Provid
 ) {
   override get message(): string {
     return `Provider command ${this.binaryPath} was not found (exit code ${this.exitCode}).`;
+  }
+}
+
+export class ProviderProcessOutputTooLargeError extends Schema.TaggedErrorClass<ProviderProcessOutputTooLargeError>()(
+  "ProviderProcessOutputTooLargeError",
+  {
+    maximumBytes: Schema.Number,
+    retainedBytes: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `Provider process output exceeded ${this.maximumBytes} bytes.`;
   }
 }
 
@@ -249,5 +262,15 @@ export function buildServerProvider(input: {
 
 export const collectStreamAsString = <E>(
   stream: Stream.Stream<Uint8Array, E>,
-): Effect.Effect<string, E> =>
-  collectUint8StreamText({ stream }).pipe(Effect.map((collected) => collected.text));
+  maximumBytes = PROVIDER_PROCESS_OUTPUT_MAX_BYTES,
+): Effect.Effect<string, E | ProviderProcessOutputTooLargeError> =>
+  collectUint8StreamText({ stream, maxBytes: maximumBytes }).pipe(
+    Effect.flatMap((collected) =>
+      collected.truncated
+        ? new ProviderProcessOutputTooLargeError({
+            maximumBytes,
+            retainedBytes: collected.bytes,
+          })
+        : Effect.succeed(collected.text),
+    ),
+  );
