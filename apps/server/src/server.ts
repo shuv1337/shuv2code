@@ -244,10 +244,6 @@ const AutomationServiceLayerLive = AutomationService.layer.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const AutomationLayerLive = AutomationService.schedulerLayer.pipe(
-  Layer.provideMerge(AutomationServiceLayerLive),
-);
-
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
 );
@@ -360,7 +356,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
-  Layer.provideMerge(Layer.mergeAll(AutomationLayerLive, Keybindings.layer)),
+  Layer.provideMerge(Layer.mergeAll(AutomationServiceLayerLive, Keybindings.layer)),
   Layer.provideMerge(ProviderRegistryLive),
   // The instance registry is the new routing keystone — text generation,
   // adapter lookup, and runtime ingestion all resolve `ProviderInstanceId`

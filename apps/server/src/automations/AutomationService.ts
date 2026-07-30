@@ -41,8 +41,6 @@ function dispatchError(cause: unknown): AutomationError {
   });
 }
 
-const TURN_START_GRACE_MS = 60_000;
-
 export class AutomationService extends Context.Service<
   AutomationService,
   {
@@ -236,16 +234,6 @@ export const make = Effect.gen(function* () {
     }
     const turn = thread.value.latestTurn;
     if (turn === null) {
-      const now = DateTime.formatIso(yield* DateTime.now);
-      const startedAt =
-        run.startedAt === null ? Number.NEGATIVE_INFINITY : Date.parse(run.startedAt);
-      if (Date.parse(now) - startedAt < TURN_START_GRACE_MS) return;
-      yield* completeRun(
-        run.id,
-        "failed",
-        now,
-        "Automation thread was created, but its turn did not start.",
-      );
       return;
     }
     if (turn.state === "running") return;
@@ -293,14 +281,14 @@ export const make = Effect.gen(function* () {
     "AutomationService.delete",
   )(function* (input) {
     const automation = yield* requireAutomation(input.automationId, input.projectId);
-    if (yield* store.hasActiveRun(automation.id)) {
+    const outcome = yield* store.delete(automation.id);
+    if (outcome === "active") {
       return yield* new AutomationError({
         reason: "conflict",
         message: "Wait for the active run to finish before deleting this automation.",
       });
     }
-    const deleted = yield* store.delete(automation.id);
-    return { deleted };
+    return { deleted: outcome === "deleted" };
   });
 
   const runNow: AutomationService["Service"]["runNow"] = Effect.fn("AutomationService.runNow")(
@@ -367,15 +355,15 @@ export const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(AutomationService, make);
 
-export const schedulerLayer = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const service = yield* AutomationService;
-    const tick = service.reconcileRuns().pipe(
-      Effect.andThen(service.sweepDue()),
-      Effect.catch((error) =>
-        Effect.logWarning("automation scheduler tick failed", { detail: error.message }),
-      ),
-    );
-    yield* tick.pipe(Effect.repeat(Schedule.spaced("5 seconds")), Effect.forkScoped);
-  }),
-);
+export const startScheduler = Effect.gen(function* () {
+  const service = yield* AutomationService;
+  const tick = service.reconcileRuns().pipe(
+    Effect.andThen(service.sweepDue()),
+    Effect.catch((error) =>
+      Effect.logWarning("automation scheduler tick failed", { detail: error.message }),
+    ),
+  );
+  yield* tick.pipe(Effect.repeat(Schedule.spaced("5 seconds")), Effect.forkScoped);
+});
+
+export const schedulerLayer = Layer.effectDiscard(startScheduler);

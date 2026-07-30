@@ -1,6 +1,7 @@
 import {
   AutomationError,
   type AutomationCreateInput as ServiceCreateInput,
+  type RuntimeMode,
 } from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -31,6 +32,26 @@ const normalizeModelSelection = (selection: NonNullable<AutomationCreateInput["m
   selection.options === undefined
     ? { instanceId: selection.instanceId, model: selection.model }
     : { instanceId: selection.instanceId, model: selection.model, options: selection.options };
+
+const runtimeModePermissionRank: Readonly<Record<RuntimeMode, number>> = {
+  "approval-required": 0,
+  "auto-accept-edits": 1,
+  auto: 2,
+  "full-access": 3,
+};
+
+export const requireAllowedAutomationRuntime = (
+  currentRuntimeMode: RuntimeMode,
+  automationRuntimeMode: RuntimeMode,
+) =>
+  runtimeModePermissionRank[automationRuntimeMode] <= runtimeModePermissionRank[currentRuntimeMode]
+    ? Effect.void
+    : Effect.fail(
+        new AutomationError({
+          reason: "unauthorized",
+          message: "An agent cannot grant an automation broader permissions than its current chat.",
+        }),
+      );
 
 export const resolveCurrentAutomationContext = Effect.fn("AutomationToolkit.resolveCurrentContext")(
   function* () {
@@ -78,7 +99,7 @@ export const normalizeAutomationCreateInput = (
   concurrencyPolicy: input.concurrencyPolicy ?? "skip",
 });
 
-const handlers = {
+export const automationHandlers = {
   automation_list: (input) =>
     Effect.gen(function* () {
       const context = yield* resolveCurrentAutomationContext();
@@ -102,12 +123,25 @@ const handlers = {
     Effect.gen(function* () {
       const context = yield* resolveCurrentAutomationContext();
       const service = yield* AutomationService.AutomationService;
+      yield* requireAllowedAutomationRuntime(
+        context.runtimeMode,
+        input.runtimeMode ?? context.runtimeMode,
+      );
       return yield* service.create(normalizeAutomationCreateInput(input, context));
     }),
   automation_update: (input: AutomationUpdateInput) =>
     Effect.gen(function* () {
       const context = yield* resolveCurrentAutomationContext();
       const service = yield* AutomationService.AutomationService;
+      const existing = yield* service.get({
+        projectId: context.projectId,
+        automationId: input.automationId,
+      });
+      const nextEnabled = input.enabled ?? existing.enabled;
+      const nextRuntimeMode = input.runtimeMode ?? existing.runtimeMode;
+      if (nextEnabled) {
+        yield* requireAllowedAutomationRuntime(context.runtimeMode, nextRuntimeMode);
+      }
       const { modelSelection, ...updates } = input;
       return yield* service.update({
         ...updates,
@@ -130,6 +164,11 @@ const handlers = {
     Effect.gen(function* () {
       const context = yield* resolveCurrentAutomationContext();
       const service = yield* AutomationService.AutomationService;
+      const automation = yield* service.get({
+        projectId: context.projectId,
+        automationId: input.automationId,
+      });
+      yield* requireAllowedAutomationRuntime(context.runtimeMode, automation.runtimeMode);
       return yield* service.runNow({
         projectId: context.projectId,
         automationId: input.automationId,
@@ -153,4 +192,4 @@ const handlers = {
     }),
 } satisfies Parameters<typeof AutomationToolkit.toLayer>[0];
 
-export const AutomationToolkitHandlersLive = AutomationToolkit.toLayer(handlers);
+export const AutomationToolkitHandlersLive = AutomationToolkit.toLayer(automationHandlers);

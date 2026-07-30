@@ -138,11 +138,11 @@ export const AutomationCreateInput = Schema.Struct({
   runtimeMode: Schema.optional(
     RuntimeMode.annotate({
       description:
-        "Permission mode for generated threads. Omit to inherit this chat's current permission mode.",
+        "Permission mode for generated threads. Omit to inherit this chat's current mode. It cannot be broader than the current chat's permissions.",
     }),
   ).annotate({
     description:
-      "Permission mode for generated threads. Omit to inherit this chat's current permission mode.",
+      "Permission mode for generated threads. Omit to inherit this chat's current mode. It cannot be broader than the current chat's permissions.",
   }),
   interactionMode: Schema.optional(
     ProviderInteractionMode.annotate({
@@ -166,14 +166,14 @@ export type AutomationCreateInput = typeof AutomationCreateInput.Type;
 
 export const AutomationCreateTool = Tool.make("automation_create", {
   description:
-    "Create a durable scheduled automation for this chat's current project. Creation defaults to paused and inherits this chat's model and permissions unless explicitly overridden.",
+    "Create a durable scheduled automation for this chat's current project. Creation defaults to paused. Generated threads cannot receive broader permissions than this chat.",
   parameters: AutomationCreateInput,
   success: ProjectAutomation,
   failure: AutomationError,
   dependencies,
 })
   .annotate(Tool.Title, "Create project automation")
-  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Destructive, true)
   .annotate(Tool.Idempotent, false);
 
 export const AutomationUpdateInput = Schema.Struct({
@@ -201,8 +201,14 @@ export const AutomationUpdateInput = Schema.Struct({
     }),
   ).annotate({ description: "Replacement provider instance and model." }),
   runtimeMode: Schema.optional(
-    RuntimeMode.annotate({ description: "Replacement permission mode for generated threads." }),
-  ).annotate({ description: "Replacement permission mode for generated threads." }),
+    RuntimeMode.annotate({
+      description:
+        "Replacement permission mode. An enabled automation cannot exceed the current chat's permissions.",
+    }),
+  ).annotate({
+    description:
+      "Replacement permission mode. An enabled automation cannot exceed the current chat's permissions.",
+  }),
   interactionMode: Schema.optional(
     ProviderInteractionMode.annotate({ description: "Replacement agent interaction mode." }),
   ).annotate({ description: "Replacement agent interaction mode." }),

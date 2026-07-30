@@ -414,6 +414,9 @@ function AutomationEditor({
                 <SelectItem value="approval-required">Approval required</SelectItem>
               </SelectPopup>
             </Select>
+            <span className="font-normal text-xs text-muted-foreground">
+              Runs are unattended. Full access allows commands and file changes without approval.
+            </span>
           </label>
           <label className="grid gap-1.5 text-sm font-medium">
             Agent mode

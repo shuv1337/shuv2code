@@ -87,7 +87,7 @@ storeLayer("AutomationStore", (it) => {
       });
       assert.strictEqual((yield* store.listRuns(created.id, 50))[0]?.id, run.id);
 
-      assert.strictEqual(yield* store.delete(created.id), true);
+      assert.strictEqual(yield* store.delete(created.id), "deleted");
       assert.strictEqual((yield* store.listRuns(created.id, 50)).length, 0);
     }),
   );

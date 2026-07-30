@@ -32,6 +32,9 @@ import {
 
 import { nextAutomationRunAt, parseAutomationSchedule } from "./AutomationSchedule.ts";
 
+const ModelSelectionJson = Schema.fromJsonString(ModelSelection);
+const encodeModelSelection = Schema.encodeSync(ModelSelectionJson);
+
 const AutomationDbRow = Schema.Struct({
   id: AutomationId,
   projectId: ProjectId,
@@ -40,7 +43,7 @@ const AutomationDbRow = Schema.Struct({
   enabled: Schema.Number,
   cronExpression: AutomationCronExpression,
   timeZone: AutomationTimeZone,
-  modelSelection: Schema.fromJsonString(ModelSelection),
+  modelSelection: ModelSelectionJson,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   concurrencyPolicy: AutomationConcurrencyPolicy,
@@ -129,6 +132,8 @@ interface CreateRunInput {
   readonly error: string | null;
 }
 
+export type AutomationDeleteOutcome = "deleted" | "active" | "not_found";
+
 export class AutomationStore extends Context.Service<
   AutomationStore,
   {
@@ -144,7 +149,9 @@ export class AutomationStore extends Context.Service<
     readonly update: (
       input: AutomationUpdateInput,
     ) => Effect.Effect<ProjectAutomation, AutomationError>;
-    readonly delete: (automationId: AutomationId) => Effect.Effect<boolean, AutomationError>;
+    readonly delete: (
+      automationId: AutomationId,
+    ) => Effect.Effect<AutomationDeleteOutcome, AutomationError>;
     readonly claimDue: (
       now: string,
     ) => Effect.Effect<ReadonlyArray<DueAutomation>, AutomationError>;
@@ -206,7 +213,7 @@ export const make = Effect.gen(function* () {
       ) VALUES (
         ${automation.id}, ${automation.projectId}, ${automation.name}, ${automation.prompt},
         ${automation.enabled ? 1 : 0}, ${automation.cronExpression}, ${automation.timeZone},
-        ${JSON.stringify(automation.modelSelection)}, ${automation.runtimeMode},
+        ${encodeModelSelection(automation.modelSelection)}, ${automation.runtimeMode},
         ${automation.interactionMode}, ${automation.concurrencyPolicy}, ${automation.nextRunAt},
         ${automation.lastRunAt}, ${automation.createdAt}, ${automation.updatedAt}
       )
@@ -269,60 +276,112 @@ export const make = Effect.gen(function* () {
 
   const update: AutomationStore["Service"]["update"] = Effect.fn("AutomationStore.update")(
     function* (input) {
-      const existing = yield* get(input.automationId).pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () =>
-              Effect.fail(
-                new AutomationError({ reason: "not_found", message: "Automation not found." }),
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const existing = yield* get(input.automationId).pipe(
+              Effect.flatMap(
+                Option.match({
+                  onNone: () =>
+                    Effect.fail(
+                      new AutomationError({
+                        reason: "not_found",
+                        message: "Automation not found.",
+                      }),
+                    ),
+                  onSome: Effect.succeed,
+                }),
               ),
-            onSome: Effect.succeed,
+            );
+            const now = DateTime.formatIso(yield* DateTime.now);
+            const merged: ProjectAutomation = {
+              ...existing,
+              name: input.name ?? existing.name,
+              prompt: input.prompt ?? existing.prompt,
+              enabled: input.enabled ?? existing.enabled,
+              cronExpression: input.cronExpression ?? existing.cronExpression,
+              timeZone: input.timeZone ?? existing.timeZone,
+              modelSelection: input.modelSelection ?? existing.modelSelection,
+              runtimeMode: input.runtimeMode ?? existing.runtimeMode,
+              interactionMode: input.interactionMode ?? existing.interactionMode,
+              concurrencyPolicy: input.concurrencyPolicy ?? existing.concurrencyPolicy,
+            };
+            const parsed = parseAutomationSchedule(merged);
+            if (!parsed.ok) {
+              return yield* new AutomationError({
+                reason: "invalid_schedule",
+                message: parsed.error,
+              });
+            }
+            const scheduleChanged =
+              input.cronExpression !== undefined ||
+              input.timeZone !== undefined ||
+              input.enabled !== undefined;
+            const updated: ProjectAutomation = {
+              ...merged,
+              nextRunAt: !merged.enabled
+                ? null
+                : scheduleChanged
+                  ? nextAutomationRunAt(merged, now)
+                  : existing.nextRunAt,
+              updatedAt: now,
+            };
+            const rows = yield* sql`
+              UPDATE project_automations SET
+                name = ${updated.name},
+                prompt = ${updated.prompt},
+                enabled = ${updated.enabled ? 1 : 0},
+                cron_expression = ${updated.cronExpression},
+                time_zone = ${updated.timeZone},
+                model_selection_json = ${encodeModelSelection(updated.modelSelection)},
+                runtime_mode = ${updated.runtimeMode},
+                interaction_mode = ${updated.interactionMode},
+                concurrency_policy = ${updated.concurrencyPolicy},
+                next_run_at = ${updated.nextRunAt},
+                updated_at = ${updated.updatedAt}
+              WHERE automation_id = ${updated.id}
+              RETURNING automation_id
+            `;
+            if (rows.length === 0) {
+              return yield* new AutomationError({
+                reason: "not_found",
+                message: "Automation not found.",
+              });
+            }
+            return updated;
           }),
-        ),
-      );
-      const now = DateTime.formatIso(yield* DateTime.now);
-      const merged: ProjectAutomation = {
-        ...existing,
-        name: input.name ?? existing.name,
-        prompt: input.prompt ?? existing.prompt,
-        enabled: input.enabled ?? existing.enabled,
-        cronExpression: input.cronExpression ?? existing.cronExpression,
-        timeZone: input.timeZone ?? existing.timeZone,
-        modelSelection: input.modelSelection ?? existing.modelSelection,
-        runtimeMode: input.runtimeMode ?? existing.runtimeMode,
-        interactionMode: input.interactionMode ?? existing.interactionMode,
-        concurrencyPolicy: input.concurrencyPolicy ?? existing.concurrencyPolicy,
-      };
-      const parsed = parseAutomationSchedule(merged);
-      if (!parsed.ok) {
-        return yield* new AutomationError({ reason: "invalid_schedule", message: parsed.error });
-      }
-      const scheduleChanged =
-        input.cronExpression !== undefined ||
-        input.timeZone !== undefined ||
-        input.enabled !== undefined;
-      const updated: ProjectAutomation = {
-        ...merged,
-        nextRunAt: !merged.enabled
-          ? null
-          : scheduleChanged
-            ? nextAutomationRunAt(merged, now)
-            : existing.nextRunAt,
-        updatedAt: now,
-      };
-      return yield* upsert(updated);
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            isAutomationError(cause) ? cause : persistenceError("AutomationStore.update", cause),
+          ),
+        );
     },
   );
 
   const deleteAutomation: AutomationStore["Service"]["delete"] = (automationId) =>
-    sql`
-      DELETE FROM project_automations
-      WHERE automation_id = ${automationId}
-      RETURNING automation_id
-    `.pipe(
-      Effect.map((rows) => rows.length > 0),
-      Effect.mapError((cause) => persistenceError("AutomationStore.delete", cause)),
-    );
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const deleted = yield* sql`
+            DELETE FROM project_automations
+            WHERE automation_id = ${automationId}
+              AND NOT EXISTS (
+                SELECT 1 FROM automation_runs
+                WHERE automation_id = ${automationId}
+                  AND status IN ('queued', 'running')
+              )
+            RETURNING automation_id
+          `;
+          if (deleted.length > 0) return "deleted" as const;
+
+          const existing = yield* sql`
+            SELECT automation_id FROM project_automations WHERE automation_id = ${automationId}
+          `;
+          return existing.length > 0 ? ("active" as const) : ("not_found" as const);
+        }),
+      )
+      .pipe(Effect.mapError((cause) => persistenceError("AutomationStore.delete", cause)));
 
   const claimDue: AutomationStore["Service"]["claimDue"] = Effect.fn("AutomationStore.claimDue")(
     function* (now) {

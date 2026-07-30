@@ -1,7 +1,25 @@
+import {
+  AutomationId,
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@shuv2code/contracts";
+import { it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import { describe, expect, it } from "vite-plus/test";
-import { ProjectId, ProviderInstanceId } from "@shuv2code/contracts";
 
-import { normalizeAutomationCreateInput } from "./handlers.ts";
+import * as AutomationService from "../../../automations/AutomationService.ts";
+import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import {
+  automationHandlers,
+  normalizeAutomationCreateInput,
+  requireAllowedAutomationRuntime,
+} from "./handlers.ts";
 
 const context = {
   projectId: ProjectId.make("project-1"),
@@ -67,4 +85,121 @@ describe("normalizeAutomationCreateInput", () => {
       concurrencyPolicy: "parallel",
     });
   });
+});
+
+describe("automation MCP authority", () => {
+  effectIt.effect("rejects broader child permissions", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* requireAllowedAutomationRuntime("approval-required", "full-access").pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ reason: "unauthorized" });
+      expect(yield* requireAllowedAutomationRuntime("auto", "auto-accept-edits")).toBeUndefined();
+    }),
+  );
+
+  effectIt.effect("rejects a missing capability before resolving or calling project services", () =>
+    Effect.gen(function* () {
+      const projectionCalls = yield* Ref.make(0);
+      const serviceCalls = yield* Ref.make(0);
+      const layer = Layer.mergeAll(
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("environment-1"),
+          threadId: ThreadId.make("thread-1"),
+          providerSessionId: "provider-session-1",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          capabilities: new Set<McpInvocationContext.McpCapability>(["preview"]),
+          issuedAt: 1,
+        }),
+        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+          getThreadShellById: () =>
+            Ref.update(projectionCalls, (count) => count + 1).pipe(Effect.as(Option.none())),
+        }),
+        Layer.mock(AutomationService.AutomationService)({
+          get: () =>
+            Ref.update(serviceCalls, (count) => count + 1).pipe(
+              Effect.andThen(Effect.die("service must not be called")),
+            ),
+        }),
+      );
+
+      const error = yield* automationHandlers
+        .automation_get({ automationId: AutomationId.make("automation-1") })
+        .pipe(Effect.provide(layer), Effect.flip);
+      expect(error).toMatchObject({ reason: "unauthorized" });
+      expect(yield* Ref.get(projectionCalls)).toBe(0);
+      expect(yield* Ref.get(serviceCalls)).toBe(0);
+    }),
+  );
+
+  effectIt.effect("derives the project from the invoking thread before delegating", () =>
+    Effect.gen(function* () {
+      const automationId = AutomationId.make("automation-1");
+      const delegatedProject = yield* Ref.make<ProjectId | null>(null);
+      const automation = {
+        id: automationId,
+        projectId: context.projectId,
+        name: "Daily report",
+        prompt: "Create the report.",
+        enabled: false,
+        cronExpression: "0 9 * * *",
+        timeZone: "Europe/London",
+        modelSelection: context.modelSelection,
+        runtimeMode: context.runtimeMode,
+        interactionMode: context.interactionMode,
+        concurrencyPolicy: "skip" as const,
+        nextRunAt: null,
+        lastRunAt: null,
+        createdAt: "2026-07-30T00:00:00.000Z",
+        updatedAt: "2026-07-30T00:00:00.000Z",
+      };
+      const layer = Layer.mergeAll(
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("environment-1"),
+          threadId: ThreadId.make("thread-1"),
+          providerSessionId: "provider-session-1",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          capabilities: new Set<McpInvocationContext.McpCapability>(["preview", "automations"]),
+          issuedAt: 1,
+        }),
+        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+          getThreadShellById: () =>
+            Effect.succeed(
+              Option.some({
+                id: ThreadId.make("thread-1"),
+                projectId: context.projectId,
+                title: "Current chat",
+                modelSelection: context.modelSelection,
+                runtimeMode: context.runtimeMode,
+                interactionMode: context.interactionMode,
+                branch: null,
+                worktreePath: "/tmp/project-1",
+                latestTurn: null,
+                createdAt: "2026-07-30T00:00:00.000Z",
+                updatedAt: "2026-07-30T00:00:00.000Z",
+                archivedAt: null,
+                settledOverride: null,
+                settledAt: null,
+                session: null,
+                latestUserMessageAt: null,
+                hasPendingApprovals: false,
+                hasPendingUserInput: false,
+                hasActionableProposedPlan: false,
+              }),
+            ),
+        }),
+        Layer.mock(AutomationService.AutomationService)({
+          get: (input) =>
+            Ref.set(delegatedProject, input.projectId ?? null).pipe(Effect.as(automation)),
+        }),
+      );
+
+      const result = yield* automationHandlers
+        .automation_get({ automationId })
+        .pipe(Effect.provide(layer));
+      expect(result.id).toBe(automationId);
+      expect(yield* Ref.get(delegatedProject)).toBe(context.projectId);
+    }),
+  );
 });

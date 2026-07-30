@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  AutomationError,
   MessageId,
   type OrchestrationLatestTurn,
   type OrchestrationThreadShell,
@@ -14,6 +15,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -330,7 +332,7 @@ serviceLayer("AutomationService", (it) => {
     }),
   );
 
-  it.effect("reconciles interrupted, completed, active, and stalled runs", () =>
+  it.effect("reconciles interrupted, completed, active, and awaiting-turn runs", () =>
     Effect.gen(function* () {
       const service = yield* AutomationService;
       const store = yield* AutomationStore.AutomationStore;
@@ -452,7 +454,47 @@ serviceLayer("AutomationService", (it) => {
       runs = yield* store.listRuns(automation.id, 50);
       assert.strictEqual(status(active.id), "running");
       assert.strictEqual(status(noThread.id), "failed");
-      assert.strictEqual(status(noTurn.id), "failed");
+      assert.strictEqual(status(noTurn.id), "running");
     }),
   );
 });
+
+it.effect(
+  "starts the scheduler after launch, survives a failed tick, and stops with its scope",
+  () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+      const reconcileCount = yield* Ref.make(0);
+      const schedulerService = Layer.mock(AutomationService)({
+        reconcileRuns: () =>
+          Effect.gen(function* () {
+            yield* Ref.update(calls, (entries) => [...entries, "reconcile"]);
+            const count = yield* Ref.updateAndGet(reconcileCount, (value) => value + 1);
+            if (count === 1) {
+              return yield* new AutomationError({
+                reason: "persistence_failed",
+                message: "Injected scheduler failure.",
+              });
+            }
+          }),
+        sweepDue: () => Ref.update(calls, (entries) => [...entries, "sweep"]),
+      });
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* AutomationServiceLive.startScheduler.pipe(Effect.provide(schedulerService));
+          yield* Effect.yieldNow;
+          assert.deepStrictEqual(yield* Ref.get(calls), ["reconcile"]);
+
+          yield* TestClock.adjust("5 seconds");
+          yield* Effect.yieldNow;
+          assert.deepStrictEqual(yield* Ref.get(calls), ["reconcile", "reconcile", "sweep"]);
+        }),
+      );
+
+      const stoppedAt = yield* Ref.get(calls);
+      yield* TestClock.adjust("10 seconds");
+      yield* Effect.yieldNow;
+      assert.deepStrictEqual(yield* Ref.get(calls), stoppedAt);
+    }).pipe(Effect.provide(TestClock.layer())),
+);

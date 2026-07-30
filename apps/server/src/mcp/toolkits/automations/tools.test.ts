@@ -1,7 +1,8 @@
 import { expect, it } from "@effect/vitest";
+import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
-import { AutomationToolkit } from "./tools.ts";
+import { AutomationCreateTool, AutomationToolkit } from "./tools.ts";
 
 const schemaHasDescription = (schema: unknown): boolean => {
   if (!schema || typeof schema !== "object") return false;
@@ -44,4 +45,8 @@ it("exports provider-compatible object schemas with described parameters", () =>
       ).toBe(true);
     }
   }
+});
+
+it("marks durable creation as destructive", () => {
+  expect(Context.get(AutomationCreateTool.annotations, Tool.Destructive)).toBe(true);
 });
