@@ -738,7 +738,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   const data = asRecord(payload?.data);
   if (itemType && data?.item !== undefined) {
-    entry.toolData = data.item;
+    // Expanded raw JSON is an MCP-only affordance. Native tool items are used
+    // transiently for image extraction, but retaining them would defeat the
+    // server's activity-payload projection and keep unread bulk in client state.
+    if (itemType === "mcp_tool_call") {
+      entry.toolData = data.item;
+    }
     const images = extractToolResultImages(data.item, title ?? activity.summary, activity.id);
     if (images.length > 0) {
       entry.images = images;

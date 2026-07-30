@@ -1024,6 +1024,7 @@ describe("deriveWorkLogEntries", () => {
         workspacePath: "/workspace/screenshots/result.png",
       },
     ]);
+    expect(entry?.toolData).toBeUndefined();
   });
 
   it("keeps MCP payloads while collapsing lifecycle updates", () => {
