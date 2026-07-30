@@ -66,6 +66,23 @@ const PreviewAutomationTabTargetFields = {
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
 
+export const PreviewAutomationSnapshotMode = Schema.Literals(["compact", "full"]);
+export type PreviewAutomationSnapshotMode = typeof PreviewAutomationSnapshotMode.Type;
+
+export const PreviewAutomationSnapshotInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  mode: Schema.optional(
+    PreviewAutomationSnapshotMode.annotate({
+      description:
+        "Accessibility detail to return. compact keeps relevant semantic nodes and is the default; full returns Chrome's raw accessibility tree for diagnostics.",
+    }),
+  ).annotate({
+    description:
+      "Accessibility detail to return. compact keeps relevant semantic nodes and is the default; full returns Chrome's raw accessibility tree for diagnostics.",
+  }),
+});
+export type PreviewAutomationSnapshotInput = typeof PreviewAutomationSnapshotInput.Type;
+
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean,

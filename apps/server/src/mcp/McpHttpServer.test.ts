@@ -156,6 +156,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
       const routedRequests: Array<{
         readonly operation: string;
+        readonly input: unknown;
         readonly tabId?: string | undefined;
       }> = [];
       const events = yield* broker.connect({
@@ -251,11 +252,34 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(snapshot.isError).toBe(false);
       expect(snapshot.content.some((content) => content.type === "image")).toBe(true);
       expect(snapshot.structuredContent).toMatchObject({
+        accessibilityTree: { mode: "compact" },
         screenshot: { mimeType: "image/png", width: 10, height: 5 },
       });
       expect(routedRequests.find(({ operation }) => operation === "snapshot")?.tabId).toBe(
         alternateTabId,
       );
+
+      const fullSnapshot = yield* server
+        .callTool({
+          name: "preview_snapshot",
+          arguments: { tabId: alternateTabId, mode: "full" },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(fullSnapshot.isError).toBe(false);
+      expect(fullSnapshot.structuredContent).toMatchObject({ accessibilityTree: {} });
+      expect(
+        routedRequests.find(
+          ({ operation, input }) =>
+            operation === "snapshot" &&
+            typeof input === "object" &&
+            input !== null &&
+            "mode" in input &&
+            input.mode === "full",
+        ),
+      ).toBeDefined();
 
       const press = yield* server
         .callTool({ name: "preview_press", arguments: { key: "Enter" } })
