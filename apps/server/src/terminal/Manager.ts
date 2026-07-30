@@ -75,6 +75,9 @@ export {
 };
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
+const DEFAULT_HISTORY_BYTE_LIMIT = 4 * 1024 * 1024;
+const DEFAULT_HISTORY_CONTROL_SEQUENCE_LIMIT = 16 * 1024;
+const HISTORY_READ_CHUNK_SIZE = 64 * 1024;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
 const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
@@ -237,7 +240,7 @@ export interface TerminalSessionState {
   status: TerminalSessionStatus;
   pid: number | null;
   history: string;
-  pendingHistoryControlSequence: string;
+  pendingHistoryControlSequence: PendingHistoryControlSequence;
   pendingProcessEvents: Array<PendingProcessEvent>;
   pendingProcessEventIndex: number;
   processEventDrainRunning: boolean;
@@ -264,6 +267,26 @@ interface PersistHistoryRequest {
 type PendingProcessEvent =
   | { type: "output"; data: string }
   | { type: "exit"; event: PtyAdapter.PtyExitEvent };
+
+type PendingHistoryControlSequence =
+  | { readonly _tag: "Buffered"; readonly value: string }
+  | { readonly _tag: "DiscardCsi" }
+  | { readonly _tag: "DiscardString"; readonly sawEscape: boolean }
+  | { readonly _tag: "DiscardEscape" };
+
+type BufferedHistoryControlSequence = Extract<
+  PendingHistoryControlSequence,
+  { readonly _tag: "Buffered" }
+>;
+type DiscardedHistoryControlSequence = Exclude<
+  PendingHistoryControlSequence,
+  BufferedHistoryControlSequence
+>;
+
+const emptyPendingHistoryControlSequence: BufferedHistoryControlSequence = {
+  _tag: "Buffered",
+  value: "",
+};
 
 type DrainProcessEventAction =
   | { type: "idle" }
@@ -852,16 +875,34 @@ function defaultSubprocessInspectorForPlatform(platform: NodeJS.Platform) {
   });
 }
 
-function capHistory(history: string, maxLines: number): string {
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
+function capHistory(history: string, maxLines: number, maxBytes: number): string {
   if (history.length === 0) return history;
   const hasTrailingNewline = history.endsWith("\n");
   const lines = history.split("\n");
   if (hasTrailingNewline) {
     lines.pop();
   }
-  if (lines.length <= maxLines) return history;
-  const capped = lines.slice(lines.length - maxLines).join("\n");
-  return hasTrailingNewline ? `${capped}\n` : capped;
+  const lineCapped =
+    lines.length <= maxLines
+      ? history
+      : `${lines.slice(lines.length - maxLines).join("\n")}${hasTrailingNewline ? "\n" : ""}`;
+  const encoded = utf8Encoder.encode(lineCapped);
+  if (encoded.byteLength <= maxBytes) return lineCapped;
+
+  let start = encoded.byteLength - maxBytes;
+  while (start < encoded.byteLength && (encoded[start]! & 0xc0) === 0x80) {
+    start += 1;
+  }
+  let byteCapped = utf8Decoder.decode(encoded.subarray(start));
+  const startsAtLineBoundary = start === 0 || encoded[start - 1] === 0x0a;
+  const firstNewline = byteCapped.indexOf("\n");
+  if (!startsAtLineBoundary && firstNewline >= 0 && firstNewline < byteCapped.length - 1) {
+    byteCapped = byteCapped.slice(firstNewline + 1);
+  }
+  return byteCapped;
 }
 
 function isCsiFinalByte(codePoint: number): boolean {
@@ -928,11 +969,98 @@ function findEscapeSequenceEndIndex(input: string, start: number): number | null
   return isEscapeFinalByte(input.charCodeAt(cursor)) ? cursor + 1 : start + 1;
 }
 
-function sanitizeTerminalHistoryChunk(
-  pendingControlSequence: string,
+function bufferIncompleteControlSequence(
+  input: string,
+  start: number,
+  limit: number,
+  discardState: DiscardedHistoryControlSequence,
+): PendingHistoryControlSequence {
+  return input.length - start <= limit
+    ? { _tag: "Buffered", value: input.slice(start) }
+    : discardState;
+}
+
+function consumeDiscardedControlSequence(
+  pending: DiscardedHistoryControlSequence,
   data: string,
-): { visibleText: string; pendingControlSequence: string } {
-  const input = `${pendingControlSequence}${data}`;
+): { readonly remainder: string | null; readonly pending: PendingHistoryControlSequence } {
+  if (pending._tag === "DiscardCsi") {
+    for (let index = 0; index < data.length; index += 1) {
+      if (isCsiFinalByte(data.charCodeAt(index))) {
+        return {
+          remainder: data.slice(index + 1),
+          pending: emptyPendingHistoryControlSequence,
+        };
+      }
+    }
+    return { remainder: null, pending };
+  }
+
+  if (pending._tag === "DiscardEscape") {
+    for (let index = 0; index < data.length; index += 1) {
+      const codePoint = data.charCodeAt(index);
+      if (isEscapeIntermediateByte(codePoint)) {
+        continue;
+      }
+      return {
+        remainder: isEscapeFinalByte(codePoint) ? data.slice(index + 1) : data.slice(index),
+        pending: emptyPendingHistoryControlSequence,
+      };
+    }
+    return { remainder: null, pending };
+  }
+
+  if (pending.sawEscape && data.startsWith("\\")) {
+    return {
+      remainder: data.slice(1),
+      pending: emptyPendingHistoryControlSequence,
+    };
+  }
+
+  for (let index = 0; index < data.length; index += 1) {
+    const codePoint = data.charCodeAt(index);
+    if (codePoint === 0x07 || codePoint === 0x9c) {
+      return {
+        remainder: data.slice(index + 1),
+        pending: emptyPendingHistoryControlSequence,
+      };
+    }
+    if (codePoint === 0x1b && data.charCodeAt(index + 1) === 0x5c) {
+      return {
+        remainder: data.slice(index + 2),
+        pending: emptyPendingHistoryControlSequence,
+      };
+    }
+  }
+
+  return {
+    remainder: null,
+    pending: {
+      _tag: "DiscardString",
+      sawEscape: data.length === 0 ? pending.sawEscape : data.endsWith("\u001b"),
+    },
+  };
+}
+
+function sanitizeTerminalHistoryChunk(
+  pendingControlSequence: PendingHistoryControlSequence,
+  data: string,
+  pendingControlSequenceLimit: number,
+): { visibleText: string; pendingControlSequence: PendingHistoryControlSequence } {
+  let resumedData = data;
+  if (pendingControlSequence._tag !== "Buffered") {
+    const resumed = consumeDiscardedControlSequence(pendingControlSequence, data);
+    if (resumed.remainder === null) {
+      return { visibleText: "", pendingControlSequence: resumed.pending };
+    }
+    resumedData = resumed.remainder;
+    pendingControlSequence = emptyPendingHistoryControlSequence;
+  }
+
+  const input =
+    pendingControlSequence.value.length === 0
+      ? resumedData
+      : `${pendingControlSequence.value}${resumedData}`;
   let visibleText = "";
   let index = 0;
 
@@ -946,7 +1074,15 @@ function sanitizeTerminalHistoryChunk(
     if (codePoint === 0x1b) {
       const nextCodePoint = input.charCodeAt(index + 1);
       if (Number.isNaN(nextCodePoint)) {
-        return { visibleText, pendingControlSequence: input.slice(index) };
+        return {
+          visibleText,
+          pendingControlSequence: bufferIncompleteControlSequence(
+            input,
+            index,
+            pendingControlSequenceLimit,
+            { _tag: "DiscardEscape" },
+          ),
+        };
       }
 
       if (nextCodePoint === 0x5b) {
@@ -964,7 +1100,15 @@ function sanitizeTerminalHistoryChunk(
           cursor += 1;
         }
         if (cursor >= input.length) {
-          return { visibleText, pendingControlSequence: input.slice(index) };
+          return {
+            visibleText,
+            pendingControlSequence: bufferIncompleteControlSequence(
+              input,
+              index,
+              pendingControlSequenceLimit,
+              { _tag: "DiscardCsi" },
+            ),
+          };
         }
         continue;
       }
@@ -977,7 +1121,18 @@ function sanitizeTerminalHistoryChunk(
       ) {
         const terminatorIndex = findStringTerminatorIndex(input, index + 2);
         if (terminatorIndex === null) {
-          return { visibleText, pendingControlSequence: input.slice(index) };
+          return {
+            visibleText,
+            pendingControlSequence: bufferIncompleteControlSequence(
+              input,
+              index,
+              pendingControlSequenceLimit,
+              {
+                _tag: "DiscardString",
+                sawEscape: input.endsWith("\u001b"),
+              },
+            ),
+          };
         }
         const sequence = input.slice(index, terminatorIndex);
         const content = stripStringTerminator(input.slice(index + 2, terminatorIndex));
@@ -990,7 +1145,15 @@ function sanitizeTerminalHistoryChunk(
 
       const escapeSequenceEndIndex = findEscapeSequenceEndIndex(input, index + 1);
       if (escapeSequenceEndIndex === null) {
-        return { visibleText, pendingControlSequence: input.slice(index) };
+        return {
+          visibleText,
+          pendingControlSequence: bufferIncompleteControlSequence(
+            input,
+            index,
+            pendingControlSequenceLimit,
+            { _tag: "DiscardEscape" },
+          ),
+        };
       }
       append(input.slice(index, escapeSequenceEndIndex));
       index = escapeSequenceEndIndex;
@@ -1012,7 +1175,15 @@ function sanitizeTerminalHistoryChunk(
         cursor += 1;
       }
       if (cursor >= input.length) {
-        return { visibleText, pendingControlSequence: input.slice(index) };
+        return {
+          visibleText,
+          pendingControlSequence: bufferIncompleteControlSequence(
+            input,
+            index,
+            pendingControlSequenceLimit,
+            { _tag: "DiscardCsi" },
+          ),
+        };
       }
       continue;
     }
@@ -1020,7 +1191,18 @@ function sanitizeTerminalHistoryChunk(
     if (codePoint === 0x9d || codePoint === 0x90 || codePoint === 0x9e || codePoint === 0x9f) {
       const terminatorIndex = findStringTerminatorIndex(input, index + 1);
       if (terminatorIndex === null) {
-        return { visibleText, pendingControlSequence: input.slice(index) };
+        return {
+          visibleText,
+          pendingControlSequence: bufferIncompleteControlSequence(
+            input,
+            index,
+            pendingControlSequenceLimit,
+            {
+              _tag: "DiscardString",
+              sawEscape: input.endsWith("\u001b"),
+            },
+          ),
+        };
       }
       const sequence = input.slice(index, terminatorIndex);
       const content = stripStringTerminator(input.slice(index + 1, terminatorIndex));
@@ -1035,7 +1217,7 @@ function sanitizeTerminalHistoryChunk(
     index += 1;
   }
 
-  return { visibleText, pendingControlSequence: "" };
+  return { visibleText, pendingControlSequence: emptyPendingHistoryControlSequence };
 }
 
 function legacySafeThreadId(threadId: string): string {
@@ -1142,6 +1324,8 @@ function normalizedRuntimeEnv(
 interface TerminalManagerOptions {
   logsDir: string;
   historyLineLimit?: number;
+  historyByteLimit?: number;
+  historyControlSequenceLimit?: number;
   ptyAdapter: PtyAdapter.PtyAdapter["Service"];
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
@@ -1182,6 +1366,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
+  const historyByteLimit = Math.max(
+    1,
+    Math.floor(options.historyByteLimit ?? DEFAULT_HISTORY_BYTE_LIMIT),
+  );
+  const historyControlSequenceLimit = Math.max(
+    1,
+    Math.floor(options.historyControlSequenceLimit ?? DEFAULT_HISTORY_CONTROL_SEQUENCE_LIMIT),
+  );
   const platform = yield* HostProcessPlatform;
   // Terminals must inherit the user's full environment (minus the blocklist
   // applied in createTerminalSpawnEnv) — an allowlist here silently strips
@@ -1430,6 +1622,50 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     yield* flushPersist(threadId, terminalId);
   });
 
+  const readCappedHistoryPath = Effect.fn("terminal.readCappedHistoryPath")(function* (
+    filePath: string,
+  ) {
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fileSystem.open(filePath, { flag: "r" });
+        const info = yield* file.stat;
+        const readWindow = BigInt(historyByteLimit + 3);
+        const start = info.size > readWindow ? info.size - readWindow : 0n;
+        if (start > 0n) {
+          yield* file.seek(start, "start");
+        }
+        const chunks: Uint8Array[] = [];
+        let remaining = info.size - start;
+        let totalBytes = 0;
+        while (remaining > 0n) {
+          const requestedBytes =
+            remaining > BigInt(HISTORY_READ_CHUNK_SIZE)
+              ? HISTORY_READ_CHUNK_SIZE
+              : Number(remaining);
+          const next = yield* file.readAlloc(requestedBytes);
+          if (Option.isNone(next) || next.value.byteLength === 0) {
+            break;
+          }
+          chunks.push(next.value);
+          totalBytes += next.value.byteLength;
+          remaining -= BigInt(next.value.byteLength);
+        }
+        const bytes = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        const raw = utf8Decoder.decode(bytes);
+        const history = capHistory(raw, historyLineLimit, historyByteLimit);
+        return {
+          history,
+          truncated: remaining === 0n && (start > 0n || history !== raw),
+        } as const;
+      }),
+    );
+  });
+
   const readHistory = Effect.fn("terminal.readHistory")(function* (
     threadId: string,
     terminalId: string,
@@ -1444,17 +1680,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           ),
         )
     ) {
-      const raw = yield* fileSystem
-        .readFileString(nextPath)
-        .pipe(
-          Effect.mapError(
-            (cause) => new TerminalHistoryError({ operation: "read", threadId, terminalId, cause }),
-          ),
-        );
-      const capped = capHistory(raw, historyLineLimit);
-      if (capped !== raw) {
+      const loaded = yield* readCappedHistoryPath(nextPath).pipe(
+        Effect.mapError(
+          (cause) => new TerminalHistoryError({ operation: "read", threadId, terminalId, cause }),
+        ),
+      );
+      if (loaded.truncated) {
         yield* fileSystem
-          .writeFileString(nextPath, capped)
+          .writeFileString(nextPath, loaded.history)
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -1462,7 +1695,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             ),
           );
       }
-      return capped;
+      return loaded.history;
     }
 
     if (terminalId !== DEFAULT_TERMINAL_ID) {
@@ -1483,17 +1716,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       return "";
     }
 
-    const raw = yield* fileSystem
-      .readFileString(legacyPath)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new TerminalHistoryError({ operation: "migrate", threadId, terminalId, cause }),
-        ),
-      );
-    const capped = capHistory(raw, historyLineLimit);
+    const loaded = yield* readCappedHistoryPath(legacyPath).pipe(
+      Effect.mapError(
+        (cause) => new TerminalHistoryError({ operation: "migrate", threadId, terminalId, cause }),
+      ),
+    );
     yield* fileSystem
-      .writeFileString(nextPath, capped)
+      .writeFileString(nextPath, loaded.history)
       .pipe(
         Effect.mapError(
           (cause) =>
@@ -1508,7 +1737,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }),
       ),
     );
-    return capped;
+    return loaded.history;
   });
 
   const deleteHistory = Effect.fn("terminal.deleteHistory")(function* (
@@ -1674,12 +1903,19 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           const sanitized = sanitizeTerminalHistoryChunk(
             session.pendingHistoryControlSequence,
             nextEvent.data,
+            historyControlSequenceLimit,
           );
           session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
           if (sanitized.visibleText.length > 0) {
-            session.history = capHistory(
-              `${session.history}${sanitized.visibleText}`,
+            const boundedVisibleText = capHistory(
+              sanitized.visibleText,
               historyLineLimit,
+              historyByteLimit,
+            );
+            session.history = capHistory(
+              `${session.history}${boundedVisibleText}`,
+              historyLineLimit,
+              historyByteLimit,
             );
           }
           const eventStamp = advanceEventSequence(session);
@@ -1701,7 +1937,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         session.hasRunningSubprocess = false;
         session.childCommandLabel = null;
         session.status = "exited";
-        session.pendingHistoryControlSequence = "";
+        session.pendingHistoryControlSequence = emptyPendingHistoryControlSequence;
         session.pendingProcessEvents = [];
         session.pendingProcessEventIndex = 0;
         session.processEventDrainRunning = false;
@@ -1773,7 +2009,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       session.hasRunningSubprocess = false;
       session.childCommandLabel = null;
       session.status = "exited";
-      session.pendingHistoryControlSequence = "";
+      session.pendingHistoryControlSequence = emptyPendingHistoryControlSequence;
       session.pendingProcessEvents = [];
       session.pendingProcessEventIndex = 0;
       session.processEventDrainRunning = false;
@@ -2162,7 +2398,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         status: "starting",
         pid: null,
         history,
-        pendingHistoryControlSequence: "",
+        pendingHistoryControlSequence: emptyPendingHistoryControlSequence,
         pendingProcessEvents: [],
         pendingProcessEventIndex: 0,
         processEventDrainRunning: false,
@@ -2223,7 +2459,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       liveSession.worktreePath = nextWorktreePath;
       liveSession.runtimeEnv = nextRuntimeEnv;
       liveSession.history = "";
-      liveSession.pendingHistoryControlSequence = "";
+      liveSession.pendingHistoryControlSequence = emptyPendingHistoryControlSequence;
       liveSession.pendingProcessEvents = [];
       liveSession.pendingProcessEventIndex = 0;
       liveSession.processEventDrainRunning = false;
@@ -2232,7 +2468,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       liveSession.runtimeEnv = nextRuntimeEnv;
       liveSession.worktreePath = nextWorktreePath;
       liveSession.history = "";
-      liveSession.pendingHistoryControlSequence = "";
+      liveSession.pendingHistoryControlSequence = emptyPendingHistoryControlSequence;
       liveSession.pendingProcessEvents = [];
       liveSession.pendingProcessEventIndex = 0;
       liveSession.processEventDrainRunning = false;
@@ -2537,7 +2773,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         const terminalId = input.terminalId;
         const session = yield* requireSession(input.threadId, terminalId);
         session.history = "";
-        session.pendingHistoryControlSequence = "";
+        session.pendingHistoryControlSequence = emptyPendingHistoryControlSequence;
         session.pendingProcessEvents = [];
         session.pendingProcessEventIndex = 0;
         session.processEventDrainRunning = false;
@@ -2574,7 +2810,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             status: "starting",
             pid: null,
             history: "",
-            pendingHistoryControlSequence: "",
+            pendingHistoryControlSequence: emptyPendingHistoryControlSequence,
             pendingProcessEvents: [],
             pendingProcessEventIndex: 0,
             processEventDrainRunning: false,
@@ -2610,7 +2846,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         const rows = input.rows ?? session.rows;
 
         session.history = "";
-        session.pendingHistoryControlSequence = "";
+        session.pendingHistoryControlSequence = emptyPendingHistoryControlSequence;
         session.pendingProcessEvents = [];
         session.pendingProcessEventIndex = 0;
         session.processEventDrainRunning = false;
