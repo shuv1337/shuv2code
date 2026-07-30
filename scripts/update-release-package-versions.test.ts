@@ -15,7 +15,10 @@ import { fromJsonStringPretty } from "@shuv2code/shared/schemaJson";
 import {
   ReleaseGitHubOutputConfigurationError,
   ReleaseGitHubOutputWriteError,
+  ReleaseMobileAppConfigError,
   ReleasePackageManifestError,
+  ReleaseVersionValidationError,
+  mobileAppConfigFile,
   releasePackageFiles,
   updateReleasePackageVersions,
   updateReleasePackageVersionsCommand,
@@ -27,6 +30,20 @@ const PackageJsonSchema = Schema.Record(Schema.String, Schema.Unknown);
 const PackageJsonPrettyJson = fromJsonStringPretty(PackageJsonSchema);
 const decodePackageJson = Schema.decodeEffect(PackageJsonPrettyJson);
 const encodePackageJson = Schema.encodeEffect(PackageJsonPrettyJson);
+
+const writeMobileAppConfigFixture = Effect.fn("writeMobileAppConfigFixture")(function* (
+  rootDir: string,
+  version: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const filePath = path.join(rootDir, mobileAppConfigFile);
+  yield* fs.makeDirectory(path.dirname(filePath), { recursive: true });
+  yield* fs.writeFileString(
+    filePath,
+    `const config = {\n  name: "shuv2code",\n  version: "${version}",\n  runtimeVersion: {\n    policy: "fingerprint",\n  },\n};\n`,
+  );
+});
 
 const writePackageJsonFixtures = Effect.fn("writePackageJsonFixtures")(function* (
   rootDir: string,
@@ -47,6 +64,8 @@ const writePackageJsonFixtures = Effect.fn("writePackageJsonFixtures")(function*
       })}\n`,
     );
   }
+
+  yield* writeMobileAppConfigFixture(rootDir, version);
 });
 
 const readReleaseVersions = Effect.fn("readReleaseVersions")(function* (rootDir: string) {
@@ -59,6 +78,10 @@ const readReleaseVersions = Effect.fn("readReleaseVersions")(function* (rootDir:
     const packageJson = yield* fs.readFileString(filePath).pipe(Effect.flatMap(decodePackageJson));
     versions.set(relativePath, String(packageJson.version));
   }
+
+  const mobileSource = yield* fs.readFileString(path.join(rootDir, mobileAppConfigFile));
+  const mobileMatch = /^\s*version:\s*"([^"]+)"\s*,\s*$/m.exec(mobileSource);
+  versions.set(mobileAppConfigFile, mobileMatch?.[1] ?? "");
 
   return versions;
 });
@@ -85,11 +108,11 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
       const result = yield* updateReleasePackageVersions("1.2.3", { rootDir: baseDir });
       const versions = yield* readReleaseVersions(baseDir);
 
-      assert.deepStrictEqual(result, { changed: true });
-      assert.deepStrictEqual(
-        Array.from(versions.entries()),
-        releasePackageFiles.map((relativePath) => [relativePath, "1.2.3"]),
-      );
+      assert.deepStrictEqual(result, { changed: true, version: "1.2.3" });
+      assert.deepStrictEqual(Array.from(versions.entries()), [
+        ...releasePackageFiles.map((relativePath) => [relativePath, "1.2.3"] as const),
+        [mobileAppConfigFile, "1.2.3"],
+      ]);
     }),
   );
 
@@ -104,7 +127,48 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
 
       const result = yield* updateReleasePackageVersions("1.2.3", { rootDir: baseDir });
 
-      assert.deepStrictEqual(result, { changed: false });
+      assert.deepStrictEqual(result, { changed: false, version: "1.2.3" });
+    }),
+  );
+
+  it.effect("rejects invalid release versions before rewriting manifests", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "update-release-package-versions-invalid-",
+      });
+
+      yield* writePackageJsonFixtures(baseDir, "0.1.0");
+
+      const error = yield* updateReleasePackageVersions("not-a-version", {
+        rootDir: baseDir,
+      }).pipe(Effect.flip);
+
+      assert.instanceOf(error, ReleaseVersionValidationError);
+      assert.equal(error.version, "not-a-version");
+      assert.equal(error.message, "Invalid release version 'not-a-version'.");
+    }),
+  );
+
+  it.effect("preserves mobile app config replace context when the version field is missing", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "update-release-package-versions-mobile-missing-",
+      });
+      const filePath = path.join(baseDir, mobileAppConfigFile);
+
+      yield* writePackageJsonFixtures(baseDir, "0.1.0");
+      yield* fs.writeFileString(filePath, "export default {};\n");
+
+      const error = yield* updateReleasePackageVersions("1.2.3", {
+        rootDir: baseDir,
+      }).pipe(Effect.flip);
+
+      assert.instanceOf(error, ReleaseMobileAppConfigError);
+      assert.equal(error.operation, "replace");
+      assert.equal(error.filePath, filePath);
     }),
   );
 

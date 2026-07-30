@@ -17,6 +17,7 @@ const workspaceFiles = [
   "apps/desktop/package.json",
   "apps/web/package.json",
   "apps/mobile/package.json",
+  "apps/mobile/app.config.ts",
   "apps/mobile/deps/react-native-nitro-markdown-0.5.0.tgz",
   "apps/mobile/modules/shuv2code-markdown-text/package.json",
   "apps/mobile/modules/shuv2code-review-diff/package.json",
@@ -179,6 +180,14 @@ function assertPackageVersion(path: string, version: string): void {
   }
 }
 
+function assertMobileAppConfigVersion(path: string, version: string): void {
+  const source = NodeFS.readFileSync(path, "utf8");
+  const match = /^\s*version:\s*"([^"]+)"\s*,\s*$/m.exec(source);
+  if (match?.[1] !== version) {
+    throw new Error(`Expected ${path} to have version ${version}.`);
+  }
+}
+
 function assertMissing(path: string, message: string): void {
   if (NodeFS.existsSync(path)) {
     throw new Error(message);
@@ -222,6 +231,10 @@ try {
   ]) {
     assertPackageVersion(NodePath.resolve(tempRoot, relativePath), "9.9.9-smoke.0");
   }
+  assertMobileAppConfigVersion(
+    NodePath.resolve(tempRoot, "apps/mobile/app.config.ts"),
+    "9.9.9-smoke.0",
+  );
 
   const nightlyReleaseMetadata = NodeChildProcess.execFileSync(
     process.execPath,
@@ -243,19 +256,64 @@ try {
   );
   assertContains(
     nightlyReleaseMetadata,
-    "version=9.9.10-nightly.20260413.321",
-    "Expected nightly metadata to contain the derived nightly version.",
+    "version=9.9.9-nightly.20260413.321",
+    "Expected nightly metadata to keep the prerelease core version.",
   );
   assertContains(
     nightlyReleaseMetadata,
-    "tag=v9.9.10-nightly.20260413.321",
+    "tag=v9.9.9-nightly.20260413.321",
     "Expected nightly metadata to contain the derived nightly tag.",
   );
   assertContains(
     nightlyReleaseMetadata,
-    "name=shuv2code Nightly 9.9.10-nightly.20260413.321 (abcdef123456)",
+    "name=shuv2code Nightly 9.9.9-nightly.20260413.321 (abcdef123456)",
     "Expected nightly metadata to include the short commit SHA in the release name.",
   );
+
+  const stableRoot = NodeFS.mkdtempSync(
+    NodePath.join(NodeOS.tmpdir(), "shuv2code-release-stable-"),
+  );
+  try {
+    copyWorkspaceManifestFixture(stableRoot);
+    NodeChildProcess.execFileSync(
+      process.execPath,
+      [
+        NodePath.resolve(repoRoot, "scripts/update-release-package-versions.ts"),
+        "0.1.0",
+        "--root",
+        stableRoot,
+      ],
+      {
+        cwd: repoRoot,
+        stdio: "inherit",
+      },
+    );
+    const stableNightlyMetadata = NodeChildProcess.execFileSync(
+      process.execPath,
+      [
+        NodePath.resolve(repoRoot, "scripts/resolve-nightly-release.ts"),
+        "--date",
+        "20260730",
+        "--run-number",
+        "1",
+        "--sha",
+        "fedcba9876543210",
+        "--root",
+        stableRoot,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+    assertContains(
+      stableNightlyMetadata,
+      "version=0.1.1-nightly.20260730.1",
+      "Expected stable committed versions to derive the next-patch nightly core.",
+    );
+  } finally {
+    NodeFS.rmSync(stableRoot, { recursive: true, force: true });
+  }
 
   const { arm64Path, x64Path } = writeMacManifestFixtures(tempRoot);
   NodeChildProcess.execFileSync(

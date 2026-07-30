@@ -10,11 +10,11 @@ on:
         type: choice
         options: [prepare, publish]
       channel:
-        description: "npm and release channel"
+        description: "npm dist-tag; must match SemVer (latest/next/nightly)"
         required: true
-        default: latest
+        default: next
         type: choice
-        options: [latest, nightly]
+        options: [latest, next, nightly]
       version:
         description: "Exact semver (initial release: 0.1.0-alpha.1)"
         required: true
@@ -37,6 +37,11 @@ jobs:
   preflight:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      npm_dist_tag: ${{ steps.validate.outputs.npm_dist_tag }}
+      github_prerelease: ${{ steps.validate.outputs.github_prerelease }}
+      github_make_latest: ${{ steps.validate.outputs.github_make_latest }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -54,20 +59,21 @@ jobs:
           components: rustfmt
 
       - name: Validate release request
+        id: validate
         shell: bash
         run: |
           set -euo pipefail
           version="${{ inputs.version }}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid semantic version: $version" >&2
-            exit 1
-          fi
           if [[ "${{ inputs.mode }}" == "publish" && "${{ inputs.ios_sqim_release_confirmed }}" != "true" ]]; then
             echo "Publishing is blocked until the matching iOS Sqim release is confirmed." >&2
             exit 1
           fi
+          node scripts/validate-release-request.ts "$version" --channel "${{ inputs.channel }}" --github-output
           node scripts/update-release-package-versions.ts "$version"
           test "$(node -p "require('./apps/server/package.json').version")" = "$version"
+          test "$(node -p "require('./apps/desktop/package.json').version")" = "$version"
+          test "$(node -p "require('./apps/web/package.json').version")" = "$version"
+          grep -qE "^[[:space:]]*version:[[:space:]]*\"${version}\"[[:space:]]*,[[:space:]]*$" apps/mobile/app.config.ts
 
       - name: Validate identity and generated inputs
         run: |
@@ -122,7 +128,7 @@ jobs:
 
       - name: Publish server before clients
         if: inputs.mode == 'publish'
-        run: pnpm --filter shuv2code publish --no-git-checks --tag "${{ inputs.channel }}" --provenance
+        run: pnpm --filter shuv2code publish --no-git-checks --tag "${{ needs.preflight.outputs.npm_dist_tag }}" --provenance
 
   linux:
     name: Linux x64 AppImage
@@ -217,9 +223,9 @@ jobs:
           if-no-files-found: error
 
   github_release:
-    name: Publish GitHub prerelease after npm, iOS, Linux, and macOS
+    name: Publish GitHub release after npm, iOS, Linux, and macOS
     if: inputs.mode == 'publish'
-    needs: [npm_server, linux, macos_arm64]
+    needs: [preflight, npm_server, linux, macos_arm64]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -235,8 +241,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: shuv2code v${{ inputs.version }}
           generate_release_notes: true
-          prerelease: true
-          make_latest: false
+          prerelease: ${{ needs.preflight.outputs.github_prerelease == 'true' }}
+          make_latest: ${{ needs.preflight.outputs.github_make_latest == 'true' }}
           files: |
             release-assets/*.AppImage
             release-assets/*.dmg
