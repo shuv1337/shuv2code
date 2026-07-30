@@ -161,12 +161,10 @@ describe("collectStreamAsString", () => {
     }),
   );
 
-  it.effect("preserves normal provider output below the ceiling", () =>
+  it.effect("preserves provider output exactly at the ceiling", () =>
     Effect.gen(function* () {
-      const output = yield* collectStreamAsString(
-        Stream.make(new TextEncoder().encode("provider ready")),
-        64,
-      );
+      const encoded = new TextEncoder().encode("provider ready");
+      const output = yield* collectStreamAsString(Stream.make(encoded), encoded.byteLength);
 
       expect(output).toBe("provider ready");
     }),

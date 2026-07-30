@@ -71,6 +71,24 @@ describe("openCodeV2Service registration helpers", () => {
     NodeAssert.equal(parseOpenCodeV2ServiceRegistration(JSON.stringify({ url: "x" })), null);
   });
 
+  it("accepts a health body exactly at the byte ceiling", async () => {
+    const prefix = '{"padding":"';
+    const suffix = '"}';
+    const paddingLength =
+      OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES -
+      Buffer.byteLength(prefix) -
+      Buffer.byteLength(suffix);
+    const encoded = `${prefix}${"x".repeat(paddingLength)}${suffix}`;
+    NodeAssert.equal(Buffer.byteLength(encoded), OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES);
+
+    const body = (await readOpenCodeV2HealthResponse(
+      new Response(encoded, {
+        headers: { "content-length": String(OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES) },
+      }),
+    )) as { readonly padding?: string };
+    NodeAssert.equal(body.padding?.length, paddingLength);
+  });
+
   it("rejects a declared oversized health body without reading it", async () => {
     const response = new Response(null, {
       headers: { "content-length": String(OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES + 1) },
