@@ -726,6 +726,40 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('alt="Preview snapshot image"');
   });
 
+  it("renders a visible fallback for rejected tool image data", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-invalid-image-tool",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "work-invalid-image-tool",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "shuv2code · preview_snapshot",
+              tone: "tool",
+              itemType: "mcp_tool_call",
+              images: [
+                {
+                  id: "snapshot-call:content:0",
+                  name: "Preview snapshot image",
+                  mimeType: "image/png",
+                  error: "Image data is invalid.",
+                },
+              ],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain("Image data is invalid.");
+    expect(markup).not.toContain("<img");
+  });
+
   it("keeps tool images visible when the completed turn work is folded", () => {
     const turnId = TurnId.make("turn-with-image");
     const markup = renderToStaticMarkup(
@@ -778,7 +812,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Worked for 2s");
+    expect(markup).toContain("Worked for 2.0s");
     expect(markup).toContain('data-tool-result-images="1"');
     expect(markup).toContain('aria-label="Expand Preview snapshot image"');
   });

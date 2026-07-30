@@ -104,6 +104,19 @@ function projectCommandData(data: Record<string, unknown>): Record<string, unkno
   return Object.keys(projectedItem).length > 0 ? projectedItem : undefined;
 }
 
+function projectImageData(data: Record<string, unknown>): Record<string, unknown> | undefined {
+  const item = asRecord(data.item);
+  if (!item || (item.type !== "imageView" && item.type !== "imageGeneration")) {
+    return undefined;
+  }
+
+  const projectedItem: Record<string, unknown> = { type: item.type };
+  for (const key of ["id", "path", "result", "savedPath", "status"] as const) {
+    if (typeof item[key] === "string") projectedItem[key] = item[key];
+  }
+  return projectedItem;
+}
+
 function summarizeToolTextOutput(value: string): string | null {
   const lines: string[] = [];
   for (const rawLine of value.split(/\r?\n/u)) {
@@ -165,7 +178,7 @@ export function projectActivityPayload(
   }
 
   const projectedData: Record<string, unknown> = {};
-  const item = projectCommandData(data);
+  const item = projectImageData(data) ?? projectCommandData(data);
   if (item) {
     projectedData.item = item;
   }

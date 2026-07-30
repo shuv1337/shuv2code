@@ -18,6 +18,7 @@ describe("tool result images", () => {
         },
       },
       "shuv2code · preview_snapshot",
+      "activity-snapshot",
     );
 
     expect(images).toEqual([
@@ -41,6 +42,7 @@ describe("tool result images", () => {
           status: "completed",
         },
         "Generated image",
+        "activity-generation",
       ),
     ).toEqual([
       {
@@ -61,6 +63,7 @@ describe("tool result images", () => {
           path: "/workspace/screenshots/result.png",
         },
         "Image view",
+        "activity-view",
       ),
     ).toEqual([
       {
@@ -68,6 +71,128 @@ describe("tool result images", () => {
         name: "result.png",
         mimeType: "image/*",
         workspacePath: "/workspace/screenshots/result.png",
+      },
+    ]);
+  });
+
+  it("does not turn failed or malformed image generation output into image URLs", () => {
+    expect(
+      extractToolResultImages(
+        {
+          type: "imageGeneration",
+          result: "generation failed",
+          status: "failed",
+        },
+        "Generated image",
+        "failed-generation",
+      ),
+    ).toEqual([]);
+    expect(
+      extractToolResultImages(
+        {
+          type: "imageGeneration",
+          result: "not base64 image data",
+          status: "completed",
+        },
+        "Generated image",
+        "malformed-generation",
+      ),
+    ).toEqual([
+      {
+        id: "malformed-generation:generated",
+        name: "Generated image",
+        mimeType: "image/*",
+        error: "Generated image data is invalid.",
+      },
+    ]);
+  });
+
+  it("does not automatically fetch remote URLs from tool output", () => {
+    expect(
+      extractToolResultImages(
+        {
+          id: "remote-call",
+          result: { generatedImage: { image_url: "https://tracker.invalid/image.png" } },
+        },
+        "Remote result",
+        "activity-remote",
+      ),
+    ).toEqual([
+      {
+        id: "remote-call:generated",
+        name: "Remote result image",
+        mimeType: "image/*",
+        error: "Remote tool images are not loaded automatically.",
+      },
+    ]);
+  });
+
+  it("deduplicates repeated inline representations and uses activity fallback IDs", () => {
+    const dataUrl = "data:image/png;base64,iVBORw0KGgo=";
+    expect(
+      extractToolResultImages(
+        {
+          result: {
+            content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+            generatedImage: { image_url: dataUrl },
+          },
+        },
+        "Snapshot",
+        "activity-without-tool-id",
+      ),
+    ).toEqual([
+      {
+        id: "activity-without-tool-id:content:0",
+        name: "Snapshot image",
+        mimeType: "image/png",
+        previewUrl: dataUrl,
+      },
+    ]);
+  });
+
+  it("caps the number of images extracted from one tool result", () => {
+    const images = extractToolResultImages(
+      {
+        id: "many-images",
+        result: {
+          content: Array.from({ length: 10 }, () => ({
+            type: "image",
+            data: "iVBORw0KGgo=",
+            mimeType: "image/png",
+          })),
+        },
+      },
+      "Snapshot",
+      "activity-many-images",
+    );
+
+    expect(images.at(-1)).toEqual({
+      id: "many-images:overflow",
+      name: "Additional images omitted",
+      mimeType: "image/*",
+      error: "2 additional images were omitted.",
+    });
+  });
+
+  it("renders a fallback instead of decoding oversized inline images", () => {
+    const oversizedPng = `iVBORw0KGgoA${"A".repeat(12 * 1024 * 1024)}`;
+    expect(
+      extractToolResultImages(
+        {
+          id: "oversized-image",
+          result: {
+            content: [{ type: "image", data: oversizedPng, mimeType: "image/png" }],
+          },
+        },
+        "Snapshot",
+        "activity-oversized",
+      ),
+    ).toEqual([
+      {
+        id: "oversized-image:content:0",
+        name: "Snapshot image",
+        mimeType: "image/png",
+        error: "Image omitted because it is larger than 8 MB.",
       },
     ]);
   });
@@ -86,5 +211,16 @@ describe("tool result images", () => {
     expect(display).toContain("visible metadata");
     expect(display).toContain("[image/png image data omitted; 12 characters]");
     expect(display).not.toContain("iVBORw0KGgo=");
+  });
+
+  it("keeps failed image generation errors visible in expanded tool JSON", () => {
+    const display = stringifyToolDataForDisplay({
+      type: "imageGeneration",
+      status: "failed",
+      result: "generation failed: safety policy",
+    });
+
+    expect(display).toContain("generation failed: safety policy");
+    expect(display).not.toContain("image data omitted");
   });
 });

@@ -2010,6 +2010,17 @@ function ToolResultImageButton(props: {
   }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <div
+        role="status"
+        className="flex min-h-24 items-center justify-center rounded-lg border border-destructive/30 bg-background/70 px-3 text-center text-xs text-destructive"
+      >
+        Unable to display {props.image.name}
+      </div>
+    );
+  }
   return (
     <button
       type="button"
@@ -2031,6 +2042,7 @@ function ToolResultImageButton(props: {
         alt={props.image.name}
         loading="lazy"
         draggable={false}
+        onError={() => setFailed(true)}
         className="block max-h-80 w-full object-contain transition-transform duration-200 group-hover/image:scale-[1.01]"
       />
     </button>
@@ -2045,7 +2057,10 @@ function WorkspaceToolResultImage(props: { image: ToolResultImage; threadRef: Sc
   });
   if (assetUrl._tag === "Loading") {
     return (
-      <div className="flex min-h-24 items-center justify-center rounded-lg border border-border/70 bg-background/70 text-xs text-muted-foreground">
+      <div
+        role="status"
+        className="flex min-h-24 items-center justify-center rounded-lg border border-border/70 bg-background/70 text-xs text-muted-foreground"
+      >
         <LoaderCircleIcon className="mr-2 size-3.5 animate-spin" />
         Loading image…
       </div>
@@ -2053,7 +2068,10 @@ function WorkspaceToolResultImage(props: { image: ToolResultImage; threadRef: Sc
   }
   if (assetUrl._tag === "Failure") {
     return (
-      <div className="flex min-h-24 items-center justify-center rounded-lg border border-destructive/30 bg-background/70 px-3 text-center text-xs text-destructive">
+      <div
+        role="alert"
+        className="flex min-h-24 items-center justify-center rounded-lg border border-destructive/30 bg-background/70 px-3 text-center text-xs text-destructive"
+      >
         Unable to load {props.image.name}
       </div>
     );
@@ -2096,9 +2114,10 @@ function ToolResultImageGallery(props: { images: ReadonlyArray<ToolResultImage> 
         ) : (
           <div
             key={image.id}
+            role="status"
             className="flex min-h-24 items-center justify-center rounded-lg border border-border/70 bg-background/70 px-3 text-center text-xs text-muted-foreground"
           >
-            {image.name}
+            {image.error ?? image.name}
           </div>
         ),
       )}
