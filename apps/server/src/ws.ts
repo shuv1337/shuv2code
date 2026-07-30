@@ -101,6 +101,7 @@ import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
+import * as AutomationService from "./automations/AutomationService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
@@ -401,6 +402,7 @@ const makeWsRpcLayer = (
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
+      const automationService = yield* AutomationService.AutomationService;
       const relayClient = yield* RelayClient.RelayClient;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -1008,6 +1010,40 @@ const makeWsRpcLayer = (
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
       return WsRpcGroup.of({
+        [WS_METHODS.automationsList]: (input) =>
+          observeRpcEffect(WS_METHODS.automationsList, automationService.list(input), {
+            "rpc.aggregate": "automation",
+          }),
+        [WS_METHODS.automationsGet]: (input) =>
+          observeRpcEffect(WS_METHODS.automationsGet, automationService.get(input), {
+            "rpc.aggregate": "automation",
+          }),
+        [WS_METHODS.automationsCreate]: (input) =>
+          observeRpcEffect(WS_METHODS.automationsCreate, automationService.create(input), {
+            "rpc.aggregate": "automation",
+          }),
+        [WS_METHODS.automationsUpdate]: (input) =>
+          observeRpcEffect(WS_METHODS.automationsUpdate, automationService.update(input), {
+            "rpc.aggregate": "automation",
+          }),
+        [WS_METHODS.automationsDelete]: (input) =>
+          observeRpcEffect(WS_METHODS.automationsDelete, automationService.delete(input), {
+            "rpc.aggregate": "automation",
+          }),
+        [WS_METHODS.automationsRunNow]: (input) =>
+          observeRpcEffect(WS_METHODS.automationsRunNow, automationService.runNow(input), {
+            "rpc.aggregate": "automation",
+          }),
+        [WS_METHODS.automationsListRuns]: (input) =>
+          observeRpcEffect(WS_METHODS.automationsListRuns, automationService.listRuns(input), {
+            "rpc.aggregate": "automation",
+          }),
+        [WS_METHODS.automationsValidateSchedule]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.automationsValidateSchedule,
+            automationService.validateSchedule(input),
+            { "rpc.aggregate": "automation" },
+          ),
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
