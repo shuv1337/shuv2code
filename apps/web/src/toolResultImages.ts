@@ -339,13 +339,12 @@ export function stringifyToolDataForDisplay(toolData: unknown): string {
         if (parent.status !== "completed") return value;
         const isolatedBudget: ExtractionBudget = { count: 0, inlineBytes: 0, omittedCount: 0 };
         const parsed = parseInlineImageUrl(value, isolatedBudget);
-        if (parsed?.ok && parsed.previewUrl.startsWith("data:")) {
-          return redactedImageValue(value, parsed.mimeType);
+        // Redact any data: payload, including rejected/unsafe formats (e.g. SVG).
+        if (parsed) {
+          return redactedImageValue(value, parsed.ok ? parsed.mimeType : "image");
         }
-        if (!parsed) {
-          const mimeType = inferBase64ImageMimeType(value);
-          return mimeType ? redactedImageValue(value, mimeType) : value;
-        }
+        const mimeType = inferBase64ImageMimeType(value);
+        return mimeType ? redactedImageValue(value, mimeType) : value;
       }
       if ((key === "image_url" || key === "imageUrl") && value.startsWith("data:image/")) {
         const isolatedBudget: ExtractionBudget = { count: 0, inlineBytes: 0, omittedCount: 0 };

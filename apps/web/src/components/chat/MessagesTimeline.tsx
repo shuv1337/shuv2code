@@ -103,7 +103,7 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@shuv2code/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
-import { useAssetUrlState } from "../../assets/assetUrls";
+import { useAssetUrls, useAssetUrlState } from "../../assets/assetUrls";
 
 import {
   buildInlineTerminalContextText,
@@ -2000,17 +2000,20 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
+type ToolResultPreviewImage = {
+  readonly id: string;
+  readonly name: string;
+  readonly src: string;
+};
+
 function ToolResultImageButton(props: {
   image: ToolResultImage;
   src: string;
-  previewImages: ReadonlyArray<{
-    readonly id: string;
-    readonly name: string;
-    readonly src: string;
-  }>;
+  previewImages: ReadonlyArray<ToolResultPreviewImage>;
 }) {
   const ctx = use(TimelineRowCtx);
-  const [failed, setFailed] = useState(false);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const failed = failedSrc === props.src;
   if (failed) {
     return (
       <div
@@ -2042,14 +2045,18 @@ function ToolResultImageButton(props: {
         alt={props.image.name}
         loading="lazy"
         draggable={false}
-        onError={() => setFailed(true)}
+        onError={() => setFailedSrc(props.src)}
         className="block max-h-80 w-full object-contain transition-transform duration-200 group-hover/image:scale-[1.01]"
       />
     </button>
   );
 }
 
-function WorkspaceToolResultImage(props: { image: ToolResultImage; threadRef: ScopedThreadRef }) {
+function WorkspaceToolResultImage(props: {
+  image: ToolResultImage;
+  threadRef: ScopedThreadRef;
+  previewImages: ReadonlyArray<ToolResultPreviewImage>;
+}) {
   const assetUrl = useAssetUrlState(props.threadRef.environmentId, {
     _tag: "workspace-file",
     threadId: props.threadRef.threadId,
@@ -2076,21 +2083,62 @@ function WorkspaceToolResultImage(props: { image: ToolResultImage; threadRef: Sc
       </div>
     );
   }
+  const previewImages = props.previewImages.some((image) => image.id === props.image.id)
+    ? props.previewImages
+    : [...props.previewImages, { id: props.image.id, name: props.image.name, src: assetUrl.url }];
   return (
-    <ToolResultImageButton
-      image={props.image}
-      src={assetUrl.url}
-      previewImages={[{ id: props.image.id, name: props.image.name, src: assetUrl.url }]}
-    />
+    <ToolResultImageButton image={props.image} src={assetUrl.url} previewImages={previewImages} />
   );
 }
 
 function ToolResultImageGallery(props: { images: ReadonlyArray<ToolResultImage> }) {
   const ctx = use(TimelineRowCtx);
-  if (props.images.length === 0) return null;
-  const inlineImages = props.images.flatMap((image) =>
-    image.previewUrl ? [{ id: image.id, name: image.name, src: image.previewUrl }] : [],
+  const threadRef = ctx.threadRef;
+  const workspaceImages = useMemo(
+    () =>
+      props.images.filter(
+        (image): image is ToolResultImage & { readonly workspacePath: string } =>
+          image.previewUrl === undefined &&
+          typeof image.workspacePath === "string" &&
+          image.workspacePath.length > 0,
+      ),
+    [props.images],
   );
+  const workspaceResources = useMemo(
+    () =>
+      threadRef
+        ? workspaceImages.map((image) => ({
+            _tag: "workspace-file" as const,
+            threadId: threadRef.threadId,
+            path: image.workspacePath,
+          }))
+        : [],
+    [threadRef, workspaceImages],
+  );
+  const workspaceUrls = useAssetUrls(ctx.activeThreadEnvironmentId, workspaceResources);
+  const previewImages = useMemo(() => {
+    const resolvedById = new Map<string, ToolResultPreviewImage>();
+    for (const image of props.images) {
+      if (image.previewUrl) {
+        resolvedById.set(image.id, {
+          id: image.id,
+          name: image.name,
+          src: image.previewUrl,
+        });
+      }
+    }
+    workspaceImages.forEach((image, index) => {
+      const src = workspaceUrls[index];
+      if (!src) return;
+      resolvedById.set(image.id, { id: image.id, name: image.name, src });
+    });
+    return props.images.flatMap((image) => {
+      const resolved = resolvedById.get(image.id);
+      return resolved ? [resolved] : [];
+    });
+  }, [props.images, workspaceImages, workspaceUrls]);
+
+  if (props.images.length === 0) return null;
   return (
     <div
       className={cn(
@@ -2107,10 +2155,15 @@ function ToolResultImageGallery(props: { images: ReadonlyArray<ToolResultImage> 
             key={image.id}
             image={image}
             src={image.previewUrl}
-            previewImages={inlineImages}
+            previewImages={previewImages}
           />
-        ) : image.workspacePath && ctx.threadRef ? (
-          <WorkspaceToolResultImage key={image.id} image={image} threadRef={ctx.threadRef} />
+        ) : image.workspacePath && threadRef ? (
+          <WorkspaceToolResultImage
+            key={image.id}
+            image={image}
+            threadRef={threadRef}
+            previewImages={previewImages}
+          />
         ) : (
           <div
             key={image.id}

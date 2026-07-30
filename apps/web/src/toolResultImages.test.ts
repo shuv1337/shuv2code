@@ -223,4 +223,43 @@ describe("tool result images", () => {
     expect(display).toContain("generation failed: safety policy");
     expect(display).not.toContain("image data omitted");
   });
+
+  it("redacts rejected imageGeneration data URLs instead of failing open", () => {
+    const svgDataUrl =
+      "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+    const display = stringifyToolDataForDisplay({
+      type: "imageGeneration",
+      status: "completed",
+      result: svgDataUrl,
+    });
+
+    expect(display).toContain("[image image data omitted;");
+    expect(display).not.toContain(svgDataUrl);
+    expect(display).not.toContain("image/svg+xml");
+  });
+
+  it("rejects MIME/signature mismatches during extraction", () => {
+    const images = extractToolResultImages(
+      {
+        id: "spoofed-call",
+        type: "mcpToolCall",
+        tool: "preview_snapshot",
+        result: {
+          // JPEG magic bytes labeled as PNG must not render.
+          content: [{ type: "image", data: "/9j/AAAA", mimeType: "image/png" }],
+        },
+      },
+      "Snapshot",
+      "activity-spoofed",
+    );
+
+    expect(images).toEqual([
+      {
+        id: "spoofed-call:content:0",
+        name: "Snapshot image",
+        mimeType: "image/png",
+        error: "Image data is invalid.",
+      },
+    ]);
+  });
 });
