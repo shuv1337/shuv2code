@@ -66,6 +66,20 @@ const PreviewAutomationTabTargetFields = {
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
 
+export const PreviewAutomationSnapshotInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  includeScreenshot: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Attach a PNG screenshot. Defaults to false so semantic inspection does not pay the visual payload cost.",
+    }),
+  ).annotate({
+    description:
+      "Attach a PNG screenshot. Defaults to false so semantic inspection does not pay the visual payload cost.",
+  }),
+});
+export type PreviewAutomationSnapshotInput = typeof PreviewAutomationSnapshotInput.Type;
+
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean,
@@ -492,11 +506,18 @@ export const PreviewAutomationWaitForInput = Schema.Struct({
   });
 export type PreviewAutomationWaitForInput = typeof PreviewAutomationWaitForInput.Type;
 
+export const PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH = 512;
+export const PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH = 2_048;
+export const PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH = 4_096;
+export const PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_SOURCE_LENGTH = 128;
+export const PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH = 2_048;
+export const PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH = 4_096;
+
 export const PreviewAutomationElement = Schema.Struct({
-  tag: Schema.String,
-  role: Schema.NullOr(Schema.String),
-  name: Schema.String,
-  selector: Schema.String,
+  tag: Schema.String.check(Schema.isMaxLength(64)),
+  role: Schema.NullOr(Schema.String.check(Schema.isMaxLength(128))),
+  name: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH)),
+  selector: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH)),
   x: Schema.Number,
   y: Schema.Number,
   width: Schema.Number,
@@ -505,30 +526,36 @@ export const PreviewAutomationElement = Schema.Struct({
 export type PreviewAutomationElement = typeof PreviewAutomationElement.Type;
 
 export const PreviewAutomationConsoleEntry = Schema.Struct({
-  level: Schema.String,
-  text: Schema.String,
+  level: Schema.String.check(Schema.isMaxLength(32)),
+  text: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH)),
   timestamp: Schema.String,
-  source: Schema.optional(Schema.String),
+  source: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_SOURCE_LENGTH)),
+  ),
 });
 export type PreviewAutomationConsoleEntry = typeof PreviewAutomationConsoleEntry.Type;
 
 export const PreviewAutomationNetworkEntry = Schema.Struct({
-  url: Schema.String,
-  method: Schema.String,
+  url: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH)),
+  method: Schema.String.check(Schema.isMaxLength(32)),
   status: Schema.NullOr(Schema.Number),
   failed: Schema.Boolean,
-  errorText: Schema.optional(Schema.String),
+  errorText: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH)),
+  ),
   timestamp: Schema.String,
 });
 export type PreviewAutomationNetworkEntry = typeof PreviewAutomationNetworkEntry.Type;
 
 export const PreviewAutomationActionEvent = Schema.Struct({
-  id: Schema.String,
-  action: Schema.String,
+  id: Schema.String.check(Schema.isMaxLength(128)),
+  action: Schema.String.check(Schema.isMaxLength(128)),
   status: Schema.Literals(["running", "succeeded", "failed", "interrupted"]),
   startedAt: Schema.String,
   completedAt: Schema.optional(Schema.String),
-  error: Schema.optional(Schema.String),
+  error: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH)),
+  ),
 });
 export type PreviewAutomationActionEvent = typeof PreviewAutomationActionEvent.Type;
 
@@ -542,12 +569,14 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   consoleEntries: Schema.Array(PreviewAutomationConsoleEntry),
   networkEntries: Schema.Array(PreviewAutomationNetworkEntry),
   actionTimeline: Schema.Array(PreviewAutomationActionEvent),
-  screenshot: Schema.Struct({
-    mimeType: Schema.Literal("image/png"),
-    data: Schema.String,
-    width: Schema.Int,
-    height: Schema.Int,
-  }),
+  screenshot: Schema.NullOr(
+    Schema.Struct({
+      mimeType: Schema.Literal("image/png"),
+      data: Schema.String,
+      width: Schema.Int,
+      height: Schema.Int,
+    }),
+  ),
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
 

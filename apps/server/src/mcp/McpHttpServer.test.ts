@@ -1,9 +1,16 @@
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@shuv2code/contracts";
+import {
+  EnvironmentId,
+  PreviewTabId,
+  ProviderInstanceId,
+  ThreadId,
+  type PreviewAutomationSnapshot,
+} from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
@@ -37,6 +44,30 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
 );
+const decodeSnapshotMetadata = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      consoleEntries: Schema.Array(Schema.Struct({ text: Schema.String })),
+      screenshot: Schema.Null,
+    }),
+  ),
+);
+
+const previewSnapshot = (
+  overrides: Partial<PreviewAutomationSnapshot> = {},
+): PreviewAutomationSnapshot => ({
+  url: "http://example.test/",
+  title: "Example",
+  loading: false,
+  visibleText: "Example",
+  interactiveElements: [],
+  accessibilityTree: {},
+  consoleEntries: [],
+  networkEntries: [],
+  actionTimeline: [],
+  screenshot: null,
+  ...overrides,
+});
 
 it("normalizes empty successful notification responses to accepted", () => {
   const notificationResponse = McpHttpServer.normalizeMcpHttpResponse(
@@ -48,6 +79,49 @@ it("normalizes empty successful notification responses to accepted", () => {
     HttpServerResponse.jsonUnsafe({ jsonrpc: "2.0", id: 1, result: {} }),
   );
   expect(resultResponse.status).toBe(200);
+});
+
+it("keeps snapshot results singly encoded and within explicit byte budgets", () => {
+  const diagnostics = Array.from({ length: 30 }, (_, index) => ({
+    level: "log",
+    text: `entry-${index}`,
+    timestamp: "2026-07-30T00:00:00.000Z",
+  }));
+  const bounded = McpHttpServer.makePreviewSnapshotCallToolResult(
+    previewSnapshot({ consoleEntries: diagnostics }),
+  );
+
+  expect(bounded.isError).toBe(false);
+  expect(bounded.structuredContent).toBeUndefined();
+  expect(bounded.content).toHaveLength(1);
+  const text = bounded.content[0];
+  expect(text?.type).toBe("text");
+  if (text?.type !== "text") throw new Error("Expected text snapshot content.");
+  const decoded = decodeSnapshotMetadata(text.text);
+  expect(decoded.consoleEntries).toHaveLength(McpHttpServer.MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT);
+  expect(decoded.consoleEntries[0]?.text).toBe("entry-10");
+  expect(decoded.screenshot).toBeNull();
+
+  const oversizedMetadata = McpHttpServer.makePreviewSnapshotCallToolResult(
+    previewSnapshot({
+      accessibilityTree: { raw: "x".repeat(McpHttpServer.MCP_PREVIEW_METADATA_MAX_BYTES) },
+    }),
+  );
+  expect(oversizedMetadata.isError).toBe(true);
+  expect(JSON.stringify(oversizedMetadata).length).toBeLessThan(1_000);
+
+  const oversizedImage = McpHttpServer.makePreviewSnapshotCallToolResult(
+    previewSnapshot({
+      screenshot: {
+        mimeType: "image/png",
+        data: Buffer.alloc(McpHttpServer.MCP_PREVIEW_IMAGE_MAX_BYTES + 1).toString("base64"),
+        width: 1_280,
+        height: 720,
+      },
+    }),
+  );
+  expect(oversizedImage.isError).toBe(true);
+  expect(oversizedImage.content[0]).toMatchObject({ type: "text" });
 });
 
 it.effect("returns bounded structural preview snapshot failures", () =>
@@ -157,6 +231,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       const routedRequests: Array<{
         readonly operation: string;
         readonly tabId?: string | undefined;
+        readonly input: unknown;
       }> = [];
       const events = yield* broker.connect({
         clientId: "mcp-test-client",
@@ -182,12 +257,16 @@ it.effect("registers annotated tools and preserves authenticated request context
                   consoleEntries: [],
                   networkEntries: [],
                   actionTimeline: [],
-                  screenshot: {
-                    mimeType: "image/png",
-                    data: Buffer.from("png").toString("base64"),
-                    width: 10,
-                    height: 5,
-                  },
+                  screenshot:
+                    (event.request.input as { readonly includeScreenshot?: boolean })
+                      .includeScreenshot === true
+                      ? {
+                          mimeType: "image/png",
+                          data: Buffer.from("png").toString("base64"),
+                          width: 10,
+                          height: 5,
+                        }
+                      : null,
                 }
               : event.request.operation === "press"
                 ? undefined
@@ -242,17 +321,26 @@ it.effect("registers annotated tools and preserves authenticated request context
         );
       expect(malformed.isError).toBe(true);
 
-      const snapshot = yield* server
+      const semanticSnapshot = yield* server
         .callTool({ name: "preview_snapshot", arguments: { tabId: alternateTabId } })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
         );
-      expect(snapshot.isError).toBe(false);
-      expect(snapshot.content.some((content) => content.type === "image")).toBe(true);
-      expect(snapshot.structuredContent).toMatchObject({
-        screenshot: { mimeType: "image/png", width: 10, height: 5 },
-      });
+      expect(semanticSnapshot.isError).toBe(false);
+      expect(semanticSnapshot.content.some((content) => content.type === "image")).toBe(false);
+      expect(semanticSnapshot.structuredContent).toBeUndefined();
+      const visualSnapshot = yield* server
+        .callTool({
+          name: "preview_snapshot",
+          arguments: { tabId: alternateTabId, includeScreenshot: true },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(visualSnapshot.isError).toBe(false);
+      expect(visualSnapshot.content.some((content) => content.type === "image")).toBe(true);
       expect(routedRequests.find(({ operation }) => operation === "snapshot")?.tabId).toBe(
         alternateTabId,
       );

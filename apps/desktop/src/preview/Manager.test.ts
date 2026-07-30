@@ -132,12 +132,15 @@ const withManager = <A>(
 
 interface TestCapturedPreviewImage {
   readonly toJPEG: () => Buffer;
+  readonly toPNG?: () => Buffer;
+  readonly resize?: (size: { readonly width: number }) => TestCapturedPreviewImage;
   readonly getSize: () => { readonly width: number; readonly height: number };
 }
 
 const makeTestPreviewWebContents = (
   capturePage: () => Promise<TestCapturedPreviewImage>,
   id = 42,
+  sendCommand: (method: string) => Promise<unknown> = async () => undefined,
 ) =>
   ({
     id,
@@ -146,6 +149,7 @@ const makeTestPreviewWebContents = (
     getURL: () => "https://example.com",
     getTitle: () => "Example",
     isLoading: () => false,
+    isDevToolsOpened: () => false,
     getZoomFactor: () => 1,
     setZoomFactor: vi.fn(),
     on: vi.fn(),
@@ -157,7 +161,7 @@ const makeTestPreviewWebContents = (
     debugger: {
       isAttached: () => false,
       attach: vi.fn(),
-      sendCommand: vi.fn(async () => undefined),
+      sendCommand: vi.fn(sendCommand),
       on: vi.fn(),
       off: vi.fn(),
     },
@@ -231,6 +235,55 @@ describe("PreviewManager", () => {
           loading: false,
         });
         expect(fromId).not.toHaveBeenCalled();
+      }),
+    ),
+  );
+
+  effectIt.effect("captures screenshots only when semantic inspection opts in", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const image = {
+          getSize: () => ({ width: 640, height: 360 }),
+          resize: () => image,
+          toJPEG: () => Buffer.from("jpeg"),
+          toPNG: () => Buffer.from("png"),
+        } satisfies TestCapturedPreviewImage;
+        const capturePage = vi.fn(async () => image);
+        const webview = makeTestPreviewWebContents(capturePage, 42, async (method) => {
+          if (method === "Runtime.evaluate") {
+            return {
+              result: {
+                value: {
+                  url: "https://example.com",
+                  title: "Example",
+                  loading: false,
+                  visibleText: "Example",
+                  interactiveElements: [],
+                },
+              },
+            };
+          }
+          if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+          return undefined;
+        });
+        fromId.mockReturnValue(webview);
+
+        yield* manager.createTab("tab_snapshot_budget");
+        yield* manager.registerWebview("tab_snapshot_budget", 42);
+
+        const semantic = yield* manager.automationSnapshot("tab_snapshot_budget", {});
+        expect(semantic.screenshot).toBeNull();
+        expect(capturePage).not.toHaveBeenCalled();
+
+        const visual = yield* manager.automationSnapshot("tab_snapshot_budget", {
+          includeScreenshot: true,
+        });
+        expect(visual.screenshot).toMatchObject({
+          mimeType: "image/png",
+          width: 640,
+          height: 360,
+        });
+        expect(capturePage).toHaveBeenCalledOnce();
       }),
     ),
   );
