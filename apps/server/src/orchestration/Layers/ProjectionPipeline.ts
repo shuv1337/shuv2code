@@ -6,6 +6,7 @@ import {
   ThreadId,
 } from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
+import * as Context from "effect/Context";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -70,6 +71,108 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
 type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
 
+type OrchestrationEventType = OrchestrationEvent["type"];
+
+const eventTypes = (
+  ...types: ReadonlyArray<OrchestrationEventType>
+): ReadonlySet<OrchestrationEventType> => new Set(types);
+
+const PROJECTOR_EVENT_TYPES = {
+  [ORCHESTRATION_PROJECTOR_NAMES.projects]: eventTypes(
+    "project.created",
+    "project.meta-updated",
+    "project.deleted",
+  ),
+  [ORCHESTRATION_PROJECTOR_NAMES.threadMessages]: eventTypes(
+    "thread.message-sent",
+    "thread.reverted",
+  ),
+  [ORCHESTRATION_PROJECTOR_NAMES.threadProposedPlans]: eventTypes(
+    "thread.proposed-plan-upserted",
+    "thread.reverted",
+  ),
+  [ORCHESTRATION_PROJECTOR_NAMES.threadActivities]: eventTypes(
+    "thread.activity-appended",
+    "thread.reverted",
+  ),
+  [ORCHESTRATION_PROJECTOR_NAMES.threadSessions]: eventTypes("thread.session-set"),
+  [ORCHESTRATION_PROJECTOR_NAMES.threadTurns]: eventTypes(
+    "thread.turn-start-requested",
+    "thread.session-set",
+    "thread.message-sent",
+    "thread.turn-interrupt-requested",
+    "thread.turn-diff-completed",
+    "thread.reverted",
+  ),
+  [ORCHESTRATION_PROJECTOR_NAMES.checkpoints]: eventTypes(),
+  [ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals]: eventTypes(
+    "thread.activity-appended",
+    "thread.approval-response-requested",
+  ),
+  [ORCHESTRATION_PROJECTOR_NAMES.threads]: eventTypes(
+    "thread.created",
+    "thread.archived",
+    "thread.unarchived",
+    "thread.settled",
+    "thread.unsettled",
+    "thread.snoozed",
+    "thread.unsnoozed",
+    "thread.meta-updated",
+    "thread.runtime-mode-set",
+    "thread.interaction-mode-set",
+    "thread.deleted",
+    "thread.message-sent",
+    "thread.proposed-plan-upserted",
+    "thread.activity-appended",
+    "thread.approval-response-requested",
+    "thread.user-input-response-requested",
+    "thread.session-set",
+    "thread.turn-diff-completed",
+    "thread.reverted",
+  ),
+} satisfies Record<ProjectorName, ReadonlySet<OrchestrationEventType>>;
+
+export const orchestrationProjectorsForEventType = (
+  eventType: OrchestrationEventType,
+): ReadonlyArray<ProjectorName> =>
+  Object.entries(PROJECTOR_EVENT_TYPES).flatMap(([projector, acceptedTypes]) =>
+    acceptedTypes.has(eventType) ? [projector as ProjectorName] : [],
+  );
+
+const acceptsEventsFor = (projector: ProjectorName) => (event: OrchestrationEvent) =>
+  PROJECTOR_EVENT_TYPES[projector].has(event.type);
+
+export type ProjectionPipelineWork =
+  | {
+      readonly kind: "projector-application";
+      readonly projector: ProjectorName;
+      readonly eventType: OrchestrationEventType;
+    }
+  | {
+      readonly kind: "sql-transaction";
+      readonly purpose: "projector" | "cursor-batch";
+      readonly projectorCount: number;
+    }
+  | {
+      readonly kind: "cursor-write";
+      readonly statementCount: 1;
+      readonly cursorCount: number;
+    }
+  | {
+      readonly kind: "thread-shell-summary-refresh";
+      readonly eventType: OrchestrationEventType;
+    };
+
+export interface ProjectionPipelineWorkObserverShape {
+  readonly record: (work: ProjectionPipelineWork) => Effect.Effect<void>;
+}
+
+export const ProjectionPipelineWorkObserver =
+  Context.Reference<ProjectionPipelineWorkObserverShape>(
+    "shuv2code/orchestration/ProjectionPipelineWorkObserver",
+    { defaultValue: () => ({ record: () => Effect.void }) },
+  );
+
 /**
  * Turn state to settle still-running turns with when their session leaves the
  * "running" status, or null while the session is (re)starting or running and
@@ -95,6 +198,7 @@ function settledTurnStateForSessionStatus(
 
 interface ProjectorDefinition {
   readonly name: ProjectorName;
+  readonly accepts: (event: OrchestrationEvent) => boolean;
   readonly apply: (
     event: OrchestrationEvent,
     attachmentSideEffects: AttachmentSideEffects,
@@ -480,6 +584,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
     const projectionTurnRepository = yield* ProjectionTurnRepository;
     const projectionPendingApprovalRepository = yield* ProjectionPendingApprovalRepository;
+    const workObserver = yield* ProjectionPipelineWorkObserver;
 
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -546,7 +651,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const refreshThreadShellSummary = Effect.fn("refreshThreadShellSummary")(function* (
       threadId: ThreadId,
+      eventType: OrchestrationEventType,
     ) {
+      yield* workObserver.record({ kind: "thread-shell-summary-refresh", eventType });
       const existingRow = yield* projectionThreadRepository.getById({
         threadId,
       });
@@ -781,7 +888,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
-        case "thread.message-sent":
+        case "thread.message-sent": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            updatedAt: event.occurredAt,
+          });
+          // Assistant chunks cannot change latest-user, approval, user-input,
+          // or proposed-plan shell fields. Re-reading four complete child
+          // collections for every token delta was pure write amplification.
+          if (event.payload.role === "user") {
+            yield* refreshThreadShellSummary(event.payload.threadId, event.type);
+          }
+          return;
+        }
+
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
@@ -796,7 +922,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummary(event.payload.threadId, event.type);
           return;
         }
 
@@ -817,7 +943,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummary(event.payload.threadId, event.type);
           return;
         }
 
@@ -833,7 +959,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: event.payload.turnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummary(event.payload.threadId, event.type);
           return;
         }
 
@@ -871,7 +997,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummary(event.payload.threadId, event.type);
           return;
         }
 
@@ -1544,38 +1670,47 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectors: ReadonlyArray<ProjectorDefinition> = [
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.projects,
+        accepts: acceptsEventsFor(ORCHESTRATION_PROJECTOR_NAMES.projects),
         apply: applyProjectsProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+        accepts: acceptsEventsFor(ORCHESTRATION_PROJECTOR_NAMES.threadMessages),
         apply: applyThreadMessagesProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadProposedPlans,
+        accepts: acceptsEventsFor(ORCHESTRATION_PROJECTOR_NAMES.threadProposedPlans),
         apply: applyThreadProposedPlansProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadActivities,
+        accepts: acceptsEventsFor(ORCHESTRATION_PROJECTOR_NAMES.threadActivities),
         apply: applyThreadActivitiesProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadSessions,
+        accepts: acceptsEventsFor(ORCHESTRATION_PROJECTOR_NAMES.threadSessions),
         apply: applyThreadSessionsProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
+        accepts: acceptsEventsFor(ORCHESTRATION_PROJECTOR_NAMES.threadTurns),
         apply: applyThreadTurnsProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.checkpoints,
+        accepts: acceptsEventsFor(ORCHESTRATION_PROJECTOR_NAMES.checkpoints),
         apply: applyCheckpointsProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals,
+        accepts: acceptsEventsFor(ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals),
         apply: applyPendingApprovalsProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.threads,
+        accepts: acceptsEventsFor(ORCHESTRATION_PROJECTOR_NAMES.threads),
         apply: applyThreadsProjection,
       },
     ];
@@ -1589,16 +1724,31 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         prunedThreadRelativePaths: new Map<string, Set<string>>(),
       };
 
+      yield* workObserver.record({
+        kind: "sql-transaction",
+        purpose: "projector",
+        projectorCount: 1,
+      });
       yield* sql.withTransaction(
-        projector.apply(event, attachmentSideEffects).pipe(
-          Effect.flatMap(() =>
-            projectionStateRepository.upsert({
-              projector: projector.name,
-              lastAppliedSequence: event.sequence,
-              updatedAt: event.occurredAt,
-            }),
+        workObserver
+          .record({
+            kind: "projector-application",
+            projector: projector.name,
+            eventType: event.type,
+          })
+          .pipe(
+            Effect.andThen(projector.apply(event, attachmentSideEffects)),
+            Effect.andThen(
+              workObserver.record({ kind: "cursor-write", statementCount: 1, cursorCount: 1 }),
+            ),
+            Effect.flatMap(() =>
+              projectionStateRepository.upsert({
+                projector: projector.name,
+                lastAppliedSequence: event.sequence,
+                updatedAt: event.occurredAt,
+              }),
+            ),
           ),
-        ),
       );
 
       yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
@@ -1613,6 +1763,37 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       );
     });
 
+    const advanceProjectorCursors = Effect.fn("advanceProjectorCursors")(function* (
+      projectorsToAdvance: ReadonlyArray<ProjectorDefinition>,
+      event: OrchestrationEvent,
+    ) {
+      if (projectorsToAdvance.length === 0) return;
+      yield* workObserver.record({
+        kind: "sql-transaction",
+        purpose: "cursor-batch",
+        projectorCount: projectorsToAdvance.length,
+      });
+      yield* sql.withTransaction(
+        workObserver
+          .record({
+            kind: "cursor-write",
+            statementCount: 1,
+            cursorCount: projectorsToAdvance.length,
+          })
+          .pipe(
+            Effect.andThen(
+              projectionStateRepository.upsertMany(
+                projectorsToAdvance.map((projector) => ({
+                  projector: projector.name,
+                  lastAppliedSequence: event.sequence,
+                  updatedAt: event.occurredAt,
+                })),
+              ),
+            ),
+          ),
+      );
+    });
+
     const bootstrapProjector = (projector: ProjectorDefinition) =>
       projectionStateRepository
         .getByProjector({
@@ -1624,15 +1805,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               eventStore.readFromSequence(
                 Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
               ),
-              (event) => runProjectorForEvent(projector, event),
+              (event) =>
+                projector.accepts(event)
+                  ? runProjectorForEvent(projector, event)
+                  : advanceProjectorCursors([projector], event),
             ),
           ),
         );
 
-    const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
-      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
-        concurrency: 1,
-      }).pipe(
+    const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) => {
+      const interestedProjectors = projectors.filter((projector) => projector.accepts(event));
+      const cursorOnlyProjectors = projectors.filter((projector) => !projector.accepts(event));
+      return Effect.forEach(
+        interestedProjectors,
+        (projector) => runProjectorForEvent(projector, event),
+        { concurrency: 1 },
+      ).pipe(
+        Effect.andThen(advanceProjectorCursors(cursorOnlyProjectors, event)),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(ServerConfig, serverConfig),
@@ -1641,6 +1830,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
         ),
       );
+    };
 
     const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.forEach(
       projectors,

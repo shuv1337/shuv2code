@@ -29,6 +29,9 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
   ORCHESTRATION_PROJECTOR_NAMES,
   OrchestrationProjectionPipelineLive,
+  ProjectionPipelineWorkObserver,
+  orchestrationProjectorsForEventType,
+  type ProjectionPipelineWork,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -53,6 +56,207 @@ const exists = (filePath: string) =>
 const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer(
   "shuv2code-projection-pipeline-test-",
 );
+
+it("routes high-frequency assistant deltas to only interested projectors", () => {
+  assert.deepEqual(orchestrationProjectorsForEventType("thread.message-sent"), [
+    ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+    ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
+    ORCHESTRATION_PROJECTOR_NAMES.threads,
+  ]);
+  assert.deepEqual(orchestrationProjectorsForEventType("thread.session-stop-requested"), []);
+});
+
+it.effect("batches cursor-only work while preserving every independent cursor", () => {
+  const observedWork: Array<ProjectionPipelineWork> = [];
+  const observerLayer = Layer.succeed(ProjectionPipelineWorkObserver, {
+    record: (work) =>
+      Effect.sync(() => {
+        observedWork.push(work);
+      }),
+  });
+  const instrumentedLayer = OrchestrationProjectionPipelineLive.pipe(
+    Layer.provideMerge(observerLayer),
+    Layer.provideMerge(OrchestrationEventStoreLive),
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), {
+        prefix: "shuv2code-projection-routing-work-test-",
+      }),
+    ),
+    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const projectionPipeline = yield* OrchestrationProjectionPipeline;
+    const eventStore = yield* OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+      eventStore
+        .append(event)
+        .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+    const now = "2026-07-30T12:00:00.000Z";
+    const projectId = ProjectId.make("project-projection-routing");
+    const threadId = ThreadId.make("thread-projection-routing");
+
+    yield* appendAndProject({
+      type: "project.created",
+      eventId: EventId.make("evt-projection-routing-project"),
+      aggregateKind: "project",
+      aggregateId: projectId,
+      occurredAt: now,
+      commandId: CommandId.make("cmd-projection-routing-project"),
+      causationEventId: null,
+      correlationId: CorrelationId.make("cmd-projection-routing-project"),
+      metadata: {},
+      payload: {
+        projectId,
+        title: "Projection routing",
+        workspaceRoot: "/tmp/projection-routing",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* appendAndProject({
+      type: "thread.created",
+      eventId: EventId.make("evt-projection-routing-thread"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: now,
+      commandId: CommandId.make("cmd-projection-routing-thread"),
+      causationEventId: null,
+      correlationId: CorrelationId.make("cmd-projection-routing-thread"),
+      metadata: {},
+      payload: {
+        threadId,
+        projectId,
+        title: "Projection routing thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.6-luna",
+        },
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+
+    observedWork.length = 0;
+    let savedDelta = yield* eventStore.append({
+      type: "thread.message-sent",
+      eventId: EventId.make("evt-projection-routing-delta-0"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: now,
+      commandId: CommandId.make("cmd-projection-routing-delta-0"),
+      causationEventId: null,
+      correlationId: CorrelationId.make("cmd-projection-routing-delta-0"),
+      metadata: {},
+      payload: {
+        threadId,
+        messageId: MessageId.make("message-projection-routing"),
+        role: "assistant",
+        text: "x",
+        turnId: TurnId.make("turn-projection-routing"),
+        streaming: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* projectionPipeline.projectEvent(savedDelta);
+    for (let index = 1; index < 100; index += 1) {
+      savedDelta = yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make(`evt-projection-routing-delta-${index}`),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make(`cmd-projection-routing-delta-${index}`),
+        causationEventId: null,
+        correlationId: CorrelationId.make(`cmd-projection-routing-delta-${index}`),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-projection-routing"),
+          role: "assistant",
+          text: "x",
+          turnId: TurnId.make("turn-projection-routing"),
+          streaming: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* projectionPipeline.projectEvent(savedDelta);
+    }
+
+    const projectorApplications = observedWork.filter(
+      (work) => work.kind === "projector-application",
+    );
+    const transactions = observedWork.filter((work) => work.kind === "sql-transaction");
+    const cursorWrites = observedWork.filter((work) => work.kind === "cursor-write");
+    const summaryRefreshes = observedWork.filter(
+      (work) => work.kind === "thread-shell-summary-refresh",
+    );
+    assert.equal(projectorApplications.length, 300);
+    assert.equal(transactions.length, 400);
+    assert.equal(cursorWrites.length, 400);
+    assert.equal(
+      cursorWrites.reduce((total, work) => total + work.cursorCount, 0),
+      900,
+    );
+    assert.equal(summaryRefreshes.length, 0);
+    assert.isBelow(projectorApplications.length, 900);
+    assert.isBelow(transactions.length, 900);
+    assert.isBelow(cursorWrites.length, 900);
+
+    const cursorRows = yield* sql<{
+      readonly projector: string;
+      readonly lastAppliedSequence: number;
+    }>`
+      SELECT
+        projector,
+        last_applied_sequence AS "lastAppliedSequence"
+      FROM projection_state
+      ORDER BY projector ASC
+    `;
+    assert.equal(cursorRows.length, 9);
+    for (const row of cursorRows) {
+      assert.equal(row.lastAppliedSequence, savedDelta.sequence);
+    }
+
+    // Force one projector behind and prove bootstrap independently recovers
+    // it without applying the delta to the other eight projectors again. The
+    // row is also rolled back one chunk to model the projector transaction's
+    // atomic mutation+cursor boundary.
+    yield* sql`
+      UPDATE projection_thread_messages
+      SET text = SUBSTR(text, 1, LENGTH(text) - 1)
+      WHERE message_id = 'message-projection-routing'
+    `;
+    yield* sql`
+      UPDATE projection_state
+      SET last_applied_sequence = ${savedDelta.sequence - 1}
+      WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.threadMessages}
+    `;
+    observedWork.length = 0;
+    yield* projectionPipeline.bootstrap;
+    assert.deepEqual(
+      observedWork
+        .filter((work) => work.kind === "projector-application")
+        .map((work) => work.projector),
+      [ORCHESTRATION_PROJECTOR_NAMES.threadMessages],
+    );
+    const recoveredMessages = yield* sql<{ readonly text: string }>`
+      SELECT text
+      FROM projection_thread_messages
+      WHERE message_id = 'message-projection-routing'
+    `;
+    assert.equal(recoveredMessages[0]?.text, "x".repeat(100));
+  }).pipe(Effect.provide(instrumentedLayer));
+});
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   it.effect("bootstraps all projection states and writes projection rows", () =>
