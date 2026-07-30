@@ -1390,7 +1390,7 @@ export function makeOpenCodeAdapter(
     const probeOpenCodeSessionBusy = (
       client: OpencodeClient,
       sessionId: string,
-    ): Effect.Effect<boolean | undefined, OpenCodeRuntimeError> => {
+    ): Effect.Effect<boolean | undefined> => {
       const statusClient = client as OpencodeClient & {
         readonly session: OpencodeClient["session"] & {
           readonly status?: (input?: unknown) => Promise<{
@@ -1407,7 +1407,7 @@ export function makeOpenCodeAdapter(
           if (!entry || typeof entry.type !== "string") {
             return false;
           }
-          return entry.type === "busy" || entry.type === "running" || entry.type === "retry";
+          return entry.type === "busy" || entry.type === "retry";
         }),
         Effect.catch(() => Effect.succeed(undefined)),
       );
