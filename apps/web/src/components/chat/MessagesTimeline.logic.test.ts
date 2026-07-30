@@ -480,6 +480,14 @@ describe("deriveMessagesTimelineRows", () => {
           turnId: "turn-1" as never,
           label: "Ran command",
           tone: "tool" as const,
+          images: [
+            {
+              id: "snapshot:image:0",
+              name: "Snapshot image",
+              mimeType: "image/png",
+              previewUrl: "data:image/png;base64,iVBORw0KGgo=",
+            },
+          ],
         },
       },
       {
@@ -514,6 +522,14 @@ describe("deriveMessagesTimelineRows", () => {
     expect(foldRow?.expanded).toBe(false);
     // User message boundary (00:00:00) → terminal message updatedAt (00:00:22).
     expect(foldRow?.label).toBe("Worked for 22s");
+    expect(foldRow?.images).toEqual([
+      {
+        id: "snapshot:image:0",
+        name: "Snapshot image",
+        mimeType: "image/png",
+        previewUrl: "data:image/png;base64,iVBORw0KGgo=",
+      },
+    ]);
     expect(collapsedRows.map((row) => row.id)).toEqual([
       "user-entry",
       "turn-fold:turn-1",

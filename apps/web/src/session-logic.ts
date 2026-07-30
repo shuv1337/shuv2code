@@ -21,6 +21,7 @@ import type {
   ThreadSession,
   TurnDiffSummary,
 } from "./types";
+import { extractToolResultImages, type ToolResultImage } from "./toolResultImages";
 
 export type ProviderPickerKind = ProviderDriverKind;
 
@@ -72,6 +73,7 @@ export interface WorkLogEntry {
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
   toolData?: unknown;
+  images?: ReadonlyArray<ToolResultImage>;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
@@ -734,10 +736,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (title) {
     entry.toolTitle = title;
   }
-  if (itemType === "mcp_tool_call") {
-    const data = asRecord(payload?.data);
-    if (data?.item !== undefined) {
-      entry.toolData = data.item;
+  const data = asRecord(payload?.data);
+  if (itemType && data?.item !== undefined) {
+    entry.toolData = data.item;
+    const images = extractToolResultImages(data.item, title ?? activity.summary, activity.id);
+    if (images.length > 0) {
+      entry.images = images;
     }
   }
   if (itemType) {
@@ -818,6 +822,7 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
+  const images = next.images ?? previous.images;
   return {
     ...previous,
     ...next,
@@ -832,6 +837,7 @@ function mergeDerivedWorkLogEntries(
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
     ...(toolData !== undefined ? { toolData } : {}),
+    ...(images !== undefined ? { images } : {}),
   };
 }
 
