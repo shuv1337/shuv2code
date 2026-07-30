@@ -9,6 +9,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import {
+  AUTOMATION_SUMMARY_PREVIEW_CODE_POINTS,
   AutomationCreateInput,
   AutomationConcurrencyPolicy,
   AutomationCronExpression,
@@ -17,6 +18,7 @@ import {
   AutomationListCursor,
   AutomationListInput,
   AutomationListResult,
+  AutomationModelPreview,
   AutomationName,
   AutomationPrompt,
   AutomationPromptPreview,
@@ -28,6 +30,7 @@ import {
   NonNegativeInt,
   PositiveInt,
   ProviderInteractionMode,
+  ProviderInstanceId,
   ProjectAutomation,
   ProjectAutomationSummary,
   ProjectId,
@@ -71,7 +74,9 @@ const AutomationSummaryDbRow = Schema.Struct({
   enabled: Schema.Number,
   cronExpression: AutomationCronExpression,
   timeZone: AutomationTimeZone,
-  modelSelection: ModelSelectionJson,
+  modelInstanceId: ProviderInstanceId,
+  modelPreview: AutomationModelPreview,
+  modelLength: NonNegativeInt,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   concurrencyPolicy: AutomationConcurrencyPolicy,
@@ -81,7 +86,14 @@ const AutomationSummaryDbRow = Schema.Struct({
   updatedAt: Schema.String,
 });
 
+const AutomationCursorProjectKey = Schema.String.check(
+  Schema.isMinLength(43),
+  Schema.isMaxLength(43),
+);
 const AutomationCursorPayload = Schema.Struct({
+  version: Schema.Literal(1),
+  projectKey: AutomationCursorProjectKey,
+  enabled: Schema.NullOr(Schema.Boolean),
   createdAt: Schema.String,
   automationId: AutomationId,
 });
@@ -113,12 +125,18 @@ const automationSummaryColumns = `
   automation_id AS "id",
   project_id AS "projectId",
   name,
-  substr(prompt, 1, 120) AS "promptPreview",
+  substr(prompt, 1, ${AUTOMATION_SUMMARY_PREVIEW_CODE_POINTS}) AS "promptPreview",
   length(prompt) AS "promptLength",
   enabled,
   cron_expression AS "cronExpression",
   time_zone AS "timeZone",
-  model_selection_json AS "modelSelection",
+  json_extract(model_selection_json, '$.instanceId') AS "modelInstanceId",
+  substr(
+    CAST(json_extract(model_selection_json, '$.model') AS TEXT),
+    1,
+    ${AUTOMATION_SUMMARY_PREVIEW_CODE_POINTS}
+  ) AS "modelPreview",
+  length(CAST(json_extract(model_selection_json, '$.model') AS TEXT)) AS "modelLength",
   runtime_mode AS "runtimeMode",
   interaction_mode AS "interactionMode",
   concurrency_policy AS "concurrencyPolicy",
@@ -183,20 +201,17 @@ function encodeAutomationCursor(payload: AutomationCursorPayload): AutomationLis
   );
 }
 
+const invalidAutomationCursor = () =>
+  new AutomationError({ reason: "invalid_cursor", message: "Invalid automation cursor." });
+
 const decodeAutomationCursor = Effect.fn("AutomationStore.decodeAutomationCursor")(function* (
   cursor: AutomationListCursor,
 ): Effect.fn.Return<AutomationCursorPayload, AutomationError> {
   const decoded = yield* Effect.try({
     try: () => Buffer.from(cursor, "base64url").toString("utf8"),
-    catch: () =>
-      new AutomationError({ reason: "invalid_cursor", message: "Invalid automation cursor." }),
+    catch: invalidAutomationCursor,
   });
-  return yield* decodeAutomationCursorJson(decoded).pipe(
-    Effect.mapError(
-      () =>
-        new AutomationError({ reason: "invalid_cursor", message: "Invalid automation cursor." }),
-    ),
-  );
+  return yield* decodeAutomationCursorJson(decoded).pipe(Effect.mapError(invalidAutomationCursor));
 });
 
 export interface DueAutomation {
@@ -268,6 +283,17 @@ export class AutomationStore extends Context.Service<
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;
+
+  const cursorProjectKey = Effect.fn("AutomationStore.cursorProjectKey")(function* (
+    projectId: ProjectId,
+  ) {
+    const digest = yield* crypto
+      .digest("SHA-256", Buffer.from(projectId, "utf8"))
+      .pipe(
+        Effect.mapError((cause) => persistenceError("AutomationStore.cursorProjectKey", cause)),
+      );
+    return Buffer.from(digest).toString("base64url");
+  });
 
   const getRows = SqlSchema.findAll({
     Request: Schema.Struct({ automationId: AutomationId }),
@@ -342,9 +368,18 @@ export const make = Effect.gen(function* () {
       const limit = input.limit ?? 50;
       const cursor =
         input.cursor === undefined ? null : yield* decodeAutomationCursor(input.cursor);
+      const projectKey = yield* cursorProjectKey(input.projectId);
+      if (
+        cursor !== null &&
+        (cursor.projectKey !== projectKey ||
+          (input.enabled !== undefined && cursor.enabled !== input.enabled))
+      ) {
+        return yield* invalidAutomationCursor();
+      }
+      const enabled = cursor === null ? (input.enabled ?? null) : cursor.enabled;
       const rows = yield* listSummaryRows({
         projectId: input.projectId,
-        enabled: input.enabled === undefined ? null : input.enabled ? 1 : 0,
+        enabled: enabled === null ? null : enabled ? 1 : 0,
         cursorCreatedAt: cursor?.createdAt ?? null,
         cursorAutomationId: cursor?.automationId ?? null,
         limit: limit + 1,
@@ -355,7 +390,13 @@ export const make = Effect.gen(function* () {
         automations: page.map(toAutomationSummary),
         nextCursor:
           rows.length > limit && last !== undefined
-            ? encodeAutomationCursor({ createdAt: last.createdAt, automationId: last.id })
+            ? encodeAutomationCursor({
+                version: 1,
+                projectKey,
+                enabled,
+                createdAt: last.createdAt,
+                automationId: last.id,
+              })
             : null,
       };
     },

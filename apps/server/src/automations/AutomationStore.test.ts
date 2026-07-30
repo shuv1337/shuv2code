@@ -9,6 +9,7 @@ import {
 } from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -294,10 +295,112 @@ storeLayer("AutomationStore", (it) => {
       assert.strictEqual(enabled.automations.length, 13);
       assert.ok(enabled.automations.every((automation) => automation.enabled));
 
+      const filteredFirst = yield* store.list({ projectId, enabled: true, limit: 5 });
+      assert.ok(filteredFirst.nextCursor !== null);
+      const filteredSecond = yield* store.list({
+        projectId,
+        cursor: filteredFirst.nextCursor!,
+        limit: 5,
+      });
+      assert.strictEqual(filteredSecond.automations.length, 5);
+      assert.ok(filteredSecond.automations.every((automation) => automation.enabled));
+
+      const mismatchedFilterError = yield* store
+        .list({
+          projectId,
+          enabled: false,
+          cursor: filteredFirst.nextCursor!,
+          limit: 5,
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(mismatchedFilterError.reason, "invalid_cursor");
+
+      const mismatchedProjectError = yield* store
+        .list({
+          projectId: ProjectId.make("another-automation-project"),
+          cursor: filteredFirst.nextCursor!,
+          limit: 5,
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(mismatchedProjectError.reason, "invalid_cursor");
+
       const invalidCursorError = yield* store
         .list({ projectId, cursor: AutomationListCursor.make("not-a-cursor") })
         .pipe(Effect.flip);
       assert.strictEqual(invalidCursorError.reason, "invalid_cursor");
+    }),
+  );
+
+  it.effect("caps pages and omits adversarial model metadata from summaries", () =>
+    Effect.gen(function* () {
+      const store = yield* AutomationStore;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("automation-bounded-summary-project");
+
+      yield* sql`DELETE FROM automation_runs`;
+      yield* sql`DELETE FROM project_automations`;
+      yield* sql`DELETE FROM projection_projects WHERE project_id = ${projectId}`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json,
+          scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          ${projectId}, 'Bounded summary project', '/tmp/automation-bounded-summary', NULL,
+          '[]', '2026-07-30T00:00:00.000Z', '2026-07-30T00:00:00.000Z', NULL
+        )
+      `;
+
+      const created = yield* Effect.forEach(
+        Array.from({ length: 101 }, (_, index) => index),
+        (index) =>
+          store.create({
+            projectId,
+            name: `Bounded automation ${index.toString().padStart(3, "0")}`,
+            prompt: "Run the bounded task",
+            enabled: false,
+            cronExpression: "0 9 * * *",
+            timeZone: "UTC",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5.6-sol",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            concurrencyPolicy: "skip",
+          }),
+        { concurrency: 1 },
+      );
+
+      const adversarialModel = "m".repeat(200_000);
+      const adversarialOption = "o".repeat(500_000);
+      const adversarialModelSelection = JSON.stringify({
+        instanceId: "codex",
+        model: adversarialModel,
+        options: [{ id: "payload", value: adversarialOption }],
+      });
+      yield* sql`
+        UPDATE project_automations
+        SET model_selection_json = ${adversarialModelSelection},
+            created_at = '0000-01-01T00:00:00.000Z'
+        WHERE automation_id = ${created[0]!.id}
+      `;
+
+      const page = yield* store.list({ projectId, limit: 100 });
+      assert.strictEqual(page.automations.length, 100);
+      assert.ok(page.nextCursor !== null);
+      const adversarialSummary = page.automations.find(
+        (automation) => automation.id === created[0]!.id,
+      );
+      assert.ok(adversarialSummary !== undefined);
+      assert.strictEqual(adversarialSummary.modelInstanceId, "codex");
+      assert.strictEqual(adversarialSummary.modelPreview, "m".repeat(120));
+      assert.strictEqual(adversarialSummary.modelLength, 200_000);
+      assert.ok(!("modelSelection" in adversarialSummary));
+      assert.ok(Buffer.byteLength(encodeAutomationList(page)) < 256_000);
+
+      const fullAutomation = Option.getOrThrow(yield* store.get(created[0]!.id));
+      assert.strictEqual(fullAutomation.modelSelection.model.length, 200_000);
+      assert.strictEqual(fullAutomation.modelSelection.options?.[0]?.value, adversarialOption);
     }),
   );
 });

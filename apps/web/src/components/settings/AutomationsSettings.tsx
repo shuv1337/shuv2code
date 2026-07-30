@@ -53,8 +53,15 @@ import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import {
+  appendAutomationSummaryPage,
+  isAutomationModelTruncated,
+  isAutomationPromptTruncated,
+  mergeAutomationSummaryPages,
   parseAutomationScheduleFields,
   parseAutomationTextFields,
+  reconcileAutomationRun,
+  removeAutomationSummary,
+  upsertAutomationSummary,
 } from "./AutomationsSettings.logic";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
@@ -95,14 +102,6 @@ function formatRelative(value: string | null): string {
   if (hours < 48) return delta >= 0 ? `in ${hours}h` : `${hours}h ago`;
   const days = Math.round(hours / 24);
   return delta >= 0 ? `in ${days}d` : `${days}d ago`;
-}
-
-function formatModelOption(id: string, value: string | boolean): string {
-  const label = id
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/^./, (character) => character.toUpperCase());
-  const renderedValue = typeof value === "boolean" ? (value ? "On" : "Off") : value;
-  return `${label}: ${renderedValue}`;
 }
 
 function asyncError(result: AsyncResult.AsyncResult<unknown, unknown>): string | null {
@@ -546,18 +545,11 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
   );
   const data = Option.getOrNull(AsyncResult.value(result));
   const queryError = asyncError(result);
-  const automations = useMemo(() => {
-    const byId = new Map<string, ProjectAutomationSummary>();
-    for (const automation of data?.automations ?? []) byId.set(automation.id, automation);
-    for (const automation of loadedAutomations) byId.set(automation.id, automation);
-    return [...byId.values()];
-  }, [data?.automations, loadedAutomations]);
+  const automations = useMemo(
+    () => mergeAutomationSummaryPages(data?.automations ?? [], loadedAutomations),
+    [data?.automations, loadedAutomations],
+  );
   const nextCursor = loadedNextCursor === undefined ? (data?.nextCursor ?? null) : loadedNextCursor;
-
-  const resetLoadedPages = () => {
-    setLoadedAutomations([]);
-    setLoadedNextCursor(undefined);
-  };
 
   const loadAutomation = async (
     automation: ProjectAutomationSummary,
@@ -606,21 +598,23 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
       setActionError(asyncError(outcome) ?? "Could not load more automations.");
       return;
     }
-    setLoadedAutomations((current) => [...current, ...outcome.value.automations]);
+    setLoadedAutomations((current) =>
+      appendAutomationSummaryPage(current, outcome.value.automations),
+    );
     setLoadedNextCursor(outcome.value.nextCursor);
   };
 
-  const execute = async (
+  const execute = async <A, E>(
     key: string,
-    action: () => Promise<AsyncResult.AsyncResult<unknown, unknown>>,
-    onSuccess?: () => void,
+    action: () => Promise<AsyncResult.AsyncResult<A, E>>,
+    onSuccess?: (value: A) => void,
   ) => {
     setBusyKey(key);
     setActionError(null);
     const outcome = await action();
     setBusyKey(null);
     if (AsyncResult.isSuccess(outcome)) {
-      onSuccess?.();
+      onSuccess?.(outcome.value);
       return;
     }
     setActionError(asyncError(outcome) ?? "Automation action failed.");
@@ -721,10 +715,12 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                         environmentId: project.environmentId,
                         input: { projectId: project.id, automationId: editing.id, ...common },
                       }),
-                () => {
+                (savedAutomation) => {
+                  setLoadedAutomations((current) =>
+                    upsertAutomationSummary(current, savedAutomation),
+                  );
                   setEditing(null);
                   setNewSeed(null);
-                  resetLoadedPages();
                 },
               );
             }}
@@ -760,13 +756,11 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                         <code>{automation.cronExpression}</code> · {automation.timeZone}
                       </span>
                       <span>
-                        {automation.modelSelection.instanceId} / {automation.modelSelection.model}
+                        {automation.modelInstanceId} / {automation.modelPreview}
+                        {isAutomationModelTruncated(automation) ? "…" : ""}
                       </span>
-                      {automation.modelSelection.options?.map((option) => (
-                        <span key={option.id}>{formatModelOption(option.id, option.value)}</span>
-                      ))}
                       <span>Overlap: {automation.concurrencyPolicy}</span>
-                      {automation.promptLength > automation.promptPreview.length ? (
+                      {isAutomationPromptTruncated(automation) ? (
                         <span>Instructions: {automation.promptLength.toLocaleString()} chars</span>
                       ) : null}
                     </div>
@@ -784,7 +778,10 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                               environmentId: project.environmentId,
                               input: { projectId: project.id, automationId: automation.id },
                             }),
-                          () => setExpandedHistory(automation.id),
+                          (run) => {
+                            setLoadedAutomations((current) => reconcileAutomationRun(current, run));
+                            setExpandedHistory(automation.id);
+                          },
                         )
                       }
                     >
@@ -823,7 +820,10 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                               environmentId: project.environmentId,
                               input: { projectId: project.id, automationId: automation.id },
                             }),
-                          resetLoadedPages,
+                          () =>
+                            setLoadedAutomations((current) =>
+                              removeAutomationSummary(current, automation.id),
+                            ),
                         );
                       }}
                     >
@@ -871,15 +871,21 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                       checked={automation.enabled}
                       disabled={busyKey === `toggle:${automation.id}`}
                       onCheckedChange={(enabled) =>
-                        void execute(`toggle:${automation.id}`, () =>
-                          updateAutomation({
-                            environmentId: project.environmentId,
-                            input: {
-                              projectId: project.id,
-                              automationId: automation.id,
-                              enabled: Boolean(enabled),
-                            },
-                          }),
+                        void execute(
+                          `toggle:${automation.id}`,
+                          () =>
+                            updateAutomation({
+                              environmentId: project.environmentId,
+                              input: {
+                                projectId: project.id,
+                                automationId: automation.id,
+                                enabled: Boolean(enabled),
+                              },
+                            }),
+                          (updatedAutomation) =>
+                            setLoadedAutomations((current) =>
+                              upsertAutomationSummary(current, updatedAutomation),
+                            ),
                         )
                       }
                     />

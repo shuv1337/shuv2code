@@ -9,6 +9,7 @@ import {
   AutomationValidationResult,
   PositiveInt,
   ProviderInteractionMode,
+  ProviderInstanceId,
   ProviderOptionSelections,
   RuntimeMode,
   ProjectAutomation,
@@ -55,9 +56,10 @@ const AutomationCronExpressionInput = describedTrimmedString(
 const AutomationTimeZoneInput = describedTrimmedString(
   "IANA time zone used to evaluate the cron schedule, for example Europe/London.",
 ).check(Schema.isMaxLength(128));
-const ProviderInstanceIdInput = describedTrimmedString(
-  "Configured provider instance ID, for example codex, claude, or an OpenCode instance.",
-).pipe(Schema.brand("ProviderInstanceId"));
+const ProviderInstanceIdInput = ProviderInstanceId.annotate({
+  description:
+    "Configured provider instance ID, for example codex, claude, or an OpenCode instance.",
+});
 const ModelNameInput = describedTrimmedString(
   "Provider model identifier for generated automation threads.",
 );
@@ -83,9 +85,13 @@ export const AutomationListInput = Schema.Struct({
   ).annotate({ description: "Maximum summaries to return in this page (1-100). Defaults to 50." }),
   cursor: Schema.optional(
     AutomationListCursor.annotate({
-      description: "Opaque nextCursor from a previous automation_list response.",
+      description:
+        "Opaque nextCursor from a previous automation_list response. It retains that page's enabled-state filter.",
     }),
-  ).annotate({ description: "Opaque nextCursor from a previous automation_list response." }),
+  ).annotate({
+    description:
+      "Opaque nextCursor from a previous automation_list response. It retains that page's enabled-state filter.",
+  }),
 });
 
 const AutomationModelSelectionInput = Schema.Struct({
@@ -100,7 +106,7 @@ const AutomationModelSelectionInput = Schema.Struct({
 
 export const AutomationListTool = Tool.make("automation_list", {
   description:
-    "List a bounded page of scheduled automation summaries owned by this chat's current project. Prompts are represented by a short preview and length; use automation_get for the complete prompt. Pass nextCursor back as cursor to continue.",
+    "List a bounded page of scheduled automation summaries owned by this chat's current project. Prompts and model names are represented by bounded previews; use automation_get for complete details. Pass nextCursor back as cursor to continue with the original enabled-state filter.",
   parameters: AutomationListInput,
   success: AutomationListResult,
   failure: AutomationError,

@@ -9,6 +9,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ModelSelection, ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 
 const entityId = <Brand extends string>(brand: Brand) =>
   TrimmedNonEmptyString.pipe(Schema.brand(brand));
@@ -65,8 +66,18 @@ export const ProjectAutomation = Schema.Struct({
 });
 export type ProjectAutomation = typeof ProjectAutomation.Type;
 
-export const AutomationPromptPreview = Schema.String.check(Schema.isMaxLength(240));
+export const AUTOMATION_SUMMARY_PREVIEW_CODE_POINTS = 120;
+const AUTOMATION_SUMMARY_PREVIEW_MAX_CODE_UNITS = AUTOMATION_SUMMARY_PREVIEW_CODE_POINTS * 2;
+
+export const AutomationPromptPreview = Schema.String.check(
+  Schema.isMaxLength(AUTOMATION_SUMMARY_PREVIEW_MAX_CODE_UNITS),
+);
 export type AutomationPromptPreview = typeof AutomationPromptPreview.Type;
+
+export const AutomationModelPreview = Schema.String.check(
+  Schema.isMaxLength(AUTOMATION_SUMMARY_PREVIEW_MAX_CODE_UNITS),
+);
+export type AutomationModelPreview = typeof AutomationModelPreview.Type;
 
 export const ProjectAutomationSummary = Schema.Struct({
   id: AutomationId,
@@ -77,7 +88,9 @@ export const ProjectAutomationSummary = Schema.Struct({
   enabled: Schema.Boolean,
   cronExpression: AutomationCronExpression,
   timeZone: AutomationTimeZone,
-  modelSelection: ModelSelection,
+  modelInstanceId: ProviderInstanceId,
+  modelPreview: AutomationModelPreview,
+  modelLength: NonNegativeInt,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   concurrencyPolicy: AutomationConcurrencyPolicy,
@@ -117,7 +130,7 @@ export const AutomationListInput = Schema.Struct({
 export type AutomationListInput = typeof AutomationListInput.Type;
 
 export const AutomationListResult = Schema.Struct({
-  automations: Schema.Array(ProjectAutomationSummary),
+  automations: Schema.Array(ProjectAutomationSummary).check(Schema.isMaxLength(100)),
   nextCursor: Schema.NullOr(AutomationListCursor),
 });
 export type AutomationListResult = typeof AutomationListResult.Type;
