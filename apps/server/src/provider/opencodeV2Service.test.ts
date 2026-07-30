@@ -11,9 +11,12 @@ import { afterEach, describe, it } from "vite-plus/test";
 import {
   detectOpenCodeServerProtocol,
   discoverOpenCodeV2Service,
+  OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES,
+  OpenCodeV2HealthResponseTooLargeError,
   openCodeV2ChannelFromVersion,
   openCodeV2ServiceRegistrationFileName,
   parseOpenCodeV2ServiceRegistration,
+  readOpenCodeV2HealthResponse,
   requireOpenCodeV2Service,
   resolveOpenCodeV2ServiceRegistrationPath,
 } from "./opencodeV2Service.ts";
@@ -66,6 +69,59 @@ describe("openCodeV2Service registration helpers", () => {
     });
     NodeAssert.equal(parseOpenCodeV2ServiceRegistration("{"), null);
     NodeAssert.equal(parseOpenCodeV2ServiceRegistration(JSON.stringify({ url: "x" })), null);
+  });
+
+  it("accepts a health body exactly at the byte ceiling", async () => {
+    const prefix = '{"padding":"';
+    const suffix = '"}';
+    const paddingLength =
+      OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES -
+      Buffer.byteLength(prefix) -
+      Buffer.byteLength(suffix);
+    const encoded = `${prefix}${"x".repeat(paddingLength)}${suffix}`;
+    NodeAssert.equal(Buffer.byteLength(encoded), OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES);
+
+    const body = (await readOpenCodeV2HealthResponse(
+      new Response(encoded, {
+        headers: { "content-length": String(OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES) },
+      }),
+    )) as { readonly padding?: string };
+    NodeAssert.equal(body.padding?.length, paddingLength);
+  });
+
+  it("rejects a declared oversized health body without reading it", async () => {
+    const response = new Response(null, {
+      headers: { "content-length": String(OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES + 1) },
+    });
+
+    await NodeAssert.rejects(readOpenCodeV2HealthResponse(response), (cause: unknown) => {
+      NodeAssert.ok(cause instanceof OpenCodeV2HealthResponseTooLargeError);
+      NodeAssert.equal(cause.maximumBytes, OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES);
+      NodeAssert.equal(cause.receivedBytes, OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES + 1);
+      return true;
+    });
+  });
+
+  it("rejects a chunked oversized health body and cancels its stream", async () => {
+    let cancelled = false;
+    const chunkBytes = 40 * 1024;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(chunkBytes));
+        controller.enqueue(new Uint8Array(chunkBytes));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    await NodeAssert.rejects(readOpenCodeV2HealthResponse(new Response(body)), (cause: unknown) => {
+      NodeAssert.ok(cause instanceof OpenCodeV2HealthResponseTooLargeError);
+      NodeAssert.equal(cause.maximumBytes, OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES);
+      NodeAssert.equal(cause.receivedBytes, chunkBytes * 2);
+      return true;
+    });
+    NodeAssert.equal(cancelled, true);
   });
 });
 

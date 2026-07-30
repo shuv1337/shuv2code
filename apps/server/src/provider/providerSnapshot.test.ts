@@ -10,7 +10,9 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
+  collectStreamAsString,
   isCommandMissingCause,
+  ProviderProcessOutputTooLargeError,
   providerModelsFromSettings,
   spawnAndCollect,
 } from "./providerSnapshot.ts";
@@ -133,4 +135,38 @@ describe("ProviderCommandNotFoundError", () => {
       expect(error.message).not.toContain("secret-token-value");
     });
   });
+});
+
+describe("collectStreamAsString", () => {
+  it.effect("drains but rejects provider output beyond the configured byte ceiling", () =>
+    Effect.gen(function* () {
+      let reachedTail = false;
+      const stream = Stream.make(new TextEncoder().encode("abcd")).pipe(
+        Stream.concat(
+          Stream.fromEffect(
+            Effect.sync(() => {
+              reachedTail = true;
+              return new TextEncoder().encode("efgh");
+            }),
+          ),
+        ),
+      );
+
+      const error = yield* collectStreamAsString(stream, 6).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(ProviderProcessOutputTooLargeError);
+      expect(error.maximumBytes).toBe(6);
+      expect(error.retainedBytes).toBe(6);
+      expect(reachedTail).toBe(true);
+    }),
+  );
+
+  it.effect("preserves provider output exactly at the ceiling", () =>
+    Effect.gen(function* () {
+      const encoded = new TextEncoder().encode("provider ready");
+      const output = yield* collectStreamAsString(Stream.make(encoded), encoded.byteLength);
+
+      expect(output).toBe("provider ready");
+    }),
+  );
 });
