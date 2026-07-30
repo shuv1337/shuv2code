@@ -120,9 +120,13 @@ is wrong, deprecate it with an explanation and publish a corrected increment.
 
 ## Signing inputs
 
-Publication requires Apple signing and notarization inputs. Store these as
-protected environment secrets/variables rather than exposing them to branch
-prepare runs:
+Publication requires Apple signing and notarization inputs. The macOS platform
+job reads them only when `mode=publish` (prepare builds unsigned). They are
+currently repository secrets/variables because signed desktop artifacts are
+built before the `production` environment approval that gates `publish_npm`.
+Environment-scoped secrets would be unavailable until after that approval, so
+do not move them into `production` unless the job graph is reordered. Prepare
+runs must not reference the signing secret values.
 
 - `CSC_LINK`
 - `CSC_KEY_PASSWORD`
@@ -141,12 +145,15 @@ default hosted endpoint.
 - `vp run brand:check`
 - `vp run schema:check`
 - `vp run icons:check`
-- full CI checks
+- release workflow `verify` job green (`vp check`, typecheck, full tests,
+  `release-smoke`, resource-monitor cargo checks, mobile config validation)
 - npm tarball includes README, LICENSE, `dist/bin.mjs`, and
   `dist/client/index.html`, has resolved runtime dependencies, and installs both
   `shuv2code` and `s2c` into a clean prefix
 - npm tarball SHA-256 verifies before publication
-- protected npm publication uses OIDC and no long-lived npm write token
+- protected npm publication uses OIDC (`setup-node` registry-url +
+  `id-token: write` on `production`) and no long-lived npm write token
+- non-stable publishes leave npm `latest` pointing away from the new version
 - AppImage starts and uses `.shuv2code`
 - iOS reports `dev.shuv.shuv2code` and the `shuv2code` scheme
 - DMG and ZIP signatures validate and notarization is stapled

@@ -199,16 +199,19 @@ jobs:
           vp run schema:check
           vp run icons:check
 
-      - name: Full CI verification
+      - name: Release preflight verification
         run: |
+          set -euo pipefail
           vp check
           vp run typecheck
           vp run test
+          node scripts/release-smoke.ts
           cargo fmt --manifest-path native/resource-monitor/Cargo.toml -- --check
           cargo test --locked --manifest-path native/resource-monitor/Cargo.toml
 
       - name: Validate mobile release configurations
         run: |
+          set -euo pipefail
           APP_VARIANT=production vp run --filter @shuv2code/mobile config:prod
           APP_VARIANT=preview vp run --filter @shuv2code/mobile config:preview
 
@@ -426,6 +429,9 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.13.1
+          # Required for npm trusted publishing / OIDC: writes the registry .npmrc
+          # that participates in the token exchange. Do not add NPM_TOKEN.
+          registry-url: https://registry.npmjs.org
 
       - name: Print and validate trusted-publishing client
         shell: bash
@@ -482,8 +488,14 @@ jobs:
           CHANNEL="$channel" VERSION="$version" node <<'NODE'
           const fs = require("node:fs")
           const tags = JSON.parse(fs.readFileSync("dist-tags.json", "utf8"))
-          if (tags[process.env.CHANNEL] !== process.env.VERSION) {
-            throw new Error(`Expected ${process.env.CHANNEL} -> ${process.env.VERSION}`)
+          const channel = process.env.CHANNEL
+          const version = process.env.VERSION
+          if (tags[channel] !== version) {
+            throw new Error(`Expected ${channel} -> ${version}`)
+          }
+          // Prereleases and nightlies must never become the default install target.
+          if (channel !== "latest" && tags.latest === version) {
+            throw new Error(`npm dist-tag latest unexpectedly points at non-stable ${version}`)
           }
           NODE
 

@@ -6,9 +6,11 @@ on:
     branches:
       - main
 
-# Personal-project gate: one fast self-hosted job.
-# Full monorepo tests, typecheck, desktop builds, Rust, and mobile native lint
-# run on the manual release workflow's verify job, not every PR.
+# Personal-project gate: one fast self-hosted job (brand/schema/icons + vp check).
+# Deeper verification lives on the manual release workflow's verify job:
+# typecheck, full unit/integration tests, release-smoke, and resource-monitor
+# cargo fmt/test. Desktop package builds, mobile native lint, and signed macOS
+# builds still run only on the release pack/platform jobs, not on every PR.
 jobs:
   ci:
     name: CI
