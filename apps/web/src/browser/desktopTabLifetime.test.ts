@@ -1,14 +1,15 @@
-import { EnvironmentId, ThreadId } from "@shuv2code/contracts";
+import { EnvironmentId, ThreadId, type DesktopPreviewHosting } from "@shuv2code/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-const { closeTab, createTab, stopBrowserRecording } = vi.hoisted(() => ({
+const { closeTab, createTab, getTabHosting, stopBrowserRecording } = vi.hoisted(() => ({
   closeTab: vi.fn<(tabId: string) => Promise<void>>(async () => undefined),
   createTab: vi.fn<() => Promise<void>>(),
+  getTabHosting: vi.fn<() => Promise<DesktopPreviewHosting>>(async () => "unbound"),
   stopBrowserRecording: vi.fn(async () => null),
 }));
 
 vi.mock("~/components/preview/previewBridge", () => ({
-  previewBridge: { closeTab, createTab },
+  previewBridge: { closeTab, createTab, getTabHosting },
 }));
 
 vi.mock("./browserRecording", () => ({
@@ -22,6 +23,8 @@ describe("desktopTabLifetime", () => {
   beforeEach(() => {
     closeTab.mockClear();
     createTab.mockClear();
+    getTabHosting.mockReset();
+    getTabHosting.mockResolvedValue("unbound");
     stopBrowserRecording.mockClear();
     vi.stubGlobal("window", globalThis);
   });
@@ -109,8 +112,7 @@ describe("desktopTabLifetime", () => {
     expect(closeTab).not.toHaveBeenCalled();
 
     resolveStop?.();
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(closeTab).toHaveBeenCalledWith("tab_recording_cleanup");
   });
 
@@ -137,5 +139,19 @@ describe("desktopTabLifetime", () => {
     resolveClose?.();
     await reacquired.ready;
     expect(createTab).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not close a main-process background tab when its renderer lease disappears", async () => {
+    vi.useFakeTimers();
+    createTab.mockResolvedValue(undefined);
+    getTabHosting.mockResolvedValueOnce("background");
+
+    const lease = acquireDesktopTab("tab_background_lease");
+    await lease.ready;
+    lease.release();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(getTabHosting).toHaveBeenCalledWith("tab_background_lease");
+    expect(closeTab).not.toHaveBeenCalled();
   });
 });

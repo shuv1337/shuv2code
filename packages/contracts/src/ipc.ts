@@ -502,9 +502,19 @@ export type DesktopPreviewColorScheme = "system" | "light" | "dark";
 export const DesktopPreviewColorSchemeSchema: Schema.Codec<DesktopPreviewColorScheme> =
   Schema.Literals(["system", "light", "dark"]);
 
+/** Process that currently owns the tab's guest WebContents. */
+export type DesktopPreviewHosting = "unbound" | "renderer" | "background";
+
+export const DesktopPreviewHostingSchema: Schema.Codec<DesktopPreviewHosting> = Schema.Literals([
+  "unbound",
+  "renderer",
+  "background",
+]);
+
 export interface DesktopPreviewTabState {
   tabId: string;
   webContentsId: number | null;
+  hosting: DesktopPreviewHosting;
   navStatus: DesktopPreviewNavStatus;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -545,6 +555,7 @@ export const DesktopPreviewNavStatusSchema = Schema.Union([
 export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   webContentsId: Schema.NullOr(Schema.Int),
+  hosting: DesktopPreviewHostingSchema,
   navStatus: DesktopPreviewNavStatusSchema,
   canGoBack: Schema.Boolean,
   canGoForward: Schema.Boolean,
@@ -895,6 +906,17 @@ export const DesktopPreviewTabInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
 });
 
+export const DesktopPreviewBackgroundTabInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  url: Schema.optional(Schema.String),
+});
+
+export const DesktopPreviewBackgroundViewportInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  width: Schema.Int.check(Schema.isGreaterThan(0)),
+  height: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+
 export const DesktopPreviewRegisterWebviewInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   webContentsId: Schema.Int.check(Schema.isGreaterThan(0)),
@@ -1025,6 +1047,12 @@ export interface DesktopBridge {
 
 export interface DesktopPreviewBridge {
   createTab: (tabId: string) => Promise<void>;
+  /** Create or retain a hidden main-process browser for unattended work. */
+  ensureBackgroundTab: (tabId: string, url?: string) => Promise<void>;
+  /** Hand a hidden browser back to the renderer before presenting it to a human. */
+  adoptBackgroundTab: (tabId: string) => Promise<void>;
+  getTabHosting: (tabId: string) => Promise<DesktopPreviewHosting>;
+  resizeBackgroundTab: (tabId: string, width: number, height: number) => Promise<boolean>;
   closeTab: (tabId: string) => Promise<void>;
   registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
   navigate: (tabId: string, url: string) => Promise<void>;

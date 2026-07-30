@@ -93,11 +93,11 @@ const waitForDesktopOverlay = async (
 ): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
-    const state = assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, {
+    assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, {
       operation,
       requestId,
     });
-    if (state.desktopByTabId[tabId] && previewBridge) {
+    if (previewBridge) {
       const status = await previewBridge.automation.status(runtimeTabId);
       if (status.available) return;
     }
@@ -142,8 +142,20 @@ const readRenderedViewport = async (
   runtimeTabId: string,
 ): Promise<PreviewRenderedViewportSize | null> => {
   const webview = findPreviewWebview(runtimeTabId);
-  if (!webview) return null;
-  return await readWebviewViewport(webview);
+  if (webview) return await readWebviewViewport(webview);
+  const value = await previewBridge?.automation.evaluate(runtimeTabId, {
+    expression: "({ width: window.innerWidth, height: window.innerHeight })",
+  });
+  if (typeof value !== "object" || value === null) return null;
+  const { width, height } = value as { readonly width?: unknown; readonly height?: unknown };
+  return typeof width === "number" &&
+    Number.isInteger(width) &&
+    width > 0 &&
+    typeof height === "number" &&
+    Number.isInteger(height) &&
+    height > 0
+    ? { width, height }
+    : null;
 };
 
 const readDeclaredViewport = (
@@ -174,6 +186,20 @@ const waitForRenderedViewport = async (
     assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, context);
     try {
       const webview = findPreviewWebview(runtimeTabId);
+      if (!webview && previewBridge) {
+        const hosting = await previewBridge.getTabHosting(runtimeTabId);
+        if (hosting === "background") {
+          const renderedViewport = await readRenderedViewport(runtimeTabId);
+          if (
+            renderedViewport &&
+            (setting._tag === "fill" ||
+              (renderedViewport.width === setting.width &&
+                renderedViewport.height === setting.height))
+          ) {
+            return renderedViewport;
+          }
+        }
+      }
       const appliedSettingKey = webview?.getAttribute("data-preview-viewport-key") ?? null;
       const declaredViewport = readDeclaredViewport(webview);
       const renderedViewport = webview ? await readWebviewViewport(webview) : null;
@@ -217,9 +243,11 @@ const currentStatus = async (
     ...(viewportSetting === undefined ? {} : { viewportSetting }),
     ...(viewport === null ? {} : { viewport }),
   };
-  if (runtimeTabId && tabId && previewBridge && state.desktopByTabId[tabId]) {
+  if (runtimeTabId && tabId && previewBridge) {
     const status = await previewBridge.automation.status(runtimeTabId);
-    return { ...status, tabId, visible, ...viewportStatus };
+    if (status.available) {
+      return { ...status, tabId, visible: status.visible, ...viewportStatus };
+    }
   }
   const navStatus = snapshot?.navStatus;
   return {
@@ -358,6 +386,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             return await currentStatus(threadRef, tabId);
           case "open": {
             const input = request.input as PreviewAutomationOpenInput;
+            const shouldPresentPreview = shouldOpenPreviewMiniPlayer(input);
             const resolvedInputUrl = input.url
               ? resolveBrowserNavigationTarget(environmentId, {
                   kind: "url",
@@ -386,6 +415,14 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 return raiseAtomCommandFailure(result);
               }
               const snapshot = result.value;
+              if (!shouldPresentPreview && previewBridge) {
+                const pendingRuntimeTabId = previewRuntimeTabId(
+                  threadRef,
+                  readThreadPreviewState(threadRef).serverEpoch,
+                  snapshot.tabId,
+                );
+                await previewBridge.ensureBackgroundTab(pendingRuntimeTabId, resolvedInputUrl);
+              }
               applyPreviewServerSnapshot(threadRef, snapshot);
               activeTabId = snapshot.tabId;
               activeSnapshot = snapshot;
@@ -396,6 +433,13 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               readThreadPreviewState(threadRef).serverEpoch,
               activeTabId,
             );
+            if (previewBridge) {
+              if (shouldPresentPreview) {
+                await previewBridge.adoptBackgroundTab(activeRuntimeTabId);
+              } else {
+                await previewBridge.ensureBackgroundTab(activeRuntimeTabId, resolvedInputUrl);
+              }
+            }
             if (activeSnapshot) {
               const defaultViewport = previewAutomationDefaultViewport(
                 reusedExistingTab,
@@ -426,9 +470,15 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 }
                 activeSnapshot = resizeResult.value;
                 updatePreviewServerSnapshot(threadRef, resizeResult.value);
+                if (!shouldPresentPreview && previewBridge && defaultViewport._tag !== "fill") {
+                  await previewBridge.resizeBackgroundTab(
+                    activeRuntimeTabId,
+                    defaultViewport.width,
+                    defaultViewport.height,
+                  );
+                }
               }
             }
-            const shouldPresentPreview = shouldOpenPreviewMiniPlayer(input);
             if (shouldPresentPreview) {
               usePreviewMiniPlayerStore.getState().open(threadRef, activeTabId);
             }
@@ -516,6 +566,13 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 serverEpoch: operationState.serverEpoch,
               };
             });
+            if (setting._tag !== "fill") {
+              await ready.bridge.resizeBackgroundTab(
+                ready.runtimeTabId,
+                setting.width,
+                setting.height,
+              );
+            }
             let viewport: PreviewRenderedViewportSize;
             try {
               viewport = await waitForRenderedViewport(

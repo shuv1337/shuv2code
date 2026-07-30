@@ -1,6 +1,8 @@
 import {
   DesktopPreviewAnnotationThemeInputSchema,
   DesktopPreviewArtifactInputSchema,
+  DesktopPreviewBackgroundTabInputSchema,
+  DesktopPreviewBackgroundViewportInputSchema,
   DesktopPreviewAutomationClickInputSchema,
   DesktopPreviewAutomationEvaluateInputSchema,
   DesktopPreviewAutomationPressInputSchema,
@@ -15,6 +17,7 @@ import {
   DesktopPreviewScreenshotArtifactSchema,
   DesktopPreviewSetColorSchemeInputSchema,
   DesktopPreviewTabInputSchema,
+  DesktopPreviewHostingSchema,
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationPayloadSchema,
   PreviewAutomationSnapshot,
@@ -53,6 +56,50 @@ export const createTab = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.createTab")(function* ({ tabId }) {
     const manager = yield* PreviewManager.PreviewManager;
     yield* manager.createTab(tabId);
+  }),
+});
+
+export const ensureBackgroundTab = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_ENSURE_BACKGROUND_TAB_CHANNEL,
+  payload: DesktopPreviewBackgroundTabInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.ensureBackgroundTab")(function* ({ tabId, url }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.ensureBackgroundTab(tabId, url);
+  }),
+});
+
+export const adoptBackgroundTab = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_ADOPT_BACKGROUND_TAB_CHANNEL,
+  payload: DesktopPreviewTabInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.adoptBackgroundTab")(function* ({ tabId }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.adoptBackgroundTab(tabId);
+  }),
+});
+
+export const getTabHosting = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_GET_TAB_HOSTING_CHANNEL,
+  payload: DesktopPreviewTabInputSchema,
+  result: DesktopPreviewHostingSchema,
+  handler: Effect.fn("desktop.ipc.preview.getTabHosting")(function* ({ tabId }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.getTabHosting(tabId);
+  }),
+});
+
+export const resizeBackgroundTab = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_RESIZE_BACKGROUND_TAB_CHANNEL,
+  payload: DesktopPreviewBackgroundViewportInputSchema,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.preview.resizeBackgroundTab")(function* ({
+    tabId,
+    width,
+    height,
+  }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.resizeBackgroundTab(tabId, width, height);
   }),
 });
 
@@ -356,6 +403,10 @@ export const saveRecording = DesktopIpc.makeIpcMethod({
 
 export const methods = [
   createTab,
+  ensureBackgroundTab,
+  adoptBackgroundTab,
+  getTabHosting,
+  resizeBackgroundTab,
   closeTab,
   registerWebview,
   navigate,

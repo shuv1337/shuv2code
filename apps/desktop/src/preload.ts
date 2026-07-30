@@ -148,6 +148,21 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   preview: {
     createTab: (tabId) => ipcRenderer.invoke(IpcChannels.PREVIEW_CREATE_TAB_CHANNEL, { tabId }),
+    ensureBackgroundTab: (tabId, url) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_ENSURE_BACKGROUND_TAB_CHANNEL, {
+        tabId,
+        ...(url ? { url } : {}),
+      }),
+    adoptBackgroundTab: (tabId) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_ADOPT_BACKGROUND_TAB_CHANNEL, { tabId }),
+    getTabHosting: (tabId) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_GET_TAB_HOSTING_CHANNEL, { tabId }),
+    resizeBackgroundTab: (tabId, width, height) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_RESIZE_BACKGROUND_TAB_CHANNEL, {
+        tabId,
+        width,
+        height,
+      }),
     closeTab: (tabId) => ipcRenderer.invoke(IpcChannels.PREVIEW_CLOSE_TAB_CHANNEL, { tabId }),
     registerWebview: (tabId, webContentsId) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_REGISTER_WEBVIEW_CHANNEL, { tabId, webContentsId }),

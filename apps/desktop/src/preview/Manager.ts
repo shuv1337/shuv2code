@@ -1,13 +1,15 @@
 /**
  * Desktop side of the in-app browser preview.
  *
- * Hosts per-tab Chromium WebContents references (the actual <webview>
- * elements live in the renderer; we only attach listeners and forward state
- * here). Single layer-scoped browser session partition.
+ * Hosts per-tab Chromium WebContents references. Human-visible tabs may be
+ * renderer `<webview>` elements; unattended tabs are hidden BrowserWindows
+ * owned by this main-process layer so renderer navigation/reloads cannot
+ * destroy them. Single layer-scoped browser session partition.
  */
 import type {
   DesktopPreviewAnnotationTheme,
   DesktopPreviewColorScheme,
+  DesktopPreviewHosting,
   DesktopPreviewPointerEvent,
   PreviewAnnotationPayload,
   PreviewAnnotationRect,
@@ -77,6 +79,7 @@ export type PreviewNavStatus =
 export interface PreviewTabState {
   tabId: string;
   webContentsId: number | null;
+  hosting: DesktopPreviewHosting;
   navStatus: PreviewNavStatus;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -451,6 +454,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const fileSystem = yield* FileSystem.FileSystem;
   const hostPlatform = yield* HostProcessPlatform;
   const path = yield* Path.Path;
+  const browserSession = yield* BrowserSession.BrowserSession;
   const parentScope = yield* Scope.Scope;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
@@ -461,6 +465,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const annotationThemeRef = yield* Ref.make(DEFAULT_ANNOTATION_THEME);
   const mainWindowRef = yield* Ref.make<Option.Option<BrowserWindow>>(Option.none());
+  const backgroundWindows = new Map<string, BrowserWindow>();
   const tabsRef = yield* SynchronizedRef.make<ReadonlyMap<string, PreviewTabState>>(new Map());
   const attachedRef = yield* Ref.make<ReadonlyMap<number, ManagedListeners>>(new Map());
   const listenersRef = yield* Ref.make<ReadonlySet<Listener>>(new Set());
@@ -496,6 +501,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     { readonly semaphore: Semaphore.Semaphore; users: number }
   >();
   const tabLifecycleGenerations = new Map<string, number>();
+
+  yield* Scope.addFinalizer(
+    parentScope,
+    Effect.sync(() => {
+      for (const window of backgroundWindows.values()) {
+        if (!window.isDestroyed()) window.destroy();
+      }
+      backgroundWindows.clear();
+    }),
+  );
 
   const attempt = <A>(errorContext: PreviewOperationContext, evaluate: () => A) =>
     Effect.try({
@@ -1434,6 +1449,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const initial: PreviewTabState = {
           tabId,
           webContentsId: null,
+          hosting: "unbound",
           navStatus: { kind: "Idle" },
           canGoBack: false,
           canGoForward: false,
@@ -1464,6 +1480,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const closeTabUnlocked = Effect.fn("PreviewManager.closeTabUnlocked")(function* (tabId: string) {
     if (!(yield* SynchronizedRef.get(tabsRef)).has(tabId)) return;
+    const backgroundWindow = backgroundWindows.get(tabId);
+    backgroundWindows.delete(tabId);
     yield* Effect.all(
       [
         cancelPickElement(tabId),
@@ -1493,10 +1511,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         { concurrency: 2, discard: true },
       );
     }
+    if (backgroundWindow && !backgroundWindow.isDestroyed()) {
+      yield* attempt(
+        {
+          operation: "closeBackgroundTab",
+          tabId,
+          webContentsId: backgroundWindow.webContents.id,
+        },
+        () => backgroundWindow.destroy(),
+      );
+    }
     const updatedAt = yield* currentIso;
     const closed: PreviewTabState = {
       ...closedTab,
       webContentsId: null,
+      hosting: "unbound",
       navStatus: { kind: "Idle" },
       canGoBack: false,
       canGoForward: false,
@@ -1527,136 +1556,150 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
-  const registerWebviewUnlocked = Effect.fn("PreviewManager.registerWebviewUnlocked")(function* (
-    tabId: string,
-    webContentsId: number,
-    expectedGeneration: number | undefined,
-  ) {
-    const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-    if (
-      !tab ||
-      tabLifecycleGenerations.get(tabId) !== expectedGeneration ||
-      (yield* Ref.get(closingTabIdsRef)).has(tabId)
+  const registerWebContentsUnlocked = Effect.fn("PreviewManager.registerWebContentsUnlocked")(
+    function* (
+      tabId: string,
+      webContentsId: number,
+      expectedGeneration: number | undefined,
+      hosting: Exclude<DesktopPreviewHosting, "unbound">,
     ) {
-      return yield* new PreviewTabNotFoundError({ tabId });
-    }
-    const wc = webContents.fromId(webContentsId);
-    const mainWindow = yield* Ref.get(mainWindowRef);
-    if (
-      !wc ||
-      wc.getType() !== "webview" ||
-      (Option.isSome(mainWindow) && wc.hostWebContents !== mainWindow.value.webContents)
-    ) {
-      return yield* new PreviewWebContentsNotFoundError({ tabId, webContentsId });
-    }
-    const attached = yield* Ref.get(attachedRef);
-    const annotationTheme = yield* Ref.get(annotationThemeRef);
-    if (tab.webContentsId === webContentsId && attached.has(webContentsId)) {
-      const zoomFactor = yield* attempt(
-        { operation: "registerWebview.getZoomFactor", tabId, webContentsId },
-        () => wc.getZoomFactor(),
+      const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (
+        !tab ||
+        tabLifecycleGenerations.get(tabId) !== expectedGeneration ||
+        (yield* Ref.get(closingTabIdsRef)).has(tabId)
+      ) {
+        return yield* new PreviewTabNotFoundError({ tabId });
+      }
+      const wc = webContents.fromId(webContentsId);
+      const mainWindow = yield* Ref.get(mainWindowRef);
+      if (hosting === "renderer" && backgroundWindows.has(tabId)) {
+        return yield* new PreviewBackgroundTabRequiresAdoptionError({ tabId });
+      }
+      const validRendererWebview =
+        hosting === "renderer" &&
+        wc?.getType() === "webview" &&
+        (!Option.isSome(mainWindow) || wc.hostWebContents === mainWindow.value.webContents);
+      const validBackgroundWindow =
+        hosting === "background" && backgroundWindows.get(tabId)?.webContents.id === webContentsId;
+      if (!wc || (!validRendererWebview && !validBackgroundWindow)) {
+        return yield* new PreviewWebContentsNotFoundError({ tabId, webContentsId });
+      }
+      const attached = yield* Ref.get(attachedRef);
+      const annotationTheme = yield* Ref.get(annotationThemeRef);
+      if (tab.webContentsId === webContentsId && attached.has(webContentsId)) {
+        const zoomFactor = yield* attempt(
+          { operation: "registerWebview.getZoomFactor", tabId, webContentsId },
+          () => wc.getZoomFactor(),
+        );
+        yield* update(tabId, { zoomFactor });
+        yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
+          wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
+        );
+        return;
+      }
+      const replacedWebContentsId =
+        tab.webContentsId != null && tab.webContentsId !== webContentsId ? tab.webContentsId : null;
+      if (replacedWebContentsId !== null) {
+        yield* Effect.all(
+          [
+            detachControlSession(replacedWebContentsId),
+            detachListeners(replacedWebContentsId),
+            cancelPickElement(tabId),
+          ],
+          { concurrency: 3, discard: true },
+        );
+      }
+      const currentTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (
+        !currentTab ||
+        tabLifecycleGenerations.get(tabId) !== expectedGeneration ||
+        (yield* Ref.get(closingTabIdsRef)).has(tabId)
+      ) {
+        return yield* new PreviewTabNotFoundError({ tabId });
+      }
+      const zoomFactor =
+        replacedWebContentsId !== null
+          ? yield* attempt(
+              { operation: "registerWebview.restoreZoomFactor", tabId, webContentsId },
+              () => {
+                wc.setZoomFactor(currentTab.zoomFactor);
+                return currentTab.zoomFactor;
+              },
+            )
+          : yield* attempt(
+              { operation: "registerWebview.getZoomFactor", tabId, webContentsId },
+              () => wc.getZoomFactor(),
+            );
+      yield* attachListeners(tabId, wc);
+      const registeredAt = yield* currentIso;
+      const registration = yield* SynchronizedRef.modifyEffect(tabsRef, (tabs) =>
+        Effect.gen(function* () {
+          const current = tabs.get(tabId);
+          if (
+            !current ||
+            tabLifecycleGenerations.get(tabId) !== expectedGeneration ||
+            (yield* Ref.get(closingTabIdsRef)).has(tabId)
+          ) {
+            return [
+              Option.none<{
+                readonly state: PreviewTabState;
+                readonly pendingUrl: string | null;
+              }>(),
+              tabs,
+            ] as const;
+          }
+          const pendingUrl = current.navStatus.kind === "Loading" ? current.navStatus.url : null;
+          const next: PreviewTabState = {
+            ...current,
+            webContentsId,
+            hosting,
+            navStatus: pendingUrl === null ? computeNavStatus(wc) : current.navStatus,
+            canGoBack: wc.navigationHistory.canGoBack(),
+            canGoForward: wc.navigationHistory.canGoForward(),
+            zoomFactor,
+            updatedAt: registeredAt,
+          };
+          return [
+            Option.some({
+              state: next,
+              pendingUrl,
+            }),
+            replaceMap(tabs, (copy) => {
+              copy.set(tabId, next);
+            }),
+          ] as const;
+        }),
       );
-      yield* update(tabId, { zoomFactor });
+      if (Option.isNone(registration)) {
+        yield* Effect.all([detachControlSession(webContentsId), detachListeners(webContentsId)], {
+          concurrency: 2,
+          discard: true,
+        });
+        return yield* new PreviewTabNotFoundError({ tabId });
+      }
+      const { state: registered, pendingUrl } = registration.value;
+      runFork(restoreControlSession(tabId, wc));
+      yield* emit(tabId, registered);
       yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
         wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
       );
-      return;
-    }
-    const replacedWebContentsId =
-      tab.webContentsId != null && tab.webContentsId !== webContentsId ? tab.webContentsId : null;
-    if (replacedWebContentsId !== null) {
-      yield* Effect.all(
-        [
-          detachControlSession(replacedWebContentsId),
-          detachListeners(replacedWebContentsId),
-          cancelPickElement(tabId),
-        ],
-        { concurrency: 3, discard: true },
-      );
-    }
-    const currentTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-    if (
-      !currentTab ||
-      tabLifecycleGenerations.get(tabId) !== expectedGeneration ||
-      (yield* Ref.get(closingTabIdsRef)).has(tabId)
-    ) {
-      return yield* new PreviewTabNotFoundError({ tabId });
-    }
-    const zoomFactor =
-      replacedWebContentsId !== null
-        ? yield* attempt(
-            { operation: "registerWebview.restoreZoomFactor", tabId, webContentsId },
-            () => {
-              wc.setZoomFactor(currentTab.zoomFactor);
-              return currentTab.zoomFactor;
-            },
-          )
-        : yield* attempt({ operation: "registerWebview.getZoomFactor", tabId, webContentsId }, () =>
-            wc.getZoomFactor(),
-          );
-    yield* attachListeners(tabId, wc);
-    const registeredAt = yield* currentIso;
-    const registration = yield* SynchronizedRef.modifyEffect(tabsRef, (tabs) =>
-      Effect.gen(function* () {
-        const current = tabs.get(tabId);
-        if (
-          !current ||
-          tabLifecycleGenerations.get(tabId) !== expectedGeneration ||
-          (yield* Ref.get(closingTabIdsRef)).has(tabId)
-        ) {
-          return [
-            Option.none<{ readonly state: PreviewTabState; readonly pendingUrl: string | null }>(),
-            tabs,
-          ] as const;
-        }
-        const pendingUrl = current.navStatus.kind === "Loading" ? current.navStatus.url : null;
-        const next: PreviewTabState = {
-          ...current,
-          webContentsId,
-          navStatus: pendingUrl === null ? computeNavStatus(wc) : current.navStatus,
-          canGoBack: wc.navigationHistory.canGoBack(),
-          canGoForward: wc.navigationHistory.canGoForward(),
-          zoomFactor,
-          updatedAt: registeredAt,
-        };
-        return [
-          Option.some({
-            state: next,
-            pendingUrl,
-          }),
-          replaceMap(tabs, (copy) => {
-            copy.set(tabId, next);
-          }),
-        ] as const;
-      }),
-    );
-    if (Option.isNone(registration)) {
-      yield* Effect.all([detachControlSession(webContentsId), detachListeners(webContentsId)], {
-        concurrency: 2,
-        discard: true,
-      });
-      return yield* new PreviewTabNotFoundError({ tabId });
-    }
-    const { state: registered, pendingUrl } = registration.value;
-    runFork(restoreControlSession(tabId, wc));
-    yield* emit(tabId, registered);
-    yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
-      wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
-    );
-    const latestNavStatus = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.navStatus;
-    if (
-      pendingUrl &&
-      latestNavStatus?.kind === "Loading" &&
-      latestNavStatus.url === pendingUrl &&
-      wc.getURL() !== pendingUrl
-    ) {
-      runFork(
-        attemptPromise({ operation: "registerWebview.loadPendingUrl", tabId, webContentsId }, () =>
-          wc.loadURL(pendingUrl),
-        ).pipe(Effect.ignore),
-      );
-    }
-  });
+      const latestNavStatus = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.navStatus;
+      if (
+        pendingUrl &&
+        latestNavStatus?.kind === "Loading" &&
+        latestNavStatus.url === pendingUrl &&
+        wc.getURL() !== pendingUrl
+      ) {
+        runFork(
+          attemptPromise(
+            { operation: "registerWebview.loadPendingUrl", tabId, webContentsId },
+            () => wc.loadURL(pendingUrl),
+          ).pipe(Effect.ignore),
+        );
+      }
+    },
+  );
 
   const registerWebview = Effect.fn("PreviewManager.registerWebview")(function* (
     tabId: string,
@@ -1665,8 +1708,151 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const expectedGeneration = tabLifecycleGenerations.get(tabId);
     return yield* withTabLifecycleLock(
       tabId,
-      registerWebviewUnlocked(tabId, webContentsId, expectedGeneration),
+      registerWebContentsUnlocked(tabId, webContentsId, expectedGeneration, "renderer"),
     );
+  });
+
+  const ensureBackgroundTabUnlocked = Effect.fn("PreviewManager.ensureBackgroundTabUnlocked")(
+    function* (tabId: string, requestedUrl?: string) {
+      const created = yield* createTabUnlocked(tabId);
+      const currentWindow = backgroundWindows.get(tabId);
+      if (currentWindow && !currentWindow.isDestroyed()) {
+        if (requestedUrl) yield* navigate(tabId, requestedUrl);
+        return;
+      }
+
+      let retainedUrl = requestedUrl;
+      if (created.webContentsId !== null) {
+        const previous = webContents.fromId(created.webContentsId);
+        if (!retainedUrl && previous && !previous.isDestroyed()) {
+          retainedUrl = previous.getURL() || undefined;
+        }
+        yield* Effect.all(
+          [detachControlSession(created.webContentsId), detachListeners(created.webContentsId)],
+          { concurrency: 2, discard: true },
+        );
+      }
+
+      const session = yield* browserSession
+        .getSession()
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new PreviewOperationError({ operation: "ensureBackgroundTab.session", cause }),
+          ),
+        );
+      const backgroundWindow = yield* attempt(
+        { operation: "ensureBackgroundTab.createWindow", tabId },
+        () =>
+          new BrowserWindow({
+            show: false,
+            width: 1280,
+            height: 800,
+            skipTaskbar: true,
+            webPreferences: {
+              session,
+              sandbox: true,
+              contextIsolation: true,
+              nodeIntegration: false,
+              backgroundThrottling: false,
+            },
+          }),
+      );
+      backgroundWindows.set(tabId, backgroundWindow);
+      const wc = backgroundWindow.webContents;
+      backgroundWindow.on("closed", () => {
+        if (backgroundWindows.get(tabId) !== backgroundWindow) return;
+        backgroundWindows.delete(tabId);
+        runFork(
+          Effect.all([detachControlSession(wc.id), detachListeners(wc.id)], {
+            concurrency: 2,
+            discard: true,
+          }).pipe(
+            Effect.andThen(update(tabId, { webContentsId: null, hosting: "unbound" })),
+            Effect.ignore,
+          ),
+        );
+      });
+      wc.on("render-process-gone", () => {
+        if (backgroundWindows.get(tabId) !== backgroundWindow || backgroundWindow.isDestroyed()) {
+          return;
+        }
+        runFork(
+          attempt({ operation: "backgroundTab.recoverRenderer", tabId, webContentsId: wc.id }, () =>
+            wc.reload(),
+          ).pipe(Effect.ignore),
+        );
+      });
+
+      const expectedGeneration = tabLifecycleGenerations.get(tabId);
+      yield* registerWebContentsUnlocked(tabId, wc.id, expectedGeneration, "background").pipe(
+        Effect.onError(() =>
+          Effect.sync(() => {
+            backgroundWindows.delete(tabId);
+            if (!backgroundWindow.isDestroyed()) backgroundWindow.destroy();
+          }),
+        ),
+      );
+      if (retainedUrl) yield* navigate(tabId, retainedUrl);
+    },
+  );
+
+  const ensureBackgroundTab = Effect.fn("PreviewManager.ensureBackgroundTab")(function* (
+    tabId: string,
+    requestedUrl?: string,
+  ) {
+    return yield* withTabLifecycleLock(tabId, ensureBackgroundTabUnlocked(tabId, requestedUrl));
+  });
+
+  const adoptBackgroundTab = Effect.fn("PreviewManager.adoptBackgroundTab")(function* (
+    tabId: string,
+  ) {
+    return yield* withTabLifecycleLock(
+      tabId,
+      Effect.gen(function* () {
+        const backgroundWindow = backgroundWindows.get(tabId);
+        if (!backgroundWindow || backgroundWindow.isDestroyed()) return;
+        const wc = backgroundWindow.webContents;
+        const url = wc.getURL();
+        const title = wc.getTitle();
+        backgroundWindows.delete(tabId);
+        yield* Effect.all([detachControlSession(wc.id), detachListeners(wc.id)], {
+          concurrency: 2,
+          discard: true,
+        });
+        yield* update(tabId, {
+          webContentsId: null,
+          hosting: "unbound",
+          navStatus: url ? { kind: "Loading", url, title } : { kind: "Idle" },
+        });
+        yield* attempt(
+          { operation: "adoptBackgroundTab.destroyWindow", tabId, webContentsId: wc.id },
+          () => backgroundWindow.destroy(),
+        );
+      }),
+    );
+  });
+
+  const getTabHosting = Effect.fn("PreviewManager.getTabHosting")(function* (tabId: string) {
+    return (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.hosting ?? "unbound";
+  });
+
+  const resizeBackgroundTab = Effect.fn("PreviewManager.resizeBackgroundTab")(function* (
+    tabId: string,
+    width: number,
+    height: number,
+  ) {
+    const backgroundWindow = backgroundWindows.get(tabId);
+    if (!backgroundWindow || backgroundWindow.isDestroyed()) return false;
+    yield* attempt(
+      {
+        operation: "resizeBackgroundTab",
+        tabId,
+        webContentsId: backgroundWindow.webContents.id,
+      },
+      () => backgroundWindow.setContentSize(width, height),
+    );
+    return true;
   });
 
   const navigate = Effect.fn("PreviewManager.navigate")(function* (tabId: string, rawUrl: string) {
@@ -1679,6 +1865,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const next: PreviewTabState = {
         tabId,
         webContentsId: current?.webContentsId ?? null,
+        hosting: current?.hosting ?? "unbound",
         navStatus: {
           kind: "Loading",
           url,
@@ -2573,7 +2760,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const navStatus = tab?.navStatus;
       return {
         available: false,
-        visible: true,
+        visible: tab?.hosting !== "background",
         tabId,
         url: !navStatus || navStatus.kind === "Idle" ? null : navStatus.url,
         title: !navStatus || navStatus.kind === "Idle" ? null : navStatus.title,
@@ -2584,7 +2771,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     return !wc || wc.isDestroyed()
       ? {
           available: false,
-          visible: true,
+          visible: tab.hosting !== "background",
           tabId,
           url: null,
           title: null,
@@ -2592,7 +2779,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         }
       : {
           available: true,
-          visible: true,
+          visible: tab.hosting !== "background",
           tabId,
           url: wc.getURL() || null,
           title: wc.getTitle() || null,
@@ -3267,6 +3454,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     closeTab,
     copyArtifactToClipboard,
     createTab,
+    ensureBackgroundTab,
+    adoptBackgroundTab,
+    getTabHosting,
+    resizeBackgroundTab,
     goBack,
     goForward,
     hardReload,
@@ -3301,6 +3492,15 @@ export class PreviewTabNotFoundError extends Schema.TaggedErrorClass<PreviewTabN
 ) {
   override get message(): string {
     return `Preview tab not found: ${this.tabId}`;
+  }
+}
+
+export class PreviewBackgroundTabRequiresAdoptionError extends Schema.TaggedErrorClass<PreviewBackgroundTabRequiresAdoptionError>()(
+  "PreviewBackgroundTabRequiresAdoptionError",
+  { tabId: Schema.String },
+) {
+  override get message(): string {
+    return `Background preview tab must be adopted before mounting a renderer webview: ${this.tabId}`;
   }
 }
 
@@ -3526,6 +3726,7 @@ export class PreviewAutomationControlInterruptedError extends Schema.TaggedError
 
 export const PreviewManagerError = Schema.Union([
   PreviewTabNotFoundError,
+  PreviewBackgroundTabRequiresAdoptionError,
   PreviewWebContentsNotFoundError,
   PreviewWebviewNotInitializedError,
   PreviewOperationError,
@@ -3560,6 +3761,17 @@ export class PreviewManager extends Context.Service<
     readonly getBrowserSession: (scope?: string) => Effect.Effect<Session, PreviewManagerError>;
     readonly isBrowserPartition: (partition: string) => boolean;
     readonly createTab: (tabId: string) => Effect.Effect<PreviewTabState, PreviewManagerError>;
+    readonly ensureBackgroundTab: (
+      tabId: string,
+      url?: string,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly adoptBackgroundTab: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly getTabHosting: (tabId: string) => Effect.Effect<DesktopPreviewHosting>;
+    readonly resizeBackgroundTab: (
+      tabId: string,
+      width: number,
+      height: number,
+    ) => Effect.Effect<boolean, PreviewManagerError>;
     readonly closeTab: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly registerWebview: (
       tabId: string,
@@ -3663,6 +3875,10 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     }),
     isBrowserPartition: browserSession.isPartition,
     createTab: operations.createTab,
+    ensureBackgroundTab: operations.ensureBackgroundTab,
+    adoptBackgroundTab: operations.adoptBackgroundTab,
+    getTabHosting: operations.getTabHosting,
+    resizeBackgroundTab: operations.resizeBackgroundTab,
     closeTab: operations.closeTab,
     registerWebview: operations.registerWebview,
     navigate: operations.navigate,

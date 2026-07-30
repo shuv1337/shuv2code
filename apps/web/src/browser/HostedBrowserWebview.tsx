@@ -9,6 +9,7 @@ import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
 import { cn } from "~/lib/utils";
 
 import { resolveBrowserSurfacePanelRect, useBrowserSurfaceStore } from "./browserSurfaceStore";
+import { shouldRendererHostPreview } from "./backgroundTabHosting";
 import {
   browserViewportSettingKey,
   resolveBrowserViewportLayout,
@@ -52,6 +53,7 @@ export function HostedBrowserWebview(props: {
   const { threadRef, tabId, runtimeTabId, initialUrl, viewport, zoomFactor } = props;
   const config = usePreviewWebviewConfig(threadRef.environmentId);
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
+  const [rendererHosted, setRendererHosted] = useState(false);
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<ElectronWebview | null>(null);
@@ -73,6 +75,33 @@ export function HostedBrowserWebview(props: {
   usePreviewBridge({ threadRef, tabId, runtimeTabId });
 
   useEffect(() => {
+    const bridge = previewBridge;
+    if (!bridge) return;
+    let disposed = false;
+    const reconcileHosting = async () => {
+      if (presentation.visible) {
+        await bridge.adoptBackgroundTab(runtimeTabId);
+        if (!disposed) setRendererHosted(true);
+        return;
+      }
+      const hosting = await bridge.getTabHosting(runtimeTabId);
+      if (!disposed) setRendererHosted(shouldRendererHostPreview(hosting, false));
+    };
+    void reconcileHosting().catch(() => {
+      if (!disposed) setRendererHosted(false);
+    });
+    const unsubscribe = bridge.onStateChange((changedTabId, state) => {
+      if (changedTabId !== runtimeTabId || presentation.visible) return;
+      setRendererHosted(shouldRendererHostPreview(state.hosting, false));
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [presentation.visible, runtimeTabId]);
+
+  useEffect(() => {
+    if (!rendererHosted) return;
     crashRecoveryRef.current = INITIAL_WEBVIEW_CRASH_RECOVERY_STATE;
     const lease = acquireDesktopTab(runtimeTabId);
     tabLeaseRef.current = lease;
@@ -80,7 +109,7 @@ export function HostedBrowserWebview(props: {
       if (tabLeaseRef.current === lease) tabLeaseRef.current = null;
       lease.release();
     };
-  }, [runtimeTabId]);
+  }, [rendererHosted, runtimeTabId]);
 
   const [webviewGeneration, setWebviewGeneration] = useState(0);
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
@@ -229,7 +258,7 @@ export function HostedBrowserWebview(props: {
     wrapper.scrollTo({ left: 0, top: 0 });
   }, [runtimeTabId, viewport._tag, viewportHeight, viewportWidth]);
 
-  if (!config) return null;
+  if (!config || !rendererHosted) return null;
 
   const wrapperStyle = resolveHostedBrowserWebviewWrapperStyle({
     active,

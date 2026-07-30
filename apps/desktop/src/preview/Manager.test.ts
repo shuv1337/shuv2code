@@ -83,7 +83,7 @@ const browserSessionLayer = Layer.succeed(
   BrowserSession.BrowserSession.of({
     getPartition: () => Effect.succeed("persist:shuv2code-nightly-test"),
     isPartition: (partition) => partition.startsWith("persist:shuv2code-nightly-"),
-    getSession: () => Effect.die("unexpected getSession"),
+    getSession: () => Effect.succeed({} as never),
     clearCookies: () => Effect.void,
     clearCache: () => Effect.void,
   }),
@@ -194,6 +194,66 @@ const makeTestPictureInPictureWindow = (loadURL: () => Promise<void> = async () 
   return { pictureInPictureWindow, send };
 };
 
+const makeTestBackgroundWindow = (id = 71) => {
+  const webContentsListeners = new Map<string, (...args: never[]) => void>();
+  const windowListeners = new Map<string, () => void>();
+  let destroyed = false;
+  let url = "about:blank";
+  const loadURL = vi.fn(async (nextUrl: string) => {
+    url = nextUrl;
+  });
+  const reload = vi.fn();
+  const setContentSize = vi.fn();
+  const wc = {
+    id,
+    isDestroyed: () => destroyed,
+    getType: () => "window",
+    getURL: () => url,
+    getTitle: () => (url === "about:blank" ? "" : "Background page"),
+    isLoading: () => false,
+    getZoomFactor: () => 1,
+    setZoomFactor: vi.fn(),
+    loadURL,
+    reload,
+    on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+      webContentsListeners.set(event, listener);
+    }),
+    off: vi.fn(),
+    ipc: { on: vi.fn(), off: vi.fn() },
+    send: webviewSend,
+    navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+    setWindowOpenHandler: vi.fn(),
+    debugger: {
+      isAttached: () => false,
+      attach: vi.fn(),
+      sendCommand: vi.fn(async () => undefined),
+      on: vi.fn(),
+      off: vi.fn(),
+    },
+  };
+  const backgroundWindow = {
+    webContents: wc,
+    isDestroyed: () => destroyed,
+    on: vi.fn((event: string, listener: () => void) => {
+      windowListeners.set(event, listener);
+    }),
+    destroy: vi.fn(() => {
+      if (destroyed) return;
+      destroyed = true;
+      windowListeners.get("closed")?.();
+    }),
+    setContentSize,
+  };
+  return {
+    backgroundWindow,
+    loadURL,
+    reload,
+    setContentSize,
+    webContentsListeners,
+    wc,
+  };
+};
+
 describe("PreviewManager", () => {
   beforeEach(() => {
     browserWindowConstructor.mockReset();
@@ -234,6 +294,105 @@ describe("PreviewManager", () => {
       }),
     ),
   );
+
+  effectIt.effect("owns unattended tabs in a hidden main-process window", () => {
+    const background = makeTestBackgroundWindow();
+    const duplicateRenderer = {
+      ...background.wc,
+      id: 72,
+      getType: () => "webview",
+    };
+    browserWindowConstructor.mockImplementation(function () {
+      return background.backgroundWindow;
+    });
+    fromId.mockImplementation((id) => {
+      if (id === background.wc.id) return background.wc as never;
+      if (id === duplicateRenderer.id) return duplicateRenderer as never;
+      return null;
+    });
+
+    return withManager((manager) =>
+      Effect.gen(function* () {
+        yield* manager.ensureBackgroundTab("tab_background", "https://example.com/report");
+        yield* Effect.yieldNow;
+
+        expect(browserWindowConstructor).toHaveBeenCalledOnce();
+        expect(browserWindowConstructor).toHaveBeenCalledWith(
+          expect.objectContaining({
+            show: false,
+            skipTaskbar: true,
+            webPreferences: expect.objectContaining({
+              backgroundThrottling: false,
+              sandbox: true,
+            }),
+          }),
+        );
+        expect(yield* manager.getTabHosting("tab_background")).toBe("background");
+        expect(yield* manager.automationStatus("tab_background")).toMatchObject({
+          available: true,
+          visible: false,
+          tabId: "tab_background",
+        });
+        const duplicateExit = yield* Effect.exit(
+          manager.registerWebview("tab_background", duplicateRenderer.id),
+        );
+        expect(Exit.isFailure(duplicateExit)).toBe(true);
+        if (Exit.isFailure(duplicateExit)) {
+          expect(Cause.squash(duplicateExit.cause)).toBeInstanceOf(
+            PreviewManager.PreviewBackgroundTabRequiresAdoptionError,
+          );
+        }
+
+        // Reconciliation after a renderer route/remount reuses the same native
+        // guest rather than constructing an offscreen DOM webview replacement.
+        yield* manager.ensureBackgroundTab("tab_background");
+        expect(browserWindowConstructor).toHaveBeenCalledOnce();
+
+        background.webContentsListeners.get("render-process-gone")?.();
+        yield* Effect.yieldNow;
+        expect(background.reload).toHaveBeenCalledOnce();
+      }),
+    );
+  });
+
+  effectIt.effect("adopts a background tab without losing its current URL", () => {
+    const background = makeTestBackgroundWindow();
+    const rendererLoadURL = vi.fn(async () => undefined);
+    const renderer = {
+      ...background.wc,
+      id: 72,
+      getType: () => "webview",
+      hostWebContents: undefined,
+      getURL: () => "about:blank",
+      loadURL: rendererLoadURL,
+    };
+    browserWindowConstructor.mockImplementation(function () {
+      return background.backgroundWindow;
+    });
+    fromId.mockImplementation((id) => {
+      if (id === background.wc.id) return background.wc as never;
+      if (id === renderer.id) return renderer as never;
+      return null;
+    });
+
+    return withManager((manager) =>
+      Effect.gen(function* () {
+        yield* manager.ensureBackgroundTab("tab_adopt", "https://example.com/durable-state");
+        yield* Effect.yieldNow;
+        yield* manager.resizeBackgroundTab("tab_adopt", 900, 600);
+        expect(background.setContentSize).toHaveBeenCalledWith(900, 600);
+
+        yield* manager.adoptBackgroundTab("tab_adopt");
+        expect(background.backgroundWindow.destroy).toHaveBeenCalledOnce();
+        expect(yield* manager.getTabHosting("tab_adopt")).toBe("unbound");
+
+        yield* manager.registerWebview("tab_adopt", renderer.id);
+        yield* Effect.yieldNow;
+        expect(yield* manager.getTabHosting("tab_adopt")).toBe("renderer");
+        expect(rendererLoadURL).toHaveBeenCalledWith("https://example.com/durable-state");
+      }),
+    );
+  });
 
   effectIt.effect("isolates failed state listeners and continues delivery", () => {
     const loggedErrors: Array<unknown> = [];

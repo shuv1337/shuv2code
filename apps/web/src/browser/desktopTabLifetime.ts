@@ -61,7 +61,10 @@ export function acquireDesktopTab(tabId: string): AcquiredDesktopTab {
         leases.delete(tabId);
         void enqueueDesktopTabOperation(tabId, async () => {
           await stopBrowserRecording(tabId).catch(() => null);
-          await previewBridge?.closeTab(tabId);
+          const hosting = previewBridge?.getTabHosting
+            ? await previewBridge.getTabHosting(tabId)
+            : "unbound";
+          if (hosting !== "background") await previewBridge?.closeTab(tabId);
         }).catch(() => undefined);
       }, 0);
     },
