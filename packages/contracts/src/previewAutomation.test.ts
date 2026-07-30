@@ -90,7 +90,11 @@ describe("PreviewAutomationSnapshot budgets", () => {
 
 describe("PreviewAutomationResultTooLargeError transport", () => {
   it("recovers byte counts from an IPC-flattened error", () => {
-    const bytes = { actualBytes: 640_000, maximumBytes: 512_000 };
+    const bytes = {
+      budget: "metadata" as const,
+      actualBytes: 640_000,
+      maximumBytes: 512_000,
+    };
     const flattened = new Error(
       `Error invoking remote method 'preview:automation:snapshot': ${PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG}: Preview automation result in tab tab_1 ${formatPreviewAutomationResultTooLargeBytes(bytes)}`,
     );
@@ -102,16 +106,16 @@ describe("PreviewAutomationResultTooLargeError transport", () => {
     expect(
       parsePreviewAutomationResultTooLargeBytes({
         _tag: PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG,
-        detail: { actualBytes: 1, maximumBytes: 2 },
+        detail: { budget: "screenshot", actualBytes: 1, maximumBytes: 2 },
       }),
-    ).toEqual({ actualBytes: 1, maximumBytes: 2 });
+    ).toEqual({ budget: "screenshot", actualBytes: 1, maximumBytes: 2 });
   });
 
   it("ignores unrelated failures", () => {
     expect(parsePreviewAutomationResultTooLargeBytes(new Error("boom"))).toBeNull();
     expect(
       parsePreviewAutomationResultTooLargeBytes(
-        new Error("SomeOtherError: was 5 bytes; maximum is 4 bytes"),
+        new Error("SomeOtherError: budget=metadata actualBytes=5 maximumBytes=4"),
       ),
     ).toBeNull();
   });

@@ -885,17 +885,27 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
 
 export const PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG = "PreviewAutomationResultTooLargeError";
 
+export const PreviewAutomationResultTooLargeBudget = Schema.Literals([
+  "metadata",
+  "screenshot",
+  "evaluation",
+]);
+export type PreviewAutomationResultTooLargeBudget =
+  typeof PreviewAutomationResultTooLargeBudget.Type;
+
 export interface PreviewAutomationResultTooLargeBytes {
+  readonly budget: PreviewAutomationResultTooLargeBudget;
   readonly actualBytes: number;
   readonly maximumBytes: number;
 }
 
 export const formatPreviewAutomationResultTooLargeBytes = (
   bytes: PreviewAutomationResultTooLargeBytes,
-): string => `was ${bytes.actualBytes} bytes; maximum is ${bytes.maximumBytes} bytes`;
+): string =>
+  `[${PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG} budget=${bytes.budget} actualBytes=${bytes.actualBytes} maximumBytes=${bytes.maximumBytes}]`;
 
 const PREVIEW_AUTOMATION_RESULT_TOO_LARGE_BYTES_PATTERN =
-  /was (\d+) bytes; maximum is (\d+) bytes/u;
+  /\[PreviewAutomationResultTooLargeError budget=(metadata|screenshot|evaluation) actualBytes=(\d+) maximumBytes=(\d+)\]/u;
 
 // Electron flattens a rejected IPC handler error into a plain `Error` whose only
 // surviving field is `name: message`, so the renderer recovers the budget error
@@ -906,8 +916,16 @@ export const parsePreviewAutomationResultTooLargeBytes = (
   const readBytes = (
     source: Record<string, unknown>,
   ): PreviewAutomationResultTooLargeBytes | null =>
-    typeof source["actualBytes"] === "number" && typeof source["maximumBytes"] === "number"
-      ? { actualBytes: source["actualBytes"], maximumBytes: source["maximumBytes"] }
+    (source["budget"] === "metadata" ||
+      source["budget"] === "screenshot" ||
+      source["budget"] === "evaluation") &&
+    typeof source["actualBytes"] === "number" &&
+    typeof source["maximumBytes"] === "number"
+      ? {
+          budget: source["budget"],
+          actualBytes: source["actualBytes"],
+          maximumBytes: source["maximumBytes"],
+        }
       : null;
   if (typeof cause === "object" && cause !== null) {
     const record = cause as Record<string, unknown>;
@@ -929,10 +947,14 @@ export const parsePreviewAutomationResultTooLargeBytes = (
           typeof (cause as Record<string, unknown>)["message"] === "string"
         ? ((cause as Record<string, unknown>)["message"] as string)
         : null;
-  if (message === null || !message.includes(PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG)) return null;
+  if (message === null) return null;
   const match = PREVIEW_AUTOMATION_RESULT_TOO_LARGE_BYTES_PATTERN.exec(message);
-  if (!match?.[1] || !match[2]) return null;
-  return { actualBytes: Number(match[1]), maximumBytes: Number(match[2]) };
+  if (!match?.[1] || !match[2] || !match[3]) return null;
+  return {
+    budget: match[1] as PreviewAutomationResultTooLargeBudget,
+    actualBytes: Number(match[2]),
+    maximumBytes: Number(match[3]),
+  };
 };
 
 export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClass<PreviewAutomationResultTooLargeError>()(
@@ -940,6 +962,7 @@ export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClas
   {
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationRemoteDiagnosticFields,
+    budget: PreviewAutomationResultTooLargeBudget,
     actualBytes: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     maximumBytes: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
   },
@@ -949,7 +972,13 @@ export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClas
       return `Preview automation ${this.operation} produced a result that is too large.`;
     }
     const measured = this.actualBytes === undefined ? "" : ` (${this.actualBytes} bytes measured)`;
-    return `Preview automation ${this.operation} produced a result larger than ${this.maximumBytes} bytes${measured}.`;
+    const remedy =
+      this.budget === "screenshot"
+        ? " Retry without includeScreenshot or use a smaller viewport."
+        : this.budget === "metadata"
+          ? " Use preview_evaluate to inspect a specific selector or region."
+          : " Narrow the preview_evaluate expression or return less data.";
+    return `Preview automation ${this.operation} exceeded the ${this.budget} budget of ${this.maximumBytes} bytes${measured}.${remedy}`;
   }
 }
 

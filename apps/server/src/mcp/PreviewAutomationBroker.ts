@@ -258,6 +258,16 @@ const classifyResponseError = (
     case "PreviewAutomationResultTooLargeError": {
       const detail =
         typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
+      const budget =
+        detail &&
+        "budget" in detail &&
+        (detail.budget === "metadata" ||
+          detail.budget === "screenshot" ||
+          detail.budget === "evaluation")
+          ? detail.budget
+          : context.operation === "evaluate"
+            ? "evaluation"
+            : "metadata";
       const maximumBytes =
         detail &&
         "maximumBytes" in detail &&
@@ -277,6 +287,7 @@ const classifyResponseError = (
       return new PreviewAutomationResultTooLargeError({
         ...context,
         ...remoteDiagnostics,
+        budget,
         ...(maximumBytes === undefined ? {} : { maximumBytes }),
         ...(actualBytes === undefined ? {} : { actualBytes }),
       });

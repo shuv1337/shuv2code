@@ -102,12 +102,13 @@ describe("boundPreviewAutomationSnapshot", () => {
     expect(bounded.interactiveElements.length).toBeGreaterThan(0);
   });
 
-  it("drops the accessibility tree before sacrificing locators", () => {
+  it("proportionally trims the accessibility tree before sacrificing locators", () => {
     const bounded = expectOk(
       boundPreviewAutomationSnapshot(
         snapshot({
           accessibilityTree: compactTreeOfNodes(120),
           interactiveElements: elements(200, 1_800),
+          visibleText: "v".repeat(58),
         }),
       ),
     );
@@ -115,15 +116,61 @@ describe("boundPreviewAutomationSnapshot", () => {
     expect(bounded.interactiveElements).toHaveLength(200);
     expect(bounded.truncated).toContain("accessibilityTree");
     expect(bounded.truncated).not.toContain("interactiveElements");
+    expect(bounded.truncated).not.toContain("visibleText");
+    expect(bounded.visibleText).toBe("v".repeat(58));
+    expect(
+      (bounded.accessibilityTree as { readonly nodes: ReadonlyArray<unknown> }).nodes.length,
+    ).toBeGreaterThan(0);
+    expect(
+      (bounded.accessibilityTree as { readonly nodes: ReadonlyArray<unknown> }).nodes.length,
+    ).toBeLessThan(120);
     expect(measure(bounded)).toBeLessThanOrEqual(PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES);
   });
 
-  it("reports a dropped accessibility tree as a budget decision, not a Chrome fault", () => {
+  it("accounts for the included-node count growing from two to three digits", () => {
+    const tree = compactTreeOfNodes(120);
+    const interactiveElements = elements(200, 1_800);
+    let low = 0;
+    let high = 100_000;
+    let match: PreviewAutomationSnapshot | undefined;
+
+    while (low <= high) {
+      const length = Math.floor((low + high) / 2);
+      const bounded = expectOk(
+        boundPreviewAutomationSnapshot(
+          snapshot({
+            accessibilityTree: tree,
+            interactiveElements,
+            visibleText: "v".repeat(length),
+          }),
+        ),
+      );
+      const count = (bounded.accessibilityTree as { readonly nodes: ReadonlyArray<unknown> }).nodes
+        .length;
+      if (count > 99) {
+        low = length + 1;
+      } else if (count < 99) {
+        high = length - 1;
+      } else {
+        match = bounded;
+        break;
+      }
+    }
+
+    expect(match).toBeDefined();
+    expect(
+      (match!.accessibilityTree as { readonly nodes: ReadonlyArray<unknown> }).nodes,
+    ).toHaveLength(99);
+    expect(match!.truncated).not.toContain("visibleText");
+    expect(measure(match!)).toBeLessThanOrEqual(PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES);
+  });
+
+  it("reports a fully dropped accessibility tree as a budget decision, not a Chrome fault", () => {
     const bounded = expectOk(
       boundPreviewAutomationSnapshot(
         snapshot({
           accessibilityTree: compactTreeOfNodes(120),
-          interactiveElements: elements(200, 1_800),
+          interactiveElements: elements(200),
         }),
       ),
     );

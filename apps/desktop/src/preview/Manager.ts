@@ -2788,6 +2788,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (!bounded.ok) {
         return yield* new PreviewAutomationResultTooLargeError({
           tabId,
+          budget: bounded.failure.budget,
           actualBytes: bounded.failure.actualBytes,
           maximumBytes: bounded.failure.maximumBytes,
         });
@@ -3202,6 +3203,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (actualBytes > MAX_EVALUATION_BYTES) {
         return yield* new PreviewAutomationResultTooLargeError({
           tabId,
+          budget: "evaluation",
           actualBytes,
           maximumBytes: MAX_EVALUATION_BYTES,
         });
@@ -3579,17 +3581,30 @@ export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClas
   "PreviewAutomationResultTooLargeError",
   {
     tabId: Schema.String,
+    budget: Schema.Literals(["metadata", "screenshot", "evaluation"]),
     actualBytes: Schema.Number,
     maximumBytes: Schema.Number,
   },
 ) {
-  get detail(): { readonly maximumBytes: number } {
-    return { maximumBytes: this.maximumBytes };
+  get detail(): {
+    readonly budget: "metadata" | "screenshot" | "evaluation";
+    readonly actualBytes: number;
+    readonly maximumBytes: number;
+  } {
+    return {
+      budget: this.budget,
+      actualBytes: this.actualBytes,
+      maximumBytes: this.maximumBytes,
+    };
   }
 
   override get message(): string {
     return `Preview automation result in tab ${this.tabId} ${formatPreviewAutomationResultTooLargeBytes(
-      { actualBytes: this.actualBytes, maximumBytes: this.maximumBytes },
+      {
+        budget: this.budget,
+        actualBytes: this.actualBytes,
+        maximumBytes: this.maximumBytes,
+      },
     )}`;
   }
 }
