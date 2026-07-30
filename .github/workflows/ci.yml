@@ -6,14 +6,14 @@ on:
     branches:
       - main
 
-# Personal-project gate: one self-hosted job focused on fast feedback.
-# Full monorepo typecheck, desktop builds, Rust, mobile native lint, and the
-# whole test matrix stay on the manual release workflow's verify job.
+# Personal-project gate: one fast self-hosted job.
+# Full monorepo tests, typecheck, desktop builds, Rust, and mobile native lint
+# run on the manual release workflow's verify job, not every PR.
 jobs:
   ci:
     name: CI
     runs-on: [self-hosted, Linux, X64, shuv-ci, shuv2code-ci]
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -33,7 +33,3 @@ jobs:
 
       - name: Lint
         run: vp check
-
-      # Keep a unit-test signal on PRs, but do not expand into desktop/Rust/native.
-      - name: Test
-        run: vp run test

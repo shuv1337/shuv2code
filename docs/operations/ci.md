@@ -1,13 +1,16 @@
 # CI quality gates
 
 - `.github/workflows/ci.yml` is a single self-hosted job for personal-project
-  speed: brand/schema/icon checks, `vp check` (lint), and `vp run test` on pull
-  requests and pushes to `main`.
-- It deliberately does **not** run full typecheck, desktop builds, Rust checks,
-  mobile native lint, or release smoke on every PR. Those are release-time
-  concerns and live on the manual release workflow `verify` job.
+  speed: brand/schema/icon checks and `vp check` (lint) on pull requests and
+  pushes to `main`. Target wall clock is a few minutes, not a full monorepo
+  matrix.
+- It deliberately does **not** run the full unit/integration suite, typecheck,
+  desktop builds, Rust checks, mobile native lint, or release smoke on every
+  PR. Those are release-time concerns and live on the manual release workflow
+  `verify` job.
 - The main branch ruleset requires only that one `CI` check, with admin bypass
   allowed and without requiring branches to be up to date with main.
+- Local focused tests remain the day-to-day signal; see `AGENTS.md`.
 - `.github/workflows/release.yml` is the sole manual npm publishing workflow.
   Prepare mode resolves the committed named version (or derives a nightly), runs
   verification once, stages a minimal npm manifest, builds one npm tarball,
