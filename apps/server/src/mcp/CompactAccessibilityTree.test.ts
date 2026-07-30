@@ -33,6 +33,17 @@ describe("compactAccessibilityTree", () => {
       nodes: [
         axNode({ nodeId: "root", role: "RootWebArea", name: "Checkout" }),
         axNode({ nodeId: "decorative", role: "generic", parentId: "root" }),
+        axNode({
+          nodeId: "empty-focus-container",
+          role: "generic",
+          properties: [{ name: "focusable", value: true }],
+        }),
+        axNode({
+          nodeId: "named-focus-fallback",
+          role: "generic",
+          name: "Custom picker",
+          properties: [{ name: "focusable", value: true }],
+        }),
         axNode({ nodeId: "copy", role: "StaticText", name: "Decorative copy" }),
         axNode({
           nodeId: "pay",
@@ -54,12 +65,18 @@ describe("compactAccessibilityTree", () => {
 
     expect(result).toMatchObject({
       mode: "compact",
-      totalNodeCount: 7,
-      relevantNodeCount: 4,
-      includedNodeCount: 4,
+      totalNodeCount: 9,
+      relevantNodeCount: 5,
+      includedNodeCount: 5,
       truncated: false,
     });
-    expect(result.nodes.map(({ nodeId }) => nodeId)).toEqual(["root", "pay", "email", "error"]);
+    expect(result.nodes.map(({ nodeId }) => nodeId)).toEqual([
+      "root",
+      "named-focus-fallback",
+      "pay",
+      "email",
+      "error",
+    ]);
     expect(result.nodes.find(({ nodeId }) => nodeId === "pay")).toEqual({
       nodeId: "pay",
       role: "button",
