@@ -257,7 +257,7 @@ jobs:
             --version "${{ needs.resolve.outputs.version }}"
           (
             cd release-server/package
-            pnpm pack --pack-destination "$GITHUB_WORKSPACE/release-server"
+            npm pack --pack-destination "$GITHUB_WORKSPACE/release-server"
           )
 
           mapfile -t tarballs < <(find release-server -maxdepth 1 -type f -name '*.tgz' -print)

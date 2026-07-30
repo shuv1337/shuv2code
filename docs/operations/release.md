@@ -107,7 +107,7 @@ mkdir -p release-server
 node scripts/prepare-release-package.ts \
   --output release-server/package \
   --version <version>
-(cd release-server/package && pnpm pack --pack-destination "$PWD/..")
+(cd release-server/package && npm pack --pack-destination "$PWD/..")
 node scripts/inspect-release-package.ts \
   --tarball release-server/shuv2code-<version>.tgz \
   --version <version> \
