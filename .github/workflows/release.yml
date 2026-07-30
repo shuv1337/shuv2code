@@ -305,6 +305,10 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           targets: x86_64-unknown-linux-gnu
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes imagemagick
       - run: node scripts/update-release-package-versions.ts "${{ needs.resolve.outputs.version }}"
       - name: Build AppImage
         run: vp run dist:desktop:artifact --platform linux --target AppImage --arch x64 --build-version "${{ needs.resolve.outputs.version }}"
