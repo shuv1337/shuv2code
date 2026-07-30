@@ -33,7 +33,7 @@ on:
 jobs:
   production:
     name: EAS Production ${{ inputs.mode }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, shuv-ci, shuv2code-ci]
     permissions:
       contents: read
     env:
