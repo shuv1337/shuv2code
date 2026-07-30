@@ -681,6 +681,19 @@ export const DesktopPreviewRecordingArtifactSchema: Schema.Codec<DesktopPreviewR
     createdAt: Schema.String,
   });
 
+export interface DesktopPreviewRecordingSession {
+  id: string;
+  tabId: string;
+}
+
+export const DESKTOP_PREVIEW_RECORDING_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+
+export const DesktopPreviewRecordingSessionSchema: Schema.Codec<DesktopPreviewRecordingSession> =
+  Schema.Struct({
+    id: Schema.String,
+    tabId: DesktopPreviewTabIdSchema,
+  });
+
 export interface DesktopPreviewScreenshotArtifact {
   id: string;
   tabId: string;
@@ -922,10 +935,20 @@ export const DesktopPreviewArtifactInputSchema = Schema.Struct({
   path: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
 });
 
-export const DesktopPreviewRecordingSaveInputSchema = Schema.Struct({
+export const DesktopPreviewRecordingBeginInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   mimeType: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
-  data: Schema.Uint8Array,
+});
+
+export const DesktopPreviewRecordingAppendInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  recordingId: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
+  data: Schema.Uint8Array.check(Schema.isMaxLength(DESKTOP_PREVIEW_RECORDING_MAX_CHUNK_BYTES)),
+});
+
+export const DesktopPreviewRecordingSessionInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  recordingId: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
 });
 
 export const DesktopPreviewAutomationClickInputSchema = Schema.Struct({
@@ -1073,11 +1096,10 @@ export interface DesktopPreviewBridge {
   recording: {
     startScreencast: (tabId: string) => Promise<void>;
     stopScreencast: (tabId: string) => Promise<void>;
-    save: (
-      tabId: string,
-      mimeType: string,
-      data: Uint8Array,
-    ) => Promise<DesktopPreviewRecordingArtifact>;
+    begin: (tabId: string, mimeType: string) => Promise<DesktopPreviewRecordingSession>;
+    append: (tabId: string, recordingId: string, data: Uint8Array) => Promise<void>;
+    finish: (tabId: string, recordingId: string) => Promise<DesktopPreviewRecordingArtifact>;
+    abort: (tabId: string, recordingId: string) => Promise<void>;
     onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
   };
   automation: {

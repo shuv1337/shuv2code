@@ -4,6 +4,7 @@ import type {
   DesktopPreviewRecordingFrame,
   DesktopPreviewTabState,
 } from "@shuv2code/contracts";
+import { DESKTOP_PREVIEW_RECORDING_MAX_CHUNK_BYTES } from "@shuv2code/contracts";
 import { exposeClerkBridge } from "@clerk/electron/preload";
 import { contextBridge, ipcRenderer } from "electron";
 
@@ -190,11 +191,32 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         ipcRenderer.invoke(IpcChannels.PREVIEW_RECORDING_START_CHANNEL, { tabId }),
       stopScreencast: (tabId) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_RECORDING_STOP_CHANNEL, { tabId }),
-      save: (tabId, mimeType, data) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_RECORDING_SAVE_CHANNEL, {
+      begin: (tabId, mimeType) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_RECORDING_BEGIN_CHANNEL, {
           tabId,
           mimeType,
+        }),
+      append: (tabId, recordingId, data) => {
+        if (data.byteLength > DESKTOP_PREVIEW_RECORDING_MAX_CHUNK_BYTES) {
+          throw new Error(
+            `Browser recording chunk was ${data.byteLength} bytes; maximum is ${DESKTOP_PREVIEW_RECORDING_MAX_CHUNK_BYTES}.`,
+          );
+        }
+        return ipcRenderer.invoke(IpcChannels.PREVIEW_RECORDING_APPEND_CHANNEL, {
+          tabId,
+          recordingId,
           data,
+        });
+      },
+      finish: (tabId, recordingId) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_RECORDING_FINISH_CHANNEL, {
+          tabId,
+          recordingId,
+        }),
+      abort: (tabId, recordingId) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_RECORDING_ABORT_CHANNEL, {
+          tabId,
+          recordingId,
         }),
       onFrame: (listener) => {
         const wrappedListener = (_event: Electron.IpcRendererEvent, frame: unknown) => {

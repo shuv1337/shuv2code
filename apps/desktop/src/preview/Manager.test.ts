@@ -42,6 +42,7 @@ const {
   fromId,
   getFocusedWebContents,
   mkdir,
+  rename,
   showItemInFolder,
   webviewSend,
   writeFile,
@@ -52,9 +53,10 @@ const {
   fromId: vi.fn((_id?: number) => null),
   getFocusedWebContents: vi.fn(() => null),
   mkdir: vi.fn((_path: string) => undefined),
+  rename: vi.fn((_from: string, _to: string) => undefined),
   showItemInFolder: vi.fn(),
   webviewSend: vi.fn(),
-  writeFile: vi.fn((_path: string, _data: Uint8Array) => undefined),
+  writeFile: vi.fn((_path: string, _data: Uint8Array, _options?: unknown) => undefined),
   writeImage: vi.fn(),
 }));
 
@@ -105,9 +107,14 @@ const fileSystemLayer = FileSystem.layerNoop({
     Effect.sync(() => {
       mkdir(path);
     }),
-  writeFile: (path, data) =>
+  writeFile: (path, data, options) =>
     Effect.sync(() => {
-      writeFile(path, data);
+      if (options === undefined) writeFile(path, data);
+      else writeFile(path, data, options);
+    }),
+  rename: (from, to) =>
+    Effect.sync(() => {
+      rename(from, to);
     }),
 });
 
@@ -201,6 +208,7 @@ describe("PreviewManager", () => {
     getFocusedWebContents.mockReset();
     getFocusedWebContents.mockReturnValue(null);
     mkdir.mockClear();
+    rename.mockClear();
     writeFile.mockClear();
     showItemInFolder.mockClear();
     writeImage.mockClear();
@@ -762,6 +770,93 @@ describe("PreviewManager", () => {
           webContentsId: 42,
           cause: captureCause,
         });
+      }),
+    ),
+  );
+
+  effectIt.effect("streams recording chunks into a partial artifact before publishing it", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const session = yield* manager.beginRecordingArtifact("tab_recording", "video/webm");
+        const first = new Uint8Array([1, 2, 3]);
+        const second = new Uint8Array([4, 5]);
+
+        yield* manager.appendRecordingArtifact("tab_recording", session.id, first);
+        yield* manager.appendRecordingArtifact("tab_recording", session.id, second);
+        const artifact = yield* manager.finishRecordingArtifact("tab_recording", session.id);
+
+        expect(writeFile).toHaveBeenNthCalledWith(1, `${artifact.path}.partial`, new Uint8Array(), {
+          flag: "wx",
+        });
+        expect(writeFile).toHaveBeenNthCalledWith(2, `${artifact.path}.partial`, first, {
+          flag: "a",
+        });
+        expect(writeFile).toHaveBeenNthCalledWith(3, `${artifact.path}.partial`, second, {
+          flag: "a",
+        });
+        expect(artifact).toMatchObject({
+          id: session.id,
+          tabId: "tab_recording",
+          mimeType: "video/webm",
+          sizeBytes: 5,
+        });
+        expect(artifact.path).toMatch(/\/browser-artifacts\/browser-recording-[^.]+\.webm$/);
+      }),
+    ),
+  );
+
+  effectIt.effect("rejects recording bytes beyond the desktop artifact ceiling", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const session = yield* manager.beginRecordingArtifact("tab_bounded", "video/webm");
+        const chunk = new Uint8Array(8 * 1024 * 1024);
+        const chunkCount = PreviewManager.MAX_BROWSER_RECORDING_ARTIFACT_BYTES / chunk.byteLength;
+
+        yield* Effect.forEach(
+          Array.from({ length: chunkCount }),
+          () => manager.appendRecordingArtifact("tab_bounded", session.id, chunk),
+          { discard: true },
+        );
+        const exit = yield* Effect.exit(
+          manager.appendRecordingArtifact("tab_bounded", session.id, new Uint8Array([1])),
+        );
+
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) {
+          const error = Cause.findErrorOption(exit.cause);
+          expect(Option.isSome(error)).toBe(true);
+          if (Option.isSome(error)) {
+            expect(error.value).toBeInstanceOf(PreviewManager.PreviewRecordingArtifactLimitError);
+            expect(error.value).toMatchObject({
+              actualBytes: PreviewManager.MAX_BROWSER_RECORDING_ARTIFACT_BYTES + 1,
+              maximumBytes: PreviewManager.MAX_BROWSER_RECORDING_ARTIFACT_BYTES,
+            });
+          }
+        }
+        yield* manager.abortRecordingArtifact("tab_bounded", session.id);
+      }),
+    ),
+  );
+
+  effectIt.effect("rejects an oversized recording chunk before writing it", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const session = yield* manager.beginRecordingArtifact("tab_chunk_bound", "video/webm");
+        const oversized = new Uint8Array(8 * 1024 * 1024 + 1);
+        const exit = yield* Effect.exit(
+          manager.appendRecordingArtifact("tab_chunk_bound", session.id, oversized),
+        );
+
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) {
+          const error = Cause.findErrorOption(exit.cause);
+          expect(Option.isSome(error)).toBe(true);
+          if (Option.isSome(error)) {
+            expect(error.value).toBeInstanceOf(PreviewManager.PreviewRecordingChunkLimitError);
+          }
+        }
+        expect(writeFile).toHaveBeenCalledOnce();
+        yield* manager.abortRecordingArtifact("tab_chunk_bound", session.id);
       }),
     ),
   );

@@ -51,4 +51,22 @@ describe("preview IPC methods", () => {
       },
     ),
   );
+
+  effectIt.effect("rejects oversized recording chunks before resolving the preview service", () =>
+    Effect.map(
+      PreviewIpc.appendRecordingArtifact
+        .handler({
+          tabId: "tab-1",
+          recordingId: "recording-1",
+          data: new Uint8Array(8 * 1024 * 1024 + 1),
+        })
+        .pipe(Effect.provideService(PreviewManager.PreviewManager, null as never), Effect.exit),
+      (exit) => {
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isSuccess(exit)) return;
+        const error = Cause.findErrorOption(exit.cause);
+        expect(Option.isSome(error) && Schema.isSchemaError(error.value)).toBe(true);
+      },
+    ),
+  );
 });

@@ -9,8 +9,11 @@ import {
   DesktopPreviewAutomationWaitForInputSchema,
   DesktopPreviewConfigInputSchema,
   DesktopPreviewNavigateInputSchema,
+  DesktopPreviewRecordingAppendInputSchema,
   DesktopPreviewRecordingArtifactSchema,
-  DesktopPreviewRecordingSaveInputSchema,
+  DesktopPreviewRecordingBeginInputSchema,
+  DesktopPreviewRecordingSessionInputSchema,
+  DesktopPreviewRecordingSessionSchema,
   DesktopPreviewRegisterWebviewInputSchema,
   DesktopPreviewScreenshotArtifactSchema,
   DesktopPreviewSetColorSchemeInputSchema,
@@ -344,13 +347,53 @@ export const automationWaitFor = DesktopIpc.makeIpcMethod({
   }),
 });
 
-export const saveRecording = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.PREVIEW_RECORDING_SAVE_CHANNEL,
-  payload: DesktopPreviewRecordingSaveInputSchema,
-  result: DesktopPreviewRecordingArtifactSchema,
-  handler: Effect.fn("desktop.ipc.preview.saveRecording")(function* ({ tabId, mimeType, data }) {
+export const beginRecordingArtifact = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_RECORDING_BEGIN_CHANNEL,
+  payload: DesktopPreviewRecordingBeginInputSchema,
+  result: DesktopPreviewRecordingSessionSchema,
+  handler: Effect.fn("desktop.ipc.preview.beginRecordingArtifact")(function* ({ tabId, mimeType }) {
     const manager = yield* PreviewManager.PreviewManager;
-    return yield* manager.saveRecording(tabId, mimeType, data);
+    return yield* manager.beginRecordingArtifact(tabId, mimeType);
+  }),
+});
+
+export const appendRecordingArtifact = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_RECORDING_APPEND_CHANNEL,
+  payload: DesktopPreviewRecordingAppendInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.appendRecordingArtifact")(function* ({
+    tabId,
+    recordingId,
+    data,
+  }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.appendRecordingArtifact(tabId, recordingId, data);
+  }),
+});
+
+export const finishRecordingArtifact = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_RECORDING_FINISH_CHANNEL,
+  payload: DesktopPreviewRecordingSessionInputSchema,
+  result: DesktopPreviewRecordingArtifactSchema,
+  handler: Effect.fn("desktop.ipc.preview.finishRecordingArtifact")(function* ({
+    tabId,
+    recordingId,
+  }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.finishRecordingArtifact(tabId, recordingId);
+  }),
+});
+
+export const abortRecordingArtifact = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_RECORDING_ABORT_CHANNEL,
+  payload: DesktopPreviewRecordingSessionInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.abortRecordingArtifact")(function* ({
+    tabId,
+    recordingId,
+  }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.abortRecordingArtifact(tabId, recordingId);
   }),
 });
 
@@ -389,5 +432,8 @@ export const methods = [
   automationWaitFor,
   startRecording,
   stopRecording,
-  saveRecording,
+  beginRecordingArtifact,
+  appendRecordingArtifact,
+  finishRecordingArtifact,
+  abortRecordingArtifact,
 ] as const;

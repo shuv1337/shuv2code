@@ -2,11 +2,14 @@ import { EnvironmentId, ThreadId } from "@shuv2code/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const {
+  abort,
+  append,
+  begin,
   events,
+  finish,
   frameSubscription,
   onFrame,
   registrySet,
-  save,
   startScreencast,
   stopScreencast,
   surfaceState,
@@ -26,6 +29,11 @@ const {
     byTabId: {} as Record<string, unknown>,
   };
   return {
+    abort: vi.fn(async () => undefined),
+    append: vi.fn<(tabId: string, recordingId: string, data: Uint8Array) => Promise<void>>(
+      async () => undefined,
+    ),
+    begin: vi.fn(async (tabId: string) => ({ id: `recording-test-${tabId}`, tabId })),
     events,
     frameSubscription,
     onFrame: vi.fn((listener: (frame: Frame) => void) => {
@@ -39,8 +47,8 @@ const {
         value.tabIds.size === 0 ? "clear" : `publish:${Array.from(value.tabIds).join(",")}`,
       );
     }),
-    save: vi.fn(async (tabId: string) => ({
-      id: "recording-test",
+    finish: vi.fn(async (tabId: string, recordingId: string) => ({
+      id: recordingId,
       tabId,
       path: "/tmp/recording-test.webm",
       mimeType: "video/webm" as const,
@@ -71,7 +79,7 @@ const {
 
 vi.mock("~/components/preview/previewBridge", () => ({
   previewBridge: {
-    recording: { onFrame, save, startScreencast, stopScreencast },
+    recording: { abort, append, begin, finish, onFrame, startScreencast, stopScreencast },
   },
 }));
 
@@ -86,6 +94,7 @@ vi.mock("./browserSurfaceStore", () => ({
 }));
 
 import {
+  MAX_BROWSER_RECORDING_PENDING_BYTES,
   BROWSER_RECORDING_FIRST_FRAME_SIZE_TIMEOUT_MS,
   BROWSER_RECORDING_STARTUP_SETTLE_TIMEOUT_MS,
   BrowserRecordingConflictError,
@@ -98,12 +107,20 @@ import {
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
 
 class FakeMediaRecorder {
+  static readonly instances: FakeMediaRecorder[] = [];
+
   static isTypeSupported(): boolean {
     return true;
   }
 
   state: RecordingState = "inactive";
+  pauseCount = 0;
+  resumeCount = 0;
   private readonly listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+
+  constructor() {
+    FakeMediaRecorder.instances.push(this);
+  }
 
   addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
     const listeners = this.listeners.get(type) ?? new Set();
@@ -122,6 +139,24 @@ class FakeMediaRecorder {
       else listener.handleEvent(new Event("stop"));
     }
   }
+
+  pause(): void {
+    this.pauseCount += 1;
+    this.state = "paused";
+  }
+
+  resume(): void {
+    this.resumeCount += 1;
+    this.state = "recording";
+  }
+
+  emitData(data: Blob): void {
+    const event = { data } as BlobEvent;
+    for (const listener of this.listeners.get("dataavailable") ?? []) {
+      if (typeof listener === "function") listener(event);
+      else listener.handleEvent(event);
+    }
+  }
 }
 
 const emitRecordingFrame = () => {
@@ -136,6 +171,7 @@ const emitRecordingFrame = () => {
 
 describe("browser recording", () => {
   beforeEach(() => {
+    FakeMediaRecorder.instances.length = 0;
     events.length = 0;
     frameSubscription.listener = null;
     surfaceState.byTabId = {
@@ -146,6 +182,7 @@ describe("browser recording", () => {
       },
     };
     vi.clearAllMocks();
+    append.mockResolvedValue(undefined);
     vi.stubGlobal("window", globalThis);
     vi.stubGlobal("MediaRecorder", FakeMediaRecorder as unknown as typeof MediaRecorder);
     class ImmediateImage {
@@ -183,6 +220,67 @@ describe("browser recording", () => {
     expect(events).toEqual(["start-screencast", "publish:recording-tab"]);
 
     await stopBrowserRecording("recording-tab");
+  });
+
+  it("streams recorder segments to desktop instead of retaining a recording-wide blob", async () => {
+    await startBrowserRecording("recording-tab");
+    const recorder = FakeMediaRecorder.instances.at(-1);
+    expect(recorder).toBeDefined();
+
+    recorder?.emitData(new Blob([new Uint8Array(512 * 1024)]));
+    await vi.waitFor(() => expect(append).toHaveBeenCalledOnce());
+
+    expect(append.mock.calls[0]?.[0]).toBe("recording-tab");
+    expect(append.mock.calls[0]?.[1]).toBe("recording-test-recording-tab");
+    expect(append.mock.calls[0]?.[2]).toHaveLength(512 * 1024);
+    expect(finish).not.toHaveBeenCalled();
+
+    await stopBrowserRecording("recording-tab");
+    expect(finish).toHaveBeenCalledWith("recording-tab", "recording-test-recording-tab");
+  });
+
+  it("pauses the producer at the bounded write-queue high-water mark", async () => {
+    let releaseFirstAppend: (() => void) | undefined;
+    append.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFirstAppend = resolve;
+        }),
+    );
+    await startBrowserRecording("recording-tab");
+    const recorder = FakeMediaRecorder.instances.at(-1);
+    const chunkBytes = 1024 * 1024;
+
+    for (let index = 0; index < MAX_BROWSER_RECORDING_PENDING_BYTES / chunkBytes; index += 1) {
+      recorder?.emitData(new Blob([new Uint8Array(chunkBytes)]));
+    }
+    await vi.waitFor(() => expect(append).toHaveBeenCalledOnce());
+    expect(recorder?.state).toBe("paused");
+    expect(recorder?.pauseCount).toBe(1);
+
+    releaseFirstAppend?.();
+    await vi.waitFor(() => expect(append).toHaveBeenCalledTimes(16));
+    await vi.waitFor(() => expect(recorder?.state).toBe("recording"));
+    expect(recorder?.resumeCount).toBe(1);
+
+    await stopBrowserRecording("recording-tab");
+  });
+
+  it("fails closed when a producer outruns the hard pending-byte bound", async () => {
+    await startBrowserRecording("recording-tab");
+    const recorder = FakeMediaRecorder.instances.at(-1);
+    const chunkBytes = 1024 * 1024;
+
+    for (let index = 0; index <= MAX_BROWSER_RECORDING_PENDING_BYTES / chunkBytes; index += 1) {
+      recorder?.emitData(new Blob([new Uint8Array(chunkBytes)]));
+    }
+
+    expect(recorder?.state).toBe("paused");
+    await expect(stopBrowserRecording("recording-tab")).rejects.toMatchObject({
+      operation: "append-artifact",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    expect(abort).toHaveBeenCalledWith("recording-tab", "recording-test-recording-tab");
   });
 
   it("records a hidden tab without requiring it to become visible", async () => {
@@ -363,7 +461,7 @@ describe("browser recording", () => {
     expect(readActiveBrowserRecordingTabIds()).toEqual(new Set(["recording-tab-2"]));
     await stopBrowserRecording("recording-tab-2");
     expect(readActiveBrowserRecordingTabIds()).toEqual(new Set());
-    expect(save).toHaveBeenCalledTimes(2);
+    expect(finish).toHaveBeenCalledTimes(2);
   });
 
   it("keeps a recording reachable through its runtime id after a server epoch changes", async () => {
@@ -474,7 +572,7 @@ describe("browser recording", () => {
 
     expect(duplicateArtifact).toEqual(firstArtifact);
     expect(stopScreencast).toHaveBeenCalledOnce();
-    expect(save).toHaveBeenCalledOnce();
+    expect(finish).toHaveBeenCalledOnce();
   });
 
   it("finishes startup before stopping so an active recording yields an artifact", async () => {
@@ -497,7 +595,7 @@ describe("browser recording", () => {
     await startPromise;
     await expect(stopPromise).resolves.toMatchObject({ tabId: "recording-tab" });
     expect(stopScreencast).toHaveBeenCalledOnce();
-    expect(save).toHaveBeenCalledOnce();
+    expect(finish).toHaveBeenCalledOnce();
     expect(events.at(-1)).toBe("clear");
   });
 
@@ -587,7 +685,7 @@ describe("browser recording", () => {
     await vi.advanceTimersByTimeAsync(BROWSER_RECORDING_STARTUP_SETTLE_TIMEOUT_MS);
 
     await rejection;
-    expect(save).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
     await expect(startBrowserRecording("recording-tab")).rejects.toBeInstanceOf(
       BrowserRecordingConflictError,
     );
@@ -597,7 +695,7 @@ describe("browser recording", () => {
     const cleanupResult = await stopBrowserRecording("recording-tab");
     expect(cleanupResult).toBeNull();
     expect(stopScreencast).toHaveBeenCalledOnce();
-    expect(save).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
     expect(events.at(-1)).toBe("clear");
   });
 });

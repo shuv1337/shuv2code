@@ -26,6 +26,7 @@ import type {
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
 } from "@shuv2code/contracts";
+import { DESKTOP_PREVIEW_RECORDING_MAX_CHUNK_BYTES } from "@shuv2code/contracts";
 import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 import { normalizePreviewUrl } from "@shuv2code/shared/preview";
 import { BrowserWindow, type Session, clipboard, nativeImage, shell, webContents } from "electron";
@@ -100,6 +101,7 @@ const MAX_INTERACTIVE_ELEMENTS = 200;
 const MAX_SCREENSHOT_WIDTH = 1280;
 const RECORDING_FRAME_INTERVAL_MS = Math.ceil(1_000 / 12);
 const RECORDING_JPEG_QUALITY = 80;
+export const MAX_BROWSER_RECORDING_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
 const PICTURE_IN_PICTURE_INITIAL_WIDTH = 480;
 const PICTURE_IN_PICTURE_INITIAL_HEIGHT = 320;
 const PICTURE_IN_PICTURE_MIN_WIDTH = 240;
@@ -383,6 +385,16 @@ interface BrowserDiagnostics {
   readonly requests: ReadonlyMap<string, { url: string; method: string }>;
 }
 
+interface RecordingArtifactWriteSession {
+  readonly id: string;
+  readonly tabId: string;
+  readonly mimeType: string;
+  readonly partialPath: string;
+  readonly finalPath: string;
+  readonly createdAt: string;
+  readonly sizeBytes: number;
+}
+
 type PointerEventListener = (event: DesktopPreviewPointerEvent) => Effect.Effect<void>;
 
 interface ExpectedAgentInput {
@@ -468,6 +480,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const recordingFrameListenersRef = yield* Ref.make<ReadonlySet<RecordingFrameListener>>(
     new Set(),
   );
+  const recordingArtifactSessionsRef = yield* SynchronizedRef.make<
+    ReadonlyMap<string, RecordingArtifactWriteSession>
+  >(new Map());
+  const recordingArtifactSequenceRef = yield* Ref.make(0);
   const pickSessionsRef = yield* Ref.make<ReadonlyMap<string, PickSession>>(new Map());
   const controlSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<number, BrowserControlSession>
@@ -2526,45 +2542,180 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     yield* stopFrameCapture(tabId, "recording");
   });
 
-  const saveRecording = Effect.fn("PreviewManager.saveRecording")(function* (
+  const beginRecordingArtifact = Effect.fn("PreviewManager.beginRecordingArtifact")(function* (
     tabId: string,
     mimeType: string,
-    data: Uint8Array,
   ) {
-    const [createdAt, millis] = yield* Effect.all([currentIso, currentMillis]);
-    const id = `browser-recording-${millis.toString(36)}`;
+    const [createdAt, millis, sequence] = yield* Effect.all([
+      currentIso,
+      currentMillis,
+      Ref.getAndUpdate(recordingArtifactSequenceRef, (value) => value + 1),
+    ]);
+    const id = `browser-recording-${millis.toString(36)}-${sequence.toString(36)}`;
     const extension = mimeType.includes("mp4") ? "mp4" : "webm";
-    const artifactPath = path.join(resolvedArtifactDirectory, `${id}.${extension}`);
+    const finalPath = path.join(resolvedArtifactDirectory, `${id}.${extension}`);
+    const partialPath = `${finalPath}.partial`;
     yield* fileSystem.makeDirectory(resolvedArtifactDirectory, { recursive: true }).pipe(
       Effect.mapError(
         (cause) =>
           new PreviewOperationError({
-            operation: "saveRecording.makeDirectory",
+            operation: "beginRecordingArtifact.makeDirectory",
             tabId,
-            artifactPath,
+            artifactPath: partialPath,
             cause,
           }),
       ),
     );
-    yield* fileSystem.writeFile(artifactPath, data).pipe(
+    yield* fileSystem.writeFile(partialPath, new Uint8Array(), { flag: "wx" }).pipe(
       Effect.mapError(
         (cause) =>
           new PreviewOperationError({
-            operation: "saveRecording.writeFile",
+            operation: "beginRecordingArtifact.createFile",
             tabId,
-            artifactPath,
+            artifactPath: partialPath,
             cause,
           }),
       ),
     );
-    return {
+    const session: RecordingArtifactWriteSession = {
       id,
       tabId,
-      path: artifactPath,
       mimeType,
-      sizeBytes: data.byteLength,
+      partialPath,
+      finalPath,
       createdAt,
+      sizeBytes: 0,
     };
+    yield* SynchronizedRef.update(recordingArtifactSessionsRef, (sessions) =>
+      replaceMap(sessions, (copy) => {
+        copy.set(id, session);
+      }),
+    );
+    return { id, tabId };
+  });
+
+  const appendRecordingArtifact = Effect.fn("PreviewManager.appendRecordingArtifact")(function* (
+    tabId: string,
+    recordingId: string,
+    data: Uint8Array,
+  ) {
+    if (data.byteLength > DESKTOP_PREVIEW_RECORDING_MAX_CHUNK_BYTES) {
+      return yield* new PreviewRecordingChunkLimitError({
+        tabId,
+        recordingId,
+        actualBytes: data.byteLength,
+        maximumBytes: DESKTOP_PREVIEW_RECORDING_MAX_CHUNK_BYTES,
+      });
+    }
+    yield* SynchronizedRef.modifyEffect(recordingArtifactSessionsRef, (sessions) =>
+      Effect.gen(function* () {
+        const session = sessions.get(recordingId);
+        if (!session || session.tabId !== tabId) {
+          return yield* new PreviewOperationError({
+            operation: "appendRecordingArtifact.findSession",
+            tabId,
+            cause: new Error(`Recording artifact session ${recordingId} was not found.`),
+          });
+        }
+        const nextSizeBytes = session.sizeBytes + data.byteLength;
+        if (nextSizeBytes > MAX_BROWSER_RECORDING_ARTIFACT_BYTES) {
+          return yield* new PreviewRecordingArtifactLimitError({
+            tabId,
+            recordingId,
+            actualBytes: nextSizeBytes,
+            maximumBytes: MAX_BROWSER_RECORDING_ARTIFACT_BYTES,
+          });
+        }
+        yield* fileSystem.writeFile(session.partialPath, data, { flag: "a" }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new PreviewOperationError({
+                operation: "appendRecordingArtifact.writeFile",
+                tabId,
+                artifactPath: session.partialPath,
+                cause,
+              }),
+          ),
+        );
+        return [
+          undefined,
+          replaceMap(sessions, (copy) => {
+            copy.set(recordingId, { ...session, sizeBytes: nextSizeBytes });
+          }),
+        ] as const;
+      }),
+    );
+  });
+
+  const finishRecordingArtifact = Effect.fn("PreviewManager.finishRecordingArtifact")(function* (
+    tabId: string,
+    recordingId: string,
+  ) {
+    return yield* SynchronizedRef.modifyEffect(recordingArtifactSessionsRef, (sessions) =>
+      Effect.gen(function* () {
+        const session = sessions.get(recordingId);
+        if (!session || session.tabId !== tabId) {
+          return yield* new PreviewOperationError({
+            operation: "finishRecordingArtifact.findSession",
+            tabId,
+            cause: new Error(`Recording artifact session ${recordingId} was not found.`),
+          });
+        }
+        yield* fileSystem.rename(session.partialPath, session.finalPath).pipe(
+          Effect.mapError(
+            (cause) =>
+              new PreviewOperationError({
+                operation: "finishRecordingArtifact.rename",
+                tabId,
+                artifactPath: session.finalPath,
+                cause,
+              }),
+          ),
+        );
+        return [
+          {
+            id: session.id,
+            tabId: session.tabId,
+            path: session.finalPath,
+            mimeType: session.mimeType,
+            sizeBytes: session.sizeBytes,
+            createdAt: session.createdAt,
+          },
+          replaceMap(sessions, (copy) => {
+            copy.delete(recordingId);
+          }),
+        ] as const;
+      }),
+    );
+  });
+
+  const abortRecordingArtifact = Effect.fn("PreviewManager.abortRecordingArtifact")(function* (
+    tabId: string,
+    recordingId: string,
+  ) {
+    yield* SynchronizedRef.modifyEffect(recordingArtifactSessionsRef, (sessions) =>
+      Effect.gen(function* () {
+        const session = sessions.get(recordingId);
+        if (!session || session.tabId !== tabId) return [undefined, sessions] as const;
+        yield* fileSystem.remove(session.partialPath, { force: true }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new PreviewOperationError({
+                operation: "abortRecordingArtifact.remove",
+                tabId,
+                artifactPath: session.partialPath,
+                cause,
+              }),
+          ),
+        );
+        return [
+          undefined,
+          replaceMap(sessions, (copy) => {
+            copy.delete(recordingId);
+          }),
+        ] as const;
+      }),
+    );
   });
 
   const automationStatus = Effect.fn("PreviewManager.automationStatus")(function* (tabId: string) {
@@ -3249,6 +3400,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       ],
       { discard: true },
     );
+    const recordingArtifactSessions = yield* SynchronizedRef.getAndSet(
+      recordingArtifactSessionsRef,
+      new Map(),
+    );
+    yield* Effect.forEach(
+      recordingArtifactSessions.values(),
+      (session) => fileSystem.remove(session.partialPath, { force: true }).pipe(Effect.ignore),
+      { discard: true },
+    );
   });
 
   yield* Effect.addFinalizer(() => destroy().pipe(Effect.ignore));
@@ -3278,7 +3438,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     registerWebview,
     resetZoom: (tabId: string) => applyZoom(tabId, () => DEFAULT_ZOOM_FACTOR),
     revealArtifact,
-    saveRecording,
+    abortRecordingArtifact,
+    appendRecordingArtifact,
+    beginRecordingArtifact,
+    finishRecordingArtifact,
     setAnnotationTheme,
     setColorScheme,
     setMainWindow,
@@ -3499,6 +3662,34 @@ export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClas
   }
 }
 
+export class PreviewRecordingArtifactLimitError extends Schema.TaggedErrorClass<PreviewRecordingArtifactLimitError>()(
+  "PreviewRecordingArtifactLimitError",
+  {
+    tabId: Schema.String,
+    recordingId: Schema.String,
+    actualBytes: Schema.Number,
+    maximumBytes: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `Browser recording ${this.recordingId} in tab ${this.tabId} exceeded the ${this.maximumBytes}-byte artifact limit`;
+  }
+}
+
+export class PreviewRecordingChunkLimitError extends Schema.TaggedErrorClass<PreviewRecordingChunkLimitError>()(
+  "PreviewRecordingChunkLimitError",
+  {
+    tabId: Schema.String,
+    recordingId: Schema.String,
+    actualBytes: Schema.Number,
+    maximumBytes: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `Browser recording ${this.recordingId} received a ${this.actualBytes}-byte chunk; maximum is ${this.maximumBytes}`;
+  }
+}
+
 export class PreviewAutomationTimeoutError extends Schema.TaggedErrorClass<PreviewAutomationTimeoutError>()(
   "PreviewAutomationTimeoutError",
   {
@@ -3539,6 +3730,8 @@ export const PreviewManagerError = Schema.Union([
   PreviewAutomationCoordinatesOutsideViewportError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationResultTooLargeError,
+  PreviewRecordingArtifactLimitError,
+  PreviewRecordingChunkLimitError,
   PreviewAutomationTimeoutError,
   PreviewAutomationControlInterruptedError,
 ]);
@@ -3597,11 +3790,23 @@ export class PreviewManager extends Context.Service<
     readonly closePictureInPicture: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly startRecording: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly stopRecording: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
-    readonly saveRecording: (
+    readonly beginRecordingArtifact: (
       tabId: string,
       mimeType: string,
+    ) => Effect.Effect<{ readonly id: string; readonly tabId: string }, PreviewManagerError>;
+    readonly appendRecordingArtifact: (
+      tabId: string,
+      recordingId: string,
       data: Uint8Array,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly finishRecordingArtifact: (
+      tabId: string,
+      recordingId: string,
     ) => Effect.Effect<DesktopPreviewRecordingArtifact, PreviewManagerError>;
+    readonly abortRecordingArtifact: (
+      tabId: string,
+      recordingId: string,
+    ) => Effect.Effect<void, PreviewManagerError>;
     readonly automationStatus: (
       tabId: string,
     ) => Effect.Effect<PreviewAutomationStatus, PreviewManagerError>;
@@ -3710,7 +3915,10 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     closePictureInPicture: operations.closePictureInPicture,
     startRecording: operations.startRecording,
     stopRecording: operations.stopRecording,
-    saveRecording: operations.saveRecording,
+    beginRecordingArtifact: operations.beginRecordingArtifact,
+    appendRecordingArtifact: operations.appendRecordingArtifact,
+    finishRecordingArtifact: operations.finishRecordingArtifact,
+    abortRecordingArtifact: operations.abortRecordingArtifact,
     automationStatus: operations.automationStatus,
     automationSnapshot: operations.automationSnapshot,
     automationClick: operations.automationClick,
