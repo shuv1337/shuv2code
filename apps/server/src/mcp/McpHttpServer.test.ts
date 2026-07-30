@@ -1,9 +1,16 @@
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@shuv2code/contracts";
+import {
+  EnvironmentId,
+  PreviewTabId,
+  ProviderInstanceId,
+  ThreadId,
+  type PreviewAutomationSnapshot,
+} from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
@@ -37,6 +44,37 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
 );
+const decodeSnapshotMetadata = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      accessibilityTree: Schema.Unknown,
+      consoleEntries: Schema.Array(Schema.Struct({ text: Schema.String })),
+      screenshot: Schema.NullOr(
+        Schema.Struct({
+          mimeType: Schema.Literal("image/png"),
+          width: Schema.Number,
+          height: Schema.Number,
+        }),
+      ),
+    }),
+  ),
+);
+
+const previewSnapshot = (
+  overrides: Partial<PreviewAutomationSnapshot> = {},
+): PreviewAutomationSnapshot => ({
+  url: "http://example.test/",
+  title: "Example",
+  loading: false,
+  visibleText: "Example",
+  interactiveElements: [],
+  accessibilityTree: {},
+  consoleEntries: [],
+  networkEntries: [],
+  actionTimeline: [],
+  screenshot: null,
+  ...overrides,
+});
 
 it("normalizes empty successful notification responses to accepted", () => {
   const notificationResponse = McpHttpServer.normalizeMcpHttpResponse(
@@ -48,6 +86,50 @@ it("normalizes empty successful notification responses to accepted", () => {
     HttpServerResponse.jsonUnsafe({ jsonrpc: "2.0", id: 1, result: {} }),
   );
   expect(resultResponse.status).toBe(200);
+});
+
+it("keeps snapshot results singly encoded and within explicit byte budgets", () => {
+  const diagnostics = Array.from({ length: 30 }, (_, index) => ({
+    level: "log",
+    text: `entry-${index}`,
+    timestamp: "2026-07-30T00:00:00.000Z",
+  }));
+  const bounded = McpHttpServer.makePreviewSnapshotCallToolResult(
+    previewSnapshot({ consoleEntries: diagnostics }),
+  );
+
+  expect(bounded.isError).toBe(false);
+  expect(bounded.structuredContent).toBeUndefined();
+  expect(bounded.content).toHaveLength(1);
+  const text = bounded.content[0];
+  expect(text?.type).toBe("text");
+  if (text?.type !== "text") throw new Error("Expected text snapshot content.");
+  const decoded = decodeSnapshotMetadata(text.text);
+  expect(decoded.consoleEntries).toHaveLength(McpHttpServer.MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT);
+  expect(decoded.consoleEntries[0]?.text).toBe("entry-10");
+  expect(decoded.screenshot).toBeNull();
+
+  const oversizedMetadata = McpHttpServer.makePreviewSnapshotCallToolResult(
+    previewSnapshot({
+      // Survive compactAccessibilityTree: payload lives on a non-AX field.
+      visibleText: "x".repeat(McpHttpServer.MCP_PREVIEW_METADATA_MAX_BYTES),
+    }),
+  );
+  expect(oversizedMetadata.isError).toBe(true);
+  expect(JSON.stringify(oversizedMetadata).length).toBeLessThan(1_000);
+
+  const oversizedImage = McpHttpServer.makePreviewSnapshotCallToolResult(
+    previewSnapshot({
+      screenshot: {
+        mimeType: "image/png",
+        data: Buffer.alloc(McpHttpServer.MCP_PREVIEW_IMAGE_MAX_BYTES + 1).toString("base64"),
+        width: 1_280,
+        height: 720,
+      },
+    }),
+  );
+  expect(oversizedImage.isError).toBe(true);
+  expect(oversizedImage.content[0]).toMatchObject({ type: "text" });
 });
 
 it.effect("returns bounded structural preview snapshot failures", () =>
@@ -216,12 +298,18 @@ it.effect("registers annotated tools and preserves authenticated request context
                   consoleEntries,
                   networkEntries,
                   actionTimeline,
-                  screenshot: {
-                    mimeType: "image/png",
-                    data: Buffer.from("png").toString("base64"),
-                    width: 10,
-                    height: 5,
-                  },
+                  screenshot:
+                    typeof event.request.input === "object" &&
+                    event.request.input !== null &&
+                    "includeScreenshot" in event.request.input &&
+                    event.request.input.includeScreenshot === true
+                      ? {
+                          mimeType: "image/png",
+                          data: Buffer.from("png").toString("base64"),
+                          width: 10,
+                          height: 5,
+                        }
+                      : null,
                 }
               : event.request.operation === "press"
                 ? undefined
@@ -283,20 +371,34 @@ it.effect("registers annotated tools and preserves authenticated request context
           Effect.provideService(McpSchema.McpServerClient, client),
         );
       expect(snapshot.isError).toBe(false);
-      expect(snapshot.content.some((content) => content.type === "image")).toBe(true);
-      expect(snapshot.structuredContent).toMatchObject({
-        accessibilityTree: {
-          mode: "compact",
-          nodes: [{ nodeId: "root" }, { nodeId: "submit" }],
-        },
-        consoleEntries: consoleEntries.slice(-20),
-        networkEntries: networkEntries.slice(-20),
-        actionTimeline: actionTimeline.slice(-20),
-        screenshot: { mimeType: "image/png", width: 10, height: 5 },
+      expect(snapshot.content.some((content) => content.type === "image")).toBe(false);
+      expect(snapshot.structuredContent).toBeUndefined();
+      const semanticText = snapshot.content.find((content) => content.type === "text");
+      expect(semanticText?.type).toBe("text");
+      if (semanticText?.type !== "text") throw new Error("Expected text snapshot content.");
+      const semanticMetadata = decodeSnapshotMetadata(semanticText.text);
+      expect(semanticMetadata.screenshot).toBeNull();
+      expect(semanticMetadata.consoleEntries).toHaveLength(20);
+      expect(semanticMetadata.consoleEntries[0]?.text).toBe("console-5");
+      expect(semanticMetadata.accessibilityTree).toMatchObject({
+        mode: "compact",
+        nodes: expect.arrayContaining([expect.objectContaining({ nodeId: "submit" })]),
       });
       expect(routedRequests.find(({ operation }) => operation === "snapshot")?.tabId).toBe(
         alternateTabId,
       );
+
+      const visualSnapshot = yield* server
+        .callTool({
+          name: "preview_snapshot",
+          arguments: { tabId: alternateTabId, includeScreenshot: true },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(visualSnapshot.isError).toBe(false);
+      expect(visualSnapshot.content.some((content) => content.type === "image")).toBe(true);
 
       const fullSnapshot = yield* server
         .callTool({
@@ -308,12 +410,12 @@ it.effect("registers annotated tools and preserves authenticated request context
           Effect.provideService(McpSchema.McpServerClient, client),
         );
       expect(fullSnapshot.isError).toBe(false);
-      expect(fullSnapshot.structuredContent).toMatchObject({
-        accessibilityTree: rawAccessibilityTree,
-        consoleEntries: consoleEntries.slice(-20),
-        networkEntries: networkEntries.slice(-20),
-        actionTimeline: actionTimeline.slice(-20),
-      });
+      const fullText = fullSnapshot.content.find((content) => content.type === "text");
+      expect(fullText?.type).toBe("text");
+      if (fullText?.type !== "text") throw new Error("Expected text snapshot content.");
+      const fullMetadata = decodeSnapshotMetadata(fullText.text);
+      expect(fullMetadata.accessibilityTree).toEqual(rawAccessibilityTree);
+      expect(fullMetadata.consoleEntries).toHaveLength(20);
       expect(
         routedRequests.find(
           ({ operation, input }) =>

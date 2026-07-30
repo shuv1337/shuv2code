@@ -580,10 +580,10 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           case "snapshot": {
             const ready = await requireReadyTab();
             const input = request.input as PreviewAutomationSnapshotInput;
-            return await ready.bridge.automation.snapshot(
-              ready.runtimeTabId,
-              resolvePreviewAutomationSnapshotMode(input),
-            );
+            return await ready.bridge.automation.snapshot(ready.runtimeTabId, {
+              ...input,
+              mode: resolvePreviewAutomationSnapshotMode(input),
+            });
           }
           case "click": {
             const ready = await requireReadyTab();

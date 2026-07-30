@@ -30,6 +30,74 @@ import {
   PreviewStandardToolkit,
 } from "./toolkits/preview/tools.ts";
 
+export const MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT = 20;
+export const MCP_PREVIEW_METADATA_MAX_BYTES = 512_000;
+export const MCP_PREVIEW_IMAGE_MAX_BYTES = 2_000_000;
+
+export const makePreviewSnapshotCallToolResult = (
+  snapshot: PreviewAutomationSnapshot,
+  mode: PreviewAutomationSnapshotInput["mode"] = "compact",
+): McpSchema.CallToolResult => {
+  const { screenshot, ...page } = snapshot;
+  const metadata = {
+    ...page,
+    accessibilityTree:
+      mode === "full" ? page.accessibilityTree : compactAccessibilityTree(page.accessibilityTree),
+    consoleEntries: page.consoleEntries.slice(-MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT),
+    networkEntries: page.networkEntries.slice(-MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT),
+    actionTimeline: page.actionTimeline.slice(-MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT),
+    screenshot:
+      screenshot === null
+        ? null
+        : {
+            mimeType: screenshot.mimeType,
+            width: screenshot.width,
+            height: screenshot.height,
+          },
+  };
+  const encodedMetadata = JSON.stringify(metadata);
+  const actualBytes = Buffer.byteLength(encodedMetadata, "utf8");
+  if (actualBytes > MCP_PREVIEW_METADATA_MAX_BYTES) {
+    return new McpSchema.CallToolResult({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `Preview snapshot metadata exceeded the ${MCP_PREVIEW_METADATA_MAX_BYTES}-byte safety budget (${actualBytes} bytes). Prefer mode='compact', omit includeScreenshot, or use targeted preview_evaluate inspection.`,
+        },
+      ],
+    });
+  }
+  const imageBytes = screenshot === null ? 0 : Buffer.byteLength(screenshot.data, "base64");
+  if (imageBytes > MCP_PREVIEW_IMAGE_MAX_BYTES) {
+    return new McpSchema.CallToolResult({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `Preview screenshot exceeded the ${MCP_PREVIEW_IMAGE_MAX_BYTES}-byte safety budget (${imageBytes} bytes). Retry without includeScreenshot or use a smaller viewport.`,
+        },
+      ],
+    });
+  }
+
+  return new McpSchema.CallToolResult({
+    isError: false,
+    content: [
+      { type: "text", text: encodedMetadata },
+      ...(screenshot === null
+        ? []
+        : [
+            {
+              type: "image" as const,
+              data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
+              mimeType: screenshot.mimeType,
+            },
+          ]),
+    ],
+  });
+};
+
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
     error: "invalid_mcp_credential",
@@ -172,37 +240,8 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
             onFailure: previewSnapshotFailure,
             onSuccess: ({ encodedResult }) => {
               const snapshot = encodedResult as PreviewAutomationSnapshot;
-              const { screenshot, ...page } = snapshot;
               const mode = (payload as PreviewAutomationSnapshotInput).mode ?? "compact";
-              const metadata = {
-                ...page,
-                accessibilityTree:
-                  mode === "full"
-                    ? page.accessibilityTree
-                    : compactAccessibilityTree(page.accessibilityTree),
-                consoleEntries: page.consoleEntries.slice(-20),
-                networkEntries: page.networkEntries.slice(-20),
-                actionTimeline: page.actionTimeline.slice(-20),
-                screenshot: {
-                  mimeType: screenshot.mimeType,
-                  width: screenshot.width,
-                  height: screenshot.height,
-                },
-              };
-              return Effect.succeed(
-                new McpSchema.CallToolResult({
-                  isError: false,
-                  structuredContent: metadata,
-                  content: [
-                    { type: "text", text: JSON.stringify(metadata) },
-                    {
-                      type: "image",
-                      data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
-                      mimeType: screenshot.mimeType,
-                    },
-                  ],
-                }),
-              );
+              return Effect.succeed(makePreviewSnapshotCallToolResult(snapshot, mode));
             },
           }),
         );
