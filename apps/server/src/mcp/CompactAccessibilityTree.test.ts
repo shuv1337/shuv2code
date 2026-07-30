@@ -12,6 +12,8 @@ const axNode = (input: {
   readonly nodeId: string;
   readonly role: string;
   readonly name?: string;
+  readonly description?: string;
+  readonly value?: string;
   readonly parentId?: string;
   readonly ignored?: boolean;
   readonly properties?: ReadonlyArray<{ readonly name: string; readonly value: unknown }>;
@@ -19,6 +21,8 @@ const axNode = (input: {
   nodeId: input.nodeId,
   role: axValue(input.role),
   ...(input.name === undefined ? {} : { name: axValue(input.name) }),
+  ...(input.description === undefined ? {} : { description: axValue(input.description) }),
+  ...(input.value === undefined ? {} : { value: axValue(input.value) }),
   ...(input.parentId === undefined ? {} : { parentId: input.parentId }),
   ...(input.ignored === undefined ? {} : { ignored: input.ignored }),
   properties: (input.properties ?? []).map(({ name, value }) => ({
@@ -105,6 +109,45 @@ describe("compactAccessibilityTree", () => {
     expect(result.includedNodeCount).toBe(120);
     expect(result.truncated).toBe(true);
     expect(result.nodes.some(({ nodeId }) => nodeId === "button-139")).toBe(true);
+  });
+
+  it("retains named landmarks, value-bearing status roles, and real Chrome state names", () => {
+    const result = compactAccessibilityTree({
+      nodes: [
+        axNode({ nodeId: "banner", role: "banner", name: "Site header" }),
+        axNode({ nodeId: "aside", role: "complementary", name: "Related links" }),
+        axNode({ nodeId: "footer", role: "contentinfo", name: "Site footer" }),
+        axNode({ nodeId: "search", role: "search", name: "Product search" }),
+        axNode({ nodeId: "progress", role: "progressbar", value: "70%" }),
+        axNode({ nodeId: "meter", role: "meter", description: "Storage used", value: "0.8" }),
+        axNode({
+          nodeId: "menu",
+          role: "button",
+          name: "Open menu",
+          properties: [
+            { name: "hasPopup", value: "menu" },
+            { name: "hasPopup", value: "menu" },
+          ],
+        }),
+      ],
+    });
+
+    expect(result.nodes.map(({ nodeId }) => nodeId)).toEqual([
+      "banner",
+      "aside",
+      "footer",
+      "search",
+      "progress",
+      "meter",
+      "menu",
+    ]);
+    expect(result.nodes.find(({ nodeId }) => nodeId === "progress")).toMatchObject({
+      role: "progressbar",
+      value: "70%",
+    });
+    expect(result.nodes.find(({ nodeId }) => nodeId === "menu")?.states).toEqual([
+      { name: "hasPopup", value: "menu" },
+    ]);
   });
 
   it("removes verbose Chrome sources and decorative nodes from the model payload", () => {

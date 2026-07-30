@@ -154,6 +154,39 @@ it.effect("registers annotated tools and preserves authenticated request context
     Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
       const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const rawAccessibilityTree = {
+        nodes: [
+          {
+            nodeId: "root",
+            role: { value: "RootWebArea" },
+            name: { value: "Example" },
+          },
+          {
+            nodeId: "submit",
+            parentId: "root",
+            role: { value: "button" },
+            name: { value: "Submit" },
+          },
+        ],
+      };
+      const consoleEntries = Array.from({ length: 25 }, (_, index) => ({
+        level: "log",
+        text: `console-${index}`,
+        timestamp: `console-time-${index}`,
+      }));
+      const networkEntries = Array.from({ length: 25 }, (_, index) => ({
+        url: `https://example.test/${index}`,
+        method: "GET",
+        status: 200,
+        failed: false,
+        timestamp: `network-time-${index}`,
+      }));
+      const actionTimeline = Array.from({ length: 25 }, (_, index) => ({
+        id: `action-${index}`,
+        action: "click",
+        status: "succeeded" as const,
+        startedAt: `action-time-${index}`,
+      }));
       const routedRequests: Array<{
         readonly operation: string;
         readonly input: unknown;
@@ -179,10 +212,10 @@ it.effect("registers annotated tools and preserves authenticated request context
                   loading: false,
                   visibleText: "Example",
                   interactiveElements: [],
-                  accessibilityTree: {},
-                  consoleEntries: [],
-                  networkEntries: [],
-                  actionTimeline: [],
+                  accessibilityTree: rawAccessibilityTree,
+                  consoleEntries,
+                  networkEntries,
+                  actionTimeline,
                   screenshot: {
                     mimeType: "image/png",
                     data: Buffer.from("png").toString("base64"),
@@ -252,7 +285,13 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(snapshot.isError).toBe(false);
       expect(snapshot.content.some((content) => content.type === "image")).toBe(true);
       expect(snapshot.structuredContent).toMatchObject({
-        accessibilityTree: { mode: "compact" },
+        accessibilityTree: {
+          mode: "compact",
+          nodes: [{ nodeId: "root" }, { nodeId: "submit" }],
+        },
+        consoleEntries: consoleEntries.slice(-20),
+        networkEntries: networkEntries.slice(-20),
+        actionTimeline: actionTimeline.slice(-20),
         screenshot: { mimeType: "image/png", width: 10, height: 5 },
       });
       expect(routedRequests.find(({ operation }) => operation === "snapshot")?.tabId).toBe(
@@ -269,7 +308,12 @@ it.effect("registers annotated tools and preserves authenticated request context
           Effect.provideService(McpSchema.McpServerClient, client),
         );
       expect(fullSnapshot.isError).toBe(false);
-      expect(fullSnapshot.structuredContent).toMatchObject({ accessibilityTree: {} });
+      expect(fullSnapshot.structuredContent).toMatchObject({
+        accessibilityTree: rawAccessibilityTree,
+        consoleEntries: consoleEntries.slice(-20),
+        networkEntries: networkEntries.slice(-20),
+        actionTimeline: actionTimeline.slice(-20),
+      });
       expect(
         routedRequests.find(
           ({ operation, input }) =>

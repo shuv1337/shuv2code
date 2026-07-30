@@ -175,15 +175,14 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
               const { screenshot, ...page } = snapshot;
               const mode = (payload as PreviewAutomationSnapshotInput).mode ?? "compact";
               const metadata = {
-                ...(mode === "full"
-                  ? page
-                  : {
-                      ...page,
-                      accessibilityTree: compactAccessibilityTree(page.accessibilityTree),
-                      consoleEntries: page.consoleEntries.slice(-20),
-                      networkEntries: page.networkEntries.slice(-20),
-                      actionTimeline: page.actionTimeline.slice(-20),
-                    }),
+                ...page,
+                accessibilityTree:
+                  mode === "full"
+                    ? page.accessibilityTree
+                    : compactAccessibilityTree(page.accessibilityTree),
+                consoleEntries: page.consoleEntries.slice(-20),
+                networkEntries: page.networkEntries.slice(-20),
+                actionTimeline: page.actionTimeline.slice(-20),
                 screenshot: {
                   mimeType: screenshot.mimeType,
                   width: screenshot.width,

@@ -59,6 +59,9 @@ const STRUCTURAL_ROLES = new Set([
   "alertdialog",
   "application",
   "article",
+  "banner",
+  "complementary",
+  "contentinfo",
   "dialog",
   "document",
   "form",
@@ -67,10 +70,12 @@ const STRUCTURAL_ROLES = new Set([
   "navigation",
   "region",
   "rootwebarea",
+  "search",
   "status",
 ]);
 
 const URGENT_ROLES = new Set(["alert", "alertdialog", "dialog", "status"]);
+const VALUE_ROLES = new Set(["meter", "progressbar"]);
 
 const STATE_NAMES = new Set([
   "autocomplete",
@@ -81,6 +86,7 @@ const STATE_NAMES = new Set([
   "expanded",
   "focusable",
   "focused",
+  "hasPopup",
   "haspopup",
   "invalid",
   "level",
@@ -142,11 +148,15 @@ function axValue(value: RawNode["role"]): unknown {
 }
 
 function compactStates(node: RawNode): ReadonlyArray<CompactAccessibilityState> {
-  return (node.properties ?? []).flatMap((property) => {
-    if (!STATE_NAMES.has(property.name)) return [];
+  const states = new Map<string, CompactAccessibilityState["value"]>();
+  for (const property of node.properties ?? []) {
+    if (!STATE_NAMES.has(property.name)) continue;
     const value = scalarValue(property.value?.value);
-    return value === undefined ? [] : [{ name: property.name, value }];
-  });
+    if (value === undefined) continue;
+    const name = property.name === "haspopup" ? "hasPopup" : property.name;
+    states.set(name, value);
+  }
+  return [...states].map(([name, value]) => ({ name, value }));
 }
 
 function stateValue(
@@ -168,6 +178,8 @@ function hasMeaningfulState(states: ReadonlyArray<CompactAccessibilityState>): b
 function relevanceScore(
   role: string,
   name: string | undefined,
+  description: string | undefined,
+  value: string | undefined,
   states: ReadonlyArray<CompactAccessibilityState>,
 ): number {
   let score = 0;
@@ -175,6 +187,7 @@ function relevanceScore(
   if (URGENT_ROLES.has(role)) score += 500;
   if (ACTIONABLE_ROLES.has(role)) score += 300;
   if (STRUCTURAL_ROLES.has(role) && name !== undefined) score += 150;
+  if (VALUE_ROLES.has(role) && (value !== undefined || description !== undefined)) score += 150;
   if (hasMeaningfulState(states)) score += 100;
   if (name !== undefined && stateValue(states, "focusable") === true) score += 75;
   if (score === 0) return 0;
@@ -221,11 +234,11 @@ export function compactAccessibilityTree(tree: unknown): CompactAccessibilityTre
     const role = compactText(axValue(node.role))?.toLowerCase();
     if (!role) return [];
     const name = compactText(axValue(node.name));
-    const states = compactStates(node);
-    const score = relevanceScore(role, name, states);
-    if (score === 0) return [];
     const description = compactText(axValue(node.description));
     const value = compactText(axValue(node.value));
+    const states = compactStates(node);
+    const score = relevanceScore(role, name, description, value, states);
+    if (score === 0) return [];
     const context = nearestNamedContext(node, nodesById);
     return [
       {
