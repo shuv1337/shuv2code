@@ -13,6 +13,7 @@ import {
   ModelSelection,
   NonNegativeInt,
   ThreadId,
+  ProviderDriverKind,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -20,7 +21,6 @@ import {
   ProviderSessionStartInput,
   ProviderStopSessionInput,
   type ProviderInstanceId,
-  type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
 } from "@shuv2code/contracts";
@@ -293,7 +293,41 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,
           eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
+        }).pipe(
+          Effect.andThen(publishRuntimeEvent(canonicalEvent)),
+          // Keep the durable OpenCode/shuvcode resume cursor in sync when a
+          // turn settles so a later restart does not re-open a finished turn.
+          Effect.andThen(
+            canonicalEvent.provider === ProviderDriverKind.make("opencode") &&
+              (canonicalEvent.type === "turn.completed" ||
+                canonicalEvent.type === "turn.aborted") &&
+              canonicalEvent.threadId !== undefined
+              ? Effect.gen(function* () {
+                  const adapterOption = yield* registry
+                    .getByInstance(source.instanceId)
+                    .pipe(Effect.option);
+                  if (Option.isNone(adapterOption)) {
+                    return;
+                  }
+                  const sessions = yield* adapterOption.value.listSessions();
+                  const session = sessions.find(
+                    (entry) => entry.threadId === canonicalEvent.threadId,
+                  );
+                  if (!session || session.resumeCursor === undefined) {
+                    return;
+                  }
+                  yield* upsertSessionBinding(
+                    { ...session, providerInstanceId: source.instanceId },
+                    canonicalEvent.threadId,
+                    {
+                      lastRuntimeEvent: `provider.${canonicalEvent.type}`,
+                      lastRuntimeEventAt: canonicalEvent.createdAt,
+                    },
+                  ).pipe(Effect.ignore);
+                })
+              : Effect.void,
+          ),
+        ),
       ),
     );
 
@@ -1045,6 +1079,32 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "ProviderService.stopAll",
           binding,
         );
+        // OpenCode/shuvcode shared services detach on stopAll instead of
+        // aborting. Keep their resume bindings alive so startup recovery can
+        // reattach to durable in-flight work after a shuv2code restart.
+        const durableResume =
+          binding.provider === ProviderDriverKind.make("opencode") &&
+          binding.resumeCursor !== null &&
+          binding.resumeCursor !== undefined &&
+          binding.status !== "stopped";
+        if (durableResume) {
+          return yield* directory.upsert({
+            threadId: binding.threadId,
+            provider: binding.provider,
+            providerInstanceId,
+            status: binding.status === "error" ? "error" : "running",
+            resumeCursor: binding.resumeCursor,
+            runtimePayload: {
+              ...(binding.runtimePayload &&
+              typeof binding.runtimePayload === "object" &&
+              !Array.isArray(binding.runtimePayload)
+                ? binding.runtimePayload
+                : {}),
+              lastRuntimeEvent: "provider.detachAll",
+              lastRuntimeEventAt: yield* nowIso,
+            },
+          });
+        }
         return yield* directory.upsert({
           threadId: binding.threadId,
           provider: binding.provider,
@@ -1063,6 +1123,59 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     });
     yield* analytics.flush;
   });
+
+  // Proactively reattach OpenCode/shuvcode sessions that were left running
+  // (or mid-turn) across a previous process lifetime. Lazy recovery on the
+  // next sendTurn is not enough — an orphaned in-flight turn never receives
+  // its completion events unless something reopens the event pump.
+  yield* Effect.forkScoped(
+    Effect.gen(function* () {
+      const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
+      for (const binding of bindings) {
+        if (binding.provider !== ProviderDriverKind.make("opencode")) {
+          continue;
+        }
+        if (binding.status === "stopped") {
+          continue;
+        }
+        if (binding.resumeCursor === null || binding.resumeCursor === undefined) {
+          continue;
+        }
+        const resumeRecord =
+          typeof binding.resumeCursor === "object" &&
+          binding.resumeCursor !== null &&
+          !Array.isArray(binding.resumeCursor)
+            ? (binding.resumeCursor as Record<string, unknown>)
+            : undefined;
+        const hasInFlightTurn =
+          typeof resumeRecord?.activeTurnId === "string" &&
+          resumeRecord.activeTurnId.trim().length > 0;
+        if (binding.status !== "running" && !hasInFlightTurn) {
+          continue;
+        }
+
+        yield* recoverSessionForThread({
+          binding,
+          operation: "ProviderService.startupRecover",
+        }).pipe(
+          Effect.tap(() =>
+            Effect.logInfo("provider.session.startup-recovered", {
+              threadId: binding.threadId,
+              provider: binding.provider,
+              hasInFlightTurn,
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider.session.startup-recover-failed", {
+              threadId: binding.threadId,
+              provider: binding.provider,
+              cause,
+            }),
+          ),
+        );
+      }
+    }),
+  );
 
   yield* Effect.addFinalizer(() =>
     runStopAll().pipe(

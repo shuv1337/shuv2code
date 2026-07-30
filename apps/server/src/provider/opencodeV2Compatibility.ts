@@ -274,6 +274,11 @@ function makeOpenCodeV2Client(options: {
         }),
     },
     session: {
+      active: () =>
+        request<{ data: Record<string, { readonly type: "running" }> }>(
+          "GET",
+          "/api/session/active",
+        ),
       get: (input: { readonly sessionID: string }) =>
         data<V2SessionInfo>("GET", sessionPath(input.sessionID)),
       create: (input?: { readonly location?: unknown }) =>
@@ -952,6 +957,21 @@ export function createOpenCodeV2CompatibilityClient(
       get: async (request: { readonly sessionID: string }) => ({
         data: toV1Session(await client.session.get(request)),
       }),
+      // Map V2's /api/session/active onto the V1-shaped session.status response
+      // so callers can probe which durable sessions are still executing after a
+      // reconnect without depending on live event delivery.
+      status: async () => {
+        const active = await client.session.active();
+        const data: Record<string, { readonly type: "busy" | "idle" }> = {};
+        for (const sessionID of Object.keys(active.data ?? {})) {
+          data[sessionID] = { type: "busy" };
+        }
+        return { data };
+      },
+      wait: async (request: { readonly sessionID: string }) => {
+        await client.session.wait(request);
+        return { data: true };
+      },
       // V2 has no per-session permission-ruleset update. shuv2code still calls this
       // after create/resume; keep a no-op so V1 call sites compile, and rely on
       // V2 agent defaults plus permission.asked / question.asked events.

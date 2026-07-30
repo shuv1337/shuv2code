@@ -807,9 +807,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          // Only promote latestTurnId when a turn becomes active. Clearing it
+          // on every ready/error session-set (activeTurnId null) drops the shell's
+          // latestTurn and makes hasQueuedTurnStart treat the last user message
+          // as unadopted work — blocking Settle for the grace window after every
+          // completed turn.
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.session.activeTurnId,
+            latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

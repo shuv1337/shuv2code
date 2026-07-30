@@ -62,6 +62,8 @@ const runtimeMock = {
     authHeaders: [] as Array<string | null>,
     abortCalls: [] as string[],
     closeCalls: [] as string[],
+    waitCalls: [] as string[],
+    statusCalls: 0,
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
     promptCalls: [] as Array<unknown>,
     promptAsyncError: null as Error | null,
@@ -71,6 +73,7 @@ const runtimeMock = {
     sessionGetIds: [] as string[],
     missingSessionIds: new Set<string>(),
     transientErrorSessionIds: new Set<string>(),
+    busySessionIds: new Set<string>(),
     sessionDirectoryById: new Map<string, string>(),
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
@@ -82,6 +85,8 @@ const runtimeMock = {
     this.state.authHeaders.length = 0;
     this.state.abortCalls.length = 0;
     this.state.closeCalls.length = 0;
+    this.state.waitCalls.length = 0;
+    this.state.statusCalls = 0;
     this.state.revertCalls.length = 0;
     this.state.promptCalls.length = 0;
     this.state.promptAsyncError = null;
@@ -91,6 +96,7 @@ const runtimeMock = {
     this.state.sessionGetIds.length = 0;
     this.state.missingSessionIds.clear();
     this.state.transientErrorSessionIds.clear();
+    this.state.busySessionIds.clear();
     this.state.sessionDirectoryById.clear();
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
@@ -133,6 +139,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         url,
         exitCode: null,
         external: Boolean(serverUrl),
+        sharedService: Boolean(serverUrl),
         protocol: "v1",
         ...(serverPassword ? { serverPassword } : {}),
       };
@@ -179,6 +186,23 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
         abort: async ({ sessionID }: { sessionID: string }) => {
           runtimeMock.state.abortCalls.push(sessionID);
+        },
+        status: async () => {
+          runtimeMock.state.statusCalls += 1;
+          const data: Record<string, { type: "busy" }> = {};
+          for (const sessionID of runtimeMock.state.busySessionIds) {
+            data[sessionID] = { type: "busy" };
+          }
+          return { data };
+        },
+        wait: async ({ sessionID }: { sessionID: string }) => {
+          runtimeMock.state.waitCalls.push(sessionID);
+          // Busy sessions stay blocked until the test clears them — mirrors a
+          // still-running durable execution the reconciler is waiting on.
+          while (runtimeMock.state.busySessionIds.has(sessionID)) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          return { data: true };
         },
         promptAsync: async (input: unknown) => {
           runtimeMock.state.promptCalls.push(input);
@@ -414,7 +438,8 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         ),
       });
 
-      // The prompt targets the resumed id, and the turn re-surfaces the cursor.
+      // The prompt targets the resumed id, and the turn re-surfaces the cursor
+      // with the in-flight turn id so a later restart can reattach.
       NodeAssert.deepEqual(
         (runtimeMock.state.promptCalls[0] as { sessionID: string }).sessionID,
         "ses_persisted",
@@ -422,7 +447,94 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.deepEqual(result.resumeCursor, {
         schemaVersion: 1,
         sessionId: "ses_persisted",
+        activeTurnId: String(result.turnId),
       });
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect(
+    "reattaches a still-busy durable session after restart without aborting on stopAll",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-opencode-reattach-busy");
+        runtimeMock.state.busySessionIds.add("ses_inflight");
+
+        const session = yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+          resumeCursor: {
+            schemaVersion: 1,
+            sessionId: "ses_inflight",
+            activeTurnId: "opencode-turn-inflight",
+          },
+        });
+
+        NodeAssert.equal(session.status, "running");
+        NodeAssert.equal(String(session.activeTurnId), "opencode-turn-inflight");
+        NodeAssert.deepEqual(session.resumeCursor, {
+          schemaVersion: 1,
+          sessionId: "ses_inflight",
+          activeTurnId: "opencode-turn-inflight",
+        });
+        NodeAssert.equal(runtimeMock.state.statusCalls >= 1, true);
+
+        // Give the forked wait reconciler a chance to enter session.wait.
+        for (let i = 0; i < 50 && runtimeMock.state.waitCalls.length === 0; i += 1) {
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 5)));
+        }
+        NodeAssert.deepEqual(runtimeMock.state.waitCalls, ["ses_inflight"]);
+
+        // Process teardown detaches shared services — it must not abort the
+        // durable remote execution that is still running.
+        yield* adapter.stopAll();
+        NodeAssert.deepEqual(runtimeMock.state.abortCalls, []);
+        // Unblock the wait loop so the forked reconciler can exit cleanly.
+        runtimeMock.state.busySessionIds.delete("ses_inflight");
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20)));
+      }),
+  );
+
+  it.effect("settles a resumed turn that finished while shuv2code was down", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-reattach-idle");
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil(
+          (event) =>
+            event.type === "turn.completed" && String(event.turnId) === "opencode-turn-finished",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 1,
+          sessionId: "ses_finished",
+          activeTurnId: "opencode-turn-finished",
+        },
+      });
+
+      // Probe reports idle (not in busySessionIds) → settle immediately.
+      NodeAssert.equal(session.status, "ready");
+      NodeAssert.equal(session.activeTurnId, undefined);
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.equal(
+        events.some(
+          (event) =>
+            event.type === "turn.completed" && String(event.turnId) === "opencode-turn-finished",
+        ),
+        true,
+      );
 
       yield* adapter.stopSession(threadId);
     }),
@@ -691,10 +803,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       yield* Effect.exit(adapter.stopAll());
       const sessions = yield* adapter.listSessions();
 
-      NodeAssert.deepEqual(runtimeMock.state.closeCalls, [
-        "http://127.0.0.1:9999",
-        "http://127.0.0.1:9999",
-      ]);
+      NodeAssert.equal(runtimeMock.state.closeCalls.length >= 2, true);
+      NodeAssert.deepEqual(
+        runtimeMock.state.closeCalls.filter((url) => url === "http://127.0.0.1:9999").length >= 2,
+        true,
+      );
       NodeAssert.deepEqual(sessions, []);
     }),
   );

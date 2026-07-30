@@ -93,7 +93,8 @@ function SidebarBrand({
       <img alt="" aria-hidden className="size-[26px] shrink-0" src="/brand/shuv2code-mark.svg" />
       <span
         className={cn(
-          "truncate text-sm font-semibold tracking-tight",
+          // Mark horns push geometric center up; nudge wordmark down for optical alignment.
+          "translate-y-px truncate text-sm font-semibold tracking-tight",
           onBackdrop ? "text-white/70" : isOnSettings ? "text-foreground" : "text-foreground/90",
         )}
       >

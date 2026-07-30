@@ -62,13 +62,36 @@ const PROVIDER = ProviderDriverKind.make("opencode");
  */
 const OPENCODE_RESUME_VERSION = 1 as const;
 
+interface OpenCodeResumeCursor {
+  readonly schemaVersion: typeof OPENCODE_RESUME_VERSION;
+  readonly sessionId: string;
+  /**
+   * Provider turn id still in flight when the cursor was last written. Used to
+   * re-adopt a mid-turn shuvcode/OpenCode execution after shuv2code restarts
+   * without minting a conflicting turn id that orchestration would reject.
+   */
+  readonly activeTurnId?: string;
+}
+
+function makeOpenCodeResumeCursor(input: {
+  readonly sessionId: string;
+  readonly activeTurnId?: string;
+}): OpenCodeResumeCursor {
+  return {
+    schemaVersion: OPENCODE_RESUME_VERSION,
+    sessionId: input.sessionId,
+    ...(input.activeTurnId !== undefined ? { activeTurnId: input.activeTurnId } : {}),
+  };
+}
+
 /**
- * Decode a persisted resume cursor into the upstream `ses_…` id. Anything
- * that isn't a current-version cursor with a non-empty id means "no resume"
- * rather than an error. Re-adopting the session id IS the resume mechanism —
- * OpenCode scopes a conversation's history by session id.
+ * Decode a persisted resume cursor into the upstream `ses_…` id (and any
+ * in-flight turn id). Anything that isn't a current-version cursor with a
+ * non-empty id means "no resume" rather than an error. Re-adopting the
+ * session id IS the resume mechanism — OpenCode scopes a conversation's
+ * history by session id.
  */
-function parseOpenCodeResume(raw: unknown): { readonly sessionId: string } | undefined {
+function parseOpenCodeResume(raw: unknown): OpenCodeResumeCursor | undefined {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return undefined;
   }
@@ -79,7 +102,24 @@ function parseOpenCodeResume(raw: unknown): { readonly sessionId: string } | und
   if (typeof record.sessionId !== "string" || record.sessionId.trim().length === 0) {
     return undefined;
   }
-  return { sessionId: record.sessionId.trim() };
+  const activeTurnId =
+    typeof record.activeTurnId === "string" && record.activeTurnId.trim().length > 0
+      ? record.activeTurnId.trim()
+      : undefined;
+  return {
+    schemaVersion: OPENCODE_RESUME_VERSION,
+    sessionId: record.sessionId.trim(),
+    ...(activeTurnId !== undefined ? { activeTurnId } : {}),
+  };
+}
+
+/**
+ * Whether this connection is a durable shared shuvcode/OpenCode service that
+ * outlives the shuv2code process. Private child servers die with us; shared
+ * ones must be detached (not aborted) on shutdown so in-flight work survives.
+ */
+function isSharedOpenCodeServer(server: OpenCodeServerConnection): boolean {
+  return server.sharedService === true || server.external === true;
 }
 
 /**
@@ -565,20 +605,57 @@ function updateProviderSession(
   });
 }
 
+/**
+ * Keep the durable resume cursor in lockstep with the in-flight provider turn
+ * so a shuv2code restart can re-adopt the same turn id orchestration already
+ * tracks (turn.completed must match activeTurnId or it is dropped).
+ */
+function writeOpenCodeResumeCursor(
+  context: OpenCodeSessionContext,
+  options?: { readonly clearActiveTurnId?: boolean },
+): void {
+  const activeTurnId =
+    options?.clearActiveTurnId === true
+      ? undefined
+      : (context.activeTurnId ??
+        (typeof context.session.activeTurnId === "string"
+          ? context.session.activeTurnId
+          : undefined));
+  context.session = {
+    ...context.session,
+    resumeCursor: makeOpenCodeResumeCursor({
+      sessionId: context.openCodeSessionId,
+      ...(activeTurnId !== undefined ? { activeTurnId: String(activeTurnId) } : {}),
+    }),
+  };
+}
+
 const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
   context: OpenCodeSessionContext,
+  options?: {
+    /**
+     * `abort` (default) tells the remote session to stop — user-initiated
+     * stop/interrupt. `detach` only tears down local pumps/scopes so a
+     * durable shared shuvcode service can keep running across shuv2code
+     * restarts.
+     */
+    readonly mode?: "abort" | "detach";
+  },
 ) {
   // Race-safe one-shot: first caller flips the flag, everyone else no-ops.
   if (yield* Ref.getAndSet(context.stopped, true)) {
     return false;
   }
 
-  // Best-effort remote abort. The scope close below tears down the local
-  // handles (event-pump fiber, server-exit fiber, event-subscribe fetch),
-  // but we still want to tell OpenCode that this session is done.
-  yield* runOpenCodeSdk("session.abort", () =>
-    context.client.session.abort({ sessionID: context.openCodeSessionId }),
-  ).pipe(Effect.ignore({ log: true }));
+  const mode = options?.mode ?? "abort";
+  if (mode === "abort") {
+    // Best-effort remote abort. The scope close below tears down the local
+    // handles (event-pump fiber, server-exit fiber, event-subscribe fetch),
+    // but we still want to tell OpenCode that this session is done.
+    yield* runOpenCodeSdk("session.abort", () =>
+      context.client.session.abort({ sessionID: context.openCodeSessionId }),
+    ).pipe(Effect.ignore({ log: true }));
+  }
 
   // Closing the session scope interrupts every fiber forked into it and
   // runs each finalizer we registered — the `AbortController.abort()` call,
@@ -652,8 +729,10 @@ export function makeOpenCodeAdapter(
     // session. Each session's `Scope.close` tears down its spawned OpenCode
     // server (via the `ChildProcessSpawner` finalizer installed in
     // `startOpenCodeServerProcess`) and interrupts the forked event/exit
-    // fibers. Consumers that can't reason about Effect scopes therefore
-    // cannot leak OpenCode child processes by forgetting to call `stopAll`.
+    // fibers. Durable shared shuvcode services are detached (not aborted) so
+    // in-flight work survives a shuv2code restart. Consumers that can't reason
+    // about Effect scopes therefore cannot leak OpenCode child processes by
+    // forgetting to call `stopAll`.
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         const contexts = [...sessions.values()];
@@ -663,7 +742,12 @@ export function makeOpenCodeAdapter(
         // the remaining cleanups.
         yield* Effect.forEach(
           contexts,
-          (context) => Effect.ignoreCause(stopOpenCodeContext(context)),
+          (context) =>
+            Effect.ignoreCause(
+              stopOpenCodeContext(context, {
+                mode: isSharedOpenCodeServer(context.server) ? "detach" : "abort",
+              }),
+            ),
           { concurrency: "unbounded", discard: true },
         );
         // Close the logger AFTER session teardown so any final lifecycle
@@ -1065,6 +1149,7 @@ export function makeOpenCodeAdapter(
               status: "running",
               activeTurnId: turnId,
             });
+            writeOpenCodeResumeCursor(context);
           }
 
           if (event.properties.status.type === "retry") {
@@ -1086,6 +1171,7 @@ export function makeOpenCodeAdapter(
           if (event.properties.status.type === "idle" && turnId) {
             context.activeTurnId = undefined;
             yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+            writeOpenCodeResumeCursor(context, { clearActiveTurnId: true });
             yield* emit({
               ...(yield* buildEventBase({
                 threadId: context.session.threadId,
@@ -1114,6 +1200,7 @@ export function makeOpenCodeAdapter(
             },
             { clearActiveTurnId: true },
           );
+          writeOpenCodeResumeCursor(context, { clearActiveTurnId: true });
           if (activeTurnId) {
             yield* emit({
               ...(yield* buildEventBase({
@@ -1147,6 +1234,7 @@ export function makeOpenCodeAdapter(
           const activeTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
           yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+          writeOpenCodeResumeCursor(context, { clearActiveTurnId: true });
           if (activeTurnId) {
             yield* emit({
               ...(yield* buildEventBase({
@@ -1233,13 +1321,109 @@ export function makeOpenCodeAdapter(
       }
     });
 
+    /**
+     * After re-adopting a durable session that still has an in-flight turn,
+     * wait for the remote execution to go idle and settle the turn if live
+     * events did not already do so (e.g. completion happened during the
+     * shuv2code outage and was never observed on the event stream).
+     */
+    const startResumedTurnReconciler = Effect.fn("startResumedTurnReconciler")(function* (
+      context: OpenCodeSessionContext,
+      resumedTurnId: TurnId,
+    ) {
+      const client = context.client as OpencodeClient & {
+        readonly session: OpencodeClient["session"] & {
+          readonly wait?: (input: {
+            readonly sessionID: string;
+          }) => Promise<{ readonly data?: unknown }>;
+        };
+      };
+      if (typeof client.session.wait !== "function") {
+        return;
+      }
+
+      yield* runOpenCodeSdk("session.wait", () =>
+        client.session.wait!({ sessionID: context.openCodeSessionId }),
+      ).pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (yield* Ref.get(context.stopped)) {
+              return;
+            }
+            // Live event pump may already have settled this turn.
+            if (context.activeTurnId !== resumedTurnId) {
+              return;
+            }
+            context.activeTurnId = undefined;
+            yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+            writeOpenCodeResumeCursor(context, { clearActiveTurnId: true });
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId: resumedTurnId,
+              })),
+              type: "turn.completed",
+              payload: {
+                state: "completed",
+              },
+            });
+          }),
+        ),
+        Effect.catch((cause) =>
+          Effect.logWarning("OpenCode resumed turn reconciler failed", {
+            threadId: context.session.threadId,
+            sessionId: context.openCodeSessionId,
+            turnId: resumedTurnId,
+            cause,
+          }),
+        ),
+        Effect.forkIn(context.sessionScope),
+      );
+    });
+
+    /**
+     * Probe whether a durable upstream session is still executing. V2 exposes
+     * this via session.status (mapped from /api/session/active). Missing or
+     * unsupported probes are treated as "unknown" so we fall back to the
+     * persisted activeTurnId rather than forcing idle.
+     */
+    const probeOpenCodeSessionBusy = (
+      client: OpencodeClient,
+      sessionId: string,
+    ): Effect.Effect<boolean | undefined, OpenCodeRuntimeError> => {
+      const statusClient = client as OpencodeClient & {
+        readonly session: OpencodeClient["session"] & {
+          readonly status?: (input?: unknown) => Promise<{
+            readonly data?: Record<string, { readonly type?: string }>;
+          }>;
+        };
+      };
+      if (typeof statusClient.session.status !== "function") {
+        return Effect.succeed(undefined);
+      }
+      return runOpenCodeSdk("session.status", () => statusClient.session.status!()).pipe(
+        Effect.map((response) => {
+          const entry = response.data?.[sessionId];
+          if (!entry || typeof entry.type !== "string") {
+            return false;
+          }
+          return entry.type === "busy" || entry.type === "running" || entry.type === "retry";
+        }),
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+    };
+
     const startSession: OpenCodeAdapterShape["startSession"] = Effect.fn("startSession")(
       function* (input) {
         const binaryPath = openCodeSettings.binaryPath;
         const serverUrl = openCodeSettings.serverUrl;
         const serverPassword = openCodeSettings.serverPassword;
         const directory = input.cwd ?? serverConfig.cwd;
-        const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
+        const resumeCursor = parseOpenCodeResume(input.resumeCursor);
+        const resumeSessionId = resumeCursor?.sessionId;
+        const resumeActiveTurnId = resumeCursor?.activeTurnId
+          ? TurnId.make(resumeCursor.activeTurnId)
+          : undefined;
         const existing = sessions.get(input.threadId);
         if (existing) {
           yield* stopOpenCodeContext(existing);
@@ -1400,10 +1584,26 @@ export function makeOpenCodeAdapter(
         }
 
         const createdAt = yield* nowIso;
+        // When re-adopting a durable session, prefer a live busy probe and
+        // fall back to the persisted in-flight turn id. Private V1 child
+        // servers never survive a restart, so only shared services can still
+        // be busy here.
+        const remoteBusy =
+          !started.created && isSharedOpenCodeServer(started.server)
+            ? yield* probeOpenCodeSessionBusy(started.client, started.openCodeSession.id)
+            : false;
+        const resumedTurnId =
+          !started.created && resumeActiveTurnId !== undefined ? resumeActiveTurnId : undefined;
+        // Keep the turn open only when the remote is busy or the probe could
+        // not decide. A confirmed-idle remote means the work finished while
+        // shuv2code was down — settle it below instead of re-opening running.
+        const adoptInFlightTurn = resumedTurnId !== undefined && remoteBusy !== false;
+        const adoptedTurnId = adoptInFlightTurn ? resumedTurnId : undefined;
+
         const session: ProviderSession = {
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
-          status: "ready",
+          status: adoptedTurnId !== undefined ? "running" : "ready",
           runtimeMode: input.runtimeMode,
           cwd: directory,
           ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
@@ -1411,10 +1611,13 @@ export function makeOpenCodeAdapter(
           // ProviderService persists this cursor and feeds it back into
           // `startSession` after the in-memory session is lost (reaper /
           // restart), so follow-ups continue the same conversation (#3604).
-          resumeCursor: {
-            schemaVersion: OPENCODE_RESUME_VERSION,
+          // When a turn is still in flight, stamp its id so a second restart
+          // re-adopts the same orchestration-visible turn id.
+          resumeCursor: makeOpenCodeResumeCursor({
             sessionId: started.openCodeSession.id,
-          },
+            ...(adoptedTurnId !== undefined ? { activeTurnId: String(adoptedTurnId) } : {}),
+          }),
+          ...(adoptedTurnId !== undefined ? { activeTurnId: adoptedTurnId } : {}),
           createdAt,
           updatedAt: createdAt,
         };
@@ -1432,7 +1635,7 @@ export function makeOpenCodeAdapter(
           messageRoleById: new Map(),
           completedAssistantPartIds: new Set(),
           turns: [],
-          activeTurnId: undefined,
+          activeTurnId: adoptedTurnId,
           activeAgent: undefined,
           activeVariant: undefined,
           stopped: yield* Ref.make(false),
@@ -1440,6 +1643,36 @@ export function makeOpenCodeAdapter(
         };
         sessions.set(input.threadId, context);
         yield* startEventPump(context);
+
+        if (resumedTurnId !== undefined) {
+          if (adoptedTurnId !== undefined) {
+            // Still running (or unknown): reattach and wait for terminal state.
+            yield* Effect.logInfo("OpenCode reattached to in-flight durable session", {
+              threadId: input.threadId,
+              sessionId: started.openCodeSession.id,
+              turnId: adoptedTurnId,
+              remoteBusy,
+            });
+            yield* startResumedTurnReconciler(context, adoptedTurnId);
+          } else {
+            // Probe confirmed idle — the turn finished while we were down.
+            yield* Effect.logInfo("OpenCode settled turn completed during disconnect", {
+              threadId: input.threadId,
+              sessionId: started.openCodeSession.id,
+              turnId: resumedTurnId,
+            });
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: input.threadId,
+                turnId: resumedTurnId,
+              })),
+              type: "turn.completed",
+              payload: {
+                state: "completed",
+              },
+            });
+          }
+        }
 
         yield* emit({
           ...(yield* buildEventBase({ threadId: input.threadId })),
@@ -1456,7 +1689,7 @@ export function makeOpenCodeAdapter(
           },
         });
 
-        return session;
+        return context.session;
       },
     );
 
@@ -1520,6 +1753,7 @@ export function makeOpenCodeAdapter(
         },
         { clearLastError: true },
       );
+      writeOpenCodeResumeCursor(context);
 
       if (steeringTurnId === undefined) {
         yield* emit({
@@ -1563,6 +1797,7 @@ export function makeOpenCodeAdapter(
                   },
                   { clearActiveTurnId: true },
                 );
+                writeOpenCodeResumeCursor(context, { clearActiveTurnId: true });
                 yield* emit({
                   ...(yield* buildEventBase({
                     threadId: input.threadId,
@@ -1582,6 +1817,8 @@ export function makeOpenCodeAdapter(
         turnId,
         // Re-surface the durable cursor on every turn so the persisted binding
         // is refreshed alongside last-seen/runtime state (mirrors Grok/Codex).
+        // Includes activeTurnId while the turn is in flight so a shuv2code
+        // restart can reattach to the same orchestration turn.
         ...(context.session.resumeCursor !== undefined
           ? { resumeCursor: context.session.resumeCursor }
           : {}),
@@ -1597,6 +1834,7 @@ export function makeOpenCodeAdapter(
         ).pipe(Effect.mapError(toRequestError));
         context.activeTurnId = undefined;
         yield* updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
+        writeOpenCodeResumeCursor(context, { clearActiveTurnId: true });
         if (interruptedTurnId) {
           yield* emit({
             ...(yield* buildEventBase({
@@ -1743,10 +1981,16 @@ export function makeOpenCodeAdapter(
         // `stopOpenCodeContext` is typed as never-failing — SDK aborts are
         // already `Effect.ignore`'d inside it. `ignoreCause` here also
         // swallows defects from throwing finalizers so one bad close can't
-        // interrupt the sibling fibers. Same pattern as the layer finalizer.
+        // interrupt the sibling fibers. Shared durable services detach only
+        // so their executions outlive this process (same as the layer finalizer).
         yield* Effect.forEach(
           contexts,
-          (context) => Effect.ignoreCause(stopOpenCodeContext(context)),
+          (context) =>
+            Effect.ignoreCause(
+              stopOpenCodeContext(context, {
+                mode: isSharedOpenCodeServer(context.server) ? "detach" : "abort",
+              }),
+            ),
           { concurrency: "unbounded", discard: true },
         );
       });

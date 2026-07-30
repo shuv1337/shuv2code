@@ -1435,6 +1435,15 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.deepEqual(settledRows, [
         { state: "completed", completedAt: "2026-01-01T00:01:00.000Z" },
       ]);
+
+      // Ready session-set must not wipe latest_turn_id — that drops the shell's
+      // latestTurn and blocks Settle via hasQueuedTurnStart after every turn.
+      const latestTurnRows = yield* sql<{ readonly latestTurnId: string | null }>`
+        SELECT latest_turn_id AS "latestTurnId"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(latestTurnRows, [{ latestTurnId: String(turnId) }]);
     }),
   );
 
