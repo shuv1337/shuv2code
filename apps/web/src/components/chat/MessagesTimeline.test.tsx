@@ -690,4 +690,96 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("lucide-x");
     expect(markup).toContain('aria-label="Tool call failed"');
   });
+
+  it("renders image content returned by a model tool", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-image-tool",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "work-image-tool",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "shuv2code · preview_snapshot",
+              tone: "tool",
+              itemType: "mcp_tool_call",
+              images: [
+                {
+                  id: "snapshot-call:content:0",
+                  name: "Preview snapshot image",
+                  mimeType: "image/png",
+                  previewUrl: "data:image/png;base64,iVBORw0KGgo=",
+                },
+              ],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-tool-result-images="1"');
+    expect(markup).toContain('aria-label="Expand Preview snapshot image"');
+    expect(markup).toContain('src="data:image/png;base64,iVBORw0KGgo="');
+    expect(markup).toContain('alt="Preview snapshot image"');
+  });
+
+  it("keeps tool images visible when the completed turn work is folded", () => {
+    const turnId = TurnId.make("turn-with-image");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        latestTurn={{
+          turnId,
+          state: "completed",
+          startedAt: "2026-03-17T19:12:29.000Z",
+          completedAt: "2026-03-17T19:12:31.000Z",
+        }}
+        timelineEntries={[
+          buildUserTimelineEntry("Show me the screenshot"),
+          {
+            id: "entry-image-tool",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            entry: {
+              id: "work-image-tool",
+              turnId,
+              createdAt: "2026-03-17T19:12:30.000Z",
+              label: "shuv2code · preview_snapshot",
+              tone: "tool",
+              itemType: "mcp_tool_call",
+              images: [
+                {
+                  id: "snapshot-call:content:0",
+                  name: "Preview snapshot image",
+                  mimeType: "image/png",
+                  previewUrl: "data:image/png;base64,iVBORw0KGgo=",
+                },
+              ],
+            },
+          },
+          {
+            id: "entry-assistant-final",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:31.000Z",
+            message: {
+              id: MessageId.make("assistant-image-final"),
+              role: "assistant",
+              text: "Displayed above.",
+              turnId,
+              createdAt: "2026-03-17T19:12:31.000Z",
+              updatedAt: "2026-03-17T19:12:31.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Worked for 2s");
+    expect(markup).toContain('data-tool-result-images="1"');
+    expect(markup).toContain('aria-label="Expand Preview snapshot image"');
+  });
 });

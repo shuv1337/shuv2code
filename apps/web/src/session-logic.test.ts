@@ -961,6 +961,71 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.toolData).toEqual(item);
   });
 
+  it("derives inline images from completed MCP tool results", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "mcp-image-done",
+        kind: "tool.completed",
+        summary: "shuv2code · preview_snapshot",
+        payload: {
+          itemType: "mcp_tool_call",
+          data: {
+            item: {
+              id: "snapshot-call",
+              type: "mcpToolCall",
+              result: {
+                content: [
+                  { type: "text", text: "snapshot" },
+                  { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.images).toEqual([
+      {
+        id: "snapshot-call:content:0",
+        name: "shuv2code · preview snapshot image",
+        mimeType: "image/png",
+        previewUrl: "data:image/png;base64,iVBORw0KGgo=",
+      },
+    ]);
+  });
+
+  it("derives workspace images from completed image view items", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "image-view-done",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          itemType: "image_view",
+          data: {
+            item: {
+              id: "image-view-call",
+              type: "imageView",
+              path: "/workspace/screenshots/result.png",
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.images).toEqual([
+      {
+        id: "image-view-call:view",
+        name: "result.png",
+        mimeType: "image/*",
+        workspacePath: "/workspace/screenshots/result.png",
+      },
+    ]);
+  });
+
   it("keeps MCP payloads while collapsing lifecycle updates", () => {
     const item = {
       type: "mcpToolCall",

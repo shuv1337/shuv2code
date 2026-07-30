@@ -31,6 +31,7 @@ import {
   workEntryIndicatesToolSuccess,
   workLogEntryIsToolLike,
 } from "../../session-logic";
+import { stringifyToolDataForDisplay, type ToolResultImage } from "../../toolResultImages";
 import { type TurnDiffSummary } from "../../types";
 import {
   getRenderablePatch,
@@ -102,6 +103,7 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@shuv2code/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
+import { useAssetUrlState } from "../../assets/assetUrls";
 
 import {
   buildInlineTerminalContextText,
@@ -1038,6 +1040,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         <span>{row.label}</span>
         <Icon className="size-3.5" />
       </button>
+      {!row.expanded ? <ToolResultImageGallery images={row.images} /> : null}
     </div>
   );
 }
@@ -1927,7 +1930,7 @@ function buildToolCallExpandedBody(
 ): string | null {
   const blocks: string[] = [];
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
-    blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
+    blocks.push(`MCP call\n${stringifyToolDataForDisplay(workEntry.toolData)}`);
   }
   const raw = workEntryRawCommand(workEntry);
   if (raw?.trim()) {
@@ -1996,6 +1999,112 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 }
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
+
+function ToolResultImageButton(props: {
+  image: ToolResultImage;
+  src: string;
+  previewImages: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly src: string;
+  }>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <button
+      type="button"
+      className="group/image relative block min-h-24 w-full cursor-zoom-in overflow-hidden rounded-lg border border-border/70 bg-background/70"
+      aria-label={`Expand ${props.image.name}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        const index = props.previewImages.findIndex((image) => image.id === props.image.id);
+        if (index < 0) return;
+        ctx.onImageExpand({
+          images: props.previewImages.map(({ name, src }) => ({ name, src })),
+          index,
+        });
+      }}
+      onPointerDown={stopRowToggle}
+    >
+      <img
+        src={props.src}
+        alt={props.image.name}
+        loading="lazy"
+        draggable={false}
+        className="block max-h-80 w-full object-contain transition-transform duration-200 group-hover/image:scale-[1.01]"
+      />
+    </button>
+  );
+}
+
+function WorkspaceToolResultImage(props: { image: ToolResultImage; threadRef: ScopedThreadRef }) {
+  const assetUrl = useAssetUrlState(props.threadRef.environmentId, {
+    _tag: "workspace-file",
+    threadId: props.threadRef.threadId,
+    path: props.image.workspacePath!,
+  });
+  if (assetUrl._tag === "Loading") {
+    return (
+      <div className="flex min-h-24 items-center justify-center rounded-lg border border-border/70 bg-background/70 text-xs text-muted-foreground">
+        <LoaderCircleIcon className="mr-2 size-3.5 animate-spin" />
+        Loading image…
+      </div>
+    );
+  }
+  if (assetUrl._tag === "Failure") {
+    return (
+      <div className="flex min-h-24 items-center justify-center rounded-lg border border-destructive/30 bg-background/70 px-3 text-center text-xs text-destructive">
+        Unable to load {props.image.name}
+      </div>
+    );
+  }
+  return (
+    <ToolResultImageButton
+      image={props.image}
+      src={assetUrl.url}
+      previewImages={[{ id: props.image.id, name: props.image.name, src: assetUrl.url }]}
+    />
+  );
+}
+
+function ToolResultImageGallery(props: { images: ReadonlyArray<ToolResultImage> }) {
+  const ctx = use(TimelineRowCtx);
+  if (props.images.length === 0) return null;
+  const inlineImages = props.images.flatMap((image) =>
+    image.previewUrl ? [{ id: image.id, name: image.name, src: image.previewUrl }] : [],
+  );
+  return (
+    <div
+      className={cn(
+        "mt-1.5 ms-7 grid max-w-2xl gap-2",
+        props.images.length > 1 ? "grid-cols-2" : "grid-cols-1",
+      )}
+      data-tool-result-images={props.images.length}
+      onClick={stopRowToggle}
+      onPointerDown={stopRowToggle}
+    >
+      {props.images.map((image) =>
+        image.previewUrl ? (
+          <ToolResultImageButton
+            key={image.id}
+            image={image}
+            src={image.previewUrl}
+            previewImages={inlineImages}
+          />
+        ) : image.workspacePath && ctx.threadRef ? (
+          <WorkspaceToolResultImage key={image.id} image={image} threadRef={ctx.threadRef} />
+        ) : (
+          <div
+            key={image.id}
+            className="flex min-h-24 items-center justify-center rounded-lg border border-border/70 bg-background/70 px-3 text-center text-xs text-muted-foreground"
+          >
+            {image.name}
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
 
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
@@ -2141,6 +2250,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           </div>
         </div>
       </div>
+      <ToolResultImageGallery images={workEntry.images ?? []} />
       {expanded && canExpand && expandedBody ? (
         <div
           className="mt-1 ms-7 cursor-default border-s border-border/45 ps-3 pt-0.5"

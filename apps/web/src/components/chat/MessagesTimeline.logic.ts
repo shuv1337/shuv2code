@@ -156,6 +156,7 @@ export type MessagesTimelineRow =
       turnId: TurnId;
       label: string;
       expanded: boolean;
+      images: NonNullable<WorkLogEntry["images"]>;
     }
   | {
       kind: "message";
@@ -253,6 +254,7 @@ interface TurnFold {
   createdAt: string;
   hiddenEntryIds: ReadonlySet<string>;
   label: string;
+  images: NonNullable<WorkLogEntry["images"]>;
 }
 
 /**
@@ -390,6 +392,9 @@ function deriveTurnFolds(input: {
       : duration
         ? `Worked for ${duration}`
         : "Worked";
+    const images = group.entries.flatMap((entry) =>
+      entry.kind === "work" ? (entry.entry.images ?? []) : [],
+    );
 
     foldsByAnchorEntryId.set(firstEntry.id, {
       turnId,
@@ -397,6 +402,7 @@ function deriveTurnFolds(input: {
       createdAt: firstEntry.createdAt,
       hiddenEntryIds,
       label,
+      images,
     });
   }
   return foldsByAnchorEntryId;
@@ -452,6 +458,7 @@ export function deriveMessagesTimelineRows(input: {
         turnId: turnFold.turnId,
         label: turnFold.label,
         expanded: input.expandedTurnIds?.has(turnFold.turnId) ?? false,
+        images: turnFold.images,
       });
     }
 
@@ -604,7 +611,12 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "turn-fold": {
       const bf = b as typeof a;
-      return a.createdAt === bf.createdAt && a.label === bf.label && a.expanded === bf.expanded;
+      return (
+        a.createdAt === bf.createdAt &&
+        a.label === bf.label &&
+        a.expanded === bf.expanded &&
+        Equal.equals(a.images, bf.images)
+      );
     }
 
     case "proposed-plan":
