@@ -143,4 +143,12 @@ describe("compactAccessibilityTree", () => {
       unavailableReason: "Chrome accessibility tree was unavailable or malformed.",
     });
   });
+
+  it("preserves a compact tree produced by the desktop host", () => {
+    const compact = compactAccessibilityTree({
+      nodes: [axNode({ nodeId: "submit", role: "button", name: "Submit" })],
+    });
+
+    expect(compactAccessibilityTree(compact)).toEqual(compact);
+  });
 });
