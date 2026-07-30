@@ -75,6 +75,7 @@ export {
 };
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
+const DEFAULT_HISTORY_BYTE_LIMIT = 4 * 1024 * 1024;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
 const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
@@ -852,16 +853,33 @@ function defaultSubprocessInspectorForPlatform(platform: NodeJS.Platform) {
   });
 }
 
-function capHistory(history: string, maxLines: number): string {
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
+function capHistory(history: string, maxLines: number, maxBytes: number): string {
   if (history.length === 0) return history;
   const hasTrailingNewline = history.endsWith("\n");
   const lines = history.split("\n");
   if (hasTrailingNewline) {
     lines.pop();
   }
-  if (lines.length <= maxLines) return history;
-  const capped = lines.slice(lines.length - maxLines).join("\n");
-  return hasTrailingNewline ? `${capped}\n` : capped;
+  const lineCapped =
+    lines.length <= maxLines
+      ? history
+      : `${lines.slice(lines.length - maxLines).join("\n")}${hasTrailingNewline ? "\n" : ""}`;
+  const encoded = utf8Encoder.encode(lineCapped);
+  if (encoded.byteLength <= maxBytes) return lineCapped;
+
+  let start = encoded.byteLength - maxBytes;
+  while (start < encoded.byteLength && (encoded[start]! & 0xc0) === 0x80) {
+    start += 1;
+  }
+  let byteCapped = utf8Decoder.decode(encoded.subarray(start));
+  const firstNewline = byteCapped.indexOf("\n");
+  if (firstNewline >= 0 && firstNewline < byteCapped.length - 1) {
+    byteCapped = byteCapped.slice(firstNewline + 1);
+  }
+  return byteCapped;
 }
 
 function isCsiFinalByte(codePoint: number): boolean {
@@ -1142,6 +1160,7 @@ function normalizedRuntimeEnv(
 interface TerminalManagerOptions {
   logsDir: string;
   historyLineLimit?: number;
+  historyByteLimit?: number;
   ptyAdapter: PtyAdapter.PtyAdapter["Service"];
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
@@ -1182,6 +1201,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
+  const historyByteLimit = Math.max(
+    1,
+    Math.floor(options.historyByteLimit ?? DEFAULT_HISTORY_BYTE_LIMIT),
+  );
   const platform = yield* HostProcessPlatform;
   // Terminals must inherit the user's full environment (minus the blocklist
   // applied in createTerminalSpawnEnv) — an allowlist here silently strips
@@ -1430,6 +1453,29 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     yield* flushPersist(threadId, terminalId);
   });
 
+  const readCappedHistoryPath = Effect.fn("terminal.readCappedHistoryPath")(function* (
+    filePath: string,
+  ) {
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fileSystem.open(filePath, { flag: "r" });
+        const info = yield* file.stat;
+        const readWindow = BigInt(historyByteLimit + 3);
+        const start = info.size > readWindow ? info.size - readWindow : 0n;
+        if (start > 0n) {
+          yield* file.seek(start, "start");
+        }
+        const bytes = yield* file.readAlloc(info.size - start);
+        const raw = utf8Decoder.decode(Option.getOrElse(bytes, () => new Uint8Array()));
+        const history = capHistory(raw, historyLineLimit, historyByteLimit);
+        return {
+          history,
+          truncated: start > 0n || history !== raw,
+        } as const;
+      }),
+    );
+  });
+
   const readHistory = Effect.fn("terminal.readHistory")(function* (
     threadId: string,
     terminalId: string,
@@ -1444,17 +1490,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           ),
         )
     ) {
-      const raw = yield* fileSystem
-        .readFileString(nextPath)
-        .pipe(
-          Effect.mapError(
-            (cause) => new TerminalHistoryError({ operation: "read", threadId, terminalId, cause }),
-          ),
-        );
-      const capped = capHistory(raw, historyLineLimit);
-      if (capped !== raw) {
+      const loaded = yield* readCappedHistoryPath(nextPath).pipe(
+        Effect.mapError(
+          (cause) => new TerminalHistoryError({ operation: "read", threadId, terminalId, cause }),
+        ),
+      );
+      if (loaded.truncated) {
         yield* fileSystem
-          .writeFileString(nextPath, capped)
+          .writeFileString(nextPath, loaded.history)
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -1462,7 +1505,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             ),
           );
       }
-      return capped;
+      return loaded.history;
     }
 
     if (terminalId !== DEFAULT_TERMINAL_ID) {
@@ -1483,17 +1526,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       return "";
     }
 
-    const raw = yield* fileSystem
-      .readFileString(legacyPath)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new TerminalHistoryError({ operation: "migrate", threadId, terminalId, cause }),
-        ),
-      );
-    const capped = capHistory(raw, historyLineLimit);
+    const loaded = yield* readCappedHistoryPath(legacyPath).pipe(
+      Effect.mapError(
+        (cause) => new TerminalHistoryError({ operation: "migrate", threadId, terminalId, cause }),
+      ),
+    );
     yield* fileSystem
-      .writeFileString(nextPath, capped)
+      .writeFileString(nextPath, loaded.history)
       .pipe(
         Effect.mapError(
           (cause) =>
@@ -1508,7 +1547,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }),
       ),
     );
-    return capped;
+    return loaded.history;
   });
 
   const deleteHistory = Effect.fn("terminal.deleteHistory")(function* (
@@ -1677,9 +1716,15 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           );
           session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
           if (sanitized.visibleText.length > 0) {
-            session.history = capHistory(
-              `${session.history}${sanitized.visibleText}`,
+            const boundedVisibleText = capHistory(
+              sanitized.visibleText,
               historyLineLimit,
+              historyByteLimit,
+            );
+            session.history = capHistory(
+              `${session.history}${boundedVisibleText}`,
+              historyLineLimit,
+              historyByteLimit,
             );
           }
           const eventStamp = advanceEventSequence(session);

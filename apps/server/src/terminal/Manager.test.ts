@@ -212,6 +212,7 @@ interface CreateManagerOptions {
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
+  historyByteLimit?: number;
   ptyAdapter?: FakePtyAdapter;
 }
 
@@ -241,6 +242,9 @@ const createManager = (
       const manager = yield* TerminalManager.makeWithOptions({
         logsDir,
         historyLineLimit,
+        ...(options.historyByteLimit !== undefined
+          ? { historyByteLimit: options.historyByteLimit }
+          : {}),
         ptyAdapter,
         ...(options.shellResolver !== undefined ? { shellResolver: options.shellResolver } : {}),
         ...(options.env !== undefined ? { env: options.env } : {}),
@@ -967,6 +971,71 @@ it.layer(
       const reopened = yield* manager.open(openInput());
       const nonEmptyLines = reopened.history.split("\n").filter((line) => line.length > 0);
       expect(nonEmptyLines).toEqual(["line2", "line3", "line4"]);
+    }),
+  );
+
+  it.effect("caps a single-line terminal burst by UTF-8 bytes in memory and on disk", () =>
+    Effect.gen(function* () {
+      const historyByteLimit = 1_024;
+      const { manager, ptyAdapter, logsDir } = yield* createManager(5_000, {
+        historyByteLimit,
+      });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      process.emitData("x".repeat(2 * 1024 * 1024));
+      yield* manager.close({ threadId: "thread-1" });
+
+      const reopened = yield* manager.open(openInput());
+      const persisted = yield* Effect.flatMap(historyLogPath(logsDir), (filePath) =>
+        Effect.flatMap(FileSystem.FileSystem, (fileSystem) => fileSystem.readFile(filePath)),
+      );
+      assert.equal(new TextEncoder().encode(reopened.history).byteLength, historyByteLimit);
+      assert.equal(persisted.byteLength, historyByteLimit);
+      assert.equal(reopened.history, "x".repeat(historyByteLimit));
+    }),
+  );
+
+  it.effect("preserves valid UTF-8 when the byte cap cuts into a multibyte line", () =>
+    Effect.gen(function* () {
+      const historyByteLimit = 101;
+      const { manager, ptyAdapter } = yield* createManager(5_000, { historyByteLimit });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      process.emitData("🔥".repeat(1_000));
+      yield* manager.close({ threadId: "thread-1" });
+
+      const reopened = yield* manager.open(openInput());
+      assert.isAtMost(new TextEncoder().encode(reopened.history).byteLength, historyByteLimit);
+      assert.notInclude(reopened.history, "�");
+      assert.equal(
+        Array.from(reopened.history).every((character) => character === "🔥"),
+        true,
+      );
+    }),
+  );
+
+  it.effect("loads only a bounded tail from an oversized persisted transcript", () =>
+    Effect.gen(function* () {
+      const historyByteLimit = 2_048;
+      const { manager, logsDir } = yield* createManager(5_000, { historyByteLimit });
+      yield* manager.open(openInput());
+      yield* manager.close({ threadId: "thread-1" });
+
+      const fileSystem = yield* FileSystem.FileSystem;
+      const filePath = yield* historyLogPath(logsDir);
+      yield* fileSystem.writeFileString(filePath, `discarded\n${"z".repeat(4 * 1024 * 1024)}`);
+
+      const reopened = yield* manager.open(openInput());
+      const persisted = yield* fileSystem.readFile(filePath);
+      assert.equal(new TextEncoder().encode(reopened.history).byteLength, historyByteLimit);
+      assert.equal(persisted.byteLength, historyByteLimit);
+      assert.equal(reopened.history, "z".repeat(historyByteLimit));
     }),
   );
 
