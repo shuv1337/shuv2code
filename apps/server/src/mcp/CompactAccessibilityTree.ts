@@ -158,6 +158,7 @@ function stateValue(
 
 function hasMeaningfulState(states: ReadonlyArray<CompactAccessibilityState>): boolean {
   return states.some(({ name, value }) => {
+    if (name === "focusable") return false;
     if (name === "live") return value !== "off";
     if (name === "invalid") return value !== false && value !== "false";
     return value === true || (name === "checked" && value === "mixed");
@@ -175,6 +176,7 @@ function relevanceScore(
   if (ACTIONABLE_ROLES.has(role)) score += 300;
   if (STRUCTURAL_ROLES.has(role) && name !== undefined) score += 150;
   if (hasMeaningfulState(states)) score += 100;
+  if (name !== undefined && stateValue(states, "focusable") === true) score += 75;
   if (score === 0) return 0;
   if (name !== undefined) score += 25;
   return score;
