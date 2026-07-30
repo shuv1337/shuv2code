@@ -2364,32 +2364,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         result: toolResult.block,
       };
 
-      const updatedStamp = yield* makeEventStamp();
-      yield* offerRuntimeEvent({
-        type: "item.updated",
-        eventId: updatedStamp.eventId,
-        provider: PROVIDER,
-        createdAt: updatedStamp.createdAt,
-        threadId: context.session.threadId,
-        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
-        itemId: asRuntimeItemId(tool.itemId),
-        payload: {
-          itemType: tool.itemType,
-          status: toolResult.isError ? "failed" : "inProgress",
-          title: tool.title,
-          ...(tool.detail ? { detail: tool.detail } : {}),
-          data: toolData,
-        },
-        providerRefs: nativeProviderRefs(context, {
-          providerItemId: tool.itemId,
-        }),
-        raw: {
-          source: "claude.sdk.message",
-          method: "claude/user",
-          payload: message,
-        },
-      });
-
       const streamKind = toolResultStreamKind(tool.itemType);
       if (streamKind && toolResult.text.length > 0 && context.turnState) {
         const deltaStamp = yield* makeEventStamp();
@@ -2411,7 +2385,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           raw: {
             source: "claude.sdk.message",
             method: "claude/user",
-            payload: message,
+            payload: {
+              type: message.type,
+              session_id: message.session_id,
+              uuid: message.uuid,
+              tool_use_id: toolResult.toolUseId,
+              is_error: toolResult.isError,
+            },
           },
         });
       }
@@ -2438,7 +2418,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         raw: {
           source: "claude.sdk.message",
           method: "claude/user",
-          payload: message,
+          payload: {
+            type: message.type,
+            session_id: message.session_id,
+            uuid: message.uuid,
+            tool_use_id: toolResult.toolUseId,
+            is_error: toolResult.isError,
+          },
         },
       });
 

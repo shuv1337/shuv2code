@@ -39,6 +39,7 @@ import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
+const encodeUnknownJson = Schema.encodeSync(Schema.UnknownFromJsonString);
 
 // Test-local service tag so the rest of the file can keep using `yield* ClaudeAdapter`.
 class ClaudeAdapter extends Context.Service<ClaudeAdapter, ClaudeAdapterShape>()(
@@ -1045,7 +1046,7 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 11).pipe(
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 10).pipe(
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -1158,7 +1159,6 @@ describe("ClaudeAdapterLive", () => {
           "content.delta",
           "item.started",
           "item.updated",
-          "item.updated",
           "item.completed",
           "turn.completed",
         ],
@@ -1196,17 +1196,17 @@ describe("ClaudeAdapterLive", () => {
         });
       }
 
-      const toolResultUpdated = runtimeEvents.find(
+      const toolResultCompleted = runtimeEvents.find(
         (event) =>
-          event.type === "item.updated" &&
+          event.type === "item.completed" &&
           (event.payload.data as { result?: { tool_use_id?: string } } | undefined)?.result
             ?.tool_use_id === "tool-grep-1",
       );
-      assert.equal(toolResultUpdated?.type, "item.updated");
-      if (toolResultUpdated?.type === "item.updated") {
+      assert.equal(toolResultCompleted?.type, "item.completed");
+      if (toolResultCompleted?.type === "item.completed") {
         assert.equal(
           (
-            toolResultUpdated.payload.data as {
+            toolResultCompleted.payload.data as {
               result?: { content?: string };
             }
           ).result?.content,
@@ -1218,6 +1218,82 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "stores a large Claude tool result once instead of duplicating it across lifecycle events",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const resultText = "x".repeat(1024 * 1024);
+        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 8).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "read", attachments: [] });
+
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-large-result",
+          uuid: "stream-large-result-start",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "tool-large-result",
+              name: "Grep",
+              input: { pattern: "x" },
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-large-result",
+          uuid: "user-large-result",
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-large-result",
+                content: resultText,
+              },
+            ],
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-session-large-result",
+          uuid: "result-large-result",
+        } as unknown as SDKMessage);
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        const serialized = encodeUnknownJson(runtimeEvents);
+        const occurrences = serialized.split(resultText).length - 1;
+        const legacyMinimumBytes = resultText.length * 4;
+
+        assert.equal(occurrences, 1);
+        assert.isBelow(serialized.length, legacyMinimumBytes * 0.3);
+        assert.equal(runtimeEvents.filter((event) => event.type === "item.updated").length, 0);
+        assert.equal(runtimeEvents.filter((event) => event.type === "item.completed").length, 1);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("falls back to a default plan step label for blank TodoWrite content", () => {
     const harness = makeHarness();
@@ -2478,7 +2554,7 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 13).pipe(
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 12).pipe(
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -2646,7 +2722,6 @@ describe("ClaudeAdapterLive", () => {
           "content.delta",
           "item.completed",
           "item.started",
-          "item.updated",
           "item.completed",
           "content.delta",
           "item.completed",
