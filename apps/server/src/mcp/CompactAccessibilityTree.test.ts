@@ -186,4 +186,54 @@ describe("compactAccessibilityTree", () => {
       unavailableReason: "Chrome accessibility tree was unavailable or malformed.",
     });
   });
+
+  it("preserves a compact tree produced by the desktop host", () => {
+    const compact = compactAccessibilityTree({
+      nodes: [axNode({ nodeId: "submit", role: "button", name: "Submit" })],
+    });
+
+    expect(compactAccessibilityTree(compact)).toEqual(compact);
+  });
+
+  it("re-bounds and canonicalizes an oversized compact tree from a mixed-version host", () => {
+    const oversizedText = "x".repeat(400);
+    const result = compactAccessibilityTree({
+      mode: "compact",
+      totalNodeCount: -1,
+      relevantNodeCount: 0,
+      includedNodeCount: 999,
+      truncated: false,
+      unavailableReason: oversizedText,
+      nodes: Array.from({ length: 125 }, (_, index) => ({
+        nodeId: `node-${index}`,
+        role: "BUTTON",
+        name: oversizedText,
+        states: [
+          { name: "haspopup", value: oversizedText },
+          { name: "hasPopup", value: "menu" },
+          { name: "selected", value: true },
+          ...Array.from({ length: 70 }, () => ({ name: "unknown", value: oversizedText })),
+        ],
+      })),
+    });
+
+    expect(result).toMatchObject({
+      totalNodeCount: 120,
+      relevantNodeCount: 120,
+      includedNodeCount: 120,
+      truncated: true,
+    });
+    expect(result.nodes).toHaveLength(120);
+    expect(result.nodes[0]).toMatchObject({
+      nodeId: "node-0",
+      role: "button",
+      name: "x".repeat(240),
+      states: [
+        { name: "hasPopup", value: "menu" },
+        { name: "selected", value: true },
+      ],
+    });
+    expect(result.unavailableReason).toBe("x".repeat(240));
+    expect(compactAccessibilityTree(result)).toEqual(result);
+  });
 });

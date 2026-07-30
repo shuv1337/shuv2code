@@ -1567,6 +1567,90 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("compacts accessibility data before returning a default snapshot", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const rawAccessibility = {
+          nodes: [
+            {
+              nodeId: "copy",
+              role: { value: "StaticText" },
+              name: { value: "decorative" },
+            },
+            {
+              nodeId: "submit",
+              backendDOMNodeId: 42,
+              role: { value: "button" },
+              name: { value: "Submit" },
+              properties: [{ name: "focusable", value: { value: true } }],
+            },
+          ],
+        };
+        const sendCommand = vi.fn(async (method: string) => {
+          if (method === "Runtime.evaluate") {
+            return {
+              result: {
+                value: {
+                  url: "https://example.com",
+                  title: "Example",
+                  loading: false,
+                  visibleText: "Submit",
+                  interactiveElements: [],
+                },
+              },
+            };
+          }
+          if (method === "Accessibility.getFullAXTree") return rawAccessibility;
+          return undefined;
+        });
+        const image = {
+          getSize: () => ({ width: 10, height: 5 }),
+          resize: vi.fn(),
+          toPNG: () => Buffer.from("snapshot"),
+        };
+        image.resize.mockReturnValue(image);
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+          capturePage: vi.fn(async () => image),
+        } as never);
+
+        yield* manager.createTab("tab_1");
+        yield* manager.registerWebview("tab_1", 42);
+        const compact = yield* manager.automationSnapshot("tab_1", "compact");
+        const full = yield* manager.automationSnapshot("tab_1", "full");
+
+        expect(compact.accessibilityTree).toMatchObject({
+          mode: "compact",
+          totalNodeCount: 2,
+          includedNodeCount: 1,
+          nodes: [{ nodeId: "submit", role: "button", name: "Submit" }],
+        });
+        expect(full.accessibilityTree).toEqual(rawAccessibility);
+      }),
+    ),
+  );
+
   effectIt.effect("emits the resolved pointer target before dispatching an automation click", () =>
     withManager((manager) =>
       Effect.gen(function* () {
