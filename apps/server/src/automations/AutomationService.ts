@@ -290,8 +290,7 @@ export const make = Effect.gen(function* () {
     return run.status === "skipped" ? run : yield* dispatchAutomation(automation, run);
   });
 
-  const list: AutomationService["Service"]["list"] = (input) =>
-    store.list(input.projectId).pipe(Effect.map((automations) => ({ automations })));
+  const list: AutomationService["Service"]["list"] = (input) => store.list(input);
 
   const get: AutomationService["Service"]["get"] = (input) =>
     requireAutomation(input.automationId, input.projectId);

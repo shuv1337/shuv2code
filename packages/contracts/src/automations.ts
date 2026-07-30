@@ -65,6 +65,29 @@ export const ProjectAutomation = Schema.Struct({
 });
 export type ProjectAutomation = typeof ProjectAutomation.Type;
 
+export const AutomationPromptPreview = Schema.String.check(Schema.isMaxLength(240));
+export type AutomationPromptPreview = typeof AutomationPromptPreview.Type;
+
+export const ProjectAutomationSummary = Schema.Struct({
+  id: AutomationId,
+  projectId: ProjectId,
+  name: AutomationName,
+  promptPreview: AutomationPromptPreview,
+  promptLength: NonNegativeInt,
+  enabled: Schema.Boolean,
+  cronExpression: AutomationCronExpression,
+  timeZone: AutomationTimeZone,
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  concurrencyPolicy: AutomationConcurrencyPolicy,
+  nextRunAt: Schema.NullOr(IsoDateTime),
+  lastRunAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type ProjectAutomationSummary = typeof ProjectAutomationSummary.Type;
+
 export const AutomationRun = Schema.Struct({
   id: AutomationRunId,
   automationId: AutomationId,
@@ -79,11 +102,23 @@ export const AutomationRun = Schema.Struct({
 });
 export type AutomationRun = typeof AutomationRun.Type;
 
-export const AutomationListInput = Schema.Struct({ projectId: ProjectId });
+export const AutomationListCursor = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
+export type AutomationListCursor = typeof AutomationListCursor.Type;
+
+export const AutomationListLimit = PositiveInt.check(Schema.isLessThanOrEqualTo(100));
+export type AutomationListLimit = typeof AutomationListLimit.Type;
+
+export const AutomationListInput = Schema.Struct({
+  projectId: ProjectId,
+  enabled: Schema.optional(Schema.Boolean),
+  cursor: Schema.optional(AutomationListCursor),
+  limit: Schema.optional(AutomationListLimit),
+});
 export type AutomationListInput = typeof AutomationListInput.Type;
 
 export const AutomationListResult = Schema.Struct({
-  automations: Schema.Array(ProjectAutomation),
+  automations: Schema.Array(ProjectAutomationSummary),
+  nextCursor: Schema.NullOr(AutomationListCursor),
 });
 export type AutomationListResult = typeof AutomationListResult.Type;
 
@@ -173,6 +208,7 @@ export class AutomationError extends Schema.TaggedErrorClass<AutomationError>()(
     "persistence_failed",
     "dispatch_failed",
     "unauthorized",
+    "invalid_cursor",
   ]),
   message: Schema.String,
 }) {}

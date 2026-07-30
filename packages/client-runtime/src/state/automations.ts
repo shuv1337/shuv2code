@@ -41,6 +41,25 @@ export function createAutomationEnvironmentAtoms<R, E>(
 
   return {
     list,
+    listPage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:automations:list-page",
+      tag: WS_METHODS.automationsList,
+      scheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          `${environmentId}:${input.projectId}:${input.cursor ?? "first"}`,
+      },
+    }),
+    get: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:automations:get",
+      tag: WS_METHODS.automationsGet,
+      scheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.automationId}`,
+      },
+    }),
     runs,
     validateSchedule: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:automations:validate-schedule",

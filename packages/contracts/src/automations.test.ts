@@ -3,12 +3,14 @@ import { assert, it } from "@effect/vitest";
 
 import {
   AutomationCreateInput,
+  AutomationListInput,
   AutomationName,
   AutomationPrompt,
   AutomationRun,
 } from "./automations.ts";
 
 const decodeAutomationCreateInput = Schema.decodeUnknownSync(AutomationCreateInput);
+const decodeAutomationListInput = Schema.decodeUnknownSync(AutomationListInput);
 const decodeAutomationName = Schema.decodeUnknownSync(AutomationName);
 const decodeAutomationPrompt = Schema.decodeUnknownSync(AutomationPrompt);
 const decodeAutomationRun = Schema.decodeUnknownSync(AutomationRun);
@@ -80,4 +82,21 @@ it("decodes linked run history", () => {
   });
 
   assert.strictEqual(decoded.threadId, "thread-1");
+});
+
+it("bounds automation list pages at one hundred summaries", () => {
+  const accepted = decodeAutomationListInput({ projectId: "project-1", limit: 100 });
+  assert.strictEqual(accepted.limit, 100);
+  assert.throws(() => decodeAutomationListInput({ projectId: "project-1", limit: 101 }));
+});
+
+it("decodes automation list cursors and enabled-state filters", () => {
+  const decoded = decodeAutomationListInput({
+    projectId: "project-1",
+    cursor: "opaque-page-token",
+    enabled: false,
+    limit: 20,
+  });
+  assert.strictEqual(decoded.cursor, "opaque-page-token");
+  assert.strictEqual(decoded.enabled, false);
 });
