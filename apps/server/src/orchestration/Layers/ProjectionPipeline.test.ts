@@ -4,6 +4,7 @@ import {
   CorrelationId,
   EventId,
   MessageId,
+  type OrchestrationEvent,
   ProjectId,
   ThreadId,
   TurnId,
@@ -29,9 +30,9 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
   ORCHESTRATION_PROJECTOR_NAMES,
   OrchestrationProjectionPipelineLive,
-  ProjectionPipelineWorkObserver,
+  ProjectionPipelineLogicalOperationObserver,
   orchestrationProjectorsForEventType,
-  type ProjectionPipelineWork,
+  type ProjectionPipelineLogicalOperation,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -57,21 +58,81 @@ const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer(
   "shuv2code-projection-pipeline-test-",
 );
 
-it("routes high-frequency assistant deltas to only interested projectors", () => {
-  assert.deepEqual(orchestrationProjectorsForEventType("thread.message-sent"), [
-    ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
-    ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
-    ORCHESTRATION_PROJECTOR_NAMES.threads,
-  ]);
-  assert.deepEqual(orchestrationProjectorsForEventType("thread.session-stop-requested"), []);
+it("classifies every orchestration event by interested projector", () => {
+  type ProjectorName =
+    (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
+  const expectedProjectorsByEventType = {
+    "project.created": [ORCHESTRATION_PROJECTOR_NAMES.projects],
+    "project.meta-updated": [ORCHESTRATION_PROJECTOR_NAMES.projects],
+    "project.deleted": [ORCHESTRATION_PROJECTOR_NAMES.projects],
+    "thread.created": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.deleted": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.archived": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.unarchived": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.settled": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.unsettled": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.snoozed": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.unsnoozed": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.meta-updated": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.runtime-mode-set": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.interaction-mode-set": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.message-sent": [
+      ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+      ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
+      ORCHESTRATION_PROJECTOR_NAMES.threads,
+    ],
+    "thread.turn-start-requested": [ORCHESTRATION_PROJECTOR_NAMES.threadTurns],
+    "thread.turn-interrupt-requested": [ORCHESTRATION_PROJECTOR_NAMES.threadTurns],
+    "thread.approval-response-requested": [
+      ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals,
+      ORCHESTRATION_PROJECTOR_NAMES.threads,
+    ],
+    "thread.user-input-response-requested": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.checkpoint-revert-requested": [],
+    "thread.reverted": [
+      ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+      ORCHESTRATION_PROJECTOR_NAMES.threadProposedPlans,
+      ORCHESTRATION_PROJECTOR_NAMES.threadActivities,
+      ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
+      ORCHESTRATION_PROJECTOR_NAMES.threads,
+    ],
+    "thread.session-stop-requested": [],
+    "thread.session-set": [
+      ORCHESTRATION_PROJECTOR_NAMES.threadSessions,
+      ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
+      ORCHESTRATION_PROJECTOR_NAMES.threads,
+    ],
+    "thread.proposed-plan-upserted": [
+      ORCHESTRATION_PROJECTOR_NAMES.threadProposedPlans,
+      ORCHESTRATION_PROJECTOR_NAMES.threads,
+    ],
+    "thread.turn-diff-completed": [
+      ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
+      ORCHESTRATION_PROJECTOR_NAMES.threads,
+    ],
+    "thread.activity-appended": [
+      ORCHESTRATION_PROJECTOR_NAMES.threadActivities,
+      ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals,
+      ORCHESTRATION_PROJECTOR_NAMES.threads,
+    ],
+  } satisfies Record<OrchestrationEvent["type"], ReadonlyArray<ProjectorName>>;
+
+  for (const eventType of Object.keys(expectedProjectorsByEventType) as Array<
+    OrchestrationEvent["type"]
+  >) {
+    assert.deepEqual(
+      orchestrationProjectorsForEventType(eventType),
+      expectedProjectorsByEventType[eventType],
+    );
+  }
 });
 
 it.effect("batches cursor-only work while preserving every independent cursor", () => {
-  const observedWork: Array<ProjectionPipelineWork> = [];
-  const observerLayer = Layer.succeed(ProjectionPipelineWorkObserver, {
-    record: (work) =>
+  const observedOperations: Array<ProjectionPipelineLogicalOperation> = [];
+  const observerLayer = Layer.succeed(ProjectionPipelineLogicalOperationObserver, {
+    record: (operation) =>
       Effect.sync(() => {
-        observedWork.push(work);
+        observedOperations.push(operation);
       }),
   });
   const instrumentedLayer = OrchestrationProjectionPipelineLive.pipe(
@@ -144,7 +205,7 @@ it.effect("batches cursor-only work while preserving every independent cursor", 
       },
     });
 
-    observedWork.length = 0;
+    observedOperations.length = 0;
     let savedDelta = yield* eventStore.append({
       type: "thread.message-sent",
       eventId: EventId.make("evt-projection-routing-delta-0"),
@@ -192,25 +253,29 @@ it.effect("batches cursor-only work while preserving every independent cursor", 
       yield* projectionPipeline.projectEvent(savedDelta);
     }
 
-    const projectorApplications = observedWork.filter(
-      (work) => work.kind === "projector-application",
+    const projectorApplications = observedOperations.filter(
+      (operation) => operation.kind === "projector-application",
     );
-    const transactions = observedWork.filter((work) => work.kind === "sql-transaction");
-    const cursorWrites = observedWork.filter((work) => work.kind === "cursor-write");
-    const summaryRefreshes = observedWork.filter(
-      (work) => work.kind === "thread-shell-summary-refresh",
+    const logicalTransactions = observedOperations.filter(
+      (operation) => operation.kind === "sql-transaction",
+    );
+    const logicalCursorWrites = observedOperations.filter(
+      (operation) => operation.kind === "cursor-write",
+    );
+    const summaryRefreshes = observedOperations.filter(
+      (operation) => operation.kind === "thread-shell-summary-refresh",
     );
     assert.equal(projectorApplications.length, 300);
-    assert.equal(transactions.length, 400);
-    assert.equal(cursorWrites.length, 400);
+    assert.equal(logicalTransactions.length, 400);
+    assert.equal(logicalCursorWrites.length, 400);
     assert.equal(
-      cursorWrites.reduce((total, work) => total + work.cursorCount, 0),
+      logicalCursorWrites.reduce((total, operation) => total + operation.cursorCount, 0),
       900,
     );
     assert.equal(summaryRefreshes.length, 0);
     assert.isBelow(projectorApplications.length, 900);
-    assert.isBelow(transactions.length, 900);
-    assert.isBelow(cursorWrites.length, 900);
+    assert.isBelow(logicalTransactions.length, 900);
+    assert.isBelow(logicalCursorWrites.length, 900);
 
     const cursorRows = yield* sql<{
       readonly projector: string;
@@ -241,12 +306,12 @@ it.effect("batches cursor-only work while preserving every independent cursor", 
       SET last_applied_sequence = ${savedDelta.sequence - 1}
       WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.threadMessages}
     `;
-    observedWork.length = 0;
+    observedOperations.length = 0;
     yield* projectionPipeline.bootstrap;
     assert.deepEqual(
-      observedWork
-        .filter((work) => work.kind === "projector-application")
-        .map((work) => work.projector),
+      observedOperations
+        .filter((operation) => operation.kind === "projector-application")
+        .map((operation) => operation.projector),
       [ORCHESTRATION_PROJECTOR_NAMES.threadMessages],
     );
     const recoveredMessages = yield* sql<{ readonly text: string }>`
@@ -255,7 +320,98 @@ it.effect("batches cursor-only work while preserving every independent cursor", 
       WHERE message_id = 'message-projection-routing'
     `;
     assert.equal(recoveredMessages[0]?.text, "x".repeat(100));
+
+    observedOperations.length = 0;
+    yield* appendAndProject({
+      type: "thread.message-sent",
+      eventId: EventId.make("evt-projection-routing-user-message"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: now,
+      commandId: CommandId.make("cmd-projection-routing-user-message"),
+      causationEventId: null,
+      correlationId: CorrelationId.make("cmd-projection-routing-user-message"),
+      metadata: {},
+      payload: {
+        threadId,
+        messageId: MessageId.make("message-projection-routing-user"),
+        role: "user",
+        text: "refresh the shell",
+        turnId: null,
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    assert.deepEqual(
+      observedOperations
+        .filter((operation) => operation.kind === "thread-shell-summary-refresh")
+        .map((operation) => operation.eventType),
+      ["thread.message-sent"],
+    );
   }).pipe(Effect.provide(instrumentedLayer));
+});
+
+it.effect("rolls back every cursor-only row when the batch fails", () => {
+  const testLayer = Layer.fresh(
+    makeProjectionPipelinePrefixedTestLayer("shuv2code-projection-cursor-batch-failure-test-"),
+  );
+
+  return Effect.gen(function* () {
+    const projectionPipeline = yield* OrchestrationProjectionPipeline;
+    const eventStore = yield* OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      CREATE TRIGGER reject_projection_cursor_batch
+      BEFORE INSERT ON projection_state
+      WHEN NEW.projector = 'projection.pending-approvals'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced cursor batch failure');
+      END
+    `;
+
+    const savedEvent = yield* eventStore.append({
+      type: "project.created",
+      eventId: EventId.make("evt-projection-cursor-batch-failure"),
+      aggregateKind: "project",
+      aggregateId: ProjectId.make("project-projection-cursor-batch-failure"),
+      occurredAt: "2026-07-30T13:00:00.000Z",
+      commandId: CommandId.make("cmd-projection-cursor-batch-failure"),
+      causationEventId: null,
+      correlationId: CorrelationId.make("cmd-projection-cursor-batch-failure"),
+      metadata: {},
+      payload: {
+        projectId: ProjectId.make("project-projection-cursor-batch-failure"),
+        title: "Projection cursor batch failure",
+        workspaceRoot: "/tmp/projection-cursor-batch-failure",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: "2026-07-30T13:00:00.000Z",
+        updatedAt: "2026-07-30T13:00:00.000Z",
+      },
+    });
+
+    const error = yield* Effect.flip(projectionPipeline.projectEvent(savedEvent));
+    assert.equal(error._tag, "PersistenceSqlError");
+
+    const cursorRows = yield* sql<{
+      readonly projector: string;
+      readonly lastAppliedSequence: number;
+    }>`
+      SELECT
+        projector,
+        last_applied_sequence AS "lastAppliedSequence"
+      FROM projection_state
+      ORDER BY projector ASC
+    `;
+    assert.deepEqual(cursorRows, [
+      {
+        projector: ORCHESTRATION_PROJECTOR_NAMES.projects,
+        lastAppliedSequence: savedEvent.sequence,
+      },
+    ]);
+  }).pipe(Effect.provide(testLayer));
 });
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
