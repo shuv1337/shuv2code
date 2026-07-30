@@ -17,6 +17,8 @@ import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
 } from "./toolkits/preview/handlers.ts";
+import { AutomationToolkitHandlersLive } from "./toolkits/automations/handlers.ts";
+import { AutomationToolkit } from "./toolkits/automations/tools.ts";
 import {
   PreviewSnapshotTool,
   PreviewSnapshotToolkit,
@@ -216,10 +218,17 @@ export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewSnapshotRegistrationLive,
 );
 
+export const AutomationToolkitRegistrationLive = McpServer.toolkit(AutomationToolkit).pipe(
+  Layer.provide(AutomationToolkitHandlersLive),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "shuv2code",
   version: packageJson.version,
   path: "/mcp",
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = PreviewToolkitRegistrationLive.pipe(Layer.provideMerge(McpTransportLive));
+export const layer = Layer.mergeAll(
+  PreviewToolkitRegistrationLive,
+  AutomationToolkitRegistrationLive,
+).pipe(Layer.provideMerge(McpTransportLive));

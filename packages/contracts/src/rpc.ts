@@ -20,6 +20,23 @@ import {
 } from "./filesystem.ts";
 import { AssetAccessError, AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
 import {
+  AutomationCreateInput,
+  AutomationDeleteInput,
+  AutomationDeleteResult,
+  AutomationError,
+  AutomationGetInput,
+  AutomationListInput,
+  AutomationListResult,
+  AutomationListRunsInput,
+  AutomationListRunsResult,
+  AutomationRun,
+  AutomationRunNowInput,
+  AutomationUpdateInput,
+  AutomationValidateScheduleInput,
+  AutomationValidationResult,
+  ProjectAutomation,
+} from "./automations.ts";
+import {
   GitActionProgressEvent,
   VcsSwitchRefInput,
   VcsSwitchRefResult,
@@ -166,6 +183,16 @@ export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
 
+  // Project automation methods
+  automationsList: "automations.list",
+  automationsGet: "automations.get",
+  automationsCreate: "automations.create",
+  automationsUpdate: "automations.update",
+  automationsDelete: "automations.delete",
+  automationsRunNow: "automations.runNow",
+  automationsListRuns: "automations.listRuns",
+  automationsValidateSchedule: "automations.validateSchedule",
+
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
 
@@ -254,6 +281,54 @@ export const WS_METHODS = {
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
 } as const;
+
+export const WsAutomationsListRpc = Rpc.make(WS_METHODS.automationsList, {
+  payload: AutomationListInput,
+  success: AutomationListResult,
+  error: Schema.Union([AutomationError, EnvironmentAuthorizationError]),
+});
+
+export const WsAutomationsGetRpc = Rpc.make(WS_METHODS.automationsGet, {
+  payload: AutomationGetInput,
+  success: ProjectAutomation,
+  error: Schema.Union([AutomationError, EnvironmentAuthorizationError]),
+});
+
+export const WsAutomationsCreateRpc = Rpc.make(WS_METHODS.automationsCreate, {
+  payload: AutomationCreateInput,
+  success: ProjectAutomation,
+  error: Schema.Union([AutomationError, EnvironmentAuthorizationError]),
+});
+
+export const WsAutomationsUpdateRpc = Rpc.make(WS_METHODS.automationsUpdate, {
+  payload: AutomationUpdateInput,
+  success: ProjectAutomation,
+  error: Schema.Union([AutomationError, EnvironmentAuthorizationError]),
+});
+
+export const WsAutomationsDeleteRpc = Rpc.make(WS_METHODS.automationsDelete, {
+  payload: AutomationDeleteInput,
+  success: AutomationDeleteResult,
+  error: Schema.Union([AutomationError, EnvironmentAuthorizationError]),
+});
+
+export const WsAutomationsRunNowRpc = Rpc.make(WS_METHODS.automationsRunNow, {
+  payload: AutomationRunNowInput,
+  success: AutomationRun,
+  error: Schema.Union([AutomationError, EnvironmentAuthorizationError]),
+});
+
+export const WsAutomationsListRunsRpc = Rpc.make(WS_METHODS.automationsListRuns, {
+  payload: AutomationListRunsInput,
+  success: AutomationListRunsResult,
+  error: Schema.Union([AutomationError, EnvironmentAuthorizationError]),
+});
+
+export const WsAutomationsValidateScheduleRpc = Rpc.make(WS_METHODS.automationsValidateSchedule, {
+  payload: AutomationValidateScheduleInput,
+  success: AutomationValidationResult,
+  error: EnvironmentAuthorizationError,
+});
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
   payload: ServerUpsertKeybindingInput,
@@ -754,6 +829,14 @@ export const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeReso
 });
 
 export const WsRpcGroup = RpcGroup.make(
+  WsAutomationsListRpc,
+  WsAutomationsGetRpc,
+  WsAutomationsCreateRpc,
+  WsAutomationsUpdateRpc,
+  WsAutomationsDeleteRpc,
+  WsAutomationsRunNowRpc,
+  WsAutomationsListRunsRpc,
+  WsAutomationsValidateScheduleRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

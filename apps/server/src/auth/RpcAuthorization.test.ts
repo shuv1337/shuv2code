@@ -37,6 +37,25 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudInstallRelayClient)).toBe(AuthRelayWriteScope);
   });
 
+  it("separates automation observation from mutation", () => {
+    for (const method of [
+      WS_METHODS.automationsList,
+      WS_METHODS.automationsGet,
+      WS_METHODS.automationsListRuns,
+      WS_METHODS.automationsValidateSchedule,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of [
+      WS_METHODS.automationsCreate,
+      WS_METHODS.automationsUpdate,
+      WS_METHODS.automationsDelete,
+      WS_METHODS.automationsRunNow,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("rejects unknown RPC method names", () => {
     for (const method of ["server.notRegistered", "toString", "constructor"]) {
       expect(() => requiredScopeForRpcMethod(method)).toThrow(

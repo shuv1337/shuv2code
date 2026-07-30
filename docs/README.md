@@ -7,6 +7,7 @@
   - [Remote environments](./architecture/remote.md)
   - [Server updates](./architecture/server-updates.md)
 - User guides
+  - [Project automations](./user/automations.md)
   - [Background service](./user/background-service.md)
   - [Remote access](./user/remote-access.md)
   - [Keeping shuv2code in sync](./user/server-updates.md)

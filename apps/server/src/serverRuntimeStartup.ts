@@ -23,6 +23,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import * as ServerConfig from "./config.ts";
+import * as AutomationService from "./automations/AutomationService.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
@@ -343,6 +344,7 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
+        yield* AutomationService.startScheduler.pipe(Scope.provide(reactorScope));
       }),
     );
 
