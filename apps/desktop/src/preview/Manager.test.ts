@@ -288,6 +288,83 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("evicts the oldest pending network request past the tracking cap", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const image: TestCapturedPreviewImage = {
+          getSize: () => ({ width: 640, height: 360 }),
+          resize: () => image,
+          toJPEG: () => Buffer.from("jpeg"),
+          toPNG: () => Buffer.from("png"),
+        };
+        const webview = makeTestPreviewWebContents(
+          vi.fn(async () => image),
+          42,
+          async (method) => {
+            if (method === "Runtime.evaluate") {
+              return {
+                result: {
+                  value: {
+                    url: "https://example.com",
+                    title: "Example",
+                    loading: false,
+                    visibleText: "Example",
+                    interactiveElements: [],
+                  },
+                },
+              };
+            }
+            if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+            return undefined;
+          },
+        );
+        fromId.mockReturnValue(webview);
+
+        yield* manager.createTab("tab_network_cap");
+        yield* manager.registerWebview("tab_network_cap", 42);
+        yield* manager.automationSnapshot("tab_network_cap", {});
+
+        const debuggerListener = (
+          webview as unknown as {
+            readonly debugger: {
+              readonly on: {
+                readonly mock: {
+                  readonly calls: ReadonlyArray<
+                    readonly [string, (event: unknown, method: string, params: unknown) => void]
+                  >;
+                };
+              };
+            };
+          }
+        ).debugger.on.mock.calls.find(([event]) => event === "message")?.[1];
+        if (!debuggerListener) throw new Error("Expected a debugger message listener.");
+
+        // One request past the cap: the first pending request must be evicted so
+        // a chatty page cannot grow the tracking map without bound.
+        const overflowCount = 501;
+        for (let index = 0; index < overflowCount; index += 1) {
+          debuggerListener({}, "Network.requestWillBeSent", {
+            requestId: `req-${index}`,
+            request: { url: `https://example.com/${index}`, method: "GET" },
+          });
+        }
+        for (const index of [0, 1, overflowCount - 1]) {
+          debuggerListener({}, "Network.responseReceived", {
+            requestId: `req-${index}`,
+            response: { status: 500 },
+          });
+        }
+        for (let flush = 0; flush < 8; flush += 1) yield* Effect.yieldNow;
+
+        const snapshot = yield* manager.automationSnapshot("tab_network_cap", {});
+        expect(snapshot.networkEntries.map((entry) => entry.url)).toEqual([
+          "https://example.com/1",
+          `https://example.com/${overflowCount - 1}`,
+        ]);
+      }),
+    ),
+  );
+
   effectIt.effect("isolates failed state listeners and continues delivery", () => {
     const loggedErrors: Array<unknown> = [];
     const logger = Logger.make(({ message }) => {
