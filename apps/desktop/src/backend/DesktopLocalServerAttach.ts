@@ -42,6 +42,14 @@ export interface DiscoveredLocalServer {
   readonly origin: string;
 }
 
+class LocalServerReadinessProbeError extends Schema.TaggedErrorClass<LocalServerReadinessProbeError>()(
+  "LocalServerReadinessProbeError",
+  {
+    origin: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
 const readJsonFileOptional = <A, E>(
   path: string,
   decode: (raw: string) => Effect.Effect<A, E>,
@@ -73,7 +81,7 @@ const probeReadyOrigin = (origin: string) =>
     timeoutMs: Duration.toMillis(DEFAULT_ATTACH_READINESS_TIMEOUT),
     intervalMs: Duration.toMillis(DEFAULT_ATTACH_PROBE_TIMEOUT),
     probeTimeoutMs: Duration.toMillis(DEFAULT_ATTACH_PROBE_TIMEOUT),
-    makeError: ({ cause }) => cause,
+    makeError: ({ cause }) => new LocalServerReadinessProbeError({ origin, cause }),
   }).pipe(
     Effect.as(true),
     Effect.orElseSucceed(() => false),

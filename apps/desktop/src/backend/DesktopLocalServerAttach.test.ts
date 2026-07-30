@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Integration fixture needs a real ephemeral Node HTTP listener.
 import * as NodeHttp from "node:http";
 
 import { assert, describe, it } from "@effect/vitest";
@@ -8,9 +9,31 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopLocalServerAttach from "./DesktopLocalServerAttach.ts";
+
+const encodeRuntimeState = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      version: Schema.Literal(1),
+      pid: Schema.Int,
+      host: Schema.String,
+      port: Schema.Int,
+      origin: Schema.String,
+      startedAt: Schema.String,
+    }),
+  ),
+);
+const encodeAttachCredential = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      version: Schema.Literal(1),
+      credential: Schema.String,
+    }),
+  ),
+);
 
 const listenReadyServer = Effect.callback<{
   readonly origin: string;
@@ -84,7 +107,7 @@ describe("discoverReusableLocalServer", () => {
 
       yield* fileSystem.writeFileString(
         path.join(stateDir, "server-runtime.json"),
-        `${JSON.stringify({
+        `${encodeRuntimeState({
           version: 1,
           pid: process.pid,
           host: "127.0.0.1",
@@ -95,7 +118,7 @@ describe("discoverReusableLocalServer", () => {
       );
       yield* fileSystem.writeFileString(
         path.join(stateDir, "local-desktop-attach.json"),
-        `${JSON.stringify({ version: 1, credential: "attach-credential" })}\n`,
+        `${encodeAttachCredential({ version: 1, credential: "attach-credential" })}\n`,
       );
 
       const environment = {
