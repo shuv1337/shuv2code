@@ -213,6 +213,7 @@ interface CreateManagerOptions {
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
   historyByteLimit?: number;
+  historyControlSequenceLimit?: number;
   ptyAdapter?: FakePtyAdapter;
 }
 
@@ -244,6 +245,9 @@ const createManager = (
         historyLineLimit,
         ...(options.historyByteLimit !== undefined
           ? { historyByteLimit: options.historyByteLimit }
+          : {}),
+        ...(options.historyControlSequenceLimit !== undefined
+          ? { historyControlSequenceLimit: options.historyControlSequenceLimit }
           : {}),
         ptyAdapter,
         ...(options.shellResolver !== undefined ? { shellResolver: options.shellResolver } : {}),
@@ -446,6 +450,39 @@ it.layer(
     Effect.flatMap(Effect.service(FileSystem.FileSystem), (fs) =>
       fs.writeFileString(filePath, contents),
     );
+
+  const withShortFileReads = (
+    fileSystem: FileSystem.FileSystem,
+    maxReadBytes: number,
+    requestedReadSizes: number[],
+  ): FileSystem.FileSystem =>
+    new Proxy(fileSystem, {
+      get(target, property) {
+        if (property !== "open") {
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (...args: Parameters<FileSystem.FileSystem["open"]>) =>
+          target.open(...args).pipe(
+            Effect.map(
+              (file) =>
+                new Proxy(file, {
+                  get(fileTarget, fileProperty) {
+                    if (fileProperty !== "readAlloc") {
+                      const value = Reflect.get(fileTarget, fileProperty, fileTarget);
+                      return typeof value === "function" ? value.bind(fileTarget) : value;
+                    }
+                    return (size: FileSystem.SizeInput) => {
+                      const requestedBytes = Number(size);
+                      requestedReadSizes.push(requestedBytes);
+                      return fileTarget.readAlloc(Math.min(requestedBytes, maxReadBytes));
+                    };
+                  },
+                }),
+            ),
+          );
+      },
+    });
 
   it.effect("reports a missing cwd without an artificial cause", () =>
     Effect.gen(function* () {
@@ -998,6 +1035,45 @@ it.layer(
     }),
   );
 
+  it.effect("retains a complete line when the byte cap starts exactly after a newline", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager(5_000, {
+        historyByteLimit: 9,
+      });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      process.emitData("aaaa\nbbbb\ncccc");
+      yield* waitFor(
+        Effect.map(getEvents, (events) => events.some((event) => event.type === "output")),
+      );
+      yield* manager.close({ threadId: "thread-1" });
+
+      const reopened = yield* manager.open(openInput());
+      assert.equal(reopened.history, "bbbb\ncccc");
+    }),
+  );
+
+  it.effect("retains a complete persisted line at the exact byte boundary", () =>
+    Effect.gen(function* () {
+      const { manager, logsDir } = yield* createManager(5_000, {
+        historyByteLimit: 9,
+      });
+      yield* manager.open(openInput());
+      yield* manager.close({ threadId: "thread-1" });
+
+      const fileSystem = yield* FileSystem.FileSystem;
+      const filePath = yield* historyLogPath(logsDir);
+      yield* fileSystem.writeFileString(filePath, "aaaa\nbbbb\ncccc");
+
+      const reopened = yield* manager.open(openInput());
+      assert.equal(reopened.history, "bbbb\ncccc");
+      assert.equal(yield* fileSystem.readFileString(filePath), "bbbb\ncccc");
+    }),
+  );
+
   it.effect("preserves valid UTF-8 when the byte cap cuts into a multibyte line", () =>
     Effect.gen(function* () {
       const historyByteLimit = 101;
@@ -1020,6 +1096,49 @@ it.layer(
     }),
   );
 
+  it.effect("preserves valid UTF-8 when a persisted tail starts inside a multibyte character", () =>
+    Effect.gen(function* () {
+      const historyByteLimit = 101;
+      const { manager, logsDir } = yield* createManager(5_000, { historyByteLimit });
+      yield* manager.open(openInput());
+      yield* manager.close({ threadId: "thread-1" });
+
+      const fileSystem = yield* FileSystem.FileSystem;
+      const filePath = yield* historyLogPath(logsDir);
+      yield* fileSystem.writeFileString(filePath, `discarded\n${"🔥".repeat(1_000)}`);
+
+      const reopened = yield* manager.open(openInput());
+      assert.isAtMost(new TextEncoder().encode(reopened.history).byteLength, historyByteLimit);
+      assert.notInclude(reopened.history, "�");
+      assert.equal(
+        Array.from(reopened.history).every((character) => character === "🔥"),
+        true,
+      );
+    }),
+  );
+
+  it.effect("assembles the newest persisted tail across injected short reads", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const requestedReadSizes: number[] = [];
+      const shortReadFileSystem = withShortFileReads(fileSystem, 7, requestedReadSizes);
+      const historyByteLimit = 32;
+      const { manager, logsDir } = yield* createManager(5_000, {
+        historyByteLimit,
+      }).pipe(Effect.provideService(FileSystem.FileSystem, shortReadFileSystem));
+      yield* manager.open(openInput());
+      yield* manager.close({ threadId: "thread-1" });
+
+      const filePath = yield* historyLogPath(logsDir);
+      yield* fileSystem.writeFileString(filePath, `discarded\n${"z".repeat(100)}`);
+
+      const reopened = yield* manager.open(openInput());
+      assert.equal(reopened.history, "z".repeat(historyByteLimit));
+      assert.equal(yield* fileSystem.readFileString(filePath), "z".repeat(historyByteLimit));
+      expect(requestedReadSizes).toEqual([35, 28, 21, 14, 7]);
+    }),
+  );
+
   it.effect("loads only a bounded tail from an oversized persisted transcript", () =>
     Effect.gen(function* () {
       const historyByteLimit = 2_048;
@@ -1036,6 +1155,60 @@ it.layer(
       assert.equal(new TextEncoder().encode(reopened.history).byteLength, historyByteLimit);
       assert.equal(persisted.byteLength, historyByteLimit);
       assert.equal(reopened.history, "z".repeat(historyByteLimit));
+    }),
+  );
+
+  it.effect("bounds repeated unterminated OSC chunks and resumes after a split terminator", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager(5_000, {
+        historyControlSequenceLimit: 12,
+      });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      const chunks = ["before\n", "\u001b]0;aaaa", "bbbb", "cccc\u001b", "\\after\n"];
+      for (const chunk of chunks) {
+        process.emitData(chunk);
+      }
+      yield* waitFor(
+        Effect.map(
+          getEvents,
+          (events) => events.filter((event) => event.type === "output").length === chunks.length,
+        ),
+      );
+      yield* manager.close({ threadId: "thread-1" });
+
+      const reopened = yield* manager.open(openInput());
+      assert.equal(reopened.history, "before\nafter\n");
+    }),
+  );
+
+  it.effect("bounds repeated unterminated CSI chunks and resumes after the final byte", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager(5_000, {
+        historyControlSequenceLimit: 10,
+      });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      const chunks = ["before\n", "\u001b[1;", "2;3;", "4;5;", "6;", "31mafter\n"];
+      for (const chunk of chunks) {
+        process.emitData(chunk);
+      }
+      yield* waitFor(
+        Effect.map(
+          getEvents,
+          (events) => events.filter((event) => event.type === "output").length === chunks.length,
+        ),
+      );
+      yield* manager.close({ threadId: "thread-1" });
+
+      const reopened = yield* manager.open(openInput());
+      assert.equal(reopened.history, "before\nafter\n");
     }),
   );
 
