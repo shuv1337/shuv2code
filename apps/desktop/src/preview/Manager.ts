@@ -22,10 +22,25 @@ import type {
   PreviewAutomationNetworkEntry,
   PreviewAutomationScrollInput,
   PreviewAutomationSnapshot,
-  PreviewAutomationSnapshotMode,
+  PreviewAutomationSnapshotInput,
   PreviewAutomationStatus,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
+} from "@shuv2code/contracts";
+import {
+  formatPreviewAutomationResultTooLargeBytes,
+  PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH,
+  PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH,
+  PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_SOURCE_LENGTH,
+  PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH,
+  PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH,
+  PREVIEW_AUTOMATION_MAX_ELEMENT_ROLE_LENGTH,
+  PREVIEW_AUTOMATION_MAX_ELEMENT_TAG_LENGTH,
+  PREVIEW_AUTOMATION_MAX_NETWORK_METHOD_LENGTH,
+  PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH,
+  PREVIEW_AUTOMATION_MAX_PAGE_TITLE_LENGTH,
+  PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH,
+  PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH,
 } from "@shuv2code/contracts";
 import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 import { compactAccessibilityTree } from "@shuv2code/shared/compactAccessibilityTree";
@@ -63,6 +78,7 @@ import {
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { playwrightInjectedRuntimeInstallExpression } from "./PlaywrightInjectedRuntime.ts";
 import { makePreviewAutomationKeySequence } from "./PreviewKeyboard.ts";
+import { boundPreviewAutomationSnapshot } from "./snapshotBudget.ts";
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -108,6 +124,7 @@ const PICTURE_IN_PICTURE_MIN_WIDTH = 240;
 const PICTURE_IN_PICTURE_MIN_HEIGHT = 160;
 const PICTURE_IN_PICTURE_ASPECT_RATIO_EPSILON = 0.002;
 const DIAGNOSTIC_BUFFER_LIMIT = 200;
+const DIAGNOSTIC_REQUEST_LIMIT = 500;
 const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
@@ -683,6 +700,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const pushBounded = <A>(buffer: ReadonlyArray<A>, entry: A): ReadonlyArray<A> =>
     [...buffer, entry].slice(-DIAGNOSTIC_BUFFER_LIMIT);
 
+  const truncateSnapshotField = (value: unknown, maximumLength: number): string =>
+    String(value).slice(0, maximumLength);
+
+  const setBoundedDiagnosticRequest = (
+    requests: Map<string, { readonly url: string; readonly method: string }>,
+    requestId: string,
+    request: { readonly url: string; readonly method: string },
+  ): void => {
+    if (!requests.has(requestId) && requests.size >= DIAGNOSTIC_REQUEST_LIMIT) {
+      const oldestRequestId = requests.keys().next().value;
+      if (oldestRequestId !== undefined) requests.delete(oldestRequestId);
+    }
+    requests.set(requestId, request);
+  };
+
   const captureDiagnosticMessage = Effect.fnUntraced(function* (
     webContentsId: number,
     method: string,
@@ -702,11 +734,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               const value = arg as Record<string, unknown>;
               return String(value["value"] ?? value["description"] ?? "");
             })
-            .join(" ");
+            .join(" ")
+            .slice(0, PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH);
           return {
             ...current,
             consoleEntries: pushBounded(current.consoleEntries, {
-              level: typeof params["type"] === "string" ? params["type"] : "log",
+              level: truncateSnapshotField(
+                typeof params["type"] === "string" ? params["type"] : "log",
+                PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH,
+              ),
               text,
               timestamp,
               source: "console",
@@ -722,7 +758,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             ...current,
             consoleEntries: pushBounded(current.consoleEntries, {
               level: "error",
-              text: String(details["text"] ?? "Uncaught exception"),
+              text: truncateSnapshotField(
+                details["text"] ?? "Uncaught exception",
+                PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH,
+              ),
               timestamp,
               source: "exception",
             }),
@@ -736,10 +775,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           return {
             ...current,
             consoleEntries: pushBounded(current.consoleEntries, {
-              level: typeof entry["level"] === "string" ? entry["level"] : "info",
-              text: String(entry["text"] ?? ""),
+              level: truncateSnapshotField(
+                typeof entry["level"] === "string" ? entry["level"] : "info",
+                PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH,
+              ),
+              text: truncateSnapshotField(
+                entry["text"] ?? "",
+                PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH,
+              ),
               timestamp,
-              source: typeof entry["source"] === "string" ? entry["source"] : "log",
+              source: truncateSnapshotField(
+                typeof entry["source"] === "string" ? entry["source"] : "log",
+                PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_SOURCE_LENGTH,
+              ),
             }),
           };
         }
@@ -751,9 +799,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           return {
             ...current,
             requests: replaceMap(current.requests, (copy) => {
-              copy.set(requestId, {
-                url: String(request["url"] ?? ""),
-                method: String(request["method"] ?? "GET"),
+              setBoundedDiagnosticRequest(copy, requestId, {
+                url: truncateSnapshotField(
+                  request["url"] ?? "",
+                  PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH,
+                ),
+                method: truncateSnapshotField(
+                  request["method"] ?? "GET",
+                  PREVIEW_AUTOMATION_MAX_NETWORK_METHOD_LENGTH,
+                ),
               });
             }),
           };
@@ -789,7 +843,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   ...request,
                   status: null,
                   failed: true,
-                  errorText: String(params["errorText"] ?? "Network request failed"),
+                  errorText: truncateSnapshotField(
+                    params["errorText"] ?? "Network request failed",
+                    PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH,
+                  ),
                   timestamp,
                 })
               : current.networkEntries,
@@ -2607,8 +2664,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       tabId: string,
       wc: Electron.WebContents,
       send: SendCommand,
-      mode: PreviewAutomationSnapshotMode,
+      input: PreviewAutomationSnapshotInput,
     ) {
+      const mode = input.mode ?? "compact";
       yield* Effect.all([send("Runtime.enable"), send("Accessibility.enable")], {
         concurrency: 2,
         discard: true,
@@ -2624,10 +2682,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         send,
         `(() => {
           const selectorFor = (element) => {
-            if (element.id) return "#" + CSS.escape(element.id);
+            if (element.id) return ("#" + CSS.escape(element.id)).slice(0, ${PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH});
             for (const attribute of ["data-testid", "name"]) {
               const value = element.getAttribute(attribute);
-              if (value) return element.tagName.toLowerCase() + "[" + attribute + "=" + JSON.stringify(value) + "]";
+              if (value) return (element.tagName.toLowerCase() + "[" + attribute + "=" + JSON.stringify(value) + "]").slice(0, ${PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH});
             }
             const buildParts = (current, parts = []) => {
               if (!current || current.nodeType !== Node.ELEMENT_NODE || parts.length >= 8) {
@@ -2643,7 +2701,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 : base;
               return buildParts(parent, [part, ...parts]);
             };
-            return buildParts(element).join(" > ");
+            return buildParts(element).join(" > ").slice(0, ${PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH});
           };
           const visible = (element) => {
             const style = getComputedStyle(element);
@@ -2655,9 +2713,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           )).filter(visible).slice(0, ${MAX_INTERACTIVE_ELEMENTS}).map((element) => {
             const rect = element.getBoundingClientRect();
             return {
-              tag: element.tagName.toLowerCase(),
-              role: element.getAttribute("role"),
-              name: element.getAttribute("aria-label") || element.innerText || element.getAttribute("name") || "",
+              tag: element.tagName.toLowerCase().slice(0, ${PREVIEW_AUTOMATION_MAX_ELEMENT_TAG_LENGTH}),
+              role: (() => {
+                const role = element.getAttribute("role");
+                return role === null ? null : role.slice(0, ${PREVIEW_AUTOMATION_MAX_ELEMENT_ROLE_LENGTH});
+              })(),
+              name: (element.getAttribute("aria-label") || element.innerText || element.getAttribute("name") || "").slice(0, ${PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH}),
               selector: selectorFor(element),
               x: rect.x,
               y: rect.y,
@@ -2666,8 +2727,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             };
           });
           return {
-            url: location.href,
-            title: document.title,
+            url: location.href.slice(0, ${PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH}),
+            title: document.title.slice(0, ${PREVIEW_AUTOMATION_MAX_PAGE_TITLE_LENGTH}),
             loading: document.readyState !== "complete",
             visibleText: (document.body?.innerText || "").slice(0, ${MAX_VISIBLE_TEXT_LENGTH}),
             interactiveElements: elements
@@ -2677,48 +2738,71 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
       const [accessibility, sourceImage, diagnostics, timelines] = yield* Effect.all([
         send("Accessibility.getFullAXTree"),
-        attemptPromise(
-          {
-            operation: "automationSnapshot.capturePage",
-            tabId,
-            webContentsId: wc.id,
-          },
-          () => wc.capturePage(),
-        ),
+        input.includeScreenshot === true
+          ? attemptPromise(
+              {
+                operation: "automationSnapshot.capturePage",
+                tabId,
+                webContentsId: wc.id,
+              },
+              () => wc.capturePage(),
+            )
+          : Effect.succeed<Electron.NativeImage | null>(null),
         Ref.get(diagnosticsRef),
         Ref.get(actionTimelineRef),
       ]);
-      const sourceSize = sourceImage.getSize();
-      const image =
-        sourceSize.width > MAX_SCREENSHOT_WIDTH
-          ? sourceImage.resize({ width: MAX_SCREENSHOT_WIDTH })
-          : sourceImage;
-      const size = image.getSize();
+      const screenshot =
+        sourceImage === null
+          ? null
+          : (() => {
+              const sourceSize = sourceImage.getSize();
+              const image =
+                sourceSize.width > MAX_SCREENSHOT_WIDTH
+                  ? sourceImage.resize({ width: MAX_SCREENSHOT_WIDTH })
+                  : sourceImage;
+              const size = image.getSize();
+              return {
+                mimeType: "image/png" as const,
+                data: image.toPNG().toString("base64"),
+                width: size.width,
+                height: size.height,
+              };
+            })();
       const browserDiagnostics = diagnostics.get(wc.id);
-      return {
+      // Fail closed here rather than at MCP assembly: an over-budget snapshot
+      // must never pay for the Electron IPC and automation WebSocket hops.
+      const bounded = boundPreviewAutomationSnapshot({
         ...page,
         accessibilityTree:
           mode === "compact" ? compactAccessibilityTree(accessibility) : accessibility,
         consoleEntries: [...(browserDiagnostics?.consoleEntries ?? [])],
         networkEntries: [...(browserDiagnostics?.networkEntries ?? [])],
-        actionTimeline: [...(timelines.get(tabId) ?? [])],
-        screenshot: {
-          mimeType: "image/png" as const,
-          data: image.toPNG().toString("base64"),
-          width: size.width,
-          height: size.height,
-        },
-      };
+        actionTimeline: [...(timelines.get(tabId) ?? [])].map((event) => ({
+          ...event,
+          ...(event.error === undefined
+            ? {}
+            : { error: event.error.slice(0, PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH) }),
+        })),
+        screenshot,
+      });
+      if (!bounded.ok) {
+        return yield* new PreviewAutomationResultTooLargeError({
+          tabId,
+          actualBytes: bounded.failure.actualBytes,
+          maximumBytes: bounded.failure.maximumBytes,
+        });
+      }
+      return bounded.snapshot;
     },
   );
 
   const automationSnapshot = Effect.fn("PreviewManager.automationSnapshot")(function* (
     tabId: string,
-    mode: PreviewAutomationSnapshotMode,
+    input: PreviewAutomationSnapshotInput,
   ) {
     const wc = yield* requireWebContents(tabId);
     return yield* withControlSession(tabId, wc, "snapshot", (send) =>
-      captureAutomationSnapshot(tabId, wc, send, mode),
+      captureAutomationSnapshot(tabId, wc, send, input),
     );
   });
 
@@ -3504,7 +3588,9 @@ export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClas
   }
 
   override get message(): string {
-    return `Preview evaluation result in tab ${this.tabId} was ${this.actualBytes} bytes; maximum is ${this.maximumBytes} bytes`;
+    return `Preview automation result in tab ${this.tabId} ${formatPreviewAutomationResultTooLargeBytes(
+      { actualBytes: this.actualBytes, maximumBytes: this.maximumBytes },
+    )}`;
   }
 }
 
@@ -3616,7 +3702,7 @@ export class PreviewManager extends Context.Service<
     ) => Effect.Effect<PreviewAutomationStatus, PreviewManagerError>;
     readonly automationSnapshot: (
       tabId: string,
-      mode: PreviewAutomationSnapshotMode,
+      input: PreviewAutomationSnapshotInput,
     ) => Effect.Effect<PreviewAutomationSnapshot, PreviewManagerError>;
     readonly automationClick: (
       tabId: string,

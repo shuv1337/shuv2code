@@ -80,6 +80,15 @@ export const PreviewAutomationSnapshotInput = Schema.Struct({
     description:
       "Accessibility detail to return. compact keeps relevant semantic nodes and is the default; full returns Chrome's raw accessibility tree for diagnostics.",
   }),
+  includeScreenshot: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Attach a PNG screenshot. Defaults to false so semantic inspection does not pay the visual payload cost.",
+    }),
+  ).annotate({
+    description:
+      "Attach a PNG screenshot. Defaults to false so semantic inspection does not pay the visual payload cost.",
+  }),
 });
 export type PreviewAutomationSnapshotInput = typeof PreviewAutomationSnapshotInput.Type;
 
@@ -509,11 +518,49 @@ export const PreviewAutomationWaitForInput = Schema.Struct({
   });
 export type PreviewAutomationWaitForInput = typeof PreviewAutomationWaitForInput.Type;
 
+export const PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH = 512;
+export const PREVIEW_AUTOMATION_MAX_ELEMENT_TAG_LENGTH = 64;
+export const PREVIEW_AUTOMATION_MAX_ELEMENT_ROLE_LENGTH = 128;
+export const PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH = 2_048;
+export const PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH = 4_096;
+export const PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_SOURCE_LENGTH = 128;
+export const PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH = 32;
+export const PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH = 2_048;
+export const PREVIEW_AUTOMATION_MAX_NETWORK_METHOD_LENGTH = 32;
+export const PREVIEW_AUTOMATION_MAX_ACTION_LABEL_LENGTH = 128;
+export const PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH = 4_096;
+export const PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH = 2_048;
+export const PREVIEW_AUTOMATION_MAX_PAGE_TITLE_LENGTH = 512;
+
+// Producer and MCP assembly measure the same metadata against the same ceiling,
+// so a snapshot the desktop accepts is always a snapshot MCP can return.
+export const PREVIEW_AUTOMATION_SNAPSHOT_DIAGNOSTIC_ENTRY_LIMIT = 20;
+export const PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES = 512_000;
+export const PREVIEW_AUTOMATION_SNAPSHOT_IMAGE_MAX_BYTES = 2_000_000;
+
+export const PREVIEW_AUTOMATION_ACCESSIBILITY_TREE_BUDGET_REASON =
+  "Accessibility tree omitted to keep the snapshot within its byte budget.";
+
+export const PreviewAutomationSnapshotTruncatedField = Schema.Literals([
+  "url",
+  "title",
+  "visibleText",
+  "interactiveElements",
+  "accessibilityTree",
+  "consoleEntries",
+  "networkEntries",
+  "actionTimeline",
+]);
+export type PreviewAutomationSnapshotTruncatedField =
+  typeof PreviewAutomationSnapshotTruncatedField.Type;
+
 export const PreviewAutomationElement = Schema.Struct({
-  tag: Schema.String,
-  role: Schema.NullOr(Schema.String),
-  name: Schema.String,
-  selector: Schema.String,
+  tag: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ELEMENT_TAG_LENGTH)),
+  role: Schema.NullOr(
+    Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ELEMENT_ROLE_LENGTH)),
+  ),
+  name: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH)),
+  selector: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH)),
   x: Schema.Number,
   y: Schema.Number,
   width: Schema.Number,
@@ -522,36 +569,42 @@ export const PreviewAutomationElement = Schema.Struct({
 export type PreviewAutomationElement = typeof PreviewAutomationElement.Type;
 
 export const PreviewAutomationConsoleEntry = Schema.Struct({
-  level: Schema.String,
-  text: Schema.String,
+  level: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH)),
+  text: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH)),
   timestamp: Schema.String,
-  source: Schema.optional(Schema.String),
+  source: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_SOURCE_LENGTH)),
+  ),
 });
 export type PreviewAutomationConsoleEntry = typeof PreviewAutomationConsoleEntry.Type;
 
 export const PreviewAutomationNetworkEntry = Schema.Struct({
-  url: Schema.String,
-  method: Schema.String,
+  url: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH)),
+  method: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_NETWORK_METHOD_LENGTH)),
   status: Schema.NullOr(Schema.Number),
   failed: Schema.Boolean,
-  errorText: Schema.optional(Schema.String),
+  errorText: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH)),
+  ),
   timestamp: Schema.String,
 });
 export type PreviewAutomationNetworkEntry = typeof PreviewAutomationNetworkEntry.Type;
 
 export const PreviewAutomationActionEvent = Schema.Struct({
-  id: Schema.String,
-  action: Schema.String,
+  id: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ACTION_LABEL_LENGTH)),
+  action: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ACTION_LABEL_LENGTH)),
   status: Schema.Literals(["running", "succeeded", "failed", "interrupted"]),
   startedAt: Schema.String,
   completedAt: Schema.optional(Schema.String),
-  error: Schema.optional(Schema.String),
+  error: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH)),
+  ),
 });
 export type PreviewAutomationActionEvent = typeof PreviewAutomationActionEvent.Type;
 
 export const PreviewAutomationSnapshot = Schema.Struct({
-  url: Schema.String,
-  title: Schema.String,
+  url: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH)),
+  title: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_PAGE_TITLE_LENGTH)),
   loading: Schema.Boolean,
   visibleText: Schema.String,
   interactiveElements: Schema.Array(PreviewAutomationElement),
@@ -559,12 +612,20 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   consoleEntries: Schema.Array(PreviewAutomationConsoleEntry),
   networkEntries: Schema.Array(PreviewAutomationNetworkEntry),
   actionTimeline: Schema.Array(PreviewAutomationActionEvent),
-  screenshot: Schema.Struct({
-    mimeType: Schema.Literal("image/png"),
-    data: Schema.String,
-    width: Schema.Int,
-    height: Schema.Int,
-  }),
+  screenshot: Schema.NullOr(
+    Schema.Struct({
+      mimeType: Schema.Literal("image/png"),
+      data: Schema.String,
+      width: Schema.Int,
+      height: Schema.Int,
+    }),
+  ),
+  truncated: Schema.optional(
+    Schema.Array(PreviewAutomationSnapshotTruncatedField).annotate({
+      description:
+        "Fields the producer reduced to keep the snapshot inside its byte budget. Absent when nothing was reduced.",
+    }),
+  ),
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
 
@@ -822,20 +883,73 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
   }
 }
 
+export const PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG = "PreviewAutomationResultTooLargeError";
+
+export interface PreviewAutomationResultTooLargeBytes {
+  readonly actualBytes: number;
+  readonly maximumBytes: number;
+}
+
+export const formatPreviewAutomationResultTooLargeBytes = (
+  bytes: PreviewAutomationResultTooLargeBytes,
+): string => `was ${bytes.actualBytes} bytes; maximum is ${bytes.maximumBytes} bytes`;
+
+const PREVIEW_AUTOMATION_RESULT_TOO_LARGE_BYTES_PATTERN =
+  /was (\d+) bytes; maximum is (\d+) bytes/u;
+
+// Electron flattens a rejected IPC handler error into a plain `Error` whose only
+// surviving field is `name: message`, so the renderer recovers the budget error
+// from the text the desktop formatted with the helper above.
+export const parsePreviewAutomationResultTooLargeBytes = (
+  cause: unknown,
+): PreviewAutomationResultTooLargeBytes | null => {
+  const readBytes = (
+    source: Record<string, unknown>,
+  ): PreviewAutomationResultTooLargeBytes | null =>
+    typeof source["actualBytes"] === "number" && typeof source["maximumBytes"] === "number"
+      ? { actualBytes: source["actualBytes"], maximumBytes: source["maximumBytes"] }
+      : null;
+  if (typeof cause === "object" && cause !== null) {
+    const record = cause as Record<string, unknown>;
+    if (record["_tag"] === PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG) {
+      const direct = readBytes(record);
+      if (direct) return direct;
+      const detail = record["detail"];
+      if (typeof detail === "object" && detail !== null) {
+        const nested = readBytes(detail as Record<string, unknown>);
+        if (nested) return nested;
+      }
+    }
+  }
+  const message =
+    cause instanceof Error
+      ? cause.message
+      : typeof cause === "object" &&
+          cause !== null &&
+          typeof (cause as Record<string, unknown>)["message"] === "string"
+        ? ((cause as Record<string, unknown>)["message"] as string)
+        : null;
+  if (message === null || !message.includes(PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG)) return null;
+  const match = PREVIEW_AUTOMATION_RESULT_TOO_LARGE_BYTES_PATTERN.exec(message);
+  if (!match?.[1] || !match[2]) return null;
+  return { actualBytes: Number(match[1]), maximumBytes: Number(match[2]) };
+};
+
 export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClass<PreviewAutomationResultTooLargeError>()(
-  "PreviewAutomationResultTooLargeError",
+  PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG,
   {
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationRemoteDiagnosticFields,
+    actualBytes: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     maximumBytes: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
   },
 ) {
   override get message(): string {
-    const summary =
-      this.maximumBytes === undefined
-        ? `Preview automation ${this.operation} produced a result that is too large.`
-        : `Preview automation ${this.operation} produced a result larger than ${this.maximumBytes} bytes.`;
-    return summary;
+    if (this.maximumBytes === undefined) {
+      return `Preview automation ${this.operation} produced a result that is too large.`;
+    }
+    const measured = this.actualBytes === undefined ? "" : ` (${this.actualBytes} bytes measured)`;
+    return `Preview automation ${this.operation} produced a result larger than ${this.maximumBytes} bytes${measured}.`;
   }
 }
 

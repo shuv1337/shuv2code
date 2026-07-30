@@ -266,10 +266,19 @@ const classifyResponseError = (
         detail.maximumBytes > 0
           ? detail.maximumBytes
           : undefined;
+      const actualBytes =
+        detail &&
+        "actualBytes" in detail &&
+        typeof detail.actualBytes === "number" &&
+        Number.isInteger(detail.actualBytes) &&
+        detail.actualBytes >= 0
+          ? detail.actualBytes
+          : undefined;
       return new PreviewAutomationResultTooLargeError({
         ...context,
         ...remoteDiagnostics,
         ...(maximumBytes === undefined ? {} : { maximumBytes }),
+        ...(actualBytes === undefined ? {} : { actualBytes }),
       });
     }
     case "PreviewAutomationUnavailableError":

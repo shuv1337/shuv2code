@@ -66,7 +66,7 @@ import {
   PreviewAutomationResponse,
   PreviewAutomationScrollInput,
   PreviewAutomationSnapshot,
-  PreviewAutomationSnapshotMode,
+  PreviewAutomationSnapshotInput,
   PreviewAutomationStatus,
   PreviewAutomationStreamEvent,
   PreviewAutomationTypeInput,
@@ -898,7 +898,7 @@ export const DesktopPreviewTabInputSchema = Schema.Struct({
 
 export const DesktopPreviewAutomationSnapshotInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
-  mode: PreviewAutomationSnapshotMode,
+  input: PreviewAutomationSnapshotInput,
 });
 
 export const DesktopPreviewRegisterWebviewInputSchema = Schema.Struct({
@@ -1090,7 +1090,7 @@ export interface DesktopPreviewBridge {
     status: (tabId: string) => Promise<PreviewAutomationStatus>;
     snapshot: (
       tabId: string,
-      mode: PreviewAutomationSnapshotMode,
+      input: PreviewAutomationSnapshotInput,
     ) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
