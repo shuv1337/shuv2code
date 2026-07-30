@@ -7,6 +7,10 @@ export interface BootstrapInputResult {
   truncated: boolean;
 }
 
+export interface BootstrapWorkObserver {
+  readonly onMessageBlockBuilt?: () => void;
+}
+
 const BOOTSTRAP_PREAMBLE =
   "Continue this conversation using the transcript context below. The final section is the latest user request to answer now.";
 const TRANSCRIPT_HEADER = "Transcript context:";
@@ -61,6 +65,7 @@ export function buildBootstrapInput(
   previousMessages: ChatMessage[],
   latestPrompt: string,
   maxChars: number,
+  workObserver?: BootstrapWorkObserver,
 ): BootstrapInputResult {
   const budget = Number.isFinite(maxChars) ? Math.max(1, Math.floor(maxChars)) : 1;
   const promptOnly = latestPrompt.length <= budget ? latestPrompt : latestPrompt.slice(0, budget);
@@ -74,66 +79,56 @@ export function buildBootstrapInput(
     };
   }
 
-  const newestFirstBlocks: string[] = [];
+  const includedNewestFirst: string[] = [];
+  let includedBodyLength = 0;
   for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
     const message = previousMessages[index];
     if (!message) continue;
-    newestFirstBlocks.push(buildMessageBlock(message));
-  }
-
-  if (newestFirstBlocks.length === 0) {
-    return {
-      text: promptOnly,
-      includedCount: 0,
-      omittedCount: previousMessages.length,
-      truncated: true,
-    };
-  }
-
-  // Include a contiguous suffix from newest to oldest, then reverse to chronological.
-  let includedNewestFirst: string[] = [];
-  for (const block of newestFirstBlocks) {
-    const nextNewestFirst = [...includedNewestFirst, block];
-    const nextChronological = nextNewestFirst.toReversed();
-    const omittedCount = newestFirstBlocks.length - nextChronological.length;
-    const transcriptBody =
-      omittedCount > 0
-        ? `${OMITTED_SUMMARY(omittedCount)}\n\n${nextChronological.join("\n\n")}`
-        : nextChronological.join("\n\n");
-    if (!finalizeWithPrompt(transcriptBody, latestPrompt, budget)) {
+    workObserver?.onMessageBlockBuilt?.();
+    const block = buildMessageBlock(message);
+    const nextIncludedCount = includedNewestFirst.length + 1;
+    const nextBodyLength = includedBodyLength + block.length + (nextIncludedCount > 1 ? 2 : 0);
+    const omittedCount = previousMessages.length - nextIncludedCount;
+    const omittedPrefixLength = omittedCount > 0 ? OMITTED_SUMMARY(omittedCount).length + 2 : 0;
+    const finalLength =
+      BOOTSTRAP_PREAMBLE.length +
+      2 +
+      TRANSCRIPT_HEADER.length +
+      1 +
+      omittedPrefixLength +
+      nextBodyLength +
+      2 +
+      LATEST_PROMPT_HEADER.length +
+      1 +
+      latestPrompt.length;
+    if (finalLength > budget) {
       break;
     }
-    includedNewestFirst = nextNewestFirst;
+    includedNewestFirst.push(block);
+    includedBodyLength = nextBodyLength;
   }
 
-  let includedChronological = includedNewestFirst.toReversed();
-  while (true) {
-    const omittedCount = newestFirstBlocks.length - includedChronological.length;
-    const transcriptBody =
-      omittedCount > 0
-        ? includedChronological.length > 0
-          ? `${OMITTED_SUMMARY(omittedCount)}\n\n${includedChronological.join("\n\n")}`
-          : OMITTED_SUMMARY(omittedCount)
-        : includedChronological.join("\n\n");
-    const finalized = finalizeWithPrompt(transcriptBody, latestPrompt, budget);
-    if (finalized) {
-      return {
-        text: finalized,
-        includedCount: includedChronological.length,
-        omittedCount,
-        truncated: omittedCount > 0 || latestPrompt.length !== promptOnly.length,
-      };
-    }
-
-    if (includedChronological.length === 0) {
-      return {
-        text: promptOnly,
-        includedCount: 0,
-        omittedCount: previousMessages.length,
-        truncated: true,
-      };
-    }
-
-    includedChronological = includedChronological.slice(1);
+  const includedChronological = includedNewestFirst.toReversed();
+  const omittedCount = previousMessages.length - includedChronological.length;
+  const transcriptBody =
+    omittedCount > 0
+      ? includedChronological.length > 0
+        ? `${OMITTED_SUMMARY(omittedCount)}\n\n${includedChronological.join("\n\n")}`
+        : OMITTED_SUMMARY(omittedCount)
+      : includedChronological.join("\n\n");
+  const finalized = finalizeWithPrompt(transcriptBody, latestPrompt, budget);
+  if (finalized) {
+    return {
+      text: finalized,
+      includedCount: includedChronological.length,
+      omittedCount,
+      truncated: omittedCount > 0 || latestPrompt.length !== promptOnly.length,
+    };
   }
+  return {
+    text: promptOnly,
+    includedCount: 0,
+    omittedCount: previousMessages.length,
+    truncated: true,
+  };
 }

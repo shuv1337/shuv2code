@@ -11,6 +11,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -24,6 +25,7 @@ const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
+const encodeUnknownJson = Schema.encodeSync(Schema.UnknownFromJsonString);
 
 const projectionSnapshotLayer = it.layer(
   OrchestrationProjectionSnapshotQueryLive.pipe(
@@ -1547,6 +1549,142 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
       assert.equal(shellSnapshot.projects.length, 0);
       assert.equal(shellSnapshot.threads.length, 0);
+    }),
+  );
+  it.effect("bounds a 40k-row thread snapshot and keyset-pages older history", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_thread_proposed_plans`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-bounded', 'Bounded', '/tmp/bounded',
+          '{"provider":"codex","model":"gpt-5-codex"}', '[]',
+          '2026-07-30T00:00:00.000Z', '2026-07-30T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, latest_turn_id, latest_user_message_at,
+          pending_approval_count, pending_user_input_count, has_actionable_proposed_plan,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'thread-bounded', 'project-bounded', 'Bounded thread',
+          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+          NULL, NULL, NULL, '2026-07-30T00:00:00.000Z', 0, 0, 0,
+          '2026-07-30T00:00:00.000Z', '2026-07-30T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE sequence(value) AS (
+          VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 10000
+        )
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        ) SELECT
+          printf('message-%05d', value), 'thread-bounded', NULL,
+          CASE WHEN value % 2 = 0 THEN 'assistant' ELSE 'user' END,
+          printf('message body %05d', value), 0,
+          '2026-07-30T00:00:00.000Z', '2026-07-30T00:00:00.000Z'
+        FROM sequence
+      `;
+      yield* sql`
+        WITH RECURSIVE sequence(value) AS (
+          VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 10000
+        )
+        INSERT INTO projection_thread_proposed_plans (
+          plan_id, thread_id, turn_id, plan_markdown, created_at, updated_at
+        ) SELECT printf('plan-%05d', value), 'thread-bounded', NULL,
+          printf('plan %05d', value), '2026-07-30T00:00:00.000Z', '2026-07-30T00:00:00.000Z'
+        FROM sequence
+      `;
+      yield* sql`
+        WITH RECURSIVE sequence(value) AS (
+          VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 10000
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        ) SELECT printf('activity-%05d', value), 'thread-bounded', NULL,
+          'info', 'test.activity', printf('activity %05d', value), '{}', value,
+          '2026-07-30T00:00:00.000Z'
+        FROM sequence
+      `;
+      yield* sql`
+        WITH RECURSIVE sequence(value) AS (
+          VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 10000
+        )
+        INSERT INTO projection_turns (
+          thread_id, turn_id, state, requested_at, completed_at,
+          checkpoint_turn_count, checkpoint_ref, checkpoint_status, checkpoint_files_json
+        ) SELECT 'thread-bounded', printf('turn-%05d', value), 'completed',
+          '2026-07-30T00:00:00.000Z', '2026-07-30T00:00:00.000Z', value,
+          printf('refs/checkpoints/%05d', value), 'ready', '[]'
+        FROM sequence
+      `;
+
+      const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(
+        ThreadId.make("thread-bounded"),
+      );
+      assert.equal(snapshot._tag, "Some");
+      if (snapshot._tag === "None") return;
+      assert.equal(snapshot.value.thread.messages.length, 200);
+      assert.equal(snapshot.value.thread.proposedPlans.length, 200);
+      assert.equal(snapshot.value.thread.activities.length, 200);
+      assert.equal(snapshot.value.thread.checkpoints.length, 200);
+      assert.equal(snapshot.value.thread.messages[0]?.id, asMessageId("message-09801"));
+      assert.equal(snapshot.value.thread.messages.at(-1)?.id, asMessageId("message-10000"));
+      assert.ok(snapshot.value.thread.historyCursor);
+      const encodedSnapshot = encodeUnknownJson(snapshot.value);
+      const encodedSnapshotBytes = new TextEncoder().encode(encodedSnapshot).byteLength;
+      assert.ok(encodedSnapshotBytes < 200_000);
+      assert.equal(
+        1 -
+          (snapshot.value.thread.messages.length +
+            snapshot.value.thread.proposedPlans.length +
+            snapshot.value.thread.activities.length +
+            snapshot.value.thread.checkpoints.length) /
+            40_000,
+        0.98,
+      );
+      const legacyFullThread = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-bounded"),
+      );
+      assert.equal(legacyFullThread._tag, "Some");
+      if (legacyFullThread._tag === "Some") {
+        const legacyBytes = new TextEncoder().encode(
+          encodeUnknownJson(legacyFullThread.value),
+        ).byteLength;
+        assert.ok(legacyBytes > 7_000_000);
+        assert.ok(encodedSnapshotBytes / legacyBytes < 0.03);
+      }
+
+      const loadPage = snapshotQuery.getThreadHistoryPage;
+      assert.ok(loadPage);
+      if (!loadPage) return;
+      const page = yield* loadPage(
+        ThreadId.make("thread-bounded"),
+        snapshot.value.thread.historyCursor!,
+      );
+      assert.equal(page.messages.length, 200);
+      assert.equal(page.messages[0]?.id, asMessageId("message-09601"));
+      assert.equal(page.messages.at(-1)?.id, asMessageId("message-09800"));
+      assert.equal(
+        page.messages.some((message) =>
+          snapshot.value.thread.messages.some((current) => current.id === message.id),
+        ),
+        false,
+      );
     }),
   );
 });

@@ -15,6 +15,8 @@ import type {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadHistoryCursor,
+  OrchestrationThreadHistoryPage,
   OrchestrationThreadShell,
   ProjectId,
   ThreadId,
@@ -153,7 +155,9 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
 
   /**
-   * Read a single active thread detail snapshot by id.
+   * Read a complete active thread detail by id for authoritative server-side
+   * command/reaction logic. Never expose this result directly to a client;
+   * client hydration must use the bounded snapshot/history methods below.
    */
   readonly getThreadDetailById: (
     threadId: ThreadId,
@@ -163,11 +167,18 @@ export interface ProjectionSnapshotQueryShape {
    * Read a single active thread detail together with the projection snapshot
    * sequence in one consistent transaction, so the returned `snapshotSequence`
    * exactly matches the state reflected in `thread` (no interleaving projector
-   * update between the two reads).
+   * update between the two reads). Collection bodies are bounded to their
+   * newest keyset page and carry an older-history cursor on the thread.
    */
   readonly getThreadDetailSnapshot: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, ProjectionRepositoryError>;
+
+  /** Read one bounded keyset page immediately before the supplied collection cursors. */
+  readonly getThreadHistoryPage?: (
+    threadId: ThreadId,
+    cursor: OrchestrationThreadHistoryCursor,
+  ) => Effect.Effect<OrchestrationThreadHistoryPage, ProjectionRepositoryError>;
 }
 
 /**

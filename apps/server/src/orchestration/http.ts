@@ -7,7 +7,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
+import {
+  projectThreadDetailSnapshot,
+  projectThreadHistoryPage,
+} from "./ActivityPayloadProjection.ts";
 import { normalizeDispatchCommand } from "./Normalizer.ts";
 import {
   annotateEnvironmentRequest,
@@ -71,6 +74,26 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             return yield* failEnvironmentNotFound("thread_not_found");
           }
           return projectThreadDetailSnapshot(snapshot.value);
+        }),
+      )
+      .handle(
+        "threadHistory",
+        Effect.fn("environment.orchestration.threadHistory")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          const loadPage = projectionSnapshotQuery.getThreadHistoryPage;
+          if (loadPage === undefined) {
+            return yield* failEnvironmentInternal(
+              "orchestration_thread_snapshot_failed",
+              new Error("Thread history pagination is unavailable."),
+            );
+          }
+          return yield* loadPage(args.payload.threadId, args.payload.cursor).pipe(
+            Effect.map(projectThreadHistoryPage),
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
+            ),
+          );
         }),
       )
       .handle(

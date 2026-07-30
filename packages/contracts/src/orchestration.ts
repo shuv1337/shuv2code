@@ -341,6 +341,22 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+export const OrchestrationThreadHistoryCursor = Schema.Struct({
+  messages: Schema.NullOr(Schema.Struct({ createdAt: IsoDateTime, messageId: MessageId })),
+  proposedPlans: Schema.NullOr(
+    Schema.Struct({ createdAt: IsoDateTime, planId: OrchestrationProposedPlanId }),
+  ),
+  activities: Schema.NullOr(
+    Schema.Struct({
+      sequence: Schema.NullOr(NonNegativeInt),
+      createdAt: IsoDateTime,
+      activityId: EventId,
+    }),
+  ),
+  checkpoints: Schema.NullOr(Schema.Struct({ checkpointTurnCount: NonNegativeInt })),
+});
+export type OrchestrationThreadHistoryCursor = typeof OrchestrationThreadHistoryCursor.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -373,6 +389,7 @@ export const OrchestrationThread = Schema.Struct({
   ),
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
+  historyCursor: Schema.optional(Schema.NullOr(OrchestrationThreadHistoryCursor)),
   session: Schema.NullOr(OrchestrationSession),
 });
 export type OrchestrationThread = typeof OrchestrationThread.Type;
@@ -511,6 +528,15 @@ export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   thread: OrchestrationThread,
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
+
+export const OrchestrationThreadHistoryPage = Schema.Struct({
+  messages: Schema.Array(OrchestrationMessage),
+  proposedPlans: Schema.Array(OrchestrationProposedPlan),
+  activities: Schema.Array(OrchestrationThreadActivity),
+  checkpoints: Schema.Array(OrchestrationCheckpointSummary),
+  cursor: Schema.NullOr(OrchestrationThreadHistoryCursor),
+});
+export type OrchestrationThreadHistoryPage = typeof OrchestrationThreadHistoryPage.Type;
 
 export const ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),

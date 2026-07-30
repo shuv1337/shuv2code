@@ -1,4 +1,9 @@
-import type { OrchestrationThreadDetailSnapshot, ThreadId } from "@shuv2code/contracts";
+import type {
+  OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadHistoryCursor,
+  OrchestrationThreadHistoryPage,
+  ThreadId,
+} from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -60,6 +65,39 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
 
 export type FetchEnvironmentThreadSnapshotError = RemoteEnvironmentRequestError;
 
+export const fetchEnvironmentThreadHistory = Effect.fn(
+  "clientRuntime.state.fetchEnvironmentThreadHistory",
+)(function* (input: {
+  readonly prepared: PreparedConnection;
+  readonly threadId: ThreadId;
+  readonly cursor: OrchestrationThreadHistoryCursor;
+  readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
+  readonly timeoutMs?: number;
+}) {
+  const requestUrl = environmentEndpointUrl(
+    input.prepared.httpBaseUrl,
+    "/api/orchestration/thread-history",
+  );
+  const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
+  const headers = yield* buildEnvironmentAuthHeaders(
+    input.prepared.httpAuthorization,
+    "POST",
+    requestUrl,
+    input.signer,
+  );
+  return yield* executeEnvironmentHttpRequest(
+    requestUrl,
+    input.timeoutMs ?? DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS,
+    withEnvironmentCredentials(
+      input.prepared.httpAuthorization,
+      client.orchestration.threadHistory({
+        payload: { threadId: input.threadId, cursor: input.cursor },
+        headers,
+      }),
+    ),
+  );
+});
+
 /**
  * Loads a thread's detail snapshot over HTTP, returning `Option.none()` when it
  * cannot be loaded (so the caller falls back to the socket-embedded snapshot).
@@ -73,6 +111,11 @@ export class ThreadSnapshotLoader extends Context.Service<
       prepared: PreparedConnection,
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>>;
+    readonly loadHistory?: (
+      prepared: PreparedConnection,
+      threadId: ThreadId,
+      cursor: OrchestrationThreadHistoryCursor,
+    ) => Effect.Effect<OrchestrationThreadHistoryPage, RemoteEnvironmentRequestError>;
   }
 >()("@shuv2code/client-runtime/state/threadSnapshotHttp/ThreadSnapshotLoader") {}
 
@@ -114,6 +157,10 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
               Effect.as(Option.none<OrchestrationThreadDetailSnapshot>()),
             ),
           ),
+        ),
+      loadHistory: (prepared, threadId, cursor) =>
+        fetchEnvironmentThreadHistory({ prepared, threadId, cursor, signer }).pipe(
+          Effect.provideService(HttpClient.HttpClient, httpClient),
         ),
     });
   }),

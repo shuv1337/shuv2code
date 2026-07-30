@@ -32,6 +32,8 @@ import {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadHistoryCursor,
+  OrchestrationThreadHistoryPage,
 } from "./orchestration.ts";
 import {
   RelayCloudEnvironmentHealthRequest,
@@ -457,6 +459,11 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
   threadId: ThreadId,
 });
 
+const EnvironmentOrchestrationThreadHistoryInput = Schema.Struct({
+  threadId: ThreadId,
+  cursor: OrchestrationThreadHistoryCursor,
+});
+
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
   .add(
     HttpApiEndpoint.get("snapshot", "/api/orchestration/snapshot", {
@@ -477,6 +484,14 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       headers: OptionalBearerHeaders,
       params: EnvironmentOrchestrationThreadSnapshotParams,
       success: OrchestrationThreadDetailSnapshot,
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("threadHistory", "/api/orchestration/thread-history", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentOrchestrationThreadHistoryInput,
+      success: OrchestrationThreadHistoryPage,
       error: EnvironmentOrchestrationThreadSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )

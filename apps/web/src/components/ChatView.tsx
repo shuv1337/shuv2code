@@ -26,6 +26,7 @@ import {
   type EnvironmentConnectionPresentation,
 } from "@shuv2code/client-runtime/connection";
 import { effectiveSettled, effectiveSnoozed } from "@shuv2code/client-runtime/state/thread-settled";
+import { loadOlderThreadHistory } from "@shuv2code/client-runtime/state/threads";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -65,6 +66,7 @@ import {
   type AtomCommandResult,
 } from "@shuv2code/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
@@ -1439,6 +1441,24 @@ function ChatViewContent(props: ChatViewProps) {
   // depend on which route is mounted.
   const isServerThread = activeServerThread !== null;
   const activeThread = activeServerThread ?? localDraftThread;
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoadError, setHistoryLoadError] = useState<string | null>(null);
+  useEffect(() => {
+    setHistoryLoading(false);
+    setHistoryLoadError(null);
+  }, [routeThreadKey]);
+  const handleLoadOlderHistory = useCallback(() => {
+    if (historyLoading || activeThread?.historyCursor == null) return;
+    setHistoryLoading(true);
+    setHistoryLoadError(null);
+    void Effect.runPromise(loadOlderThreadHistory(environmentId, threadId)).then(
+      () => setHistoryLoading(false),
+      (error) => {
+        setHistoryLoading(false);
+        setHistoryLoadError(error instanceof Error ? error.message : "Could not load history.");
+      },
+    );
+  }, [activeThread?.historyCursor, environmentId, historyLoading, threadId]);
   const threadError = isServerThread
     ? (localServerError ?? activeServerThread?.session?.lastError ?? null)
     : localDraftError;
@@ -2417,7 +2437,8 @@ function ChatViewContent(props: ChatViewProps) {
   )
     ? activeProviderStatus
     : null;
-  const hasTimelineTopBanner = Boolean(threadError) || visibleProviderStatus !== null;
+  const hasTimelineTopBanner =
+    Boolean(threadError) || visibleProviderStatus !== null || activeThread?.historyCursor != null;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
@@ -5722,6 +5743,23 @@ function ChatViewContent(props: ChatViewProps) {
             </div>
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
+              {activeThread.historyCursor != null ? (
+                <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={handleLoadOlderHistory}
+                    disabled={historyLoading}
+                    className="pointer-events-auto rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {historyLoading ? "Loading earlier history…" : "Load earlier history"}
+                  </button>
+                  {historyLoadError ? (
+                    <span className="pointer-events-auto ml-2 rounded bg-destructive/10 px-2 py-1 text-destructive text-xs">
+                      {historyLoadError}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 key={activeThread.id}

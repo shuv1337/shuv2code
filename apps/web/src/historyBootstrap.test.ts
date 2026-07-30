@@ -136,4 +136,28 @@ describe("buildBootstrapInput", () => {
     expect(result.text).toContain("Attached image");
     expect(result.text).toContain("screenshot.png");
   });
+
+  it("stops materializing a 50k-message history once the character budget is full", () => {
+    const messages = Array.from({ length: 50_000 }, (_, index) => ({
+      id: messageId(`message-${index}`),
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      text: `history-${index}-${"x".repeat(120)}`,
+      createdAt: "2026-02-09T00:00:00.000Z",
+      turnId: null,
+      updatedAt: "2026-02-09T00:00:00.000Z",
+      streaming: false,
+    }));
+    let blockBuilds = 0;
+
+    const result = buildBootstrapInput(messages, "latest request", 4_000, {
+      onMessageBlockBuilt: () => {
+        blockBuilds += 1;
+      },
+    });
+
+    expect(result.text.length).toBeLessThanOrEqual(4_000);
+    expect(result.text).toContain("history-49999");
+    expect(result.omittedCount).toBeGreaterThan(49_900);
+    expect(blockBuilds).toBeLessThan(30);
+  });
 });

@@ -2,6 +2,7 @@ import type {
   OrchestrationEvent,
   OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadHistoryPage,
 } from "@shuv2code/contracts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -271,6 +272,15 @@ export function projectThreadDetailSnapshot(
         projectActivityPayload,
       ),
     },
+  };
+}
+
+export function projectThreadHistoryPage(
+  page: OrchestrationThreadHistoryPage,
+): OrchestrationThreadHistoryPage {
+  return {
+    ...page,
+    activities: dropStaleContextWindowActivities(page.activities).map(projectActivityPayload),
   };
 }
 

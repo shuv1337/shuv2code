@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   EventId,
+  MessageId,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
@@ -33,6 +34,7 @@ import * as RpcSession from "../rpc/session.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   makeEnvironmentThreadState,
+  mergeThreadHistoryPage,
   ThreadSnapshotLoader,
   type EnvironmentThreadState,
 } from "./threads.ts";
@@ -98,6 +100,40 @@ const ACTIVE_THREAD: OrchestrationThread = {
     updatedAt: "2026-04-01T00:01:00.000Z",
   },
 };
+
+it("prepends older history without duplicating cursor-boundary records", () => {
+  const currentMessage = {
+    id: MessageId.make("message-current"),
+    role: "assistant" as const,
+    text: "current",
+    turnId: null,
+    streaming: false,
+    createdAt: "2026-04-01T00:01:00.000Z",
+    updatedAt: "2026-04-01T00:01:00.000Z",
+  };
+  const olderMessage = {
+    ...currentMessage,
+    id: MessageId.make("message-older"),
+    text: "older",
+    createdAt: "2026-04-01T00:00:00.000Z",
+    updatedAt: "2026-04-01T00:00:00.000Z",
+  };
+  const merged = mergeThreadHistoryPage(
+    { ...BASE_THREAD, messages: [currentMessage] },
+    {
+      messages: [olderMessage, currentMessage],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+      cursor: null,
+    },
+  );
+  expect(merged.messages.map((message) => message.id)).toEqual([
+    olderMessage.id,
+    currentMessage.id,
+  ]);
+  expect(merged.historyCursor).toBeNull();
+});
 
 type TestThreadInput = OrchestrationThreadStreamItem | Error;
 

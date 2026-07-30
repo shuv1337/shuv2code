@@ -3,6 +3,7 @@ import {
   type EnvironmentId as EnvironmentIdType,
   type OrchestrationThread,
   type OrchestrationThreadDetailSnapshot,
+  type OrchestrationThreadHistoryPage,
   type OrchestrationThreadStreamItem,
   type ThreadId as ThreadIdType,
 } from "@shuv2code/contracts";
@@ -11,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom } from "effect/unstable/reactivity";
@@ -21,7 +23,10 @@ import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
-import { ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
+import {
+  ThreadSnapshotLoader,
+  type FetchEnvironmentThreadSnapshotError,
+} from "./threadSnapshotHttp.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 import { THREAD_STATE_IDLE_TTL_MS } from "./threadRetention.ts";
@@ -46,6 +51,48 @@ function formatThreadError(cause: Cause.Cause<unknown>): string {
 function shouldPersistThread(thread: OrchestrationThread): boolean {
   const status = thread.session?.status;
   return status !== "starting" && status !== "running";
+}
+
+function prependUniqueById<A extends { readonly id: string }>(
+  older: ReadonlyArray<A>,
+  current: ReadonlyArray<A>,
+): Array<A> {
+  const currentIds = new Set(current.map((item) => item.id));
+  return [...older.filter((item) => !currentIds.has(item.id)), ...current];
+}
+
+export function mergeThreadHistoryPage(
+  thread: OrchestrationThread,
+  page: OrchestrationThreadHistoryPage,
+): OrchestrationThread {
+  const checkpointTurnCounts = new Set(
+    thread.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount),
+  );
+  return {
+    ...thread,
+    messages: prependUniqueById(page.messages, thread.messages),
+    proposedPlans: prependUniqueById(page.proposedPlans, thread.proposedPlans),
+    activities: prependUniqueById(page.activities, thread.activities),
+    checkpoints: [
+      ...page.checkpoints.filter(
+        (checkpoint) => !checkpointTurnCounts.has(checkpoint.checkpointTurnCount),
+      ),
+      ...thread.checkpoints,
+    ],
+    historyCursor: page.cursor,
+  };
+}
+
+const threadHistoryLoaders = new Map<
+  string,
+  Effect.Effect<boolean, FetchEnvironmentThreadSnapshotError>
+>();
+
+export function loadOlderThreadHistory(
+  environmentId: EnvironmentIdType,
+  threadId: ThreadIdType,
+): Effect.Effect<boolean, FetchEnvironmentThreadSnapshotError> {
+  return threadHistoryLoaders.get(threadKey({ environmentId, threadId })) ?? Effect.succeed(false);
 }
 
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
@@ -81,6 +128,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   );
   const awaitingCompletion = yield* Ref.make(false);
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
+  const historyLoadSemaphore = yield* Semaphore.make(1);
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
@@ -178,6 +226,31 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       ),
     );
   });
+
+  const loadOlderHistory = historyLoadSemaphore.withPermit(
+    Effect.gen(function* () {
+      const current = yield* SubscriptionRef.get(state);
+      if (Option.isNone(current.data) || current.data.value.historyCursor == null) return false;
+      const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+      if (Option.isNone(prepared)) return false;
+      const loadHistory = snapshotLoader.loadHistory;
+      if (loadHistory === undefined) return false;
+      const page = yield* loadHistory(prepared.value, threadId, current.data.value.historyCursor);
+      const latest = yield* SubscriptionRef.get(state);
+      if (Option.isNone(latest.data)) return false;
+      yield* setThread(mergeThreadHistoryPage(latest.data.value, page));
+      return true;
+    }),
+  );
+  const historyLoaderKey = threadKey({ environmentId, threadId });
+  threadHistoryLoaders.set(historyLoaderKey, loadOlderHistory);
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      if (threadHistoryLoaders.get(historyLoaderKey) === loadOlderHistory) {
+        threadHistoryLoaders.delete(historyLoaderKey);
+      }
+    }),
+  );
 
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
     item: OrchestrationThreadStreamItem,
