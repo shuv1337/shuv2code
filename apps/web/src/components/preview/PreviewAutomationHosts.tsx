@@ -66,6 +66,7 @@ import {
 } from "./previewNavigationReadiness";
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
 import { createPreviewAutomationClientId } from "./previewAutomationClientId";
+import { resolvePreviewAutomationSnapshotMode } from "./previewAutomationSnapshotMode";
 import {
   needsPreviewAutomationSessionSync,
   resolvePreviewAutomationOpenTab,
@@ -581,7 +582,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const input = request.input as PreviewAutomationSnapshotInput;
             return await ready.bridge.automation.snapshot(
               ready.runtimeTabId,
-              input.mode ?? "compact",
+              resolvePreviewAutomationSnapshotMode(input),
             );
           }
           case "click": {
