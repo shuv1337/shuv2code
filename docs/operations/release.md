@@ -20,7 +20,9 @@ Rules enforced by `scripts/lib/release-version.ts`:
 - `nightly` is required for `-nightly.YYYYMMDD.N` versions.
 - Nightlies do not rewrite committed versions. A committed prerelease keeps the
   same core (`0.1.0-alpha.2` → `0.1.0-nightly...`); a committed stable advances
-  one patch (`0.1.0` → `0.1.1-nightly...`).
+  one patch (`0.1.0` → `0.1.1-nightly...`). Because SemVer sorts `nightly`
+  before `rc` on the same core, the desktop nightly channel deliberately permits
+  downgrade-style transitions; the `next` and `nightly` channels remain isolated.
 
 Publishing is manual and must follow this order:
 
@@ -30,21 +32,27 @@ Publishing is manual and must follow this order:
    version. `nightly` derives an ephemeral version from the committed server
    version, UTC date, and workflow run number.
 2. Run `.github/workflows/release.yml` in `prepare` mode. A prepare run may use a
-   branch commit, performs no external publication, and uploads reviewable npm,
-   Linux, and macOS artifacts plus SHA-256 files.
-3. Review the npm tarball and digest. `scripts/inspect-release-package.ts` checks
-   the packed manifest and required files, rejects unresolved workspace/catalog
-   protocols and sensitive paths, performs a clean-prefix install, and executes
-   both `shuv2code --version` and `s2c --version`.
+   branch commit, performs no external publication, and rehearses the release by
+   uploading reviewable npm, Linux, and macOS artifacts plus SHA-256 files. A
+   prepare artifact is not promoted across workflow runs.
+3. Review the rehearsal npm tarball and digest. `scripts/inspect-release-package.ts`
+   checks the minimal packed manifest and required files, rejects unresolved
+   workspace/catalog protocols, private package references, lifecycle scripts,
+   and sensitive paths, performs a script-enabled clean-prefix install, and
+   executes both `shuv2code --version` and `s2c --version`.
 4. Build, install, and verify the matching production iOS app, then distribute
    it through Sqim following [the iOS runbook](./ios-sqim.md).
 5. Merge the exact reviewed release commit to `main`, then run the workflow in
-   `publish` mode with the Sqim confirmation checked. Duplicate npm versions or
-   Git tags fail in `resolve`, before package or desktop builds.
-6. The `publish_npm` job pauses at the protected `production` environment,
-   downloads the reviewed npm artifact, verifies its SHA-256, and runs the npm
-   CLI directly against that tarball with the SemVer-derived dist-tag. It never
-   rebuilds or invokes a pnpm publish wrapper.
+   `publish` mode with the Sqim confirmation checked and an operator-written
+   release summary. Duplicate npm versions or Git tags fail in `resolve`, before
+   package or desktop builds.
+6. The publish run builds and uploads a fresh artifact from that immutable main
+   SHA, then `publish_npm` pauses at the protected `production` environment.
+   Before approving, download and inspect the tarball and SHA-256 from that same
+   blocked publish run; compare them with the rehearsal expectations. Approval
+   downloads that exact same-run artifact, verifies its SHA-256, and runs npm
+   directly against it with the SemVer-derived dist-tag. No step between approval
+   and publication rebuilds or invokes a pnpm publish wrapper.
 7. The workflow waits until `npm view shuv2code@<version>` returns the exact
    version and verifies the selected dist-tag. Only then can it publish the
    GitHub release and its desktop checksums under `v<version>`.
@@ -54,9 +62,11 @@ Publishing is manual and must follow this order:
 
 The workflow uses Node 24 and fails if Node is below 22.14.0 or npm is below
 11.5.1, disables dependency caching on release jobs, pins every action to a
-reviewed commit SHA, and records the immutable source SHA. It does not deploy a hosted web app or relay, announce to inherited
-community channels, publish Windows/Android/Intel-macOS artifacts, or mutate a
-repository name. The optional relay has a separate manual workflow with a typed
+reviewed commit SHA, and records the immutable source SHA. Generated GitHub notes
+are prepended with the operator summary and compare only against the shuv2code
+`v0.1.0-alpha.1`-or-later tag line. It does not deploy a hosted web app or relay,
+announce to inherited community channels, publish Windows/Android/Intel-macOS
+artifacts, or mutate a repository name. The optional relay has a separate manual workflow with a typed
 confirmation and protected environment.
 
 ## One-time npm trusted-publishing bootstrap
@@ -94,7 +104,10 @@ runbook before considering a daily schedule.
 vp run --filter shuv2code build
 node scripts/apply-web-brand-assets.ts production apps/server/dist/client
 mkdir -p release-server
-pnpm --filter shuv2code pack --pack-destination "$PWD/release-server"
+node scripts/prepare-release-package.ts \
+  --output release-server/package \
+  --version <version>
+(cd release-server/package && pnpm pack --pack-destination "$PWD/..")
 node scripts/inspect-release-package.ts \
   --tarball release-server/shuv2code-<version>.tgz \
   --version <version> \
@@ -107,7 +120,9 @@ is wrong, deprecate it with an explanation and publish a corrected increment.
 
 ## Signing inputs
 
-Publication requires Apple signing and notarization inputs:
+Publication requires Apple signing and notarization inputs. Store these as
+protected environment secrets/variables rather than exposing them to branch
+prepare runs:
 
 - `CSC_LINK`
 - `CSC_KEY_PASSWORD`

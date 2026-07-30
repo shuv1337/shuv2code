@@ -9,17 +9,10 @@ import * as PlatformError from "effect/PlatformError";
 
 import {
   readDesktopBaseVersion,
-  resolveNightlyBaseVersion,
   resolveNightlyReleaseMetadata,
   resolveNightlyTargetVersion,
   writeNightlyReleaseOutput,
 } from "./resolve-nightly-release.ts";
-
-it("strips prerelease and build metadata when deriving the nightly base version", () => {
-  assert.equal(resolveNightlyBaseVersion("0.0.17"), "0.0.17");
-  assert.equal(resolveNightlyBaseVersion("9.9.9-smoke.0"), "9.9.9");
-  assert.equal(resolveNightlyBaseVersion("1.2.3-beta.4+build.9"), "1.2.3");
-});
 
 it.effect("keeps prerelease cores and bumps only stable committed versions", () =>
   Effect.gen(function* () {

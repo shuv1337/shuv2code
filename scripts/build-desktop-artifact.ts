@@ -18,6 +18,7 @@ import {
 } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
+import { classifyReleaseVersion } from "./lib/release-version.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -1480,11 +1481,11 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
 export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
   // Desktop branding/updater only distinguishes nightly vs production artwork.
   // npm `next` prereleases share production desktop branding.
-  return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
+  return classifyReleaseVersion(version).class === "nightly" ? "nightly" : "latest";
 }
 
 export function resolveDesktopGitHubReleaseType(version: string): "release" | "prerelease" {
-  return /-/.test(version) ? "prerelease" : "release";
+  return classifyReleaseVersion(version).githubPrerelease ? "prerelease" : "release";
 }
 
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {

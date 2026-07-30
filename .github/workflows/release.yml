@@ -15,6 +15,10 @@ on:
         default: next
         type: choice
         options: [latest, next, nightly]
+      release_summary:
+        description: "Short operator-written summary prepended to generated GitHub release notes"
+        required: true
+        type: string
       ios_sqim_release_confirmed:
         description: "Confirm the matching iOS build was released through Sqim before desktop publication"
         required: true
@@ -41,6 +45,7 @@ jobs:
       release_class: ${{ steps.release.outputs.release_class }}
       source_sha: ${{ steps.release.outputs.source_sha }}
       tag: ${{ steps.release.outputs.tag }}
+      previous_tag: ${{ steps.release.outputs.previous_tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -130,6 +135,16 @@ jobs:
             echo "Git tag v${version} already exists." >&2
             exit 1
           fi
+
+          if [[ "$channel" == "nightly" ]]; then
+            release_notes_channel=nightly
+          else
+            release_notes_channel=stable
+          fi
+          node scripts/resolve-previous-release-tag.ts \
+            --channel "$release_notes_channel" \
+            --current-tag "v${version}" \
+            --github-output
 
           set +e
           npm_lookup="$(npm view "shuv2code@${version}" version --json 2>&1)"
@@ -234,8 +249,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-server
-          pnpm --filter shuv2code pack --pack-destination "$GITHUB_WORKSPACE/release-server"
-          npm pack ./apps/server --dry-run --json > release-server/npm-pack-dry-run.json
+          node scripts/prepare-release-package.ts \
+            --output release-server/package \
+            --version "${{ needs.resolve.outputs.version }}"
+          (
+            cd release-server/package
+            pnpm pack --pack-destination "$GITHUB_WORKSPACE/release-server"
+          )
 
           mapfile -t tarballs < <(find release-server -maxdepth 1 -type f -name '*.tgz' -print)
           if [[ ${#tarballs[@]} -ne 1 ]]; then
@@ -249,6 +269,12 @@ jobs:
             --version "${{ needs.resolve.outputs.version }}" \
             --digest-output "$digest"
           (cd release-server && sha256sum --check "$(basename "$digest")")
+          {
+            echo "### npm artifact ready for review"
+            echo "- Tarball: \`$(basename "$tarball")\`"
+            echo "- SHA-256: \`$(cut -d' ' -f1 "$digest")\`"
+            echo "- Source SHA: \`${{ needs.resolve.outputs.source_sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -256,7 +282,6 @@ jobs:
           path: |
             release-server/*.tgz
             release-server/*.sha256
-            release-server/npm-pack-dry-run.json
           if-no-files-found: error
 
   linux:
@@ -306,13 +331,6 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 40
     env:
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      SHUV2CODE_APPLE_TEAM_ID: ${{ vars.SHUV2CODE_APPLE_TEAM_ID }}
-      MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
       SHUV2CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.SHUV2CODE_CLERK_PASSKEY_RP_DOMAINS }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -331,6 +349,14 @@ jobs:
       - name: Require signing inputs for publication
         if: inputs.mode == 'publish'
         shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          SHUV2CODE_APPLE_TEAM_ID: ${{ vars.SHUV2CODE_APPLE_TEAM_ID }}
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
         run: |
           set -euo pipefail
           for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER SHUV2CODE_APPLE_TEAM_ID MACOS_PROVISIONING_PROFILE; do
@@ -339,6 +365,10 @@ jobs:
       - name: Prepare signing inputs
         if: inputs.mode == 'publish'
         shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
         run: |
           set -euo pipefail
           key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
@@ -348,20 +378,27 @@ jobs:
           printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
           security cms -D -i "$profile_path" >/dev/null
           echo "SHUV2CODE_MACOS_PROVISIONING_PROFILE=$profile_path" >> "$GITHUB_ENV"
-      - name: Build DMG and ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-          args=(--platform mac --target dmg --arch arm64 --build-version "${{ needs.resolve.outputs.version }}")
-          if [[ "${{ inputs.mode }}" == "publish" ]]; then args+=(--signed); fi
-          vp run dist:desktop:artifact "${args[@]}"
+      - name: Build unsigned DMG and ZIP
+        if: inputs.mode == 'prepare'
+        run: vp run dist:desktop:artifact --platform mac --target dmg --arch arm64 --build-version "${{ needs.resolve.outputs.version }}"
+      - name: Build signed DMG and ZIP
+        if: inputs.mode == 'publish'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          SHUV2CODE_APPLE_TEAM_ID: ${{ vars.SHUV2CODE_APPLE_TEAM_ID }}
+        run: vp run dist:desktop:artifact --platform mac --target dmg --arch arm64 --build-version "${{ needs.resolve.outputs.version }}" --signed
       - name: Collect and digest artifacts
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release-macos
           find release -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.yml' \) -exec cp {} release-macos/ \;
-          test -n "$(find release-macos -type f -print -quit)"
+          test -n "$(find release-macos -type f -name '*.dmg' -print -quit)"
+          test -n "$(find release-macos -type f -name '*.zip' -print -quit)"
+          test -n "$(find release-macos -type f -name '*.yml' -print -quit)"
           (
             cd release-macos
             find . -maxdepth 1 -type f ! -name '*.sha256' -print0 \
@@ -485,7 +522,9 @@ jobs:
           tag_name: ${{ needs.resolve.outputs.tag }}
           target_commitish: ${{ needs.resolve.outputs.source_sha }}
           name: shuv2code v${{ needs.resolve.outputs.version }}
+          body: ${{ inputs.release_summary }}
           generate_release_notes: true
+          previous_tag: ${{ needs.resolve.outputs.previous_tag }}
           prerelease: ${{ needs.resolve.outputs.github_prerelease == 'true' }}
           make_latest: ${{ needs.resolve.outputs.github_make_latest == 'true' }}
           files: |

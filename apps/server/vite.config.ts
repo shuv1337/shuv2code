@@ -3,6 +3,7 @@ import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { classifyReleaseVersion } from "../../scripts/lib/release-version.ts";
 import packageJson from "./package.json" with { type: "json" };
 
 const bundledPackagePrefixes = [
@@ -17,7 +18,8 @@ export function shouldBundleCliDependency(id: string): boolean {
 }
 
 const repoEnv = loadRepoEnv();
-const cliBuildChannel = packageJson.version.includes("-nightly.") ? "nightly" : "latest";
+const cliBuildChannel =
+  classifyReleaseVersion(packageJson.version).class === "nightly" ? "nightly" : "latest";
 
 export default mergeConfig(
   baseConfig,

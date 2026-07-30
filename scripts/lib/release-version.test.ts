@@ -22,7 +22,13 @@ describe("classifyReleaseVersion", () => {
   });
 
   it("maps alpha/beta/rc prereleases only to next", () => {
-    for (const version of ["0.1.0-alpha.2", "0.1.0-beta.1", "0.1.0-rc.1", "1.0.0-alpha.1"]) {
+    for (const version of [
+      "0.1.0-alpha.2",
+      "0.1.0-beta.1",
+      "0.1.0-rc.1",
+      "1.0.0-alpha.1",
+      "1.0.0-alpha-1+build.9",
+    ]) {
       expect(classifyReleaseVersion(version)).toMatchObject({
         version,
         class: "prerelease",
@@ -54,6 +60,11 @@ describe("classifyReleaseVersion", () => {
       "0.1.0-nightly.20260730.0",
       "0.1.0-nightly.2026073.1",
       "0.1.0-nightly.20260730.1.extra",
+      "1.0.0-alpha..1",
+      "1.0.0-..",
+      "1.0.0-01",
+      "1.0.0+???",
+      " 1.0.0",
     ]) {
       expect(() => classifyReleaseVersion(version)).toThrow(InvalidReleaseVersionError);
     }

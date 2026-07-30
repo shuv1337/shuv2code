@@ -102,12 +102,28 @@ export function validatePackedPackage(
     }
   }
 
-  const runtimeDependencies = recordOfStrings(manifest.dependencies);
-  const privateDependency = PRIVATE_RUNTIME_DEPENDENCIES.find(
-    (dependency) => dependency in runtimeDependencies,
-  );
-  if (privateDependency !== undefined) {
-    fail(`Packed package retains private runtime dependency '${privateDependency}'.`);
+  if (manifest.devDependencies !== undefined) {
+    fail("Packed package manifest must not contain devDependencies.");
+  }
+  if (manifest.scripts !== undefined) {
+    fail("Packed package manifest must not contain development or lifecycle scripts.");
+  }
+
+  for (const dependencyField of [
+    "dependencies",
+    "optionalDependencies",
+    "peerDependencies",
+    "devDependencies",
+  ] as const) {
+    const dependencies = recordOfStrings(manifest[dependencyField]);
+    const privateDependency = PRIVATE_RUNTIME_DEPENDENCIES.find(
+      (dependency) => dependency in dependencies,
+    );
+    if (privateDependency !== undefined) {
+      fail(
+        `Packed package retains private dependency '${privateDependency}' in '${dependencyField}'.`,
+      );
+    }
   }
 
   return {
@@ -159,16 +175,7 @@ function verifyInstalledBinaries(tarballPath: string, expectedVersion: string): 
   try {
     const install = NodeChildProcess.spawnSync(
       "npm",
-      [
-        "install",
-        "--global",
-        "--prefix",
-        prefix,
-        "--no-audit",
-        "--no-fund",
-        "--ignore-scripts",
-        tarballPath,
-      ],
+      ["install", "--global", "--prefix", prefix, "--no-audit", "--no-fund", tarballPath],
       {
         encoding: "utf8",
         maxBuffer: 64 * 1024 * 1024,
@@ -202,18 +209,25 @@ function verifyInstalledBinaries(tarballPath: string, expectedVersion: string): 
   }
 }
 
-interface CliOptions {
+export interface CliOptions {
   readonly tarballPath: string;
   readonly version: string;
   readonly digestOutputPath: string;
 }
 
-function parseCliOptions(args: ReadonlyArray<string>): CliOptions {
+export function parseCliOptions(args: ReadonlyArray<string>): CliOptions {
+  const allowedFlags = new Set(["--tarball", "--version", "--digest-output"]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
-    if (flag === undefined || value === undefined || !flag.startsWith("--")) {
+    if (
+      flag === undefined ||
+      value === undefined ||
+      !allowedFlags.has(flag) ||
+      value.startsWith("--") ||
+      values.has(flag)
+    ) {
       fail(
         "Usage: inspect-release-package --tarball <path> --version <semver> --digest-output <path>",
       );

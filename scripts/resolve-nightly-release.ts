@@ -85,9 +85,6 @@ const decodeServerPackageJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ServerPackageJsonSchema),
 );
 
-/** @deprecated Prefer resolveNightlyCoreVersion from release-version. */
-export const resolveNightlyBaseVersion = (version: string) => version.replace(/[-+].*$/, "");
-
 export const resolveNightlyTargetVersion = (version: string) => {
   try {
     return Effect.succeed(resolveNightlyCoreVersion(version));

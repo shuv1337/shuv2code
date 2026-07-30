@@ -8,6 +8,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   ReleasePackageInspectionError,
   computeFileSha256,
+  parseCliOptions,
   validatePackedPackage,
 } from "./inspect-release-package.ts";
 
@@ -59,7 +60,19 @@ describe("release package inspection", () => {
           expectedFiles,
           "0.1.0-alpha.1",
         ),
-      /private runtime dependency/,
+      /private dependency/,
+    );
+    assert.throws(
+      () =>
+        validatePackedPackage(
+          {
+            ...validManifest,
+            devDependencies: { "@shuv2code/shared": "0.1.0-alpha.1" },
+          },
+          expectedFiles,
+          "0.1.0-alpha.1",
+        ),
+      /devDependencies/,
     );
   });
 
@@ -97,6 +110,52 @@ describe("release package inspection", () => {
           "0.1.0-alpha.1",
         ),
       /bin 's2c'/,
+    );
+  });
+
+  it("rejects malformed, unknown, and duplicate CLI flags", () => {
+    assert.throws(() => parseCliOptions(["--tarball", "package.tgz", "--version"]), /Usage:/);
+    assert.throws(
+      () =>
+        parseCliOptions([
+          "--tarball",
+          "--version",
+          "--version",
+          "0.1.0",
+          "--digest-output",
+          "digest.txt",
+        ]),
+      /Usage:/,
+    );
+    assert.throws(
+      () =>
+        parseCliOptions([
+          "--tarball",
+          "package.tgz",
+          "--wat",
+          "value",
+          "--digest-output",
+          "digest.txt",
+        ]),
+      /Usage:/,
+    );
+  });
+
+  it("parses the complete CLI contract", () => {
+    assert.deepEqual(
+      parseCliOptions([
+        "--tarball",
+        "package.tgz",
+        "--version",
+        "0.1.0-alpha.1",
+        "--digest-output",
+        "package.sha256",
+      ]),
+      {
+        tarballPath: NodePath.resolve("package.tgz"),
+        version: "0.1.0-alpha.1",
+        digestOutputPath: NodePath.resolve("package.sha256"),
+      },
     );
   });
 

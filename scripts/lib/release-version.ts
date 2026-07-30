@@ -1,5 +1,3 @@
-import { parseSemver } from "@shuv2code/shared/semver";
-
 export type NpmReleaseDistTag = "latest" | "next" | "nightly";
 
 export type ReleaseVersionClass = "stable" | "prerelease" | "nightly";
@@ -46,42 +44,46 @@ export class ReleaseChannelMismatchError extends Error {
 }
 
 const NIGHTLY_DATE_RUN = /^nightly\.(\d{8})\.(\d+)$/;
-/** Full x.y.z with optional prerelease; rejects two-segment forms like `0.1`. */
-const STRICT_RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/;
+const STRICT_RELEASE_VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 function isPositiveIntegerString(value: string): boolean {
   return /^\d+$/.test(value) && Number.parseInt(value, 10) >= 1;
+}
+
+function hasInvalidNumericPrereleaseIdentifier(identifiers: ReadonlyArray<string>): boolean {
+  return identifiers.some(
+    (identifier) => /^\d+$/.test(identifier) && identifier.length > 1 && identifier.startsWith("0"),
+  );
 }
 
 export function formatCoreVersion(major: number, minor: number, patch: number): string {
   return `${major}.${minor}.${patch}`;
 }
 
-function stripBuildMetadata(version: string): string {
-  const plusIndex = version.indexOf("+");
-  return plusIndex === -1 ? version : version.slice(0, plusIndex);
-}
-
 export function classifyReleaseVersion(version: string): ParsedReleaseVersion {
-  const withoutBuild = stripBuildMetadata(version.trim());
-  if (!STRICT_RELEASE_VERSION.test(withoutBuild)) {
-    throw new InvalidReleaseVersionError(version);
-  }
-  const parsed = parseSemver(withoutBuild);
-  if (!parsed) {
+  const candidate = version.trim();
+  const match = STRICT_RELEASE_VERSION.exec(candidate);
+  if (candidate !== version || !match) {
     throw new InvalidReleaseVersionError(version);
   }
 
-  const coreVersion = formatCoreVersion(parsed.major, parsed.minor, parsed.patch);
-  const normalizedVersion =
-    parsed.prerelease.length === 0 ? coreVersion : `${coreVersion}-${parsed.prerelease.join(".")}`;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  const prerelease = match[4]?.split(".") ?? [];
+  if (hasInvalidNumericPrereleaseIdentifier(prerelease)) {
+    throw new InvalidReleaseVersionError(version);
+  }
 
-  if (parsed.prerelease.length === 0) {
+  const coreVersion = formatCoreVersion(major, minor, patch);
+
+  if (prerelease.length === 0) {
     return {
-      version: normalizedVersion,
-      major: parsed.major,
-      minor: parsed.minor,
-      patch: parsed.patch,
+      version: candidate,
+      major,
+      minor,
+      patch,
       prerelease: [],
       coreVersion,
       class: "stable",
@@ -91,8 +93,8 @@ export function classifyReleaseVersion(version: string): ParsedReleaseVersion {
     };
   }
 
-  if (parsed.prerelease[0] === "nightly") {
-    const nightlyLabel = parsed.prerelease.join(".");
+  if (prerelease[0] === "nightly") {
+    const nightlyLabel = prerelease.join(".");
     const nightlyMatch = NIGHTLY_DATE_RUN.exec(nightlyLabel);
     const runNumber = nightlyMatch?.[2];
     if (!nightlyMatch || runNumber === undefined || !isPositiveIntegerString(runNumber)) {
@@ -100,11 +102,11 @@ export function classifyReleaseVersion(version: string): ParsedReleaseVersion {
     }
 
     return {
-      version: normalizedVersion,
-      major: parsed.major,
-      minor: parsed.minor,
-      patch: parsed.patch,
-      prerelease: parsed.prerelease,
+      version: candidate,
+      major,
+      minor,
+      patch,
+      prerelease,
       coreVersion,
       class: "nightly",
       npmDistTag: "nightly",
@@ -114,11 +116,11 @@ export function classifyReleaseVersion(version: string): ParsedReleaseVersion {
   }
 
   return {
-    version: normalizedVersion,
-    major: parsed.major,
-    minor: parsed.minor,
-    patch: parsed.patch,
-    prerelease: parsed.prerelease,
+    version: candidate,
+    major,
+    minor,
+    patch,
+    prerelease,
     coreVersion,
     class: "prerelease",
     npmDistTag: "next",
