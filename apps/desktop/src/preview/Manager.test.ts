@@ -242,12 +242,12 @@ describe("PreviewManager", () => {
   effectIt.effect("captures screenshots only when semantic inspection opts in", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        const image = {
+        const image: TestCapturedPreviewImage = {
           getSize: () => ({ width: 640, height: 360 }),
           resize: () => image,
           toJPEG: () => Buffer.from("jpeg"),
           toPNG: () => Buffer.from("png"),
-        } satisfies TestCapturedPreviewImage;
+        };
         const capturePage = vi.fn(async () => image);
         const webview = makeTestPreviewWebContents(capturePage, 42, async (method) => {
           if (method === "Runtime.evaluate") {

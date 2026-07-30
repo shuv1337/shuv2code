@@ -519,15 +519,44 @@ export const PreviewAutomationWaitForInput = Schema.Struct({
 export type PreviewAutomationWaitForInput = typeof PreviewAutomationWaitForInput.Type;
 
 export const PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH = 512;
+export const PREVIEW_AUTOMATION_MAX_ELEMENT_TAG_LENGTH = 64;
+export const PREVIEW_AUTOMATION_MAX_ELEMENT_ROLE_LENGTH = 128;
 export const PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH = 2_048;
 export const PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH = 4_096;
 export const PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_SOURCE_LENGTH = 128;
+export const PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH = 32;
 export const PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH = 2_048;
+export const PREVIEW_AUTOMATION_MAX_NETWORK_METHOD_LENGTH = 32;
+export const PREVIEW_AUTOMATION_MAX_ACTION_LABEL_LENGTH = 128;
 export const PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH = 4_096;
+export const PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH = 2_048;
+export const PREVIEW_AUTOMATION_MAX_PAGE_TITLE_LENGTH = 512;
+
+// Producer and MCP assembly measure the same metadata against the same ceiling,
+// so a snapshot the desktop accepts is always a snapshot MCP can return.
+export const PREVIEW_AUTOMATION_SNAPSHOT_DIAGNOSTIC_ENTRY_LIMIT = 20;
+export const PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES = 512_000;
+export const PREVIEW_AUTOMATION_SNAPSHOT_IMAGE_MAX_BYTES = 2_000_000;
+
+export const PreviewAutomationSnapshotTruncatedField = Schema.Literals([
+  "url",
+  "title",
+  "visibleText",
+  "interactiveElements",
+  "accessibilityTree",
+  "consoleEntries",
+  "networkEntries",
+  "actionTimeline",
+  "screenshot",
+]);
+export type PreviewAutomationSnapshotTruncatedField =
+  typeof PreviewAutomationSnapshotTruncatedField.Type;
 
 export const PreviewAutomationElement = Schema.Struct({
-  tag: Schema.String.check(Schema.isMaxLength(64)),
-  role: Schema.NullOr(Schema.String.check(Schema.isMaxLength(128))),
+  tag: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ELEMENT_TAG_LENGTH)),
+  role: Schema.NullOr(
+    Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ELEMENT_ROLE_LENGTH)),
+  ),
   name: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH)),
   selector: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH)),
   x: Schema.Number,
@@ -538,7 +567,7 @@ export const PreviewAutomationElement = Schema.Struct({
 export type PreviewAutomationElement = typeof PreviewAutomationElement.Type;
 
 export const PreviewAutomationConsoleEntry = Schema.Struct({
-  level: Schema.String.check(Schema.isMaxLength(32)),
+  level: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH)),
   text: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH)),
   timestamp: Schema.String,
   source: Schema.optional(
@@ -549,7 +578,7 @@ export type PreviewAutomationConsoleEntry = typeof PreviewAutomationConsoleEntry
 
 export const PreviewAutomationNetworkEntry = Schema.Struct({
   url: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH)),
-  method: Schema.String.check(Schema.isMaxLength(32)),
+  method: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_NETWORK_METHOD_LENGTH)),
   status: Schema.NullOr(Schema.Number),
   failed: Schema.Boolean,
   errorText: Schema.optional(
@@ -560,8 +589,8 @@ export const PreviewAutomationNetworkEntry = Schema.Struct({
 export type PreviewAutomationNetworkEntry = typeof PreviewAutomationNetworkEntry.Type;
 
 export const PreviewAutomationActionEvent = Schema.Struct({
-  id: Schema.String.check(Schema.isMaxLength(128)),
-  action: Schema.String.check(Schema.isMaxLength(128)),
+  id: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ACTION_LABEL_LENGTH)),
+  action: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_ACTION_LABEL_LENGTH)),
   status: Schema.Literals(["running", "succeeded", "failed", "interrupted"]),
   startedAt: Schema.String,
   completedAt: Schema.optional(Schema.String),
@@ -572,8 +601,8 @@ export const PreviewAutomationActionEvent = Schema.Struct({
 export type PreviewAutomationActionEvent = typeof PreviewAutomationActionEvent.Type;
 
 export const PreviewAutomationSnapshot = Schema.Struct({
-  url: Schema.String,
-  title: Schema.String,
+  url: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH)),
+  title: Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_MAX_PAGE_TITLE_LENGTH)),
   loading: Schema.Boolean,
   visibleText: Schema.String,
   interactiveElements: Schema.Array(PreviewAutomationElement),
@@ -587,6 +616,12 @@ export const PreviewAutomationSnapshot = Schema.Struct({
       data: Schema.String,
       width: Schema.Int,
       height: Schema.Int,
+    }),
+  ),
+  truncated: Schema.optional(
+    Schema.Array(PreviewAutomationSnapshotTruncatedField).annotate({
+      description:
+        "Fields the producer reduced to keep the snapshot inside its byte budget. Absent when nothing was reduced.",
     }),
   ),
 });

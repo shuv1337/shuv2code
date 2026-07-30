@@ -2,6 +2,11 @@ import type {
   PreviewAutomationSnapshot,
   PreviewAutomationSnapshotInput,
 } from "@shuv2code/contracts";
+import {
+  PREVIEW_AUTOMATION_SNAPSHOT_DIAGNOSTIC_ENTRY_LIMIT,
+  PREVIEW_AUTOMATION_SNAPSHOT_IMAGE_MAX_BYTES,
+  PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES,
+} from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -30,9 +35,32 @@ import {
   PreviewStandardToolkit,
 } from "./toolkits/preview/tools.ts";
 
-export const MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT = 20;
-export const MCP_PREVIEW_METADATA_MAX_BYTES = 512_000;
-export const MCP_PREVIEW_IMAGE_MAX_BYTES = 2_000_000;
+export const MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT =
+  PREVIEW_AUTOMATION_SNAPSHOT_DIAGNOSTIC_ENTRY_LIMIT;
+export const MCP_PREVIEW_METADATA_MAX_BYTES = PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES;
+export const MCP_PREVIEW_IMAGE_MAX_BYTES = PREVIEW_AUTOMATION_SNAPSHOT_IMAGE_MAX_BYTES;
+
+export const PREVIEW_SNAPSHOT_BUDGET_ERROR_TAG = "PreviewSnapshotBudgetExceeded";
+
+const previewSnapshotBudgetError = (
+  budget: "metadata" | "screenshot",
+  actualBytes: number,
+  maximumBytes: number,
+  text: string,
+): McpSchema.CallToolResult =>
+  new McpSchema.CallToolResult({
+    isError: true,
+    structuredContent: {
+      error: {
+        _tag: PREVIEW_SNAPSHOT_BUDGET_ERROR_TAG,
+        operation: "snapshot",
+        budget,
+        actualBytes,
+        maximumBytes,
+      },
+    },
+    content: [{ type: "text", text }],
+  });
 
 export const makePreviewSnapshotCallToolResult = (
   snapshot: PreviewAutomationSnapshot,
@@ -58,27 +86,23 @@ export const makePreviewSnapshotCallToolResult = (
   const encodedMetadata = JSON.stringify(metadata);
   const actualBytes = Buffer.byteLength(encodedMetadata, "utf8");
   if (actualBytes > MCP_PREVIEW_METADATA_MAX_BYTES) {
-    return new McpSchema.CallToolResult({
-      isError: true,
-      content: [
-        {
-          type: "text",
-          text: `Preview snapshot metadata exceeded the ${MCP_PREVIEW_METADATA_MAX_BYTES}-byte safety budget (${actualBytes} bytes). Prefer mode='compact', omit includeScreenshot, or use targeted preview_evaluate inspection.`,
-        },
-      ],
-    });
+    // The producer already trims to this same budget, so reaching here means an
+    // untrimmable page: only narrower inspection can recover.
+    return previewSnapshotBudgetError(
+      "metadata",
+      actualBytes,
+      MCP_PREVIEW_METADATA_MAX_BYTES,
+      `Preview snapshot metadata exceeded the ${MCP_PREVIEW_METADATA_MAX_BYTES}-byte safety budget (${actualBytes} bytes). Use preview_evaluate to inspect a specific selector or region instead of the whole page.`,
+    );
   }
   const imageBytes = screenshot === null ? 0 : Buffer.byteLength(screenshot.data, "base64");
   if (imageBytes > MCP_PREVIEW_IMAGE_MAX_BYTES) {
-    return new McpSchema.CallToolResult({
-      isError: true,
-      content: [
-        {
-          type: "text",
-          text: `Preview screenshot exceeded the ${MCP_PREVIEW_IMAGE_MAX_BYTES}-byte safety budget (${imageBytes} bytes). Retry without includeScreenshot or use a smaller viewport.`,
-        },
-      ],
-    });
+    return previewSnapshotBudgetError(
+      "screenshot",
+      imageBytes,
+      MCP_PREVIEW_IMAGE_MAX_BYTES,
+      `Preview screenshot exceeded the ${MCP_PREVIEW_IMAGE_MAX_BYTES}-byte safety budget (${imageBytes} bytes). Retry without includeScreenshot or use a smaller viewport.`,
+    );
   }
 
   return new McpSchema.CallToolResult({

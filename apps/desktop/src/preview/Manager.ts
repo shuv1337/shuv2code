@@ -29,11 +29,18 @@ import type {
 } from "@shuv2code/contracts";
 import {
   PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH,
+  PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH,
   PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_SOURCE_LENGTH,
   PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH,
   PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH,
+  PREVIEW_AUTOMATION_MAX_ELEMENT_ROLE_LENGTH,
+  PREVIEW_AUTOMATION_MAX_ELEMENT_TAG_LENGTH,
+  PREVIEW_AUTOMATION_MAX_NETWORK_METHOD_LENGTH,
   PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH,
+  PREVIEW_AUTOMATION_MAX_PAGE_TITLE_LENGTH,
+  PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH,
   PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH,
+  PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES,
 } from "@shuv2code/contracts";
 import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 import { compactAccessibilityTree } from "@shuv2code/shared/compactAccessibilityTree";
@@ -71,6 +78,7 @@ import {
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { playwrightInjectedRuntimeInstallExpression } from "./PlaywrightInjectedRuntime.ts";
 import { makePreviewAutomationKeySequence } from "./PreviewKeyboard.ts";
+import { boundPreviewAutomationSnapshot } from "./snapshotBudget.ts";
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -733,7 +741,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             consoleEntries: pushBounded(current.consoleEntries, {
               level: truncateSnapshotField(
                 typeof params["type"] === "string" ? params["type"] : "log",
-                32,
+                PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH,
               ),
               text,
               timestamp,
@@ -769,7 +777,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             consoleEntries: pushBounded(current.consoleEntries, {
               level: truncateSnapshotField(
                 typeof entry["level"] === "string" ? entry["level"] : "info",
-                32,
+                PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH,
               ),
               text: truncateSnapshotField(
                 entry["text"] ?? "",
@@ -796,7 +804,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   request["url"] ?? "",
                   PREVIEW_AUTOMATION_MAX_NETWORK_URL_LENGTH,
                 ),
-                method: truncateSnapshotField(request["method"] ?? "GET", 32),
+                method: truncateSnapshotField(
+                  request["method"] ?? "GET",
+                  PREVIEW_AUTOMATION_MAX_NETWORK_METHOD_LENGTH,
+                ),
               });
             }),
           };
@@ -2702,10 +2713,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           )).filter(visible).slice(0, ${MAX_INTERACTIVE_ELEMENTS}).map((element) => {
             const rect = element.getBoundingClientRect();
             return {
-              tag: element.tagName.toLowerCase().slice(0, 64),
+              tag: element.tagName.toLowerCase().slice(0, ${PREVIEW_AUTOMATION_MAX_ELEMENT_TAG_LENGTH}),
               role: (() => {
                 const role = element.getAttribute("role");
-                return role === null ? null : role.slice(0, 128);
+                return role === null ? null : role.slice(0, ${PREVIEW_AUTOMATION_MAX_ELEMENT_ROLE_LENGTH});
               })(),
               name: (element.getAttribute("aria-label") || element.innerText || element.getAttribute("name") || "").slice(0, ${PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH}),
               selector: selectorFor(element),
@@ -2716,8 +2727,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             };
           });
           return {
-            url: location.href,
-            title: document.title,
+            url: location.href.slice(0, ${PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH}),
+            title: document.title.slice(0, ${PREVIEW_AUTOMATION_MAX_PAGE_TITLE_LENGTH}),
             loading: document.readyState !== "complete",
             visibleText: (document.body?.innerText || "").slice(0, ${MAX_VISIBLE_TEXT_LENGTH}),
             interactiveElements: elements
@@ -2735,27 +2746,32 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 webContentsId: wc.id,
               },
               () => wc.capturePage(),
-            ).pipe(Effect.map((image) => Option.some(image)))
-          : Effect.succeed(Option.none<Electron.NativeImage>()),
+            )
+          : Effect.succeed<Electron.NativeImage | null>(null),
         Ref.get(diagnosticsRef),
         Ref.get(actionTimelineRef),
       ]);
-      const screenshot = Option.map(sourceImage, (capturedImage) => {
-        const sourceSize = capturedImage.getSize();
-        const image =
-          sourceSize.width > MAX_SCREENSHOT_WIDTH
-            ? capturedImage.resize({ width: MAX_SCREENSHOT_WIDTH })
-            : capturedImage;
-        const size = image.getSize();
-        return {
-          mimeType: "image/png" as const,
-          data: image.toPNG().toString("base64"),
-          width: size.width,
-          height: size.height,
-        };
-      }).pipe(Option.getOrNull);
+      const screenshot =
+        sourceImage === null
+          ? null
+          : (() => {
+              const sourceSize = sourceImage.getSize();
+              const image =
+                sourceSize.width > MAX_SCREENSHOT_WIDTH
+                  ? sourceImage.resize({ width: MAX_SCREENSHOT_WIDTH })
+                  : sourceImage;
+              const size = image.getSize();
+              return {
+                mimeType: "image/png" as const,
+                data: image.toPNG().toString("base64"),
+                width: size.width,
+                height: size.height,
+              };
+            })();
       const browserDiagnostics = diagnostics.get(wc.id);
-      return {
+      // Fail closed here rather than at MCP assembly: an over-budget snapshot
+      // must never pay for the Electron IPC and automation WebSocket hops.
+      const bounded = boundPreviewAutomationSnapshot({
         ...page,
         accessibilityTree:
           mode === "compact" ? compactAccessibilityTree(accessibility) : accessibility,
@@ -2768,7 +2784,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             : { error: event.error.slice(0, PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH) }),
         })),
         screenshot,
-      };
+      });
+      if (!bounded.withinBudget) {
+        return yield* new PreviewAutomationResultTooLargeError({
+          tabId,
+          actualBytes: bounded.metadataBytes,
+          maximumBytes: PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES,
+        });
+      }
+      return bounded.snapshot;
     },
   );
 
@@ -3564,7 +3588,7 @@ export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClas
   }
 
   override get message(): string {
-    return `Preview evaluation result in tab ${this.tabId} was ${this.actualBytes} bytes; maximum is ${this.maximumBytes} bytes`;
+    return `Preview automation result in tab ${this.tabId} was ${this.actualBytes} bytes; maximum is ${this.maximumBytes} bytes`;
   }
 }
 

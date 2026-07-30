@@ -49,6 +49,8 @@ const decodeSnapshotMetadata = Schema.decodeUnknownSync(
     Schema.Struct({
       accessibilityTree: Schema.Unknown,
       consoleEntries: Schema.Array(Schema.Struct({ text: Schema.String })),
+      networkEntries: Schema.Array(Schema.Struct({ url: Schema.String })),
+      actionTimeline: Schema.Array(Schema.Struct({ id: Schema.String })),
       screenshot: Schema.NullOr(
         Schema.Struct({
           mimeType: Schema.Literal("image/png"),
@@ -94,8 +96,25 @@ it("keeps snapshot results singly encoded and within explicit byte budgets", () 
     text: `entry-${index}`,
     timestamp: "2026-07-30T00:00:00.000Z",
   }));
+  const requests = Array.from({ length: 30 }, (_, index) => ({
+    url: `https://example.test/${index}`,
+    method: "GET",
+    status: 200,
+    failed: false,
+    timestamp: "2026-07-30T00:00:00.000Z",
+  }));
+  const actions = Array.from({ length: 30 }, (_, index) => ({
+    id: `action-${index}`,
+    action: "click",
+    status: "succeeded" as const,
+    startedAt: "2026-07-30T00:00:00.000Z",
+  }));
   const bounded = McpHttpServer.makePreviewSnapshotCallToolResult(
-    previewSnapshot({ consoleEntries: diagnostics }),
+    previewSnapshot({
+      consoleEntries: diagnostics,
+      networkEntries: requests,
+      actionTimeline: actions,
+    }),
   );
 
   expect(bounded.isError).toBe(false);
@@ -107,6 +126,10 @@ it("keeps snapshot results singly encoded and within explicit byte budgets", () 
   const decoded = decodeSnapshotMetadata(text.text);
   expect(decoded.consoleEntries).toHaveLength(McpHttpServer.MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT);
   expect(decoded.consoleEntries[0]?.text).toBe("entry-10");
+  expect(decoded.networkEntries).toHaveLength(McpHttpServer.MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT);
+  expect(decoded.networkEntries[0]?.url).toBe("https://example.test/10");
+  expect(decoded.actionTimeline).toHaveLength(McpHttpServer.MCP_PREVIEW_DIAGNOSTIC_ENTRY_LIMIT);
+  expect(decoded.actionTimeline[0]?.id).toBe("action-10");
   expect(decoded.screenshot).toBeNull();
 
   const oversizedMetadata = McpHttpServer.makePreviewSnapshotCallToolResult(
@@ -117,6 +140,14 @@ it("keeps snapshot results singly encoded and within explicit byte budgets", () 
   );
   expect(oversizedMetadata.isError).toBe(true);
   expect(JSON.stringify(oversizedMetadata).length).toBeLessThan(1_000);
+  expect(oversizedMetadata.structuredContent).toMatchObject({
+    error: {
+      _tag: McpHttpServer.PREVIEW_SNAPSHOT_BUDGET_ERROR_TAG,
+      operation: "snapshot",
+      budget: "metadata",
+      maximumBytes: McpHttpServer.MCP_PREVIEW_METADATA_MAX_BYTES,
+    },
+  });
 
   const oversizedImage = McpHttpServer.makePreviewSnapshotCallToolResult(
     previewSnapshot({
@@ -130,6 +161,13 @@ it("keeps snapshot results singly encoded and within explicit byte budgets", () 
   );
   expect(oversizedImage.isError).toBe(true);
   expect(oversizedImage.content[0]).toMatchObject({ type: "text" });
+  expect(oversizedImage.structuredContent).toMatchObject({
+    error: {
+      _tag: McpHttpServer.PREVIEW_SNAPSHOT_BUDGET_ERROR_TAG,
+      budget: "screenshot",
+      maximumBytes: McpHttpServer.MCP_PREVIEW_IMAGE_MAX_BYTES,
+    },
+  });
 });
 
 it.effect("returns bounded structural preview snapshot failures", () =>
@@ -380,6 +418,10 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(semanticMetadata.screenshot).toBeNull();
       expect(semanticMetadata.consoleEntries).toHaveLength(20);
       expect(semanticMetadata.consoleEntries[0]?.text).toBe("console-5");
+      expect(semanticMetadata.networkEntries).toHaveLength(20);
+      expect(semanticMetadata.networkEntries[0]?.url).toBe("https://example.test/5");
+      expect(semanticMetadata.actionTimeline).toHaveLength(20);
+      expect(semanticMetadata.actionTimeline[0]?.id).toBe("action-5");
       expect(semanticMetadata.accessibilityTree).toMatchObject({
         mode: "compact",
         nodes: expect.arrayContaining([expect.objectContaining({ nodeId: "submit" })]),
