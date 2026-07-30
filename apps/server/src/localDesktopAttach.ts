@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "./atomicWrite.ts";
@@ -108,7 +109,11 @@ export const persistLocalDesktopAttach = (input: {
 export const ensureLocalDesktopAttachCredential = Effect.fn("ensureLocalDesktopAttachCredential")(
   function* (
     path: string,
-  ): Effect.fn.Return<string, LocalDesktopAttachError, FileSystem.FileSystem | Crypto.Crypto> {
+  ): Effect.fn.Return<
+    string,
+    LocalDesktopAttachError,
+    FileSystem.FileSystem | Crypto.Crypto | Path.Path
+  > {
     const existing = yield* readPersistedLocalDesktopAttach(path);
     if (Option.isSome(existing)) {
       return existing.value.credential;

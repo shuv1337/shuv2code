@@ -200,6 +200,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           // Busy sessions stay blocked until the test clears them — mirrors a
           // still-running durable execution the reconciler is waiting on.
           while (runtimeMock.state.busySessionIds.has(sessionID)) {
+            // @effect-diagnostics-next-line globalTimers:off - Promise-based SDK mock needs a real event-loop delay outside the Effect test clock.
             await new Promise((resolve) => setTimeout(resolve, 10));
           }
           return { data: true };
@@ -484,6 +485,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
         // Give the forked wait reconciler a chance to enter session.wait.
         for (let i = 0; i < 50 && runtimeMock.state.waitCalls.length === 0; i += 1) {
+          // @effect-diagnostics-next-line globalTimers:off - Polls a Promise-based SDK mock on the real event loop.
           yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 5)));
         }
         NodeAssert.deepEqual(runtimeMock.state.waitCalls, ["ses_inflight"]);
@@ -494,6 +496,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         NodeAssert.deepEqual(runtimeMock.state.abortCalls, []);
         // Unblock the wait loop so the forked reconciler can exit cleanly.
         runtimeMock.state.busySessionIds.delete("ses_inflight");
+        // @effect-diagnostics-next-line globalTimers:off - Lets the Promise-based SDK mock observe teardown before scope closes.
         yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20)));
       }),
   );
