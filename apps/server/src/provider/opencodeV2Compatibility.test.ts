@@ -5,7 +5,12 @@ import * as NodeHttp from "node:http";
 
 import { afterEach, describe, it } from "vite-plus/test";
 
-import { createOpenCodeV2CompatibilityClient } from "./opencodeV2Compatibility.ts";
+import {
+  createOpenCodeV2CompatibilityClient,
+  OpenCodeV2EventTooLargeError,
+  OpenCodeV2ResponseBodyTooLargeError,
+  OpenCodeV2StreamStateOverflowError,
+} from "./opencodeV2Compatibility.ts";
 
 describe("createOpenCodeV2CompatibilityClient", () => {
   const servers: NodeHttp.Server[] = [];
@@ -48,6 +53,18 @@ describe("createOpenCodeV2CompatibilityClient", () => {
     }
     return Buffer.concat(chunks).toString("utf8");
   }
+
+  it("rejects disabled or unbounded buffer ceilings", () => {
+    NodeAssert.throws(
+      () =>
+        createOpenCodeV2CompatibilityClient({
+          baseUrl: "http://127.0.0.1",
+          directory: "/tmp/project",
+          bufferLimits: { sseEventBytes: Number.POSITIVE_INFINITY },
+        }),
+      /sseEventBytes must be a positive safe integer/,
+    );
+  });
 
   it("sends basic auth and flattens provider/model inventory", async () => {
     const expectedAuth = `Basic ${Buffer.from("opencode:pw", "utf8").toString("base64")}`;
@@ -222,6 +239,10 @@ describe("createOpenCodeV2CompatibilityClient", () => {
       patterns: [],
     });
     await client.permission.reply({ requestID: "perm-1", reply: "once" });
+    await NodeAssert.rejects(
+      client.permission.reply({ requestID: "perm-1", reply: "once" }),
+      /has no session/,
+    );
   });
 
   it("normalizes V2 question events and routes replies to their owning session", async () => {
@@ -293,6 +314,224 @@ describe("createOpenCodeV2CompatibilityClient", () => {
 
     await client.question.reply({ requestID: "que_1", answers: [["Selected"]] });
     NodeAssert.deepEqual(replyBody, { answers: [["Selected"]] });
+    await NodeAssert.rejects(
+      client.question.reply({ requestID: "que_1", answers: [["Selected"]] }),
+      /has no session/,
+    );
+  });
+
+  it("rejects a declared oversized HTTP response before retaining its body", async () => {
+    const baseUrl = await listen((_req, res) => {
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": "65",
+      });
+      res.end();
+    });
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+      bufferLimits: { responseBodyBytes: 64 },
+    });
+
+    await NodeAssert.rejects(client.app.skills(), (cause: unknown) => {
+      NodeAssert.ok(cause instanceof OpenCodeV2ResponseBodyTooLargeError);
+      NodeAssert.equal(cause.maximumBytes, 64);
+      NodeAssert.equal(cause.receivedBytes, 65);
+      NodeAssert.equal(cause.resource, "/api/skill");
+      return true;
+    });
+  });
+
+  it("bounds a chunked HTTP response even when content-length is absent", async () => {
+    const baseUrl = await listen((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write("x".repeat(40));
+      res.end("x".repeat(40));
+    });
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+      bufferLimits: { responseBodyBytes: 64 },
+    });
+
+    await NodeAssert.rejects(client.app.skills(), (cause: unknown) => {
+      NodeAssert.ok(cause instanceof OpenCodeV2ResponseBodyTooLargeError);
+      NodeAssert.equal(cause.maximumBytes, 64);
+      NodeAssert.ok(cause.receivedBytes > 64);
+      NodeAssert.ok(cause.receivedBytes <= 80);
+      return true;
+    });
+  });
+
+  it("bounds an SSE event that never supplies a delimiter", async () => {
+    const baseUrl = await listen((req, res) => {
+      NodeAssert.equal(req.url, "/api/event");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${"x".repeat(40)}`);
+      res.end("x".repeat(40));
+    });
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+      bufferLimits: { sseEventBytes: 64 },
+    });
+    const subscription = await client.event.subscribe();
+
+    await NodeAssert.rejects(
+      async () => {
+        for await (const _event of subscription.stream) {
+          // The oversized event must fail before yielding.
+        }
+      },
+      (cause: unknown) => {
+        NodeAssert.ok(cause instanceof OpenCodeV2EventTooLargeError);
+        NodeAssert.equal(cause.maximumBytes, 64);
+        NodeAssert.ok(cause.receivedBytes > 64);
+        return true;
+      },
+    );
+  });
+
+  it("preserves a valid UTF-8 SSE event split across byte boundaries", async () => {
+    const nativeEvent = {
+      type: "session.text.delta",
+      created: 2,
+      data: {
+        sessionID: "ses_utf8",
+        assistantMessageID: "msg_utf8",
+        ordinal: 0,
+        delta: "moon 🌕",
+      },
+    };
+    const baseUrl = await listen((req, res) => {
+      NodeAssert.equal(req.url, "/api/event");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const encoded = Buffer.from(`data: ${JSON.stringify(nativeEvent)}\n\n`, "utf8");
+      for (const byte of encoded) res.write(Buffer.from([byte]));
+      res.end();
+    });
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+      bufferLimits: { sseEventBytes: 1_024 },
+    });
+    const subscription = await client.event.subscribe();
+    const events = [];
+    for await (const event of subscription.stream) events.push(event);
+
+    const delta = events.find((event) => event.type === "message.part.delta");
+    NodeAssert.equal(delta?.properties.delta, "moon 🌕");
+    NodeAssert.equal(delta?.properties.sessionID, "ses_utf8");
+  });
+
+  it("bounds cumulative normalized stream state across individually valid events", async () => {
+    const nativeEvents = [
+      {
+        type: "session.text.started",
+        data: { sessionID: "ses_1", assistantMessageID: "msg_1", ordinal: 0 },
+      },
+      {
+        type: "session.text.delta",
+        data: {
+          sessionID: "ses_1",
+          assistantMessageID: "msg_1",
+          ordinal: 0,
+          delta: "abc",
+        },
+      },
+      {
+        type: "session.text.delta",
+        data: {
+          sessionID: "ses_1",
+          assistantMessageID: "msg_1",
+          ordinal: 0,
+          delta: "def",
+        },
+      },
+    ];
+    const baseUrl = await listen((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const event of nativeEvents) res.write(`data: ${JSON.stringify(event)}\n\n`);
+      res.end();
+    });
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+      bufferLimits: { sseEventBytes: 1_024, streamStateBytes: 5 },
+    });
+    const subscription = await client.event.subscribe();
+
+    await NodeAssert.rejects(
+      async () => {
+        for await (const _event of subscription.stream) {
+          // Consume until cumulative retained state crosses the limit.
+        }
+      },
+      (cause: unknown) => {
+        NodeAssert.ok(cause instanceof OpenCodeV2StreamStateOverflowError);
+        NodeAssert.equal(cause.maximumBytes, 5);
+        NodeAssert.equal(cause.retainedBytes, 6);
+        return true;
+      },
+    );
+  });
+
+  it("releases completed stream parts instead of exhausting the active-part ceiling", async () => {
+    const nativeEvents = ["msg_1", "msg_2"].flatMap((assistantMessageID) => [
+      {
+        type: "session.text.started",
+        data: { sessionID: "ses_1", assistantMessageID, ordinal: 0 },
+      },
+      {
+        type: "session.text.ended",
+        data: { sessionID: "ses_1", assistantMessageID, ordinal: 0, text: "done" },
+      },
+    ]);
+    const baseUrl = await listen((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const event of nativeEvents) res.write(`data: ${JSON.stringify(event)}\n\n`);
+      res.end();
+    });
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+      bufferLimits: { activeStreamParts: 1 },
+    });
+    const subscription = await client.event.subscribe();
+    const events = [];
+    for await (const event of subscription.stream) events.push(event);
+
+    NodeAssert.equal(events.filter((event) => event.type === "message.part.updated").length, 4);
+  });
+
+  it("releases unfinished parts when their session reaches a terminal event", async () => {
+    const nativeEvents = [
+      {
+        type: "session.text.started",
+        data: { sessionID: "ses_1", assistantMessageID: "msg_1", ordinal: 0 },
+      },
+      { type: "session.execution.succeeded", data: { sessionID: "ses_1" } },
+      {
+        type: "session.text.started",
+        data: { sessionID: "ses_2", assistantMessageID: "msg_2", ordinal: 0 },
+      },
+    ];
+    const baseUrl = await listen((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const event of nativeEvents) res.write(`data: ${JSON.stringify(event)}\n\n`);
+      res.end();
+    });
+    const client = createOpenCodeV2CompatibilityClient({
+      baseUrl,
+      directory: "/tmp/project",
+      bufferLimits: { activeStreamParts: 1 },
+    });
+    const subscription = await client.event.subscribe();
+    const events = [];
+    for await (const event of subscription.stream) events.push(event);
+
+    NodeAssert.equal(events.filter((event) => event.type === "message.updated").length, 2);
   });
 
   it("projects native V2 streaming, completion, and permission events to the legacy adapter contract", async () => {

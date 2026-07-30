@@ -35,6 +35,59 @@ export interface DiscoverOpenCodeV2ServiceInput {
 }
 
 const HEALTH_TIMEOUT_MS = 2_000;
+export const OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES = 64 * 1024;
+
+export class OpenCodeV2HealthResponseTooLargeError extends Error {
+  readonly maximumBytes: number;
+  readonly receivedBytes: number;
+
+  constructor(input: { readonly maximumBytes: number; readonly receivedBytes: number }) {
+    super(
+      `OpenCode V2 health response exceeded ${input.maximumBytes} bytes ` +
+        `(received at least ${input.receivedBytes}).`,
+    );
+    this.name = "OpenCodeV2HealthResponseTooLargeError";
+    this.maximumBytes = input.maximumBytes;
+    this.receivedBytes = input.receivedBytes;
+  }
+}
+
+/** @internal Bounded separately from the larger compatibility API response budget. */
+export async function readOpenCodeV2HealthResponse(response: Response): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES) {
+    await response.body?.cancel();
+    throw new OpenCodeV2HealthResponseTooLargeError({
+      maximumBytes: OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES,
+      receivedBytes: declaredLength,
+    });
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return undefined;
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      const receivedBytes = bytes + next.value.byteLength;
+      if (receivedBytes > OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES) {
+        throw new OpenCodeV2HealthResponseTooLargeError({
+          maximumBytes: OPEN_CODE_V2_HEALTH_RESPONSE_MAX_BYTES,
+          receivedBytes,
+        });
+      }
+      chunks.push(next.value);
+      bytes = receivedBytes;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+
+  return JSON.parse(Buffer.concat(chunks, bytes).toString("utf8")) as unknown;
+}
 
 export function openCodeV2StateDirectory(environment: NodeJS.ProcessEnv = process.env): string {
   const stateHome =
@@ -141,7 +194,7 @@ async function probeRegistration(
     if (!response.ok) {
       return null;
     }
-    const body = (await response.json()) as {
+    const body = (await readOpenCodeV2HealthResponse(response)) as {
       healthy?: unknown;
       version?: unknown;
       pid?: unknown;

@@ -2,6 +2,7 @@
 
 import * as NodeHttp from "node:http";
 import * as NodeHttps from "node:https";
+import * as NodeStringDecoder from "node:string_decoder";
 
 import type {
   Agent as OpenCodeV1Agent,
@@ -9,10 +10,107 @@ import type {
   ProviderListResponse,
 } from "@opencode-ai/sdk/v2";
 
+export interface OpenCodeV2BufferLimits {
+  readonly responseBodyBytes: number;
+  readonly sseEventBytes: number;
+  readonly streamStateBytes: number;
+  readonly activeStreamParts: number;
+}
+
+export const OPEN_CODE_V2_BUFFER_LIMITS: OpenCodeV2BufferLimits = {
+  // History responses may contain several image/tool payloads. Keep this above the
+  // 10 MiB per-image contract (plus base64 expansion) without leaving it unbounded.
+  responseBodyBytes: 64 * 1024 * 1024,
+  sseEventBytes: 16 * 1024 * 1024,
+  streamStateBytes: 16 * 1024 * 1024,
+  activeStreamParts: 256,
+};
+
+export class OpenCodeV2ResponseBodyTooLargeError extends Error {
+  readonly maximumBytes: number;
+  readonly receivedBytes: number;
+  readonly resource: string;
+
+  constructor(input: {
+    readonly maximumBytes: number;
+    readonly receivedBytes: number;
+    readonly resource: string;
+  }) {
+    super(
+      `OpenCode V2 response from ${input.resource} exceeded ${input.maximumBytes} bytes ` +
+        `(received at least ${input.receivedBytes}).`,
+    );
+    this.name = "OpenCodeV2ResponseBodyTooLargeError";
+    this.maximumBytes = input.maximumBytes;
+    this.receivedBytes = input.receivedBytes;
+    this.resource = input.resource;
+  }
+}
+
+export class OpenCodeV2EventTooLargeError extends Error {
+  readonly maximumBytes: number;
+  readonly receivedBytes: number;
+
+  constructor(input: { readonly maximumBytes: number; readonly receivedBytes: number }) {
+    super(
+      `OpenCode V2 SSE event exceeded ${input.maximumBytes} bytes ` +
+        `(received at least ${input.receivedBytes}).`,
+    );
+    this.name = "OpenCodeV2EventTooLargeError";
+    this.maximumBytes = input.maximumBytes;
+    this.receivedBytes = input.receivedBytes;
+  }
+}
+
+export class OpenCodeV2StreamStateOverflowError extends Error {
+  readonly maximumBytes: number;
+  readonly retainedBytes: number;
+  readonly maximumActiveParts: number;
+  readonly activeParts: number;
+
+  constructor(input: {
+    readonly maximumBytes: number;
+    readonly retainedBytes: number;
+    readonly maximumActiveParts: number;
+    readonly activeParts: number;
+  }) {
+    super(
+      `OpenCode V2 normalized stream state exceeded its limit ` +
+        `(${input.retainedBytes}/${input.maximumBytes} bytes, ` +
+        `${input.activeParts}/${input.maximumActiveParts} active parts).`,
+    );
+    this.name = "OpenCodeV2StreamStateOverflowError";
+    this.maximumBytes = input.maximumBytes;
+    this.retainedBytes = input.retainedBytes;
+    this.maximumActiveParts = input.maximumActiveParts;
+    this.activeParts = input.activeParts;
+  }
+}
+
+function resolveOpenCodeV2BufferLimits(
+  overrides: Partial<OpenCodeV2BufferLimits> | undefined,
+): OpenCodeV2BufferLimits {
+  const resolve = (name: keyof OpenCodeV2BufferLimits): number => {
+    const value = overrides?.[name] ?? OPEN_CODE_V2_BUFFER_LIMITS[name];
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new RangeError(`OpenCode V2 ${name} must be a positive safe integer.`);
+    }
+    return value;
+  };
+  return {
+    responseBodyBytes: resolve("responseBodyBytes"),
+    sseEventBytes: resolve("sseEventBytes"),
+    streamStateBytes: resolve("streamStateBytes"),
+    activeStreamParts: resolve("activeStreamParts"),
+  };
+}
+
 interface V2CompatibilityClientInput {
   readonly baseUrl: string;
   readonly directory: string;
   readonly serverPassword?: string;
+  /** @internal Primarily exposed so transport boundaries can be tested without giant fixtures. */
+  readonly bufferLimits?: Partial<OpenCodeV2BufferLimits>;
 }
 
 interface V2ProviderInfo {
@@ -120,17 +218,42 @@ function openHttpRequest(input: {
   });
 }
 
-async function readResponseBody(response: NodeHttp.IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of response) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+async function readResponseBody(
+  response: NodeHttp.IncomingMessage,
+  input: { readonly maximumBytes: number; readonly resource: string },
+): Promise<string> {
+  const declaredLength = Number(response.headers["content-length"]);
+  if (Number.isFinite(declaredLength) && declaredLength > input.maximumBytes) {
+    response.destroy();
+    throw new OpenCodeV2ResponseBodyTooLargeError({
+      maximumBytes: input.maximumBytes,
+      receivedBytes: declaredLength,
+      resource: input.resource,
+    });
   }
-  return Buffer.concat(chunks).toString("utf8");
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of response) {
+    const encoded = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const receivedBytes = bytes + encoded.byteLength;
+    if (receivedBytes > input.maximumBytes) {
+      response.destroy();
+      throw new OpenCodeV2ResponseBodyTooLargeError({
+        maximumBytes: input.maximumBytes,
+        receivedBytes,
+        resource: input.resource,
+      });
+    }
+    chunks.push(encoded);
+    bytes = receivedBytes;
+  }
+  return Buffer.concat(chunks, bytes).toString("utf8");
 }
 
 function makeOpenCodeV2Client(options: {
   readonly baseUrl: string;
   readonly headers?: Record<string, string>;
+  readonly bufferLimits: OpenCodeV2BufferLimits;
 }) {
   const request = async <A>(
     method: string,
@@ -159,7 +282,10 @@ function makeOpenCodeV2Client(options: {
     });
     const status = response.statusCode ?? 0;
     if (status < 200 || status >= 300) {
-      const encoded = await readResponseBody(response);
+      const encoded = await readResponseBody(response, {
+        maximumBytes: options.bufferLimits.responseBodyBytes,
+        resource: url.pathname,
+      });
       const body = (() => {
         try {
           return JSON.parse(encoded) as unknown;
@@ -178,7 +304,12 @@ function makeOpenCodeV2Client(options: {
       response.destroy();
       return undefined as A;
     }
-    return JSON.parse(await readResponseBody(response)) as A;
+    return JSON.parse(
+      await readResponseBody(response, {
+        maximumBytes: options.bufferLimits.responseBodyBytes,
+        resource: url.pathname,
+      }),
+    ) as A;
   };
 
   const data = async <A>(
@@ -205,24 +336,41 @@ function makeOpenCodeV2Client(options: {
         throw new Error(`OpenCode V2 event subscription failed with status ${status}.`);
       }
       let buffer = "";
+      const decoder = new NodeStringDecoder.StringDecoder("utf8");
+      const assertEventSize = (encoded: string) => {
+        const receivedBytes = Buffer.byteLength(encoded, "utf8");
+        if (receivedBytes > options.bufferLimits.sseEventBytes) {
+          throw new OpenCodeV2EventTooLargeError({
+            maximumBytes: options.bufferLimits.sseEventBytes,
+            receivedBytes,
+          });
+        }
+      };
+      const parseAvailableEvents = function* () {
+        buffer = buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary >= 0) {
+          const block = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          assertEventSize(block);
+          const encoded = block
+            .split("\n")
+            .flatMap((line) => (line.startsWith("data:") ? [line.slice(5).trimStart()] : []))
+            .join("\n");
+          if (encoded.length > 0) {
+            yield JSON.parse(encoded) as { type: string; data?: unknown };
+          }
+          boundary = buffer.indexOf("\n\n");
+        }
+        assertEventSize(buffer);
+      };
       try {
         for await (const chunk of response) {
-          buffer += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-          buffer = buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
-          let boundary = buffer.indexOf("\n\n");
-          while (boundary >= 0) {
-            const block = buffer.slice(0, boundary);
-            buffer = buffer.slice(boundary + 2);
-            const encoded = block
-              .split("\n")
-              .flatMap((line) => (line.startsWith("data:") ? [line.slice(5).trimStart()] : []))
-              .join("\n");
-            if (encoded.length > 0) {
-              yield JSON.parse(encoded) as { type: string; data?: unknown };
-            }
-            boundary = buffer.indexOf("\n\n");
-          }
+          buffer += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          yield* parseAvailableEvents();
         }
+        buffer += decoder.end();
+        yield* parseAvailableEvents();
       } finally {
         response.destroy();
       }
@@ -583,9 +731,18 @@ interface V2StreamEvent {
 }
 
 interface V2StreamState {
+  readonly limits: OpenCodeV2BufferLimits;
+  retainedBytes: number;
   readonly text: Map<
     string,
-    { readonly partID: string; readonly started: number; text: string; initialized: boolean }
+    {
+      readonly partID: string;
+      readonly sessionID: string;
+      readonly started: number;
+      text: string;
+      bytes: number;
+      initialized: boolean;
+    }
   >;
   readonly tools: Map<
     string,
@@ -597,8 +754,49 @@ interface V2StreamState {
       readonly started: number;
       name: string;
       input: Record<string, unknown>;
+      inputBytes: number;
     }
   >;
+}
+
+function activeStreamParts(state: V2StreamState): number {
+  return state.text.size + state.tools.size;
+}
+
+function assertStreamStateCapacity(
+  state: V2StreamState,
+  input: { readonly retainedBytes: number; readonly activeParts?: number },
+): void {
+  const activeParts = input.activeParts ?? activeStreamParts(state);
+  if (
+    input.retainedBytes > state.limits.streamStateBytes ||
+    activeParts > state.limits.activeStreamParts
+  ) {
+    throw new OpenCodeV2StreamStateOverflowError({
+      maximumBytes: state.limits.streamStateBytes,
+      retainedBytes: input.retainedBytes,
+      maximumActiveParts: state.limits.activeStreamParts,
+      activeParts,
+    });
+  }
+}
+
+function serializedBytes(value: unknown): number {
+  const encoded = JSON.stringify(value);
+  return encoded === undefined ? 0 : Buffer.byteLength(encoded, "utf8");
+}
+
+function releaseSessionStreamState(state: V2StreamState, sessionID: string): void {
+  for (const [key, text] of state.text) {
+    if (text.sessionID !== sessionID) continue;
+    state.retainedBytes -= text.bytes;
+    state.text.delete(key);
+  }
+  for (const [key, tool] of state.tools) {
+    if (tool.sessionID !== sessionID) continue;
+    state.retainedBytes -= tool.inputBytes;
+    state.tools.delete(key);
+  }
 }
 
 function eventData(event: V2StreamEvent): Record<string, unknown> {
@@ -654,6 +852,12 @@ function normalizeV2Events(
   if (event.type === "session.execution.started" && sessionID) {
     return [{ type: "session.status", properties: { sessionID, status: { type: "busy" } } }];
   }
+  if (
+    (event.type === "session.execution.succeeded" || event.type === "session.execution.failed") &&
+    sessionID
+  ) {
+    releaseSessionStreamState(state, sessionID);
+  }
   if (event.type === "session.execution.succeeded" && sessionID) {
     return [{ type: "session.status", properties: { sessionID, status: { type: "idle" } } }];
   }
@@ -692,10 +896,16 @@ function normalizeV2Events(
     });
     let textState = state.text.get(key);
     if (!textState) {
+      assertStreamStateCapacity(state, {
+        retainedBytes: state.retainedBytes,
+        activeParts: activeStreamParts(state) + 1,
+      });
       textState = {
         partID: v2PartID(data.assistantMessageID, kind, ordinal),
+        sessionID,
         started: created,
         text: "",
+        bytes: 0,
         initialized: false,
       };
       state.text.set(key, textState);
@@ -727,7 +937,13 @@ function normalizeV2Events(
     }
     if (phase === "delta" && typeof data.delta === "string") {
       const events = initialize();
+      const deltaBytes = Buffer.byteLength(data.delta, "utf8");
+      assertStreamStateCapacity(state, {
+        retainedBytes: state.retainedBytes + deltaBytes,
+      });
       textState.text += data.delta;
+      textState.bytes += deltaBytes;
+      state.retainedBytes += deltaBytes;
       return [
         ...events,
         {
@@ -738,8 +954,16 @@ function normalizeV2Events(
     }
     if (phase === "ended") {
       const events = initialize();
-      if (typeof data.text === "string") textState.text = data.text;
-      return [
+      if (typeof data.text === "string") {
+        const replacementBytes = Buffer.byteLength(data.text, "utf8");
+        assertStreamStateCapacity(state, {
+          retainedBytes: state.retainedBytes - textState.bytes + replacementBytes,
+        });
+        state.retainedBytes = state.retainedBytes - textState.bytes + replacementBytes;
+        textState.text = data.text;
+        textState.bytes = replacementBytes;
+      }
+      const completed = [
         ...events,
         {
           type: "message.part.updated",
@@ -756,6 +980,9 @@ function normalizeV2Events(
           },
         },
       ];
+      state.text.delete(key);
+      state.retainedBytes -= textState.bytes;
+      return completed;
     }
   }
 
@@ -776,6 +1003,10 @@ function normalizeV2Events(
     });
     let tool = state.tools.get(key);
     if (!tool) {
+      assertStreamStateCapacity(state, {
+        retainedBytes: state.retainedBytes,
+        activeParts: activeStreamParts(state) + 1,
+      });
       tool = {
         partID: v2PartID(data.assistantMessageID, "tool", data.callID),
         sessionID,
@@ -784,12 +1015,19 @@ function normalizeV2Events(
         started: created,
         name: typeof data.name === "string" ? data.name : "tool",
         input: {},
+        inputBytes: 0,
       };
       state.tools.set(key, tool);
     }
     if (typeof data.name === "string") tool.name = data.name;
     if (data.input && typeof data.input === "object" && !Array.isArray(data.input)) {
+      const inputBytes = serializedBytes(data.input);
+      assertStreamStateCapacity(state, {
+        retainedBytes: state.retainedBytes - tool.inputBytes + inputBytes,
+      });
+      state.retainedBytes = state.retainedBytes - tool.inputBytes + inputBytes;
       tool.input = data.input as Record<string, unknown>;
+      tool.inputBytes = inputBytes;
     }
     const basePart = {
       id: tool.partID,
@@ -848,7 +1086,7 @@ function normalizeV2Events(
       typeof (data.error as { message?: unknown }).message === "string"
         ? (data.error as { message: string }).message
         : "OpenCode tool failed.";
-    return [
+    const completed = [
       ...prefix,
       {
         type: "message.part.updated",
@@ -876,6 +1114,9 @@ function normalizeV2Events(
         },
       },
     ];
+    state.tools.delete(key);
+    state.retainedBytes -= tool.inputBytes;
+    return completed;
   }
 
   return [{ type: event.type, properties: data }];
@@ -889,8 +1130,10 @@ function normalizeV2Events(
 export function createOpenCodeV2CompatibilityClient(
   input: V2CompatibilityClientInput,
 ): OpenCodeV1Client {
+  const bufferLimits = resolveOpenCodeV2BufferLimits(input.bufferLimits);
   const client = makeOpenCodeV2Client({
     baseUrl: input.baseUrl,
+    bufferLimits,
     ...(input.serverPassword
       ? { headers: { Authorization: basicAuthHeader(input.serverPassword) } }
       : {}),
@@ -915,7 +1158,12 @@ export function createOpenCodeV2CompatibilityClient(
           options?.signal ? { signal: options.signal } : undefined,
         );
         async function* stream() {
-          const state: V2StreamState = { text: new Map(), tools: new Map() };
+          const state: V2StreamState = {
+            limits: bufferLimits,
+            retainedBytes: 0,
+            text: new Map(),
+            tools: new Map(),
+          };
           for await (const event of source) {
             const eventData =
               event.data && typeof event.data === "object"
@@ -926,6 +1174,17 @@ export function createOpenCodeV2CompatibilityClient(
               typeof eventData?.id === "string" &&
               typeof eventData.sessionID === "string"
             ) {
+              if (
+                !permissionSessions.has(eventData.id) &&
+                permissionSessions.size + questionSessions.size >= bufferLimits.activeStreamParts
+              ) {
+                throw new OpenCodeV2StreamStateOverflowError({
+                  maximumBytes: bufferLimits.streamStateBytes,
+                  retainedBytes: 0,
+                  maximumActiveParts: bufferLimits.activeStreamParts,
+                  activeParts: permissionSessions.size + questionSessions.size + 1,
+                });
+              }
               permissionSessions.set(eventData.id, eventData.sessionID);
             }
             if (
@@ -933,7 +1192,30 @@ export function createOpenCodeV2CompatibilityClient(
               typeof eventData?.id === "string" &&
               typeof eventData.sessionID === "string"
             ) {
+              if (
+                !questionSessions.has(eventData.id) &&
+                permissionSessions.size + questionSessions.size >= bufferLimits.activeStreamParts
+              ) {
+                throw new OpenCodeV2StreamStateOverflowError({
+                  maximumBytes: bufferLimits.streamStateBytes,
+                  retainedBytes: 0,
+                  maximumActiveParts: bufferLimits.activeStreamParts,
+                  activeParts: permissionSessions.size + questionSessions.size + 1,
+                });
+              }
               questionSessions.set(eventData.id, eventData.sessionID);
+            }
+            if (
+              (event.type === "session.execution.succeeded" ||
+                event.type === "session.execution.failed") &&
+              typeof eventData?.sessionID === "string"
+            ) {
+              for (const [requestID, ownerSessionID] of permissionSessions) {
+                if (ownerSessionID === eventData.sessionID) permissionSessions.delete(requestID);
+              }
+              for (const [requestID, ownerSessionID] of questionSessions) {
+                if (ownerSessionID === eventData.sessionID) questionSessions.delete(requestID);
+              }
             }
             for (const normalized of normalizeV2Events(event, state)) {
               yield normalized;
@@ -1040,6 +1322,7 @@ export function createOpenCodeV2CompatibilityClient(
           throw new Error(`OpenCode V2 permission request '${request.requestID}' has no session.`);
         }
         await client.permission.reply({ ...request, sessionID });
+        permissionSessions.delete(request.requestID);
         return { data: true };
       },
     },
@@ -1053,6 +1336,7 @@ export function createOpenCodeV2CompatibilityClient(
           throw new Error(`OpenCode V2 question request '${request.requestID}' has no session.`);
         }
         await client.question.reply({ ...request, sessionID });
+        questionSessions.delete(request.requestID);
         return { data: true };
       },
     },
