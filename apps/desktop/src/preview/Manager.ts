@@ -28,6 +28,7 @@ import type {
   PreviewAutomationWaitForInput,
 } from "@shuv2code/contracts";
 import {
+  formatPreviewAutomationResultTooLargeBytes,
   PREVIEW_AUTOMATION_MAX_ACTION_ERROR_LENGTH,
   PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_LEVEL_LENGTH,
   PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_SOURCE_LENGTH,
@@ -40,7 +41,6 @@ import {
   PREVIEW_AUTOMATION_MAX_PAGE_TITLE_LENGTH,
   PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH,
   PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH,
-  PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES,
 } from "@shuv2code/contracts";
 import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 import { compactAccessibilityTree } from "@shuv2code/shared/compactAccessibilityTree";
@@ -2785,11 +2785,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         })),
         screenshot,
       });
-      if (!bounded.withinBudget) {
+      if (!bounded.ok) {
         return yield* new PreviewAutomationResultTooLargeError({
           tabId,
-          actualBytes: bounded.metadataBytes,
-          maximumBytes: PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES,
+          actualBytes: bounded.failure.actualBytes,
+          maximumBytes: bounded.failure.maximumBytes,
         });
       }
       return bounded.snapshot;
@@ -3588,7 +3588,9 @@ export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClas
   }
 
   override get message(): string {
-    return `Preview automation result in tab ${this.tabId} was ${this.actualBytes} bytes; maximum is ${this.maximumBytes} bytes`;
+    return `Preview automation result in tab ${this.tabId} ${formatPreviewAutomationResultTooLargeBytes(
+      { actualBytes: this.actualBytes, maximumBytes: this.maximumBytes },
+    )}`;
   }
 }
 

@@ -2,8 +2,11 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  formatPreviewAutomationResultTooLargeBytes,
+  parsePreviewAutomationResultTooLargeBytes,
   PREVIEW_AUTOMATION_MAX_DIAGNOSTIC_TEXT_LENGTH,
   PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH,
+  PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG,
   PreviewAutomationSnapshot,
   PreviewAutomationSnapshotInput,
 } from "./previewAutomation.ts";
@@ -82,5 +85,34 @@ describe("PreviewAutomationSnapshot budgets", () => {
         ],
       }),
     ).toThrow();
+  });
+});
+
+describe("PreviewAutomationResultTooLargeError transport", () => {
+  it("recovers byte counts from an IPC-flattened error", () => {
+    const bytes = { actualBytes: 640_000, maximumBytes: 512_000 };
+    const flattened = new Error(
+      `Error invoking remote method 'preview:automation:snapshot': ${PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG}: Preview automation result in tab tab_1 ${formatPreviewAutomationResultTooLargeBytes(bytes)}`,
+    );
+
+    expect(parsePreviewAutomationResultTooLargeBytes(flattened)).toEqual(bytes);
+  });
+
+  it("recovers byte counts from a structured host error", () => {
+    expect(
+      parsePreviewAutomationResultTooLargeBytes({
+        _tag: PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG,
+        detail: { actualBytes: 1, maximumBytes: 2 },
+      }),
+    ).toEqual({ actualBytes: 1, maximumBytes: 2 });
+  });
+
+  it("ignores unrelated failures", () => {
+    expect(parsePreviewAutomationResultTooLargeBytes(new Error("boom"))).toBeNull();
+    expect(
+      parsePreviewAutomationResultTooLargeBytes(
+        new Error("SomeOtherError: was 5 bytes; maximum is 4 bytes"),
+      ),
+    ).toBeNull();
   });
 });

@@ -105,7 +105,7 @@ export const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = readonlyBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Compact accessibility detail is the default and returns relevant semantic nodes; use mode='full' only for raw accessibility diagnostics. Returns bounded page state, locators, recent diagnostics, and action history. Set includeScreenshot=true only when visual inspection is needed.",
+      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Compact accessibility detail is the default and returns relevant semantic nodes; use mode='full' only for raw accessibility diagnostics. Returns bounded page state, locators, recent diagnostics, and action history. Set includeScreenshot=true only when visual inspection is needed. Oversized pages are reduced to stay inside the byte budget: check the returned truncated array for the field names that were shortened before trusting them as complete.",
     parameters: PreviewAutomationSnapshotInput,
     success: PreviewAutomationSnapshot,
     failure: PreviewAutomationError,

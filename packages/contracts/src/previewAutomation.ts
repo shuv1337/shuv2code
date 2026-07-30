@@ -538,6 +538,9 @@ export const PREVIEW_AUTOMATION_SNAPSHOT_DIAGNOSTIC_ENTRY_LIMIT = 20;
 export const PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES = 512_000;
 export const PREVIEW_AUTOMATION_SNAPSHOT_IMAGE_MAX_BYTES = 2_000_000;
 
+export const PREVIEW_AUTOMATION_ACCESSIBILITY_TREE_BUDGET_REASON =
+  "Accessibility tree omitted to keep the snapshot within its byte budget.";
+
 export const PreviewAutomationSnapshotTruncatedField = Schema.Literals([
   "url",
   "title",
@@ -547,7 +550,6 @@ export const PreviewAutomationSnapshotTruncatedField = Schema.Literals([
   "consoleEntries",
   "networkEntries",
   "actionTimeline",
-  "screenshot",
 ]);
 export type PreviewAutomationSnapshotTruncatedField =
   typeof PreviewAutomationSnapshotTruncatedField.Type;
@@ -881,20 +883,73 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
   }
 }
 
+export const PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG = "PreviewAutomationResultTooLargeError";
+
+export interface PreviewAutomationResultTooLargeBytes {
+  readonly actualBytes: number;
+  readonly maximumBytes: number;
+}
+
+export const formatPreviewAutomationResultTooLargeBytes = (
+  bytes: PreviewAutomationResultTooLargeBytes,
+): string => `was ${bytes.actualBytes} bytes; maximum is ${bytes.maximumBytes} bytes`;
+
+const PREVIEW_AUTOMATION_RESULT_TOO_LARGE_BYTES_PATTERN =
+  /was (\d+) bytes; maximum is (\d+) bytes/u;
+
+// Electron flattens a rejected IPC handler error into a plain `Error` whose only
+// surviving field is `name: message`, so the renderer recovers the budget error
+// from the text the desktop formatted with the helper above.
+export const parsePreviewAutomationResultTooLargeBytes = (
+  cause: unknown,
+): PreviewAutomationResultTooLargeBytes | null => {
+  const readBytes = (
+    source: Record<string, unknown>,
+  ): PreviewAutomationResultTooLargeBytes | null =>
+    typeof source["actualBytes"] === "number" && typeof source["maximumBytes"] === "number"
+      ? { actualBytes: source["actualBytes"], maximumBytes: source["maximumBytes"] }
+      : null;
+  if (typeof cause === "object" && cause !== null) {
+    const record = cause as Record<string, unknown>;
+    if (record["_tag"] === PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG) {
+      const direct = readBytes(record);
+      if (direct) return direct;
+      const detail = record["detail"];
+      if (typeof detail === "object" && detail !== null) {
+        const nested = readBytes(detail as Record<string, unknown>);
+        if (nested) return nested;
+      }
+    }
+  }
+  const message =
+    cause instanceof Error
+      ? cause.message
+      : typeof cause === "object" &&
+          cause !== null &&
+          typeof (cause as Record<string, unknown>)["message"] === "string"
+        ? ((cause as Record<string, unknown>)["message"] as string)
+        : null;
+  if (message === null || !message.includes(PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG)) return null;
+  const match = PREVIEW_AUTOMATION_RESULT_TOO_LARGE_BYTES_PATTERN.exec(message);
+  if (!match?.[1] || !match[2]) return null;
+  return { actualBytes: Number(match[1]), maximumBytes: Number(match[2]) };
+};
+
 export class PreviewAutomationResultTooLargeError extends Schema.TaggedErrorClass<PreviewAutomationResultTooLargeError>()(
-  "PreviewAutomationResultTooLargeError",
+  PREVIEW_AUTOMATION_RESULT_TOO_LARGE_TAG,
   {
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationRemoteDiagnosticFields,
+    actualBytes: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     maximumBytes: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
   },
 ) {
   override get message(): string {
-    const summary =
-      this.maximumBytes === undefined
-        ? `Preview automation ${this.operation} produced a result that is too large.`
-        : `Preview automation ${this.operation} produced a result larger than ${this.maximumBytes} bytes.`;
-    return summary;
+    if (this.maximumBytes === undefined) {
+      return `Preview automation ${this.operation} produced a result that is too large.`;
+    }
+    const measured = this.actualBytes === undefined ? "" : ` (${this.actualBytes} bytes measured)`;
+    return `Preview automation ${this.operation} produced a result larger than ${this.maximumBytes} bytes${measured}.`;
   }
 }
 

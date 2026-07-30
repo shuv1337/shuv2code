@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  parsePreviewAutomationResultTooLargeBytes,
   type PreviewAutomationHost,
   PreviewAutomationOperation,
   type PreviewAutomationRequest,
@@ -134,6 +135,27 @@ export class PreviewAutomationTargetNotEditableHostError extends Schema.TaggedEr
   }
 }
 
+export class PreviewAutomationResultTooLargeHostError extends Schema.TaggedErrorClass<PreviewAutomationResultTooLargeHostError>()(
+  "PreviewAutomationResultTooLargeHostError",
+  {
+    requestId: TrimmedNonEmptyString,
+    operation: PreviewAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: Schema.NullOr(PreviewTabId),
+    actualBytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    maximumBytes: Schema.Int.check(Schema.isGreaterThan(0)),
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationResultTooLargeError" as const;
+  }
+
+  override get message(): string {
+    return `Preview automation ${this.operation} request ${this.requestId} produced ${this.actualBytes} bytes in tab ${this.tabId ?? "unassigned"}; maximum is ${this.maximumBytes} bytes.`;
+  }
+}
+
 const targetNotEditableDiagnostics = (
   cause: unknown,
 ): {
@@ -183,6 +205,17 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
     input: PreviewAutomationOperationContext & { readonly cause: unknown },
   ): PreviewAutomationHostError {
     if (isPreviewAutomationHostError(input.cause)) return input.cause;
+    const tooLargeBytes = parsePreviewAutomationResultTooLargeBytes(input.cause);
+    if (tooLargeBytes) {
+      return new PreviewAutomationResultTooLargeHostError({
+        requestId: input.requestId,
+        operation: input.operation,
+        environmentId: input.environmentId,
+        threadId: input.threadId,
+        tabId: input.tabId,
+        ...tooLargeBytes,
+      });
+    }
     const diagnostics = targetNotEditableDiagnostics(input.cause);
     return diagnostics
       ? new PreviewAutomationTargetNotEditableHostError({
@@ -212,6 +245,7 @@ export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetNotEditableHostError,
+  PreviewAutomationResultTooLargeHostError,
   PreviewAutomationOperationError,
 ]);
 export type PreviewAutomationHostError = typeof PreviewAutomationHostError.Type;

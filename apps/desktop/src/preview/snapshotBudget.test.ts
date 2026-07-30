@@ -1,11 +1,13 @@
 import type { PreviewAutomationSnapshot } from "@shuv2code/contracts";
 import {
+  PREVIEW_AUTOMATION_ACCESSIBILITY_TREE_BUDGET_REASON,
   PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH,
   PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH,
   PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH,
   PREVIEW_AUTOMATION_SNAPSHOT_IMAGE_MAX_BYTES,
   PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES,
 } from "@shuv2code/contracts";
+import { compactAccessibilityTree } from "@shuv2code/shared/compactAccessibilityTree";
 import { describe, expect, it } from "vite-plus/test";
 
 import { boundPreviewAutomationSnapshot } from "./snapshotBudget.ts";
@@ -26,6 +28,23 @@ const snapshot = (
   ...overrides,
 });
 
+const element = (
+  index: number,
+  selectorLength = PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH,
+): PreviewAutomationSnapshot["interactiveElements"][number] => ({
+  tag: "button",
+  role: "button",
+  name: "n".repeat(PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH),
+  selector: `s${index}`.padEnd(selectorLength, "x"),
+  x: 0,
+  y: 0,
+  width: 10,
+  height: 10,
+});
+
+const elements = (count: number, selectorLength?: number) =>
+  Array.from({ length: count }, (_, index) => element(index, selectorLength));
+
 const measure = (bounded: PreviewAutomationSnapshot): number =>
   Buffer.byteLength(
     JSON.stringify({
@@ -42,44 +61,80 @@ const measure = (bounded: PreviewAutomationSnapshot): number =>
     "utf8",
   );
 
+const expectOk = (result: ReturnType<typeof boundPreviewAutomationSnapshot>) => {
+  if (!result.ok) throw new Error(`Expected an in-budget snapshot, got ${result.failure.budget}.`);
+  return result.snapshot;
+};
+
+const compactTreeOfNodes = (count: number) =>
+  compactAccessibilityTree({
+    nodes: Array.from({ length: count }, (_, index) => ({
+      nodeId: `node-${index}`,
+      role: { value: "button" },
+      name: { value: `label-${index}`.padEnd(240, "x") },
+    })),
+  });
+
 describe("boundPreviewAutomationSnapshot", () => {
   it("leaves an in-budget snapshot untouched", () => {
-    const bounded = boundPreviewAutomationSnapshot(snapshot());
-    expect(bounded.withinBudget).toBe(true);
-    expect(bounded.snapshot.truncated).toBeUndefined();
-    expect(bounded.snapshot).toEqual(snapshot());
+    const bounded = expectOk(boundPreviewAutomationSnapshot(snapshot()));
+    expect(bounded.truncated).toBeUndefined();
+    expect(bounded).toEqual(snapshot());
   });
 
   it("keeps the producer worst case inside the budget MCP assembly enforces", () => {
-    const bounded = boundPreviewAutomationSnapshot(
-      snapshot({
-        visibleText: "v".repeat(20_000),
-        interactiveElements: Array.from({ length: 200 }, (_, index) => ({
-          tag: "button",
-          role: "button",
-          name: "n".repeat(PREVIEW_AUTOMATION_MAX_ELEMENT_NAME_LENGTH),
-          selector: `s${index}`.padEnd(PREVIEW_AUTOMATION_MAX_SELECTOR_LENGTH, "x"),
-          x: 0,
-          y: 0,
-          width: 10,
-          height: 10,
-        })),
-        consoleEntries: Array.from({ length: 200 }, (_, index) => ({
-          level: "log",
-          text: `console-${index}`.padEnd(4_096, "x"),
-          timestamp: "2026-07-30T00:00:00.000Z",
-        })),
-      }),
+    const bounded = expectOk(
+      boundPreviewAutomationSnapshot(
+        snapshot({
+          visibleText: "v".repeat(20_000),
+          interactiveElements: elements(200),
+          consoleEntries: Array.from({ length: 200 }, (_, index) => ({
+            level: "log",
+            text: `console-${index}`.padEnd(4_096, "x"),
+            timestamp: "2026-07-30T00:00:00.000Z",
+          })),
+        }),
+      ),
     );
 
-    expect(bounded.withinBudget).toBe(true);
-    expect(measure(bounded.snapshot)).toBeLessThanOrEqual(
-      PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES,
+    expect(measure(bounded)).toBeLessThanOrEqual(PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES);
+    expect(bounded.truncated).toEqual(expect.arrayContaining(["consoleEntries"]));
+    expect(bounded.interactiveElements.length).toBeGreaterThan(0);
+  });
+
+  it("drops the accessibility tree before sacrificing locators", () => {
+    const bounded = expectOk(
+      boundPreviewAutomationSnapshot(
+        snapshot({
+          accessibilityTree: compactTreeOfNodes(120),
+          interactiveElements: elements(200, 1_800),
+        }),
+      ),
     );
-    expect(bounded.snapshot.truncated).toEqual(
-      expect.arrayContaining(["consoleEntries", "interactiveElements"]),
+
+    expect(bounded.interactiveElements).toHaveLength(200);
+    expect(bounded.truncated).toContain("accessibilityTree");
+    expect(bounded.truncated).not.toContain("interactiveElements");
+    expect(measure(bounded)).toBeLessThanOrEqual(PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES);
+  });
+
+  it("reports a dropped accessibility tree as a budget decision, not a Chrome fault", () => {
+    const bounded = expectOk(
+      boundPreviewAutomationSnapshot(
+        snapshot({
+          accessibilityTree: compactTreeOfNodes(120),
+          interactiveElements: elements(200, 1_800),
+        }),
+      ),
     );
-    expect(bounded.snapshot.interactiveElements.length).toBeGreaterThan(0);
+
+    expect(bounded.accessibilityTree).toMatchObject({
+      mode: "compact",
+      nodes: [],
+      truncated: true,
+      unavailableReason: PREVIEW_AUTOMATION_ACCESSIBILITY_TREE_BUDGET_REASON,
+    });
+    expect(compactAccessibilityTree(bounded.accessibilityTree)).toEqual(bounded.accessibilityTree);
   });
 
   it("compacts a raw full-mode accessibility tree instead of shipping it", () => {
@@ -90,18 +145,33 @@ describe("boundPreviewAutomationSnapshot", () => {
         name: { value: `label-${index}`.padEnd(240, "x") },
       })),
     };
-    const bounded = boundPreviewAutomationSnapshot(snapshot({ accessibilityTree: rawTree }));
-
-    expect(bounded.withinBudget).toBe(true);
-    expect(bounded.snapshot.truncated).toContain("accessibilityTree");
-    expect(bounded.snapshot.accessibilityTree).toMatchObject({ mode: "compact" });
-    expect(measure(bounded.snapshot)).toBeLessThanOrEqual(
-      PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES,
+    const bounded = expectOk(
+      boundPreviewAutomationSnapshot(snapshot({ accessibilityTree: rawTree })),
     );
+
+    expect(bounded.truncated).toContain("accessibilityTree");
+    expect(bounded.accessibilityTree).toMatchObject({ mode: "compact" });
+    expect(measure(bounded)).toBeLessThanOrEqual(PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES);
   });
 
-  it("drops an oversized screenshot rather than losing the whole snapshot", () => {
-    const bounded = boundPreviewAutomationSnapshot(
+  it("trims page prose to the exact remaining allowance", () => {
+    const bounded = expectOk(
+      boundPreviewAutomationSnapshot(
+        snapshot({
+          visibleText: "v".repeat(60_000),
+          interactiveElements: elements(200, 1_800),
+        }),
+      ),
+    );
+
+    expect(bounded.truncated).toContain("visibleText");
+    expect(bounded.visibleText.length).toBeLessThan(60_000);
+    expect(bounded.interactiveElements).toHaveLength(200);
+    expect(measure(bounded)).toBeLessThanOrEqual(PREVIEW_AUTOMATION_SNAPSHOT_METADATA_MAX_BYTES);
+  });
+
+  it("fails closed when a requested screenshot exceeds its budget", () => {
+    const result = boundPreviewAutomationSnapshot(
       snapshot({
         screenshot: {
           mimeType: "image/png",
@@ -112,17 +182,21 @@ describe("boundPreviewAutomationSnapshot", () => {
       }),
     );
 
-    expect(bounded.withinBudget).toBe(true);
-    expect(bounded.snapshot.screenshot).toBeNull();
-    expect(bounded.snapshot.truncated).toContain("screenshot");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected an out-of-budget screenshot failure.");
+    expect(result.failure).toMatchObject({
+      budget: "screenshot",
+      maximumBytes: PREVIEW_AUTOMATION_SNAPSHOT_IMAGE_MAX_BYTES,
+    });
+    expect(result.failure.actualBytes).toBeGreaterThan(PREVIEW_AUTOMATION_SNAPSHOT_IMAGE_MAX_BYTES);
   });
 
   it("truncates an unbounded page url", () => {
-    const bounded = boundPreviewAutomationSnapshot(
-      snapshot({ url: `data:text/html,${"x".repeat(10_000)}` }),
+    const bounded = expectOk(
+      boundPreviewAutomationSnapshot(snapshot({ url: `data:text/html,${"x".repeat(10_000)}` })),
     );
 
-    expect(bounded.snapshot.url).toHaveLength(PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH);
-    expect(bounded.snapshot.truncated).toContain("url");
+    expect(bounded.url).toHaveLength(PREVIEW_AUTOMATION_MAX_PAGE_URL_LENGTH);
+    expect(bounded.truncated).toContain("url");
   });
 });
