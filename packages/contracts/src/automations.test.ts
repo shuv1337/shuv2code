@@ -3,15 +3,42 @@ import { assert, it } from "@effect/vitest";
 
 import {
   AutomationCreateInput,
+  AutomationListInput,
+  AutomationListResult,
   AutomationName,
   AutomationPrompt,
   AutomationRun,
+  ProjectAutomationSummary,
 } from "./automations.ts";
 
 const decodeAutomationCreateInput = Schema.decodeUnknownSync(AutomationCreateInput);
+const decodeAutomationListInput = Schema.decodeUnknownSync(AutomationListInput);
+const decodeAutomationListResult = Schema.decodeUnknownSync(AutomationListResult);
 const decodeAutomationName = Schema.decodeUnknownSync(AutomationName);
 const decodeAutomationPrompt = Schema.decodeUnknownSync(AutomationPrompt);
 const decodeAutomationRun = Schema.decodeUnknownSync(AutomationRun);
+const decodeProjectAutomationSummary = Schema.decodeUnknownSync(ProjectAutomationSummary);
+
+const automationSummary = {
+  id: "automation-1",
+  projectId: "project-1",
+  name: "Morning report",
+  promptPreview: "Run the report",
+  promptLength: 14,
+  enabled: true,
+  cronExpression: "0 9 * * *",
+  timeZone: "UTC",
+  modelInstanceId: "codex",
+  modelPreview: "gpt-5.6-sol",
+  modelLength: 11,
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  concurrencyPolicy: "skip",
+  nextRunAt: null,
+  lastRunAt: null,
+  createdAt: "2026-07-30T00:00:00.000Z",
+  updatedAt: "2026-07-30T00:00:00.000Z",
+} as const;
 
 it("decodes a complete project automation create input", () => {
   const decoded = decodeAutomationCreateInput({
@@ -80,4 +107,52 @@ it("decodes linked run history", () => {
   });
 
   assert.strictEqual(decoded.threadId, "thread-1");
+});
+
+it("bounds automation list pages at one hundred summaries", () => {
+  const accepted = decodeAutomationListInput({ projectId: "project-1", limit: 100 });
+  assert.strictEqual(accepted.limit, 100);
+  assert.throws(() => decodeAutomationListInput({ projectId: "project-1", limit: 101 }));
+
+  const page = decodeAutomationListResult({
+    automations: Array.from({ length: 100 }, (_, index) => ({
+      ...automationSummary,
+      id: `automation-${index}`,
+    })),
+    nextCursor: "next-page",
+  });
+  assert.strictEqual(page.automations.length, 100);
+  assert.throws(() =>
+    decodeAutomationListResult({
+      automations: Array.from({ length: 101 }, (_, index) => ({
+        ...automationSummary,
+        id: `automation-${index}`,
+      })),
+      nextCursor: null,
+    }),
+  );
+});
+
+it("decodes automation list cursors and enabled-state filters", () => {
+  const decoded = decodeAutomationListInput({
+    projectId: "project-1",
+    cursor: "opaque-page-token",
+    enabled: false,
+    limit: 20,
+  });
+  assert.strictEqual(decoded.cursor, "opaque-page-token");
+  assert.strictEqual(decoded.enabled, false);
+});
+
+it("keeps automation summary model metadata bounded and option-free", () => {
+  const decoded = decodeProjectAutomationSummary(automationSummary);
+  assert.strictEqual(decoded.modelInstanceId, "codex");
+  assert.strictEqual(decoded.modelPreview, "gpt-5.6-sol");
+  assert.ok(!("modelSelection" in decoded));
+  assert.throws(() =>
+    decodeProjectAutomationSummary({
+      ...automationSummary,
+      modelPreview: "x".repeat(241),
+    }),
+  );
 });

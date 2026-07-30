@@ -3,6 +3,7 @@ import type { EnvironmentProject } from "@shuv2code/client-runtime/state/shell";
 import {
   type ModelSelection,
   type ProjectAutomation,
+  type ProjectAutomationSummary,
   type RuntimeMode,
   type ProviderInteractionMode,
   type AutomationConcurrencyPolicy,
@@ -52,8 +53,15 @@ import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import {
+  appendAutomationSummaryPage,
+  isAutomationModelTruncated,
+  isAutomationPromptTruncated,
+  mergeAutomationSummaryPages,
   parseAutomationScheduleFields,
   parseAutomationTextFields,
+  reconcileAutomationRun,
+  removeAutomationSummary,
+  upsertAutomationSummary,
 } from "./AutomationsSettings.logic";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
@@ -96,14 +104,6 @@ function formatRelative(value: string | null): string {
   return delta >= 0 ? `in ${days}d` : `${days}d ago`;
 }
 
-function formatModelOption(id: string, value: string | boolean): string {
-  const label = id
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/^./, (character) => character.toUpperCase());
-  const renderedValue = typeof value === "boolean" ? (value ? "On" : "Off") : value;
-  return `${label}: ${renderedValue}`;
-}
-
 function asyncError(result: AsyncResult.AsyncResult<unknown, unknown>): string | null {
   if (!AsyncResult.isFailure(result)) return null;
   const cause = Cause.squash(result.cause);
@@ -114,7 +114,7 @@ function AutomationHistory({
   automation,
   project,
 }: {
-  readonly automation: ProjectAutomation;
+  readonly automation: ProjectAutomationSummary;
   readonly project: EnvironmentProject;
 }) {
   const navigate = useNavigate();
@@ -506,11 +506,17 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
     }),
   );
   const createAutomation = useAtomCommand(automationEnvironment.create);
+  const getAutomation = useAtomCommand(automationEnvironment.get);
+  const listAutomationPage = useAtomCommand(automationEnvironment.listPage);
   const updateAutomation = useAtomCommand(automationEnvironment.update);
   const deleteAutomation = useAtomCommand(automationEnvironment.delete);
   const runNow = useAtomCommand(automationEnvironment.runNow);
   const [editing, setEditing] = useState<ProjectAutomation | "new" | null>(null);
   const [newSeed, setNewSeed] = useState<AutomationFormValue | null>(null);
+  const [loadedAutomations, setLoadedAutomations] = useState<
+    ReadonlyArray<ProjectAutomationSummary>
+  >([]);
+  const [loadedNextCursor, setLoadedNextCursor] = useState<string | null | undefined>(undefined);
   const [expandedHistory, setExpandedHistory] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -539,18 +545,76 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
   );
   const data = Option.getOrNull(AsyncResult.value(result));
   const queryError = asyncError(result);
+  const automations = useMemo(
+    () => mergeAutomationSummaryPages(data?.automations ?? [], loadedAutomations),
+    [data?.automations, loadedAutomations],
+  );
+  const nextCursor = loadedNextCursor === undefined ? (data?.nextCursor ?? null) : loadedNextCursor;
 
-  const execute = async (
+  const loadAutomation = async (
+    automation: ProjectAutomationSummary,
+    intent: "edit" | "duplicate",
+  ) => {
+    const key = `get:${automation.id}`;
+    setBusyKey(key);
+    setActionError(null);
+    const outcome = await getAutomation({
+      environmentId: project.environmentId,
+      input: { projectId: project.id, automationId: automation.id },
+    });
+    setBusyKey(null);
+    if (!AsyncResult.isSuccess(outcome)) {
+      setActionError(asyncError(outcome) ?? "Could not load the complete automation.");
+      return;
+    }
+    if (intent === "edit") {
+      setEditing(outcome.value);
+      return;
+    }
+    setNewSeed({
+      name: `${outcome.value.name} copy`,
+      prompt: outcome.value.prompt,
+      enabled: false,
+      cronExpression: outcome.value.cronExpression,
+      timeZone: outcome.value.timeZone,
+      modelSelection: outcome.value.modelSelection,
+      runtimeMode: outcome.value.runtimeMode,
+      interactionMode: outcome.value.interactionMode,
+      concurrencyPolicy: outcome.value.concurrencyPolicy,
+    });
+    setEditing("new");
+  };
+
+  const loadMore = async () => {
+    if (nextCursor === null) return;
+    setBusyKey("load-more");
+    setActionError(null);
+    const outcome = await listAutomationPage({
+      environmentId: project.environmentId,
+      input: { projectId: project.id, cursor: nextCursor, limit: 50 },
+    });
+    setBusyKey(null);
+    if (!AsyncResult.isSuccess(outcome)) {
+      setActionError(asyncError(outcome) ?? "Could not load more automations.");
+      return;
+    }
+    setLoadedAutomations((current) =>
+      appendAutomationSummaryPage(current, outcome.value.automations),
+    );
+    setLoadedNextCursor(outcome.value.nextCursor);
+  };
+
+  const execute = async <A, E>(
     key: string,
-    action: () => Promise<AsyncResult.AsyncResult<unknown, unknown>>,
-    onSuccess?: () => void,
+    action: () => Promise<AsyncResult.AsyncResult<A, E>>,
+    onSuccess?: (value: A) => void,
   ) => {
     setBusyKey(key);
     setActionError(null);
     const outcome = await action();
     setBusyKey(null);
     if (AsyncResult.isSuccess(outcome)) {
-      onSuccess?.();
+      onSuccess?.(outcome.value);
       return;
     }
     setActionError(asyncError(outcome) ?? "Automation action failed.");
@@ -651,7 +715,10 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                         environmentId: project.environmentId,
                         input: { projectId: project.id, automationId: editing.id, ...common },
                       }),
-                () => {
+                (savedAutomation) => {
+                  setLoadedAutomations((current) =>
+                    upsertAutomationSummary(current, savedAutomation),
+                  );
                   setEditing(null);
                   setNewSeed(null);
                 },
@@ -668,8 +735,8 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
           <div className="rounded-2xl border border-destructive/25 px-5 py-8 text-sm text-destructive">
             {queryError}
           </div>
-        ) : data?.automations.length ? (
-          data.automations.map((automation) => {
+        ) : automations.length ? (
+          automations.map((automation) => {
             const historyOpen = expandedHistory === automation.id;
             return (
               <Card key={automation.id} className="overflow-hidden">
@@ -682,19 +749,20 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                       </Badge>
                     </div>
                     <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                      {automation.prompt}
+                      {automation.promptPreview}
                     </p>
                     <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                       <span>
                         <code>{automation.cronExpression}</code> · {automation.timeZone}
                       </span>
                       <span>
-                        {automation.modelSelection.instanceId} / {automation.modelSelection.model}
+                        {automation.modelInstanceId} / {automation.modelPreview}
+                        {isAutomationModelTruncated(automation) ? "…" : ""}
                       </span>
-                      {automation.modelSelection.options?.map((option) => (
-                        <span key={option.id}>{formatModelOption(option.id, option.value)}</span>
-                      ))}
                       <span>Overlap: {automation.concurrencyPolicy}</span>
+                      {isAutomationPromptTruncated(automation) ? (
+                        <span>Instructions: {automation.promptLength.toLocaleString()} chars</span>
+                      ) : null}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1 sm:justify-end">
@@ -710,7 +778,10 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                               environmentId: project.environmentId,
                               input: { projectId: project.id, automationId: automation.id },
                             }),
-                          () => setExpandedHistory(automation.id),
+                          (run) => {
+                            setLoadedAutomations((current) => reconcileAutomationRun(current, run));
+                            setExpandedHistory(automation.id);
+                          },
                         )
                       }
                     >
@@ -720,7 +791,8 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                       size="icon-xs"
                       variant="ghost"
                       aria-label={`Edit ${automation.name}`}
-                      onClick={() => setEditing(automation)}
+                      disabled={busyKey === `get:${automation.id}`}
+                      onClick={() => void loadAutomation(automation, "edit")}
                     >
                       <PencilIcon />
                     </Button>
@@ -728,20 +800,8 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                       size="icon-xs"
                       variant="ghost"
                       aria-label={`Duplicate ${automation.name}`}
-                      onClick={() => {
-                        setNewSeed({
-                          name: `${automation.name} copy`,
-                          prompt: automation.prompt,
-                          enabled: false,
-                          cronExpression: automation.cronExpression,
-                          timeZone: automation.timeZone,
-                          modelSelection: automation.modelSelection,
-                          runtimeMode: automation.runtimeMode,
-                          interactionMode: automation.interactionMode,
-                          concurrencyPolicy: automation.concurrencyPolicy,
-                        });
-                        setEditing("new");
-                      }}
+                      disabled={busyKey === `get:${automation.id}`}
+                      onClick={() => void loadAutomation(automation, "duplicate")}
                     >
                       <CopyIcon />
                     </Button>
@@ -753,11 +813,17 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                       onClick={() => {
                         if (!window.confirm(`Delete “${automation.name}” and its run history?`))
                           return;
-                        void execute(`delete:${automation.id}`, () =>
-                          deleteAutomation({
-                            environmentId: project.environmentId,
-                            input: { projectId: project.id, automationId: automation.id },
-                          }),
+                        void execute(
+                          `delete:${automation.id}`,
+                          () =>
+                            deleteAutomation({
+                              environmentId: project.environmentId,
+                              input: { projectId: project.id, automationId: automation.id },
+                            }),
+                          () =>
+                            setLoadedAutomations((current) =>
+                              removeAutomationSummary(current, automation.id),
+                            ),
                         );
                       }}
                     >
@@ -805,15 +871,21 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
                       checked={automation.enabled}
                       disabled={busyKey === `toggle:${automation.id}`}
                       onCheckedChange={(enabled) =>
-                        void execute(`toggle:${automation.id}`, () =>
-                          updateAutomation({
-                            environmentId: project.environmentId,
-                            input: {
-                              projectId: project.id,
-                              automationId: automation.id,
-                              enabled: Boolean(enabled),
-                            },
-                          }),
+                        void execute(
+                          `toggle:${automation.id}`,
+                          () =>
+                            updateAutomation({
+                              environmentId: project.environmentId,
+                              input: {
+                                projectId: project.id,
+                                automationId: automation.id,
+                                enabled: Boolean(enabled),
+                              },
+                            }),
+                          (updatedAutomation) =>
+                            setLoadedAutomations((current) =>
+                              upsertAutomationSummary(current, updatedAutomation),
+                            ),
                         )
                       }
                     />
@@ -846,6 +918,18 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
             </Button>
           </div>
         )}
+        {automations.length > 0 && nextCursor !== null ? (
+          <div className="flex justify-center pt-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busyKey === "load-more"}
+              onClick={() => void loadMore()}
+            >
+              {busyKey === "load-more" ? <Spinner /> : null} Load more
+            </Button>
+          </div>
+        ) : null}
       </div>
     </SettingsSection>
   );
