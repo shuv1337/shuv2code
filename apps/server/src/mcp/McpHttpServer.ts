@@ -1,3 +1,7 @@
+import type {
+  PreviewAutomationSnapshot,
+  PreviewAutomationSnapshotInput,
+} from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -10,6 +14,7 @@ import { McpSchema, McpServer, Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
+import { compactAccessibilityTree } from "./CompactAccessibilityTree.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -166,18 +171,19 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
           Effect.matchCauseEffect({
             onFailure: previewSnapshotFailure,
             onSuccess: ({ encodedResult }) => {
-              const snapshot = encodedResult as {
-                readonly screenshot: {
-                  readonly mimeType: "image/png";
-                  readonly data: string;
-                  readonly width: number;
-                  readonly height: number;
-                };
-                readonly [key: string]: unknown;
-              };
+              const snapshot = encodedResult as PreviewAutomationSnapshot;
               const { screenshot, ...page } = snapshot;
+              const mode = (payload as PreviewAutomationSnapshotInput).mode ?? "compact";
               const metadata = {
-                ...page,
+                ...(mode === "full"
+                  ? page
+                  : {
+                      ...page,
+                      accessibilityTree: compactAccessibilityTree(page.accessibilityTree),
+                      consoleEntries: page.consoleEntries.slice(-20),
+                      networkEntries: page.networkEntries.slice(-20),
+                      actionTimeline: page.actionTimeline.slice(-20),
+                    }),
                 screenshot: {
                   mimeType: screenshot.mimeType,
                   width: screenshot.width,
