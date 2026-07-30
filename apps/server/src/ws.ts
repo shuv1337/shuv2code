@@ -54,7 +54,6 @@ import {
   WS_METHODS,
   WsRpcGroup,
 } from "@shuv2code/contracts";
-import { clamp } from "effect/Number";
 import { resolveServerBackgroundActivitySettings } from "@shuv2code/shared/backgroundActivitySettings";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
@@ -122,6 +121,7 @@ const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchComma
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const EDITOR_DISCOVERY_TIMEOUT = Duration.seconds(5);
+export const THREAD_DETAIL_REPLAY_LIMIT = 1_000;
 
 export const resolveAvailableEditorsForConfig = <A, E, R>(
   discovery: Effect.Effect<ReadonlyArray<A>, E, R>,
@@ -1300,21 +1300,49 @@ const makeWsRpcLayer = (
               // catch-up followed by the buffered/ongoing live events. Overlapping
               // events are deduped by sequence on the client.
               //
-              // Read the full range after the cursor (not the store's default
-              // page-bounded limit): the range is normally tiny (a fresh HTTP
-              // snapshot sequence) and the per-thread filter runs after reading,
-              // so a global cap could otherwise omit this thread's events.
+              const loadThreadSnapshot = projectionSnapshotQuery
+                .getThreadDetailSnapshot(input.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: `Failed to load thread ${input.threadId}`,
+                        cause,
+                      }),
+                  ),
+                  Effect.flatMap(
+                    Option.match({
+                      onNone: () =>
+                        Effect.fail(
+                          new OrchestrationGetSnapshotError({
+                            message: `Thread ${input.threadId} was not found`,
+                            cause: input.threadId,
+                          }),
+                        ),
+                      onSome: Effect.succeed,
+                    }),
+                  ),
+                  Effect.map((snapshot) => ({
+                    kind: "snapshot" as const,
+                    snapshot: projectThreadDetailSnapshot(snapshot),
+                  })),
+                );
+
+              // Query the requested thread's indexed stream directly. Read one
+              // extra item so a stale cursor falls back to a fresh bounded
+              // snapshot rather than attempting an unlimited replay.
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
-                const catchUpStream = orchestrationEngine
-                  .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
+                const replayEvents = yield* orchestrationEngine
+                  .readEvents(afterSequence, THREAD_DETAIL_REPLAY_LIMIT + 1, {
+                    kind: "thread",
+                    id: input.threadId,
+                  })
                   .pipe(
-                    Stream.filter(isThisThreadDetailEvent),
-                    Stream.map((event) => ({
-                      kind: "event" as const,
-                      event: projectActivityEvent(event),
-                    })),
-                    Stream.mapError(
+                    Stream.filter(isThreadDetailEvent),
+                    Stream.runCollect,
+                    Effect.map((events) => Array.from(events)),
+                    Effect.mapError(
                       (cause) =>
                         new OrchestrationGetSnapshotError({
                           message: `Failed to replay thread ${input.threadId} events`,
@@ -1322,6 +1350,18 @@ const makeWsRpcLayer = (
                         }),
                     ),
                   );
+                const catchUpStream: Stream.Stream<
+                  OrchestrationThreadStreamItem,
+                  OrchestrationGetSnapshotError
+                > =
+                  replayEvents.length > THREAD_DETAIL_REPLAY_LIMIT
+                    ? Stream.fromEffect(loadThreadSnapshot)
+                    : Stream.fromIterable(replayEvents).pipe(
+                        Stream.map((event) => ({
+                          kind: "event" as const,
+                          event: projectActivityEvent(event),
+                        })),
+                      );
                 const afterCatchUp =
                   input.requestCompletionMarker === true
                     ? Stream.concat(
@@ -1334,24 +1374,7 @@ const makeWsRpcLayer = (
                 return Stream.concat(catchUpStream, afterCatchUp);
               }
 
-              const snapshot = yield* projectionSnapshotQuery
-                .getThreadDetailSnapshot(input.threadId)
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: `Failed to load thread ${input.threadId}`,
-                        cause,
-                      }),
-                  ),
-                );
-
-              if (Option.isNone(snapshot)) {
-                return yield* new OrchestrationGetSnapshotError({
-                  message: `Thread ${input.threadId} was not found`,
-                  cause: input.threadId,
-                });
-              }
+              const snapshot = yield* loadThreadSnapshot;
 
               const afterSnapshot =
                 input.requestCompletionMarker === true
@@ -1362,13 +1385,7 @@ const makeWsRpcLayer = (
                       bufferedLiveStream,
                     )
                   : bufferedLiveStream;
-              return Stream.concat(
-                Stream.make({
-                  kind: "snapshot" as const,
-                  snapshot: projectThreadDetailSnapshot(snapshot.value),
-                }),
-                afterSnapshot,
-              );
+              return Stream.concat(Stream.make(snapshot), afterSnapshot);
             }),
             { "rpc.aggregate": "orchestration" },
           ),

@@ -10,7 +10,13 @@
  *
  * @module OrchestrationEngineService
  */
-import type { OrchestrationCommand, OrchestrationEvent } from "@shuv2code/contracts";
+import type {
+  OrchestrationAggregateKind,
+  OrchestrationCommand,
+  OrchestrationEvent,
+  ProjectId,
+  ThreadId,
+} from "@shuv2code/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -35,6 +41,10 @@ export interface OrchestrationEngineShape {
   readonly readEvents: (
     fromSequenceExclusive: number,
     limit?: number,
+    aggregate?: {
+      readonly kind: OrchestrationAggregateKind;
+      readonly id: ProjectId | ThreadId;
+    },
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError, never>;
 
   /**

@@ -9,7 +9,12 @@
  *
  * @module OrchestrationEventStore
  */
-import { OrchestrationEvent } from "@shuv2code/contracts";
+import {
+  OrchestrationEvent,
+  type OrchestrationAggregateKind,
+  type ProjectId,
+  type ThreadId,
+} from "@shuv2code/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -42,6 +47,18 @@ export interface OrchestrationEventStoreShape {
    * Reads in fixed-size pages and normalizes non-integer/negative limits.
    */
   readonly readFromSequence: (
+    sequenceExclusive: number,
+    limit?: number,
+  ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
+
+  /**
+   * Replay one aggregate stream after an exclusive global sequence cursor.
+   * Uses the event store's `(aggregate_kind, stream_id, sequence)` index so
+   * callers do not decode unrelated project and thread history.
+   */
+  readonly readAggregateFromSequence: (
+    aggregateKind: OrchestrationAggregateKind,
+    aggregateId: ProjectId | ThreadId,
     sequenceExclusive: number,
     limit?: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;

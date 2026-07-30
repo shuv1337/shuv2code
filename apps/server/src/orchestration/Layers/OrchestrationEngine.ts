@@ -306,8 +306,19 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     Effect.annotateLogs({ sequence: commandReadModel.snapshotSequence }),
   );
 
-  const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive, limit) =>
-    eventStore.readFromSequence(fromSequenceExclusive, limit);
+  const readEvents: OrchestrationEngineShape["readEvents"] = (
+    fromSequenceExclusive,
+    limit,
+    aggregate,
+  ) =>
+    aggregate === undefined
+      ? eventStore.readFromSequence(fromSequenceExclusive, limit)
+      : eventStore.readAggregateFromSequence(
+          aggregate.kind,
+          aggregate.id,
+          fromSequenceExclusive,
+          limit,
+        );
 
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {

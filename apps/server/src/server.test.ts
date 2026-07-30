@@ -76,7 +76,7 @@ import * as AutomationService from "./automations/AutomationService.ts";
 import * as ServerConfig from "./config.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import { makeRoutesLayer } from "./server.ts";
-import { resolveAvailableEditorsForConfig } from "./ws.ts";
+import { resolveAvailableEditorsForConfig, THREAD_DETAIL_REPLAY_LIMIT } from "./ws.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -5875,6 +5875,132 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.deepEqual(items[1], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("bounds thread catch-up and requests only the indexed aggregate", () =>
+    Effect.gen(function* () {
+      const now = "2026-01-01T00:00:00.000Z";
+      const replayEvent = {
+        sequence: 8,
+        eventId: EventId.make("event-thread-catch-up"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-sent",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make("message-thread-catch-up"),
+          role: "assistant",
+          text: "bounded catch-up",
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      } satisfies OrchestrationEvent;
+      let observedRequest:
+        | {
+            readonly afterSequence: number;
+            readonly limit: number | undefined;
+            readonly aggregate: { readonly kind: string; readonly id: string } | undefined;
+          }
+        | undefined;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            readEvents: (afterSequence, limit, aggregate) => {
+              observedRequest = { afterSequence, limit, aggregate };
+              return Stream.make(replayEvent);
+            },
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 7,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+
+      assert.equal(items[0]?.kind, "event");
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.deepEqual(observedRequest, {
+        afterSequence: 7,
+        limit: THREAD_DETAIL_REPLAY_LIMIT + 1,
+        aggregate: { kind: "thread", id: defaultThreadId },
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("replaces an oversized thread catch-up with a fresh snapshot", () =>
+    Effect.gen(function* () {
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const now = "2026-01-01T00:00:00.000Z";
+      const replayEvents = Array.from(
+        { length: THREAD_DETAIL_REPLAY_LIMIT + 1 },
+        (_unused, index) =>
+          ({
+            sequence: index + 1,
+            eventId: EventId.make(`event-oversized-catch-up-${index}`),
+            aggregateKind: "thread",
+            aggregateId: defaultThreadId,
+            occurredAt: now,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.message-sent",
+            payload: {
+              threadId: defaultThreadId,
+              messageId: MessageId.make(`message-oversized-catch-up-${index}`),
+              role: "assistant",
+              text: `replay ${index}`,
+              turnId: null,
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          }) satisfies OrchestrationEvent,
+      );
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            readEvents: () => Stream.fromIterable(replayEvents),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.succeed(
+                Option.some({ snapshotSequence: THREAD_DETAIL_REPLAY_LIMIT + 1, thread }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 0,
             requestCompletionMarker: true,
           }).pipe(Stream.take(2), Stream.runCollect),
         ),
