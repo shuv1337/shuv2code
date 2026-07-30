@@ -12,6 +12,7 @@ import {
   type PreviewAutomationResizeResult,
   type PreviewAutomationSetColorSchemeInput,
   type PreviewAutomationSetColorSchemeResult,
+  type PreviewAutomationSnapshotInput,
   type PreviewAutomationHost as PreviewAutomationHostState,
   type PreviewAutomationRequest,
   type PreviewAutomationStatus,
@@ -65,6 +66,7 @@ import {
 } from "./previewNavigationReadiness";
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
 import { createPreviewAutomationClientId } from "./previewAutomationClientId";
+import { resolvePreviewAutomationSnapshotMode } from "./previewAutomationSnapshotMode";
 import {
   needsPreviewAutomationSessionSync,
   resolvePreviewAutomationOpenTab,
@@ -577,7 +579,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           }
           case "snapshot": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.snapshot(ready.runtimeTabId);
+            const input = request.input as PreviewAutomationSnapshotInput;
+            return await ready.bridge.automation.snapshot(
+              ready.runtimeTabId,
+              resolvePreviewAutomationSnapshotMode(input),
+            );
           }
           case "click": {
             const ready = await requireReadyTab();

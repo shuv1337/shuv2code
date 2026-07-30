@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./compactAccessibilityTree": {
+      "types": "./src/compactAccessibilityTree.ts",
+      "import": "./src/compactAccessibilityTree.ts"
+    },
     "./projectFavicon": {
       "types": "./src/projectFavicon.ts",
       "import": "./src/projectFavicon.ts"
