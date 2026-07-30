@@ -1,6 +1,11 @@
 # CI quality gates
 
-- `.github/workflows/ci.yml` runs `vp check` (lint + typecheck), `vpr typecheck`, and `vp run test` on pull requests and pushes to `main`.
+- `.github/workflows/ci.yml` is a single self-hosted job for personal-project
+  speed: brand/schema/icon checks, `vp check` (lint), and `vp run test` on pull
+  requests and pushes to `main`. It does **not** run full typecheck, desktop
+  builds, Rust checks, mobile native lint, or release smoke on every PR.
+- The main branch ruleset requires only that one `CI` check (PR required, admin
+  bypass allowed). Deep verification lives on the manual release workflow.
 - `.github/workflows/release.yml` is the sole manual npm publishing workflow.
   Prepare mode resolves the committed named version (or derives a nightly), runs
   verification once, stages a minimal npm manifest, builds one npm tarball,

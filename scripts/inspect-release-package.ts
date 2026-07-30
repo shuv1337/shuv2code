@@ -191,11 +191,14 @@ function verifyInstalledBinaries(tarballPath: string, expectedVersion: string): 
     }
 
     for (const binName of ["shuv2code", "s2c"] as const) {
-      const binPath =
-        process.platform === "win32"
-          ? NodePath.join(prefix, `${binName}.cmd`)
-          : NodePath.join(prefix, "bin", binName);
-      if (!NodeFS.existsSync(binPath)) fail(`Clean-prefix install did not expose '${binName}'.`);
+      const unixBinPath = NodePath.join(prefix, "bin", binName);
+      const windowsBinPath = NodePath.join(prefix, `${binName}.cmd`);
+      const binPath = NodeFS.existsSync(unixBinPath)
+        ? unixBinPath
+        : NodeFS.existsSync(windowsBinPath)
+          ? windowsBinPath
+          : null;
+      if (binPath === null) fail(`Clean-prefix install did not expose '${binName}'.`);
       const versionOutput = runText(binPath, ["--version"]).trim();
       const expectedOutput = `shuv2code v${expectedVersion}`;
       if (versionOutput !== expectedOutput) {

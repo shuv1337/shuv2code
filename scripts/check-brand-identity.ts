@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off - Repository guard script uses synchronous git/file traversal and CLI output.
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import allowlistJson from "./brand-identity-allowlist.json" with { type: "json" };
 
@@ -93,7 +93,7 @@ function isBinary(contents: Buffer): boolean {
 }
 
 function listGitFiles(root: string): ReadonlyArray<string> {
-  const output = execFileSync(
+  const output = NodeChildProcess.execFileSync(
     "git",
     ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     { cwd: root, maxBuffer: 32 * 1024 * 1024 },
@@ -106,13 +106,13 @@ function listGitFiles(root: string): ReadonlyArray<string> {
 }
 
 function walk(root: string, entryPath: string): ReadonlyArray<string> {
-  const absolutePath = resolve(root, entryPath);
-  const info = statSync(absolutePath);
-  if (info.isFile()) return [relative(root, absolutePath)];
+  const absolutePath = NodePath.resolve(root, entryPath);
+  const info = NodeFS.statSync(absolutePath);
+  if (info.isFile()) return [NodePath.relative(root, absolutePath)];
   if (!info.isDirectory()) return [];
-  return readdirSync(absolutePath, { withFileTypes: true }).flatMap((entry) => {
-    const child = resolve(absolutePath, entry.name);
-    const childRelative = relative(root, child);
+  return NodeFS.readdirSync(absolutePath, { withFileTypes: true }).flatMap((entry) => {
+    const child = NodePath.resolve(absolutePath, entry.name);
+    const childRelative = NodePath.relative(root, child);
     if (entry.isDirectory()) return walk(root, childRelative);
     return entry.isFile() ? [childRelative] : [];
   });
@@ -122,9 +122,9 @@ export function scanPaths(root: string, paths: ReadonlyArray<string>): ReadonlyA
   const matches: Array<BrandMatch> = [];
   for (const path of paths) {
     if (INTERNAL_EXCLUSIONS.has(path)) continue;
-    const absolutePath = resolve(root, path);
-    if (!existsSync(absolutePath) || !statSync(absolutePath).isFile()) continue;
-    const contents = readFileSync(absolutePath);
+    const absolutePath = NodePath.resolve(root, path);
+    if (!NodeFS.existsSync(absolutePath) || !NodeFS.statSync(absolutePath).isFile()) continue;
+    const contents = NodeFS.readFileSync(absolutePath);
     if (isBinary(contents)) continue;
     matches.push(...scanText(path, contents.toString("utf8")));
   }
