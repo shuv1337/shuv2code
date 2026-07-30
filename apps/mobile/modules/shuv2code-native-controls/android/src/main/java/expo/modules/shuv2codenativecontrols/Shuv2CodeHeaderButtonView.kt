@@ -9,7 +9,10 @@ import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 
-class Shuv2CodeHeaderButtonView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
+class Shuv2CodeHeaderButtonView(context: Context, appContext: AppContext) : ExpoView(
+  context,
+  appContext
+) {
   private val iconView = HeaderIconView(context)
   private val onTriggered by EventDispatcher()
 
