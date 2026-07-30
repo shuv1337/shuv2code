@@ -25,10 +25,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import { makeDrainableWorker } from "@shuv2code/shared/DrainableWorker";
+import * as TxRef from "effect/TxRef";
+import { makeBoundedCoalescingWorker } from "@shuv2code/shared/BoundedCoalescingWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
-import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
+import {
+  ProjectionTurnRepository,
+  type ProjectionPendingTurnStart,
+} from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -92,6 +96,9 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const PROVIDER_RUNTIME_INGESTION_QUEUE_CAPACITY = 128;
+const PROVIDER_RUNTIME_THREAD_CACHE_CAPACITY = 10_000;
+const PROVIDER_RUNTIME_THREAD_CACHE_TTL = Duration.seconds(30);
 const STRICT_PROVIDER_LIFECYCLE_GUARD =
   process.env.SHUV2CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -109,6 +116,87 @@ type RuntimeIngestionInput =
       source: "domain";
       event: TurnStartRequestedDomainEvent;
     };
+
+function eventRequiresFreshThreadShell(event: ProviderRuntimeEvent): boolean {
+  switch (event.type) {
+    case "session.started":
+    case "session.state.changed":
+    case "session.exited":
+    case "thread.started":
+    case "turn.started":
+    case "turn.completed":
+    case "turn.aborted":
+    case "runtime.error":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function eventRequiresPendingTurn(event: ProviderRuntimeEvent): boolean {
+  switch (event.type) {
+    case "session.started":
+    case "session.state.changed":
+    case "thread.started":
+    case "turn.started":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function sameRuntimeDeltaStream(left: ProviderRuntimeEvent, right: ProviderRuntimeEvent): boolean {
+  return (
+    left.threadId === right.threadId &&
+    left.turnId === right.turnId &&
+    left.itemId === right.itemId &&
+    left.provider === right.provider &&
+    left.providerInstanceId === right.providerInstanceId
+  );
+}
+
+function coalesceRuntimeIngestionInput(
+  current: RuntimeIngestionInput,
+  next: RuntimeIngestionInput,
+): RuntimeIngestionInput | undefined {
+  if (current.source !== "runtime" || next.source !== "runtime") {
+    return undefined;
+  }
+  const left = current.event;
+  const right = next.event;
+  if (!sameRuntimeDeltaStream(left, right)) {
+    return undefined;
+  }
+  if (
+    left.type === "content.delta" &&
+    right.type === "content.delta" &&
+    left.payload.streamKind === "assistant_text" &&
+    right.payload.streamKind === "assistant_text" &&
+    left.payload.delta.length + right.payload.delta.length <= MAX_BUFFERED_ASSISTANT_CHARS
+  ) {
+    return {
+      source: "runtime",
+      event: {
+        ...left,
+        payload: { ...left.payload, delta: `${left.payload.delta}${right.payload.delta}` },
+      },
+    };
+  }
+  if (
+    left.type === "turn.proposed.delta" &&
+    right.type === "turn.proposed.delta" &&
+    left.payload.delta.length + right.payload.delta.length <= MAX_BUFFERED_ASSISTANT_CHARS
+  ) {
+    return {
+      source: "runtime",
+      event: {
+        ...left,
+        payload: { delta: `${left.payload.delta}${right.payload.delta}` },
+      },
+    };
+  }
+  return undefined;
+}
 
 function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
   return value === undefined ? undefined : TurnId.make(String(value));
@@ -694,6 +782,8 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const threadShellReads = yield* TxRef.make(0);
+  const pendingTurnReads = yield* TxRef.make(0);
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
@@ -734,6 +824,34 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(""),
   });
 
+  const readThreadShell = Effect.fn("ProviderRuntimeIngestion.readThreadShell")(function* (
+    threadId: ThreadId,
+  ) {
+    yield* TxRef.update(threadShellReads, (count) => count + 1).pipe(Effect.tx);
+    return yield* projectionSnapshotQuery
+      .getThreadShellById(threadId)
+      .pipe(Effect.map(Option.getOrUndefined));
+  });
+
+  const threadShellByThreadId = yield* Cache.make({
+    capacity: PROVIDER_RUNTIME_THREAD_CACHE_CAPACITY,
+    timeToLive: PROVIDER_RUNTIME_THREAD_CACHE_TTL,
+    lookup: readThreadShell,
+  });
+
+  const readPendingTurnStart = Effect.fn("ProviderRuntimeIngestion.readPendingTurnStart")(
+    function* (threadId: ThreadId) {
+      yield* TxRef.update(pendingTurnReads, (count) => count + 1).pipe(Effect.tx);
+      return yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId });
+    },
+  );
+
+  const pendingTurnStartByThreadId = yield* Cache.make({
+    capacity: PROVIDER_RUNTIME_THREAD_CACHE_CAPACITY,
+    timeToLive: PROVIDER_RUNTIME_THREAD_CACHE_TTL,
+    lookup: readPendingTurnStart,
+  });
+
   const rememberTaskDescription = (threadId: ThreadId, taskId: string, description: string) =>
     Cache.set(taskDescriptionByTaskKey, providerTaskKey(threadId, taskId), description);
 
@@ -753,10 +871,15 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
-  const resolveThreadShell = Effect.fn("resolveThreadShell")(function* (threadId: ThreadId) {
-    return yield* projectionSnapshotQuery
-      .getThreadShellById(threadId)
-      .pipe(Effect.map(Option.getOrUndefined));
+  const resolveThreadShell = Effect.fn("resolveThreadShell")(function* (
+    event: ProviderRuntimeEvent,
+  ) {
+    if (!eventRequiresFreshThreadShell(event)) {
+      return yield* Cache.get(threadShellByThreadId, event.threadId);
+    }
+    const thread = yield* readThreadShell(event.threadId);
+    yield* Cache.set(threadShellByThreadId, event.threadId, thread);
+    return thread;
   });
 
   const rememberAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
@@ -1215,12 +1338,9 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.asVoid);
     });
 
-  const getSourceProposedPlanReferenceForPendingTurnStart = Effect.fn(
-    "getSourceProposedPlanReferenceForPendingTurnStart",
-  )(function* (threadId: ThreadId) {
-    const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
-      threadId,
-    });
+  const getSourceProposedPlanReferenceForPendingTurnStart = (
+    pendingTurnStart: Option.Option<ProjectionPendingTurnStart>,
+  ) => {
     if (Option.isNone(pendingTurnStart)) {
       return null;
     }
@@ -1235,7 +1355,7 @@ const make = Effect.gen(function* () {
       sourceThreadId,
       sourcePlanId,
     } as const;
-  });
+  };
 
   const getExpectedProviderTurnIdForThread = Effect.fn("getExpectedProviderTurnIdForThread")(
     function* (threadId: ThreadId) {
@@ -1247,7 +1367,11 @@ const make = Effect.gen(function* () {
 
   const getSourceProposedPlanReferenceForAcceptedTurnStart = Effect.fn(
     "getSourceProposedPlanReferenceForAcceptedTurnStart",
-  )(function* (threadId: ThreadId, eventTurnId: TurnId | undefined) {
+  )(function* (
+    threadId: ThreadId,
+    eventTurnId: TurnId | undefined,
+    pendingTurnStart: Option.Option<ProjectionPendingTurnStart>,
+  ) {
     if (eventTurnId === undefined) {
       return null;
     }
@@ -1257,7 +1381,7 @@ const make = Effect.gen(function* () {
       return null;
     }
 
-    return yield* getSourceProposedPlanReferenceForPendingTurnStart(threadId);
+    return getSourceProposedPlanReferenceForPendingTurnStart(pendingTurnStart);
   });
 
   const markSourceProposedPlanImplemented = Effect.fn("markSourceProposedPlanImplemented")(
@@ -1293,7 +1417,7 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
-      const thread = yield* resolveThreadShell(event.threadId);
+      const thread = yield* resolveThreadShell(event);
       if (!thread) return;
 
       let loadedThreadDetail: OrchestrationThread | null | undefined;
@@ -1309,9 +1433,9 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
-      const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
-        threadId: thread.id,
-      });
+      const pendingTurnStart = eventRequiresPendingTurn(event)
+        ? yield* Cache.get(pendingTurnStartByThreadId, thread.id)
+        : Option.none<ProjectionPendingTurnStart>();
       const hasPendingTurnStart =
         Option.isSome(pendingTurnStart) && thread.session?.status === "starting";
 
@@ -1360,7 +1484,11 @@ const make = Effect.gen(function* () {
       })();
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
-          ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
+          ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(
+              thread.id,
+              eventTurnId,
+              pendingTurnStart,
+            )
           : null;
 
       if (
@@ -1439,24 +1567,41 @@ const make = Effect.gen(function* () {
             );
           }
 
+          const nextSession = {
+            threadId: thread.id,
+            status,
+            providerName: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            runtimeMode: thread.session?.runtimeMode ?? "full-access",
+            activeTurnId: nextActiveTurnId,
+            lastError,
+            updatedAt: now,
+          } as const;
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
             commandId: yield* providerCommandId(event, "thread-session-set"),
             threadId: thread.id,
-            session: {
-              threadId: thread.id,
-              status,
-              providerName: event.provider,
-              ...(event.providerInstanceId !== undefined
-                ? { providerInstanceId: event.providerInstanceId }
-                : {}),
-              runtimeMode: thread.session?.runtimeMode ?? "full-access",
-              activeTurnId: nextActiveTurnId,
-              lastError,
-              updatedAt: now,
-            },
+            session: nextSession,
             createdAt: now,
           });
+          yield* Cache.set(threadShellByThreadId, thread.id, {
+            ...thread,
+            session: nextSession,
+            updatedAt: now,
+          });
+          if (
+            event.type === "turn.started" ||
+            event.type === "turn.completed" ||
+            event.type === "turn.aborted" ||
+            event.type === "session.exited" ||
+            status === "error" ||
+            status === "stopped" ||
+            status === "interrupted"
+          ) {
+            yield* Cache.set(pendingTurnStartByThreadId, thread.id, Option.none());
+          }
         }
       }
 
@@ -1787,7 +1932,11 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.asVoid);
     });
 
-  const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
+  const processDomainEvent = (event: TurnStartRequestedDomainEvent) =>
+    Effect.gen(function* () {
+      yield* Cache.invalidate(pendingTurnStartByThreadId, event.payload.threadId);
+      yield* Cache.invalidate(threadShellByThreadId, event.payload.threadId);
+    });
 
   const processInput = (input: RuntimeIngestionInput) =>
     input.source === "runtime" ? processRuntimeEvent(input.event) : processDomainEvent(input.event);
@@ -1807,7 +1956,11 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const worker = yield* makeBoundedCoalescingWorker({
+    capacity: PROVIDER_RUNTIME_INGESTION_QUEUE_CAPACITY,
+    coalesce: coalesceRuntimeIngestionInput,
+    process: processInputSafely,
+  });
 
   const start: ProviderRuntimeIngestionShape["start"] = () =>
     Effect.gen(function* () {
@@ -1826,9 +1979,25 @@ const make = Effect.gen(function* () {
       );
     });
 
+  const diagnostics: ProviderRuntimeIngestionShape["diagnostics"] = Effect.gen(function* () {
+    const queue = yield* worker.diagnostics;
+    return {
+      queueCapacity: queue.capacity,
+      queued: queue.queued,
+      active: queue.active,
+      maxQueued: queue.maxQueued,
+      enqueued: queue.enqueued,
+      coalesced: queue.coalesced,
+      processed: queue.processed,
+      threadShellReads: yield* TxRef.get(threadShellReads).pipe(Effect.tx),
+      pendingTurnReads: yield* TxRef.get(pendingTurnReads).pipe(Effect.tx),
+    };
+  });
+
   return {
     start,
     drain: worker.drain,
+    diagnostics,
   } satisfies ProviderRuntimeIngestionShape;
 });
 

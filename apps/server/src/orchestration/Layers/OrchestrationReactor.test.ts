@@ -35,6 +35,17 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            diagnostics: Effect.succeed({
+              queueCapacity: 128,
+              queued: 0,
+              active: false,
+              maxQueued: 0,
+              enqueued: 0,
+              coalesced: 0,
+              processed: 0,
+              threadShellReads: 0,
+              pendingTurnReads: 0,
+            }),
           }),
         ),
         Layer.provideMerge(

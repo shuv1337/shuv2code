@@ -316,6 +316,7 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
+      diagnostics: () => runtime!.runPromise(ingestion.diagnostics),
     };
   }
 
@@ -979,6 +980,59 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(message?.text).toBe("hello world");
     expect(message?.streaming).toBe(false);
+  });
+
+  it("bounds and coalesces delta bursts without repeated projection reads", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const deltaCount = 2_000;
+
+    for (let index = 0; index < deltaCount; index += 1) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-burst-delta-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-burst"),
+        itemId: asItemId("item-burst"),
+        payload: {
+          streamKind: "assistant_text",
+          delta: "x",
+        },
+      });
+    }
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-burst-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-burst"),
+      itemId: asItemId("item-burst"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    await harness.drain();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    const message = thread?.messages.find((entry) => entry.id === "assistant:item-burst");
+    const diagnostics = await harness.diagnostics();
+
+    expect(message?.text).toBe("x".repeat(deltaCount));
+    expect(message?.streaming).toBe(false);
+    expect(diagnostics.queueCapacity).toBe(128);
+    expect(diagnostics.maxQueued).toBeLessThanOrEqual(diagnostics.queueCapacity);
+    expect(diagnostics.enqueued).toBe(deltaCount + 1);
+    expect(diagnostics.coalesced).toBeGreaterThanOrEqual(deltaCount * 0.9);
+    expect(diagnostics.processed).toBeLessThanOrEqual(deltaCount * 0.1 + 1);
+    // The previous hot path performed both reads for every one of these events.
+    expect(diagnostics.threadShellReads).toBe(1);
+    expect(diagnostics.pendingTurnReads).toBe(0);
+    expect(diagnostics.threadShellReads).toBeLessThan((deltaCount + 1) * 0.01);
   });
 
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {

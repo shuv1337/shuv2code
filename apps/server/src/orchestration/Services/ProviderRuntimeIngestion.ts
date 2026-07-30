@@ -30,6 +30,21 @@ export interface ProviderRuntimeIngestionShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /** Lightweight ingestion counters used by diagnostics and regression tests. */
+  readonly diagnostics: Effect.Effect<ProviderRuntimeIngestionDiagnostics>;
+}
+
+export interface ProviderRuntimeIngestionDiagnostics {
+  readonly queueCapacity: number;
+  readonly queued: number;
+  readonly active: boolean;
+  readonly maxQueued: number;
+  readonly enqueued: number;
+  readonly coalesced: number;
+  readonly processed: number;
+  readonly threadShellReads: number;
+  readonly pendingTurnReads: number;
 }
 
 /**
