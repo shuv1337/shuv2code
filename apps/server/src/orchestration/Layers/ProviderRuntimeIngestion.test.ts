@@ -1013,7 +1013,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
-  it("preserves completed tool metadata on projected tool activities", async () => {
+  it("preserves failed status and metadata on completed tool activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1027,7 +1027,7 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("item-tool-completed"),
       payload: {
         itemType: "dynamic_tool_call",
-        status: "completed",
+        status: "failed",
         title: "Read file",
         data: {
           toolCallId: "tool-read-1",
@@ -1063,6 +1063,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.kind).toBe("tool.completed");
     expect(activity?.summary).toBe("Read file");
     expect(payload?.itemType).toBe("dynamic_tool_call");
+    expect(payload?.status).toBe("failed");
     expect(payload?.detail).toBeUndefined();
     expect(data?.toolCallId).toBe("tool-read-1");
     expect(data?.kind).toBe("read");

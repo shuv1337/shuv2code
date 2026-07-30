@@ -1220,7 +1220,7 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect(
-    "stores a large Claude tool result once instead of duplicating it across lifecycle events",
+    "stores a large failed Claude tool result once with compact completion metadata",
     () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
@@ -1266,6 +1266,7 @@ describe("ClaudeAdapterLive", () => {
                 type: "tool_result",
                 tool_use_id: "tool-large-result",
                 content: resultText,
+                is_error: true,
               },
             ],
           },
@@ -1288,6 +1289,22 @@ describe("ClaudeAdapterLive", () => {
         assert.isBelow(serialized.length, legacyMinimumBytes * 0.3);
         assert.equal(runtimeEvents.filter((event) => event.type === "item.updated").length, 0);
         assert.equal(runtimeEvents.filter((event) => event.type === "item.completed").length, 1);
+        const completed = runtimeEvents.find((event) => event.type === "item.completed");
+        assert.equal(completed?.type, "item.completed");
+        if (completed?.type === "item.completed") {
+          assert.equal(completed.payload.status, "failed");
+          const completedData = completed.payload.data as
+            | { readonly result?: { readonly content?: string } }
+            | undefined;
+          assert.equal(completedData?.result?.content, resultText);
+          assert.deepEqual(completed.raw?.payload, {
+            type: "user",
+            session_id: "sdk-session-large-result",
+            uuid: "user-large-result",
+            tool_use_id: "tool-large-result",
+            is_error: true,
+          });
+        }
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),
