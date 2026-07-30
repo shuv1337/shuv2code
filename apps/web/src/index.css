@@ -993,7 +993,7 @@ body {
 .electron-windows {
   --desktop-window-right-resize-inset: 6px;
   /* Give the Windows app chrome a little breathing room below the resize edge. */
-  --workspace-topbar-height: 60px;
+  --workspace-topbar-height: 68px;
 }
 
 /* App-chrome grain. Baked into each surface's own background (behind
