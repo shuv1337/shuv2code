@@ -1906,7 +1906,7 @@ export const makeCodexSessionRuntime = (
               input.version !== "v3" ||
               input.outputModality !== "audio" ||
               input.clientManagedHandoffs !== true ||
-              input.transport?.type !== "webrtc"
+              (input.transport?.type !== "webrtc" && input.transport?.type !== "websocket")
             ) {
               return yield* new CodexSessionRuntimeRealtimeLaneError({
                 reason: "invalid_realtime_configuration",

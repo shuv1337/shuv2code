@@ -1,6 +1,7 @@
 import {
   WS_METHODS,
   type EnvironmentId,
+  type VoiceAppendAudioInput,
   type VoiceEnsureControllerInput,
   type VoiceListVoicesInput,
   type VoiceRealtimeIngressInput,
@@ -95,6 +96,9 @@ export const startRealtimeVoice = (input: VoiceSessionStartInput) =>
 
 export const ingestRealtimeVoiceEvent = (input: VoiceRealtimeIngressInput) =>
   request(WS_METHODS.voiceIngestRealtimeEvent, input);
+
+export const appendRealtimeVoiceAudio = (input: VoiceAppendAudioInput) =>
+  request(WS_METHODS.voiceAppendAudio, input);
 
 export const stopRealtimeVoice = (input: VoiceSessionStopInput) =>
   request(WS_METHODS.voiceStop, input);

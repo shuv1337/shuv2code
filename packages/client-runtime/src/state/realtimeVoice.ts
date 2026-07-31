@@ -37,6 +37,7 @@ export type RealtimeVoicePhase =
         | "media-devices-unavailable"
         | "webrtc-unavailable"
         | "data-channel-unavailable"
+        | "pcm-unavailable"
         | "server-unsupported"
         | VoiceUnsupportedCode;
       readonly message: string;

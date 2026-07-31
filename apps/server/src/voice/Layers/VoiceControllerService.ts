@@ -435,6 +435,9 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const ingestRealtimeEvent: VoiceControllerService["Service"]["ingestRealtimeEvent"] = (input) =>
     actionRunner.ingestRealtimeEvent(input);
 
+  const appendAudio: VoiceControllerService["Service"]["appendAudio"] = (input) =>
+    transport.appendAudio(input);
+
   const handleRuntimeEvent = Effect.fn("VoiceControllerService.handleRuntimeEvent")(function* (
     event: VoiceRuntimeGatewayEvent,
   ) {
@@ -669,6 +672,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     listVoices,
     start,
     ingestRealtimeEvent,
+    appendAudio,
     stop,
     subscribe,
   });

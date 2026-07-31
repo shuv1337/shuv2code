@@ -158,6 +158,7 @@ describe("ProviderSessionReaper", () => {
       startRealtime: () => unsupported(),
       appendRealtimeText: () => unsupported(),
       appendRealtimeSpeech: () => unsupported(),
+      appendRealtimeAudio: () => unsupported(),
       stopRealtime: () => unsupported(),
       listRealtimeVoices: () => unsupported(),
       interruptTurn: () => unsupported(),

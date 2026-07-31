@@ -101,14 +101,71 @@ export type VoiceListVoicesResult = typeof VoiceListVoicesResult.Type;
 
 const SessionDescriptionSdp = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(262_144));
 
+/** Hard ceiling for one base64-encoded PCM input chunk (decoded ≤ 64 KiB). */
+export const VOICE_PCM_MAX_ENCODED_CHUNK_CHARS = 87_384;
+/** Hard ceiling for one base64-encoded PCM output chunk. */
+export const VOICE_PCM_MAX_OUTPUT_ENCODED_CHUNK_CHARS = 87_384;
+export const VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ = 24_000;
+export const VOICE_PCM_DEFAULT_CHANNELS = 1;
+
+export const VoiceAudioFormat = Schema.Literals(["pcm16", "g711_ulaw", "g711_alaw"]);
+export type VoiceAudioFormat = typeof VoiceAudioFormat.Type;
+
+export const VoiceAudioMetadata = Schema.Struct({
+  format: VoiceAudioFormat,
+  sampleRateHz: PositiveInt,
+  channels: PositiveInt,
+});
+export type VoiceAudioMetadata = typeof VoiceAudioMetadata.Type;
+
+export const VoiceWebrtcStartTransport = Schema.Struct({
+  type: Schema.Literal("webrtc"),
+  offerSdp: SessionDescriptionSdp,
+});
+export type VoiceWebrtcStartTransport = typeof VoiceWebrtcStartTransport.Type;
+
+export const VoiceWebsocketStartTransport = Schema.Struct({
+  type: Schema.Literal("websocket"),
+  inputAudio: VoiceAudioMetadata,
+});
+export type VoiceWebsocketStartTransport = typeof VoiceWebsocketStartTransport.Type;
+
+export const VoiceSessionStartTransport = Schema.Union([
+  VoiceWebrtcStartTransport,
+  VoiceWebsocketStartTransport,
+]);
+export type VoiceSessionStartTransport = typeof VoiceSessionStartTransport.Type;
+
+/**
+ * Start a fenced voice session. Prefer WebRTC when available; websocket/PCM is
+ * the negotiated fallback. Legacy clients may still send top-level `offerSdp`.
+ */
 export const VoiceSessionStartInput = Schema.Struct({
   controllerThreadId: ThreadId,
   clientSessionId: VoiceClientSessionId,
   generation: VoiceGeneration,
-  offerSdp: SessionDescriptionSdp,
+  /** @deprecated Prefer `transport: { type: "webrtc", offerSdp }`. */
+  offerSdp: Schema.optionalKey(SessionDescriptionSdp),
+  transport: Schema.optionalKey(VoiceSessionStartTransport),
   voiceId: Schema.optionalKey(TrimmedNonEmptyString),
-});
+}).check(
+  Schema.makeFilter((input) => {
+    if (input.transport !== undefined) return true;
+    if (input.offerSdp !== undefined && input.offerSdp.length > 0) return true;
+    return "Either transport or legacy offerSdp is required.";
+  }),
+);
 export type VoiceSessionStartInput = typeof VoiceSessionStartInput.Type;
+
+export const resolveVoiceSessionStartTransport = (
+  input: VoiceSessionStartInput,
+): VoiceSessionStartTransport => {
+  if (input.transport !== undefined) return input.transport;
+  if (input.offerSdp !== undefined && input.offerSdp.length > 0) {
+    return { type: "webrtc", offerSdp: input.offerSdp };
+  }
+  throw new Error("Voice session start is missing transport.");
+};
 
 export const VoiceSessionStartResult = Schema.Struct({
   controller: VoiceControllerIdentity,
@@ -117,7 +174,11 @@ export const VoiceSessionStartResult = Schema.Struct({
   generation: VoiceGeneration,
   runtimeInstanceId: VoiceRuntimeInstanceId,
   realtimeSessionId: VoiceRealtimeSessionId,
-  answerSdp: SessionDescriptionSdp,
+  /** Present for WebRTC sessions; null for websocket/PCM. */
+  answerSdp: Schema.NullOr(SessionDescriptionSdp),
+  transportType: Schema.Literals(["webrtc", "websocket"]),
+  /** Server-advertised input audio format for websocket sessions. */
+  inputAudio: Schema.optionalKey(VoiceAudioMetadata),
   /**
    * Last event sequence committed before this response. A fresh subscriber
    * passes this value as `afterSequence`; only newer events are delivered.
@@ -135,6 +196,39 @@ export const VoiceSessionFence = Schema.Struct({
   realtimeSessionId: VoiceRealtimeSessionId,
 });
 export type VoiceSessionFence = typeof VoiceSessionFence.Type;
+
+/**
+ * Fenced, monotonically sequenced PCM input. Ephemeral — must not enter durable
+ * VoiceSessionEvent history, projections, NDJSON, or generic RPC logs.
+ */
+export const VoiceAppendAudioInput = Schema.Struct({
+  ...VoiceSessionFence.fields,
+  sequence: PositiveInt,
+  audioBase64: Schema.String.check(
+    Schema.isNonEmpty(),
+    Schema.isMaxLength(VOICE_PCM_MAX_ENCODED_CHUNK_CHARS),
+  ),
+  format: VoiceAudioFormat,
+  sampleRateHz: PositiveInt,
+  channels: PositiveInt,
+});
+export type VoiceAppendAudioInput = typeof VoiceAppendAudioInput.Type;
+
+export const VoiceAppendAudioResult = Schema.Struct({
+  accepted: Schema.Boolean,
+  /** Present when accepted is false. */
+  code: Schema.optionalKey(
+    Schema.Literals([
+      "stale_generation",
+      "out_of_order",
+      "overload",
+      "session_not_found",
+      "unsupported_transport",
+      "chunk_too_large",
+    ]),
+  ),
+});
+export type VoiceAppendAudioResult = typeof VoiceAppendAudioResult.Type;
 
 export const VoiceSessionStopInput = VoiceSessionFence;
 export type VoiceSessionStopInput = typeof VoiceSessionStopInput.Type;
@@ -261,16 +355,6 @@ export class VoiceControllerError extends Schema.TaggedErrorClass<VoiceControlle
   },
 ) {}
 
-export const VoiceAudioFormat = Schema.Literals(["pcm16", "g711_ulaw", "g711_alaw"]);
-export type VoiceAudioFormat = typeof VoiceAudioFormat.Type;
-
-export const VoiceAudioMetadata = Schema.Struct({
-  format: VoiceAudioFormat,
-  sampleRateHz: PositiveInt,
-  channels: PositiveInt,
-});
-export type VoiceAudioMetadata = typeof VoiceAudioMetadata.Type;
-
 export const VoiceSessionStateEvent = Schema.Struct({
   type: Schema.Literal("session.state"),
   state: VoiceTransportState,
@@ -323,6 +407,22 @@ export const VoiceSessionErrorEvent = Schema.Struct({
   retryable: Schema.Boolean,
 });
 
+/**
+ * Ephemeral output audio for websocket transport. Not durable history —
+ * delivered only on the live subscribe stream for the current generation.
+ */
+export const VoiceOutputAudioDeltaEvent = Schema.Struct({
+  type: Schema.Literal("audio.output.delta"),
+  sequence: PositiveInt,
+  audioBase64: Schema.String.check(
+    Schema.isNonEmpty(),
+    Schema.isMaxLength(VOICE_PCM_MAX_OUTPUT_ENCODED_CHUNK_CHARS),
+  ),
+  format: VoiceAudioFormat,
+  sampleRateHz: PositiveInt,
+  channels: PositiveInt,
+});
+
 export const VoiceSessionEventPayload = Schema.Union([
   VoiceSessionStateEvent,
   VoiceTranscriptDeltaEvent,
@@ -330,6 +430,7 @@ export const VoiceSessionEventPayload = Schema.Union([
   VoiceActionStatusEvent,
   VoiceTargetStatusEvent,
   VoiceSessionErrorEvent,
+  VoiceOutputAudioDeltaEvent,
 ]);
 export type VoiceSessionEventPayload = typeof VoiceSessionEventPayload.Type;
 

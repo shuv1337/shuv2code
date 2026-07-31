@@ -12,6 +12,8 @@ import {
   type VoiceEnsureControllerInput,
   type VoiceEnsureControllerResult,
   type VoiceListVoicesInput,
+  type VoiceAppendAudioInput,
+  type VoiceAppendAudioResult,
   type VoiceListVoicesResult,
   type VoiceRealtimeIngressEvent,
   type VoiceRealtimeIngressInput,
@@ -25,6 +27,8 @@ import {
   type VoiceSessionStopResult,
   type VoiceSubscribeEventsInput,
   type VoiceUnsupportedCode,
+  VOICE_PCM_DEFAULT_CHANNELS,
+  VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ,
 } from "@shuv2code/contracts";
 import {
   initialRealtimeVoiceState,
@@ -38,6 +42,7 @@ import {
   nextRealtimeVoiceGeneration,
 } from "@shuv2code/client-runtime/operations/realtime-voice";
 
+import { PcmVoiceTransport } from "./PcmVoiceTransport";
 import { WebRtcVoiceTransport } from "./WebRtcVoiceTransport";
 import { detectVoiceBrowserSupport, type VoiceBrowserSupport } from "./voiceBrowserSupport";
 import { normalizeVoiceSessionError, VoiceSessionError } from "./voiceErrors";
@@ -60,6 +65,10 @@ export interface VoiceSessionControllerApi {
     environmentId: EnvironmentId,
     input: VoiceRealtimeIngressInput,
   ) => Promise<VoiceRealtimeIngressResult>;
+  readonly appendAudio?: (
+    environmentId: EnvironmentId,
+    input: VoiceAppendAudioInput,
+  ) => Promise<VoiceAppendAudioResult>;
   readonly stop: (
     environmentId: EnvironmentId,
     input: VoiceSessionStopInput,
@@ -84,6 +93,17 @@ export interface StartVoiceSessionInput {
 export interface VoiceSessionControllerDependencies {
   readonly api: VoiceSessionControllerApi;
   readonly createTransport?: () => WebRtcVoiceTransport;
+  readonly createPcmTransport?: (options: {
+    readonly sampleRateHz: number;
+    readonly channels: number;
+    readonly onPcmChunk: (chunk: {
+      readonly sequence: number;
+      readonly audioBase64: string;
+      readonly format: "pcm16";
+      readonly sampleRateHz: number;
+      readonly channels: number;
+    }) => void | Promise<void>;
+  }) => PcmVoiceTransport;
   readonly createClientSessionId?: () => string;
   readonly detectSupport?: () => VoiceBrowserSupport;
   readonly scheduleRetry?: (callback: () => void, delayMs: number) => () => void;
@@ -111,16 +131,17 @@ function controllerPresentation(environmentId: EnvironmentId, controller: VoiceC
   } as const;
 }
 
-const SERVER_UNSUPPORTED_CODES = new Set<VoiceUnsupportedCode>([
+const SERVER_UNSUPPORTED_CODES: ReadonlySet<string> = new Set([
   "feature_disabled",
   "method_unavailable",
   "incompatible_version",
   "empty_voice_catalog",
   "webrtc_unavailable",
+  "pcm_unavailable",
 ]);
 
 function isServerUnsupportedCode(code: string): code is VoiceUnsupportedCode {
-  return SERVER_UNSUPPORTED_CODES.has(code as VoiceUnsupportedCode);
+  return SERVER_UNSUPPORTED_CODES.has(code);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -217,12 +238,15 @@ export function parseRealtimeVoiceDataChannelEvent(
 export class VoiceSessionController {
   readonly #api: VoiceSessionControllerApi;
   readonly #createTransport: () => WebRtcVoiceTransport;
+  readonly #createPcmTransport: NonNullable<
+    VoiceSessionControllerDependencies["createPcmTransport"]
+  >;
   readonly #createClientSessionId: () => string;
   readonly #detectSupport: () => VoiceBrowserSupport;
   readonly #scheduleRetry: (callback: () => void, delayMs: number) => () => void;
   readonly #listeners = new Set<(state: RealtimeVoiceSessionState) => void>();
   #state = initialRealtimeVoiceState;
-  #transport: WebRtcVoiceTransport | null = null;
+  #transport: WebRtcVoiceTransport | PcmVoiceTransport | null = null;
   #unsubscribeEvents: (() => void) | null = null;
   #environmentId: EnvironmentId | null = null;
   #startInput: StartVoiceSessionInput | null = null;
@@ -251,6 +275,8 @@ export class VoiceSessionController {
   constructor(dependencies: VoiceSessionControllerDependencies) {
     this.#api = dependencies.api;
     this.#createTransport = dependencies.createTransport ?? (() => new WebRtcVoiceTransport());
+    this.#createPcmTransport =
+      dependencies.createPcmTransport ?? ((options) => new PcmVoiceTransport(options));
     this.#createClientSessionId = dependencies.createClientSessionId ?? defaultClientSessionId;
     this.#detectSupport = dependencies.detectSupport ?? detectVoiceBrowserSupport;
     this.#scheduleRetry =
@@ -376,61 +402,134 @@ export class VoiceSessionController {
           true,
         );
       }
-      const transport = this.#createTransport();
-      this.#transport = transport;
       this.#dispatch({ type: "permission-requested", generation: generationIdentity.generation });
-      await transport.connect({
-        exchangeOffer: async (offerSdp) => {
-          this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
-          const started = await this.#api.start(input.environmentId, {
-            controllerThreadId: ensured.controller.controllerThreadId,
-            clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
-            generation: VoiceGeneration.make(generationIdentity.generation),
-            offerSdp,
-            voiceId,
-          });
-          if (
-            started.clientSessionId !== generationIdentity.clientSessionId ||
-            started.generation !== generationIdentity.generation
-          ) {
-            throw new VoiceSessionError(
-              "stale-generation",
-              "The voice server returned a stale session.",
-            );
-          }
-          if (
-            !this.#isCurrentAttempt(
-              generationIdentity.clientSessionId,
+      if (support.webrtc) {
+        const transport = this.#createTransport();
+        this.#transport = transport;
+        await transport.connect({
+          exchangeOffer: async (offerSdp) => {
+            this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
+            const started = await this.#api.start(input.environmentId, {
+              controllerThreadId: ensured.controller.controllerThreadId,
+              clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
+              generation: VoiceGeneration.make(generationIdentity.generation),
+              transport: { type: "webrtc", offerSdp },
+              voiceId,
+            });
+            if (
+              started.clientSessionId !== generationIdentity.clientSessionId ||
+              started.generation !== generationIdentity.generation
+            ) {
+              throw new VoiceSessionError(
+                "stale-generation",
+                "The voice server returned a stale session.",
+              );
+            }
+            if (
+              !this.#isCurrentAttempt(
+                generationIdentity.clientSessionId,
+                generationIdentity.generation,
+              )
+            ) {
+              await this.#releaseLateStartedSession(
+                input.environmentId,
+                started,
+                generationIdentity.generation,
+              );
+              return started.answerSdp ?? "";
+            }
+            this.#bindStartedSession(input.environmentId, started);
+            return started.answerSdp ?? "";
+          },
+          onData: (data) => this.#handleDataChannelMessage(data, generationIdentity.generation),
+          onMicrophoneEnded: () => {
+            void this.#fail(
               generationIdentity.generation,
-            )
-          ) {
-            await this.#releaseLateStartedSession(
-              input.environmentId,
-              started,
-              generationIdentity.generation,
+              new VoiceSessionError(
+                "microphone-ended",
+                "The microphone became unavailable. Check the device and try again.",
+                true,
+              ),
             );
-            return started.answerSdp;
-          }
-          this.#bindStartedSession(input.environmentId, started);
-          return started.answerSdp;
-        },
-        onData: (data) => this.#handleDataChannelMessage(data, generationIdentity.generation),
-        onMicrophoneEnded: () => {
-          void this.#fail(
-            generationIdentity.generation,
-            new VoiceSessionError(
-              "microphone-ended",
-              "The microphone became unavailable. Check the device and try again.",
-              true,
-            ),
+          },
+          onConnectionStateChange: (state) => {
+            if (state === "failed" || state === "disconnected") {
+              void this.reconnect();
+            }
+          },
+        });
+      } else if (support.pcm && this.#api.appendAudio !== undefined) {
+        this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
+        const started = await this.#api.start(input.environmentId, {
+          controllerThreadId: ensured.controller.controllerThreadId,
+          clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
+          generation: VoiceGeneration.make(generationIdentity.generation),
+          transport: {
+            type: "websocket",
+            inputAudio: {
+              format: "pcm16",
+              sampleRateHz: VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ,
+              channels: VOICE_PCM_DEFAULT_CHANNELS,
+            },
+          },
+          voiceId,
+        });
+        if (
+          started.clientSessionId !== generationIdentity.clientSessionId ||
+          started.generation !== generationIdentity.generation
+        ) {
+          throw new VoiceSessionError(
+            "stale-generation",
+            "The voice server returned a stale session.",
           );
-        },
-        onConnectionStateChange: (state) => {
-          if (state === "failed" || state === "disconnected") {
-            void this.reconnect();
-          }
-        },
-      });
+        }
+        if (
+          !this.#isCurrentAttempt(generationIdentity.clientSessionId, generationIdentity.generation)
+        ) {
+          await this.#releaseLateStartedSession(
+            input.environmentId,
+            started,
+            generationIdentity.generation,
+          );
+          return;
+        }
+        this.#bindStartedSession(input.environmentId, started);
+        const sampleRateHz = started.inputAudio?.sampleRateHz ?? VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ;
+        const channels = started.inputAudio?.channels ?? VOICE_PCM_DEFAULT_CHANNELS;
+        const appendAudio = this.#api.appendAudio;
+        const transport = this.#createPcmTransport({
+          sampleRateHz,
+          channels,
+          onPcmChunk: async (chunk) => {
+            const fence = this.#fence;
+            const environmentId = this.#environmentId;
+            if (!fence || !environmentId || !appendAudio) return;
+            if (
+              !this.#isCurrentAttempt(
+                generationIdentity.clientSessionId,
+                generationIdentity.generation,
+              )
+            ) {
+              return;
+            }
+            await appendAudio(environmentId, {
+              ...fence,
+              sequence: chunk.sequence,
+              audioBase64: chunk.audioBase64,
+              format: chunk.format,
+              sampleRateHz: chunk.sampleRateHz,
+              channels: chunk.channels,
+            });
+          },
+        });
+        this.#transport = transport;
+        await transport.start();
+      } else {
+        throw new VoiceSessionError(
+          "webrtc-unavailable",
+          "This browser does not support WebRTC or PCM voice fallback.",
+        );
+      }
       if (
         !this.#isCurrentAttempt(
           generationIdentity.clientSessionId,
@@ -438,7 +537,8 @@ export class VoiceSessionController {
         ) ||
         !this.#controller
       ) {
-        transport.close();
+        this.#transport?.close();
+        this.#transport = null;
         return;
       }
       this.#dispatch({
@@ -857,8 +957,13 @@ export class VoiceSessionController {
     this.#subscriptionRetryAttempt = 0;
     this.#unsubscribeEvents?.();
     this.#unsubscribeEvents = null;
-    this.#transport?.close();
+    const transport = this.#transport;
     this.#transport = null;
+    if (transport instanceof PcmVoiceTransport) {
+      void transport.stop();
+    } else {
+      transport?.close();
+    }
   }
 
   async #releaseActiveResources(): Promise<void> {

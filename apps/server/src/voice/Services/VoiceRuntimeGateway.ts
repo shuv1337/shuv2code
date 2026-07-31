@@ -129,12 +129,14 @@ export interface VoiceRuntimeGatewayShape {
     readonly runtimeInstanceId: VoiceRuntimeInstanceId;
     readonly generation: VoiceGeneration;
     readonly realtimeSessionId: VoiceRealtimeSessionId;
-    readonly offerSdp: string;
+    readonly transportType: "webrtc" | "websocket";
+    readonly offerSdp?: string | undefined;
     readonly voiceId?: string | undefined;
     readonly clientManagedHandoffs: true;
   }) => Effect.Effect<
     VoiceCodexIdentity & {
-      readonly answerSdp: string;
+      readonly answerSdp: string | null;
+      readonly transportType: "webrtc" | "websocket";
     },
     VoiceRuntimeGatewayError
   >;
@@ -143,6 +145,11 @@ export interface VoiceRuntimeGatewayShape {
     readonly runtimeInstanceId: VoiceRuntimeInstanceId;
     readonly generation: VoiceGeneration;
     readonly realtimeSessionId?: VoiceRealtimeSessionId | undefined;
+  }) => Effect.Effect<void, VoiceRuntimeGatewayError>;
+  readonly appendTransportAudio: (input: {
+    readonly transportThreadId: ThreadId;
+    readonly generation: VoiceGeneration;
+    readonly audioBase64: string;
   }) => Effect.Effect<void, VoiceRuntimeGatewayError>;
   readonly listVoices: (controllerThreadId: ThreadId) => Effect.Effect<
     {

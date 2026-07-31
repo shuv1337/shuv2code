@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  VoiceAppendAudioInput,
   VoiceControllerError,
   VoiceGeneration,
   VoiceRealtimeIngressInput,
@@ -9,7 +10,9 @@ import {
   VoiceTranscriptDeltaEvent,
   VoiceTranscriptDoneEvent,
   VoiceSessionStartInput,
+  VoiceSessionStartResult,
   VoiceSubscribeEventsInput,
+  resolveVoiceSessionStartTransport,
 } from "./realtimeVoice.ts";
 
 describe("realtime voice contracts", () => {
@@ -24,6 +27,68 @@ describe("realtime voice contracts", () => {
 
     expect(input.generation).toBe(VoiceGeneration.make(1));
     expect(input.offerSdp).toBe("v=0\r\n");
+    expect(resolveVoiceSessionStartTransport(input)).toEqual({
+      type: "webrtc",
+      offerSdp: "v=0\r\n",
+    });
+  });
+
+  it("accepts an explicit websocket PCM start transport", () => {
+    const input = Schema.decodeUnknownSync(VoiceSessionStartInput)({
+      controllerThreadId: "controller-1",
+      clientSessionId: "client-session-1",
+      generation: 2,
+      transport: {
+        type: "websocket",
+        inputAudio: { format: "pcm16", sampleRateHz: 24_000, channels: 1 },
+      },
+    });
+    expect(resolveVoiceSessionStartTransport(input).type).toBe("websocket");
+    const result = Schema.decodeUnknownSync(VoiceSessionStartResult)({
+      controller: {
+        controllerThreadId: "controller-1",
+        hostProjectId: "project-1",
+        providerInstanceId: "codex",
+        authorizedRuntimeCeiling: "approval-required",
+        bindingGeneration: 1,
+        controlEpoch: 1,
+        state: "active",
+      },
+      transportThreadId: "transport-1",
+      clientSessionId: "client-session-1",
+      generation: 2,
+      runtimeInstanceId: "runtime-1",
+      realtimeSessionId: "realtime-1",
+      answerSdp: null,
+      transportType: "websocket",
+      inputAudio: { format: "pcm16", sampleRateHz: 24_000, channels: 1 },
+      eventCursor: 0,
+    });
+    expect(result.transportType).toBe("websocket");
+    expect(result.answerSdp).toBeNull();
+  });
+
+  it("bounds fenced PCM append payloads", () => {
+    const input = Schema.decodeUnknownSync(VoiceAppendAudioInput)({
+      controllerThreadId: "controller-1",
+      transportThreadId: "transport-1",
+      clientSessionId: "client-session-1",
+      generation: 1,
+      runtimeInstanceId: "runtime-1",
+      realtimeSessionId: "realtime-1",
+      sequence: 1,
+      audioBase64: "AAAA",
+      format: "pcm16",
+      sampleRateHz: 24_000,
+      channels: 1,
+    });
+    expect(input.sequence).toBe(1);
+    expect(() =>
+      Schema.decodeUnknownSync(VoiceAppendAudioInput)({
+        ...input,
+        sequence: 0,
+      }),
+    ).toThrow();
   });
 
   it.each([0, -1, 1.5])("rejects invalid generations: %s", (generation) => {

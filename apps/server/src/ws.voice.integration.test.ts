@@ -148,7 +148,8 @@ describe("authenticated voice RPC vertical integration", () => {
             Effect.succeed({
               codexProviderThreadId: "codex-transport-session-1",
               runtimeInstanceId: input.runtimeInstanceId,
-              answerSdp: "answer-sdp",
+              answerSdp: input.transportType === "websocket" ? null : "answer-sdp",
+              transportType: input.transportType,
             }),
           stopTransport: (input) =>
             Effect.sync(() => {
@@ -177,6 +178,7 @@ describe("authenticated voice RPC vertical integration", () => {
             }),
           appendTransportText: () => Effect.void,
           appendTransportSpeech: () => Effect.void,
+          appendTransportAudio: () => Effect.void,
           streamEvents: Stream.fromPubSub(runtimeEvents),
         });
 

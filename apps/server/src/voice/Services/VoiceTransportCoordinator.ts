@@ -4,6 +4,8 @@ import type {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  VoiceAppendAudioInput,
+  VoiceAppendAudioResult,
   VoiceControllerError,
   VoiceControllerIdentity,
   VoiceSessionEvent,
@@ -36,7 +38,9 @@ export interface ActiveVoiceSession {
   readonly providerInstanceId: ProviderInstanceId;
   readonly controller: VoiceControllerIdentity;
   readonly controllerRuntime: ControllerRuntimeState;
-  readonly answerSdp: string;
+  readonly transportType: "webrtc" | "websocket";
+  readonly answerSdp: string | null;
+  readonly lastAudioSequence: number;
   readonly eventCursor: number;
   readonly history: ReadonlyArray<VoiceSessionEvent>;
 }
@@ -105,6 +109,9 @@ export interface VoiceTransportCoordinatorShape {
     readonly targetThreadId?: ThreadId;
     readonly phase?: VoiceTargetPhase;
   }) => Effect.Effect<void>;
+  readonly appendAudio: (
+    input: VoiceAppendAudioInput,
+  ) => Effect.Effect<VoiceAppendAudioResult, VoiceControllerError>;
 }
 
 export class VoiceTransportCoordinator extends Context.Service<

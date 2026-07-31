@@ -64,9 +64,17 @@ export interface ProviderRealtimeStartInput {
   readonly threadId: ThreadId;
   readonly generation: number;
   readonly realtimeSessionId: string;
-  readonly offerSdp: string;
+  /** WebRTC SDP offer; omit for websocket/PCM transport. */
+  readonly offerSdp?: string;
+  readonly transportType?: "webrtc" | "websocket";
   readonly voiceId?: string;
   readonly clientManagedHandoffs: true;
+}
+
+export interface ProviderRealtimeAudioInput {
+  readonly threadId: ThreadId;
+  readonly generation: number;
+  readonly audioBase64: string;
 }
 
 export interface ProviderRealtimeTextInput {
@@ -151,6 +159,8 @@ export interface ProviderAdapterShape<TError> {
   readonly appendRealtimeSpeech?: (
     input: ProviderRealtimeSpeechInput,
   ) => Effect.Effect<void, TError>;
+
+  readonly appendRealtimeAudio?: (input: ProviderRealtimeAudioInput) => Effect.Effect<void, TError>;
 
   readonly stopRealtime?: (input: ProviderRealtimeStopInput) => Effect.Effect<void, TError>;
 

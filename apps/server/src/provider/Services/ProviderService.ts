@@ -35,6 +35,7 @@ import type {
   ProviderAdapterCapabilities,
   ProviderCreationRecoveryInput,
   ProviderCreationRecoveryResult,
+  ProviderRealtimeAudioInput,
   ProviderRealtimeSpeechInput,
   ProviderRealtimeStartInput,
   ProviderRealtimeStopInput,
@@ -84,6 +85,10 @@ export interface ProviderServiceShape {
 
   readonly appendRealtimeSpeech: (
     input: ProviderRealtimeSpeechInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly appendRealtimeAudio: (
+    input: ProviderRealtimeAudioInput,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   readonly stopRealtime: (

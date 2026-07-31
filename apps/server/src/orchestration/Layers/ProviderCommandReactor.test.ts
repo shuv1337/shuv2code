@@ -319,6 +319,7 @@ describe("ProviderCommandReactor", () => {
       startRealtime: () => unsupported(),
       appendRealtimeText: () => unsupported(),
       appendRealtimeSpeech: () => unsupported(),
+      appendRealtimeAudio: () => unsupported(),
       stopRealtime: () => unsupported(),
       listRealtimeVoices: () => unsupported(),
       recoverCreatedSession: () => unsupported(),

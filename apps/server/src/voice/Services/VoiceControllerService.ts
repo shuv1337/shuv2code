@@ -1,4 +1,6 @@
 import type {
+  VoiceAppendAudioInput,
+  VoiceAppendAudioResult,
   VoiceEnsureControllerInput,
   VoiceEnsureControllerResult,
   VoiceListVoicesInput,
@@ -36,6 +38,9 @@ export interface VoiceControllerServiceShape {
   readonly ingestRealtimeEvent: (
     input: VoiceRealtimeIngressInput,
   ) => Effect.Effect<VoiceRealtimeIngressResult, VoiceControllerError>;
+  readonly appendAudio: (
+    input: VoiceAppendAudioInput,
+  ) => Effect.Effect<VoiceAppendAudioResult, VoiceControllerError>;
   readonly stop: (
     input: VoiceSessionStopInput,
   ) => Effect.Effect<VoiceSessionStopResult, VoiceControllerError>;
