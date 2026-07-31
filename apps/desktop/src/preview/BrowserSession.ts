@@ -25,13 +25,6 @@ const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   "geolocation",
 ]);
 
-export function isPreviewPermissionAllowed(permission: string): boolean {
-  // Preview contents are untrusted sites. Media is intentionally absent even
-  // when a site asks for audio only; microphone capture belongs to the exact
-  // main shuv2code renderer origin.
-  return permission !== "media" && ALLOWED_PREVIEW_PERMISSIONS.has(permission);
-}
-
 export class BrowserSessionPartitionDerivationError extends Schema.TaggedErrorClass<BrowserSessionPartitionDerivationError>()(
   "BrowserSessionPartitionDerivationError",
   {
@@ -141,10 +134,10 @@ export const make = Effect.gen(function* BrowserSessionMake() {
             .replace(/\s*shuv2code\/[\d.]+/, "");
           browserSession.setUserAgent(userAgent);
           browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-            callback(isPreviewPermissionAllowed(permission));
+            callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
           });
           browserSession.setPermissionCheckHandler((_webContents, permission) =>
-            isPreviewPermissionAllowed(permission),
+            ALLOWED_PREVIEW_PERMISSIONS.has(permission),
           );
           const next = new Map(sessions);
           next.set(partition, browserSession);
