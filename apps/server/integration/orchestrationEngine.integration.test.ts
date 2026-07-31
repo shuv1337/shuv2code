@@ -49,6 +49,8 @@ const APPROVAL_REQUEST_ID = asApprovalRequestId("req-approval-1");
 type IntegrationProvider = ProviderDriverKind;
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
+const REAL_CODEX_MODEL =
+  process.env.CODEX_INTEGRATION_MODEL ?? DEFAULT_MODEL_BY_PROVIDER[CODEX_PROVIDER] ?? DEFAULT_MODEL;
 
 function nowIso() {
   return "2026-05-01T00:00:00.000Z";
@@ -272,7 +274,12 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
     withRealCodexHarness((harness) =>
       Effect.gen(function* () {
         const createdAt = nowIso();
+        const trace = (stage: string) =>
+          process.env.CODEX_INTEGRATION_TRACE === "1"
+            ? Effect.logInfo(`real-codex test: ${stage}`)
+            : Effect.void;
 
+        yield* trace("dispatching project.create");
         yield* harness.engine.dispatch({
           type: "project.create",
           commandId: CommandId.make("cmd-project-create-real-codex"),
@@ -281,10 +288,11 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           workspaceRoot: harness.workspaceDir,
           defaultModelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5.3-codex",
+            model: REAL_CODEX_MODEL,
           },
           createdAt,
         });
+        yield* trace("project.create dispatched");
 
         yield* harness.engine.dispatch({
           type: "thread.create",
@@ -294,7 +302,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           title: "Integration Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5.3-codex",
+            model: REAL_CODEX_MODEL,
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
@@ -302,6 +310,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           worktreePath: harness.workspaceDir,
           createdAt,
         });
+        yield* trace("thread.create dispatched");
 
         yield* harness.engine.dispatch({
           type: "thread.turn.start",
@@ -317,18 +326,100 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           runtimeMode: "full-access",
           createdAt: nowIso(),
         });
+        yield* trace("first thread.turn.start dispatched");
 
         const firstThread = yield* harness.waitForThread(
           THREAD_ID,
           (entry) =>
-            entry.session?.status === "ready" &&
-            entry.session.providerName === "codex" &&
-            entry.messages.some(
-              (message) => message.role === "assistant" && message.streaming === false,
-            ),
+            entry.session?.status === "error" ||
+            entry.session?.status === "stopped" ||
+            (entry.session?.status === "ready" &&
+              entry.session.providerName === "codex" &&
+              entry.messages.some(
+                (message) => message.role === "assistant" && message.streaming === false,
+              )),
           180_000,
         );
+        yield* trace(`first turn observed as ${firstThread.session?.status ?? "missing"}`);
+        assert.equal(
+          firstThread.session?.status,
+          "ready",
+          firstThread.session?.lastError ?? "First Codex turn did not become ready.",
+        );
         assert.equal(firstThread.session?.threadId, "thread-1");
+        const voiceControllerThreadId = ThreadId.make("real-codex-voice-controller-probe");
+        const voiceRuntimeInstanceId = "integration-voice-runtime-1";
+        yield* harness.providerService.startSession(voiceControllerThreadId, {
+          threadId: voiceControllerThreadId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          cwd: harness.workspaceDir,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: REAL_CODEX_MODEL,
+          },
+          recoveryPolicy: "forbid",
+          threadSource: "shuv2code/integration/realtime-voice-controller-catalog",
+          threadPurpose: "voice-controller",
+          runtimeInstanceId: voiceRuntimeInstanceId,
+          runtimeMode: "approval-required",
+          controllerGrant: {
+            controllerThreadId: voiceControllerThreadId,
+            runtimeInstanceId: voiceRuntimeInstanceId,
+            authorizedRuntimeCeiling: "approval-required",
+            liveControllerRuntimeMode: "approval-required",
+            controlEpoch: 1,
+            controlEnabled: true,
+          },
+        });
+        const realtimeVoices =
+          yield* harness.providerService.listRealtimeVoices(voiceControllerThreadId);
+        assert.isAbove(realtimeVoices.voices.length, 0);
+        assert.isString(realtimeVoices.defaultVoiceId);
+        yield* harness.providerService.stopSession({ threadId: voiceControllerThreadId });
+        const firstProviderSession = (yield* harness.providerService.listSessions()).find(
+          (session) => session.threadId === THREAD_ID,
+        );
+        const firstResumeCursor = firstProviderSession?.resumeCursor;
+        const firstProviderThreadId =
+          firstProviderSession?.providerThreadId ??
+          (typeof firstResumeCursor === "object" &&
+          firstResumeCursor !== null &&
+          "threadId" in firstResumeCursor &&
+          typeof firstResumeCursor.threadId === "string"
+            ? firstResumeCursor.threadId
+            : null);
+        assert.isString(firstProviderThreadId);
+
+        yield* harness.engine.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("cmd-runtime-mode-set-real-codex"),
+          threadId: THREAD_ID,
+          runtimeMode: "approval-required",
+          createdAt: nowIso(),
+        });
+        const loweredThread = yield* harness.waitForThread(
+          THREAD_ID,
+          (entry) =>
+            entry.runtimeMode === "approval-required" &&
+            entry.session?.runtimeMode === "approval-required" &&
+            entry.session.status === "ready",
+          30_000,
+        );
+        assert.equal(loweredThread.runtimeMode, "approval-required");
+        const loweredProviderSession = (yield* harness.providerService.listSessions()).find(
+          (session) => session.threadId === THREAD_ID,
+        );
+        const loweredResumeCursor = loweredProviderSession?.resumeCursor;
+        const loweredProviderThreadId =
+          loweredProviderSession?.providerThreadId ??
+          (typeof loweredResumeCursor === "object" &&
+          loweredResumeCursor !== null &&
+          "threadId" in loweredResumeCursor &&
+          typeof loweredResumeCursor.threadId === "string"
+            ? loweredResumeCursor.threadId
+            : null);
+        assert.equal(loweredProviderThreadId, firstProviderThreadId);
+        yield* trace("runtime mode lowered with provider thread preserved");
 
         yield* harness.engine.dispatch({
           type: "thread.turn.start",
@@ -344,19 +435,275 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           runtimeMode: "approval-required",
           createdAt: nowIso(),
         });
+        yield* trace("second thread.turn.start dispatched");
 
         const secondThread = yield* harness.waitForThread(
           THREAD_ID,
           (entry) =>
-            entry.session?.status === "ready" &&
-            entry.session.providerName === "codex" &&
-            entry.session.runtimeMode === "approval-required" &&
-            entry.messages.some(
-              (message) => message.role === "assistant" && message.text.includes("BETA"),
-            ),
+            entry.session?.status === "error" ||
+            entry.session?.status === "stopped" ||
+            (entry.session?.status === "ready" &&
+              entry.session.providerName === "codex" &&
+              entry.session.runtimeMode === "approval-required" &&
+              entry.messages.some(
+                (message) => message.role === "assistant" && message.text.includes("BETA"),
+              )),
           180_000,
         );
+        yield* trace(`second turn observed as ${secondThread.session?.status ?? "missing"}`);
+        assert.equal(
+          secondThread.session?.status,
+          "ready",
+          secondThread.session?.lastError ?? "Second Codex turn did not become ready.",
+        );
         assert.equal(secondThread.session?.threadId, "thread-1");
+        const secondProviderSession = (yield* harness.providerService.listSessions()).find(
+          (session) => session.threadId === THREAD_ID,
+        );
+        const secondResumeCursor = secondProviderSession?.resumeCursor;
+        const secondProviderThreadId =
+          secondProviderSession?.providerThreadId ??
+          (typeof secondResumeCursor === "object" &&
+          secondResumeCursor !== null &&
+          "threadId" in secondResumeCursor &&
+          typeof secondResumeCursor.threadId === "string"
+            ? secondResumeCursor.threadId
+            : null);
+        assert.equal(secondProviderThreadId, firstProviderThreadId);
+      }),
+    ),
+);
+
+it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
+  "steers and interrupts the exact active Codex turn at a controlled barrier",
+  () =>
+    withRealCodexHarness((harness) =>
+      Effect.gen(function* () {
+        const createdAt = nowIso();
+        yield* harness.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-create-real-codex-control"),
+          projectId: PROJECT_ID,
+          title: "Realtime Control Integration Project",
+          workspaceRoot: harness.workspaceDir,
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: REAL_CODEX_MODEL,
+          },
+          createdAt,
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-create-real-codex-control"),
+          threadId: THREAD_ID,
+          projectId: PROJECT_ID,
+          title: "Realtime Control Integration Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: REAL_CODEX_MODEL,
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: harness.workspaceDir,
+          createdAt,
+        });
+
+        const firstStartedPath = NodePath.join(harness.workspaceDir, "voice-barrier-1.started");
+        const firstReleasePath = NodePath.join(harness.workspaceDir, "voice-barrier-1.release");
+        NodeFS.writeFileSync(
+          NodePath.join(harness.workspaceDir, "voice-barrier-1.sh"),
+          [
+            "#!/bin/sh",
+            "set -eu",
+            "touch voice-barrier-1.started",
+            "while [ ! -f voice-barrier-1.release ]; do sleep 0.1; done",
+            "echo RELEASED",
+            "",
+          ].join("\n"),
+          { mode: 0o755 },
+        );
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-real-codex-barrier-steer"),
+          threadId: THREAD_ID,
+          message: {
+            messageId: asMessageId("msg-real-codex-barrier-steer"),
+            role: "user",
+            text: "Run `sh ./voice-barrier-1.sh` now. Wait for it to exit before replying.",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: nowIso(),
+        });
+        const firstRunning = yield* harness.waitForThread(
+          THREAD_ID,
+          (entry) => entry.session?.status === "running" && entry.session.activeTurnId !== null,
+          60_000,
+        );
+        const firstTurnId = firstRunning.session?.activeTurnId;
+        if (firstTurnId === null || firstTurnId === undefined) {
+          return yield* Effect.die("First real Codex turn did not expose an active turn id.");
+        }
+        yield* waitForSync(
+          () => NodeFS.existsSync(firstStartedPath),
+          (exists) => exists,
+          "first real Codex barrier to start",
+          60_000,
+        );
+
+        const steerCommandId = CommandId.make("cmd-turn-steer-real-codex-barrier");
+        yield* harness.engine.dispatch({
+          type: "thread.turn.steer",
+          commandId: steerCommandId,
+          threadId: THREAD_ID,
+          expectedTurnId: firstTurnId,
+          message: {
+            messageId: asMessageId("msg-real-codex-steer"),
+            role: "user",
+            text: "After the command exits, reply with exactly STEERED.",
+            attachments: [],
+          },
+          createdAt: nowIso(),
+        });
+        const steerEvents = yield* harness.waitForDomainEvent(
+          (event) =>
+            event.type === "thread.provider-effect-outcome-set" &&
+            event.payload.outcome.operationId === steerCommandId &&
+            event.payload.outcome.operation === "steer" &&
+            event.payload.outcome.state === "confirmed",
+          60_000,
+        );
+        const steerOutcome = steerEvents.find(
+          (event) =>
+            event.type === "thread.provider-effect-outcome-set" &&
+            event.payload.outcome.operationId === steerCommandId &&
+            event.payload.outcome.state === "confirmed",
+        );
+        assert.equal(
+          steerOutcome?.type === "thread.provider-effect-outcome-set"
+            ? steerOutcome.payload.outcome.actualTurnId
+            : null,
+          firstTurnId,
+        );
+        NodeFS.writeFileSync(firstReleasePath, "release\n", "utf8");
+
+        const steeredThread = yield* harness.waitForThread(
+          THREAD_ID,
+          (entry) =>
+            entry.session?.status === "ready" &&
+            entry.session.activeTurnId === null &&
+            entry.messages.some(
+              (message) =>
+                message.role === "assistant" &&
+                message.streaming === false &&
+                message.text.includes("STEERED"),
+            ),
+          90_000,
+        );
+        assert.equal(steeredThread.session?.status, "ready");
+
+        const secondStartedPath = NodePath.join(harness.workspaceDir, "voice-barrier-2.started");
+        NodeFS.writeFileSync(
+          NodePath.join(harness.workspaceDir, "voice-barrier-2.sh"),
+          [
+            "#!/bin/sh",
+            "set -eu",
+            "touch voice-barrier-2.started",
+            "while [ ! -f voice-barrier-2.release ]; do sleep 0.1; done",
+            "echo SHOULD_NOT_COMPLETE",
+            "",
+          ].join("\n"),
+          { mode: 0o755 },
+        );
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-real-codex-barrier-interrupt"),
+          threadId: THREAD_ID,
+          message: {
+            messageId: asMessageId("msg-real-codex-barrier-interrupt"),
+            role: "user",
+            text: "Run `sh ./voice-barrier-2.sh` now. Wait for it to exit before replying.",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: nowIso(),
+        });
+        const secondRunning = yield* harness.waitForThread(
+          THREAD_ID,
+          (entry) =>
+            entry.session?.status === "running" &&
+            entry.session.activeTurnId !== null &&
+            entry.session.activeTurnId !== firstTurnId,
+          60_000,
+        );
+        const secondTurnId = secondRunning.session?.activeTurnId;
+        if (secondTurnId === null || secondTurnId === undefined) {
+          return yield* Effect.die("Second real Codex turn did not expose an active turn id.");
+        }
+        yield* waitForSync(
+          () => NodeFS.existsSync(secondStartedPath),
+          (exists) => exists,
+          "second real Codex barrier to start",
+          60_000,
+        );
+
+        const interruptCommandId = CommandId.make("cmd-turn-interrupt-real-codex-barrier");
+        yield* harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: interruptCommandId,
+          threadId: THREAD_ID,
+          turnId: secondTurnId,
+          createdAt: nowIso(),
+        });
+        const interruptEvents = yield* harness.waitForDomainEvent(
+          (event) =>
+            event.type === "thread.provider-effect-outcome-set" &&
+            event.payload.outcome.operationId === interruptCommandId &&
+            event.payload.outcome.operation === "interrupt" &&
+            event.payload.outcome.state === "confirmed",
+          60_000,
+        );
+        const interruptOutcome = interruptEvents.find(
+          (event) =>
+            event.type === "thread.provider-effect-outcome-set" &&
+            event.payload.outcome.operationId === interruptCommandId &&
+            event.payload.outcome.state === "confirmed",
+        );
+        assert.equal(
+          interruptOutcome?.type === "thread.provider-effect-outcome-set"
+            ? interruptOutcome.payload.outcome.actualTurnId
+            : null,
+          secondTurnId,
+        );
+        yield* harness.waitForThread(
+          THREAD_ID,
+          (entry) =>
+            entry.session?.activeTurnId === null &&
+            (entry.session.status === "interrupted" || entry.session.status === "ready"),
+          60_000,
+        );
+
+        const allEvents = yield* harness.waitForDomainEvent(
+          (event) =>
+            event.type === "thread.turn-interrupt-requested" &&
+            event.payload.turnId === secondTurnId,
+        );
+        assert.equal(
+          allEvents.filter((event) => event.type === "thread.turn-start-requested").length,
+          2,
+        );
+        assert.equal(
+          allEvents.filter((event) => event.type === "thread.turn-steer-requested").length,
+          1,
+        );
+        assert.equal(
+          allEvents.filter((event) => event.type === "thread.turn-interrupt-requested").length,
+          1,
+        );
       }),
     ),
 );
@@ -1218,6 +1565,7 @@ it.live("forwards thread.turn.interrupt to claudeAgent provider sessions", () =>
         yield* seedProjectAndThread(harness);
 
         yield* harness.adapterHarness!.queueTurnResponseForNextSession({
+          autoComplete: false,
           events: [
             {
               type: "turn.started",
@@ -1240,17 +1588,6 @@ it.live("forwards thread.turn.interrupt to claudeAgent provider sessions", () =>
               turnId: FIXTURE_TURN_ID,
               delta: "Long running output.\n",
             },
-            {
-              type: "turn.completed",
-              ...runtimeBase(
-                "evt-claude-interrupt-3",
-                "2026-02-24T10:13:00.100Z",
-                CLAUDE_AGENT_PROVIDER,
-              ),
-              threadId: THREAD_ID,
-              turnId: FIXTURE_TURN_ID,
-              status: "completed",
-            },
           ],
         });
 
@@ -1267,14 +1604,20 @@ it.live("forwards thread.turn.interrupt to claudeAgent provider sessions", () =>
 
         const thread = yield* harness.waitForThread(
           THREAD_ID,
-          (entry) => entry.session?.threadId === "thread-1",
+          (entry) =>
+            entry.session?.threadId === "thread-1" &&
+            entry.session.status === "running" &&
+            entry.session.activeTurnId !== null,
         );
         assert.equal(thread.session?.threadId, "thread-1");
+        const activeTurnId = thread.session?.activeTurnId;
+        assert.ok(activeTurnId);
 
         yield* harness.engine.dispatch({
           type: "thread.turn.interrupt",
           commandId: CommandId.make("cmd-turn-interrupt-claude"),
           threadId: THREAD_ID,
+          turnId: activeTurnId,
           createdAt: nowIso(),
         });
         yield* harness.waitForDomainEvent(

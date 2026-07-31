@@ -116,6 +116,38 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }),
   );
 
+  it("resolves persisted voice settings with startup force-deny precedence", () => {
+    const enabled = {
+      enableRealtimeVoice: true,
+      enableVoiceThreadRead: true,
+      enableVoiceThreadControl: true,
+    };
+
+    assert.deepEqual(ServerSettingsModule.resolveVoiceControlPolicy(enabled, {}), {
+      realtime: true,
+      read: true,
+      control: true,
+    });
+    assert.deepEqual(
+      ServerSettingsModule.resolveVoiceControlPolicy(enabled, {
+        SHUV2CODE_REALTIME_VOICE_FORCE_DISABLED: "true",
+        SHUV2CODE_VOICE_THREAD_CONTROL_FORCE_DISABLED: "1",
+      }),
+      { realtime: false, read: true, control: false },
+    );
+    assert.deepEqual(
+      ServerSettingsModule.resolveVoiceControlPolicy(
+        {
+          enableRealtimeVoice: true,
+          enableVoiceThreadRead: false,
+          enableVoiceThreadControl: true,
+        },
+        {},
+      ),
+      { realtime: true, read: false, control: false },
+    );
+  });
+
   it.effect(
     "decodes legacy object-shaped textGenerationModelSelection.options from settings.json",
     () =>

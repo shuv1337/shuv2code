@@ -42,7 +42,15 @@ export const codexExecLaunchArgs = (launchArgs?: string) => {
 export const codexSessionAppServerArgs = (
   appServerArgs: ReadonlyArray<string> | undefined,
   launchArgs: string | undefined,
+  options: {
+    readonly enableRealtimeConversation?: boolean;
+  } = {},
 ) => {
   const launchAppServerArgs = codexAppServerArgs(launchArgs);
-  return appServerArgs ? [...launchAppServerArgs, ...appServerArgs] : launchAppServerArgs;
+  const effectiveAppServerArgs = appServerArgs
+    ? [...launchAppServerArgs, ...appServerArgs]
+    : launchAppServerArgs;
+  return options.enableRealtimeConversation
+    ? [...effectiveAppServerArgs, "--enable", "realtime_conversation"]
+    : effectiveAppServerArgs;
 };

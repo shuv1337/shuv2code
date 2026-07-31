@@ -54,6 +54,40 @@ import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
 export { resolveSourceControlWriterModelSelection } from "@shuv2code/shared/serverSettings";
 
+export interface VoiceControlPolicy {
+  readonly realtime: boolean;
+  readonly read: boolean;
+  readonly control: boolean;
+}
+
+const forceDisabled = (value: string | undefined): boolean =>
+  value === "1" || value?.toLowerCase() === "true";
+
+/**
+ * Resolve the effective voice policy. Environment flags are startup-only
+ * emergency denies: they can never enable a persisted capability.
+ */
+export function resolveVoiceControlPolicy(
+  settings: Pick<
+    ServerSettings,
+    "enableRealtimeVoice" | "enableVoiceThreadRead" | "enableVoiceThreadControl"
+  >,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): VoiceControlPolicy {
+  const realtime =
+    settings.enableRealtimeVoice &&
+    !forceDisabled(environment.SHUV2CODE_REALTIME_VOICE_FORCE_DISABLED);
+  const read =
+    settings.enableVoiceThreadRead &&
+    !forceDisabled(environment.SHUV2CODE_VOICE_THREAD_READ_FORCE_DISABLED);
+  const control =
+    read &&
+    settings.enableVoiceThreadControl &&
+    !forceDisabled(environment.SHUV2CODE_VOICE_THREAD_CONTROL_FORCE_DISABLED);
+
+  return { realtime, read, control };
+}
+
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
 const encodeServerSettingsJson = Schema.encodeUnknownEffect(fromJsonStringPretty(ServerSettings));
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);

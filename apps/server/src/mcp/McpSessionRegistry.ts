@@ -1,4 +1,9 @@
-import { ProviderInstanceId, ThreadId } from "@shuv2code/contracts";
+import {
+  ProviderInstanceId,
+  type RuntimeMode,
+  ThreadId,
+  type VoiceRuntimeInstanceId,
+} from "@shuv2code/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -11,10 +16,29 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpProviderSession from "./McpProviderSession.ts";
 
-export interface McpCredentialRequest {
+export interface StandardMcpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
+  readonly profile?: { readonly kind: "standard-provider" } | undefined;
 }
+
+export interface VoiceControllerMcpCredentialRequest {
+  readonly threadId: ThreadId;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly profile: {
+    readonly kind: "voice-controller";
+    readonly controllerThreadId: ThreadId;
+    readonly runtimeInstanceId: VoiceRuntimeInstanceId;
+    readonly authorizedRuntimeCeiling: RuntimeMode;
+    readonly liveControllerRuntimeMode: RuntimeMode;
+    readonly controlEpoch: number;
+    readonly controlEnabled: boolean;
+  };
+}
+
+export type McpCredentialRequest =
+  | StandardMcpCredentialRequest
+  | VoiceControllerMcpCredentialRequest;
 
 export interface McpIssuedCredential {
   readonly config: McpProviderSession.McpProviderSessionConfig;
@@ -24,13 +48,26 @@ export interface McpSessionRegistryShape {
   readonly issue: (request: McpCredentialRequest) => Effect.Effect<McpIssuedCredential>;
   readonly resolve: (
     rawToken: string,
+    expectedProfile?: McpInvocationContext.McpCredentialProfile["kind"],
   ) => Effect.Effect<McpInvocationContext.McpInvocationScope | undefined>;
+  /**
+   * Binds an already-issued controller credential to the identities returned by
+   * the real Codex thread open/start response. Until this succeeds the
+   * controller endpoint rejects the credential.
+   */
+  readonly bindControllerProviderIdentity: (
+    credentialId: string,
+    identity: {
+      readonly codexProviderThreadId: string;
+    },
+  ) => Effect.Effect<boolean>;
   /**
    * Records a sign of life for every credential bound to `threadId`. Provider
    * turns call this so that a session which is plainly alive keeps its
    * credential even when it goes a long time without touching an MCP tool.
    */
   readonly touch: (threadId: ThreadId) => Effect.Effect<void>;
+  readonly revokeCredential: (credentialId: string) => Effect.Effect<void>;
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
   readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeAll: Effect.Effect<void>;
@@ -98,10 +135,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
-  const endpoint =
+  const endpointBase =
     httpServer.address._tag === "TcpAddress"
-      ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}/mcp`
-      : "http://127.0.0.1/mcp";
+      ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}`
+      : "http://127.0.0.1";
 
   const hashToken = (token: string) =>
     crypto
@@ -120,29 +157,67 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const issue: McpSessionRegistryShape["issue"] = Effect.fn("McpSessionRegistry.issue")(
     function* (request) {
       const issuedAt = yield* currentTimeMillis;
+      const credentialId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const providerSessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
+      const requestedProfile = request.profile ?? { kind: "standard-provider" as const };
+      const profile: McpInvocationContext.McpCredentialProfile =
+        requestedProfile.kind === "voice-controller"
+          ? {
+              kind: "voice-controller",
+              controllerThreadId: ThreadId.make(requestedProfile.controllerThreadId),
+              runtimeInstanceId: requestedProfile.runtimeInstanceId,
+              providerIdentity: undefined,
+              scope: {
+                kind: "managed-codex-environment",
+                environmentId,
+              },
+              authorizedRuntimeCeiling: requestedProfile.authorizedRuntimeCeiling,
+              liveControllerRuntimeMode: requestedProfile.liveControllerRuntimeMode,
+              controlEpoch: requestedProfile.controlEpoch,
+            }
+          : { kind: "standard-provider" };
+      const capabilities: ReadonlySet<McpInvocationContext.McpCapability> =
+        requestedProfile.kind === "voice-controller"
+          ? new Set([
+              "threads.read",
+              ...(requestedProfile.controlEnabled ? (["threads.control"] as const) : []),
+            ])
+          : new Set(["preview", "automations"]);
       const scope: McpInvocationContext.McpInvocationScope = {
+        credentialId,
         environmentId,
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set(["preview", "automations"]),
+        profile,
+        capabilities,
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
-        const next = new Map(pruneDead(records, issuedAt));
+        const next = new Map(
+          Array.from(pruneDead(records, issuedAt)).filter(
+            ([, record]) =>
+              record.scope.threadId !== scope.threadId ||
+              record.scope.profile.kind !== profile.kind,
+          ),
+        );
         next.set(tokenHash, { tokenHash, scope, lastAliveAt: issuedAt });
         return { records: next };
       });
       return {
         config: {
+          credentialId,
           environmentId,
           threadId: scope.threadId,
           providerSessionId,
           providerInstanceId: scope.providerInstanceId,
-          endpoint,
+          profile,
+          endpoint:
+            profile.kind === "voice-controller"
+              ? `${endpointBase}/mcp/controller`
+              : `${endpointBase}/mcp`,
           authorizationHeader: `Bearer ${rawToken}`,
         },
       };
@@ -150,7 +225,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   );
 
   const resolve: McpSessionRegistryShape["resolve"] = Effect.fn("McpSessionRegistry.resolve")(
-    function* (rawToken) {
+    function* (rawToken, expectedProfile) {
       if (rawToken.length === 0) return undefined;
       const tokenHash = yield* hashToken(rawToken);
       const timestamp = yield* currentTimeMillis;
@@ -158,6 +233,9 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         const current = pruneDead(records, timestamp);
         const record = current.get(tokenHash);
         if (!record) return [undefined, { records: current }] as const;
+        if (expectedProfile !== undefined && record.scope.profile.kind !== expectedProfile) {
+          return [undefined, { records: current }] as const;
+        }
         const next = new Map(current);
         next.set(tokenHash, { ...record, lastAliveAt: timestamp });
         return [record.scope, { records: next }] as const;
@@ -181,6 +259,41 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     },
   );
 
+  const bindControllerProviderIdentity: McpSessionRegistryShape["bindControllerProviderIdentity"] =
+    Effect.fn("McpSessionRegistry.bindControllerProviderIdentity")(
+      function* (credentialId, identity) {
+        const codexProviderThreadId = identity.codexProviderThreadId.trim();
+        if (codexProviderThreadId.length === 0) return false;
+        return yield* SynchronizedRef.modify(state, ({ records }) => {
+          const next = new Map(records);
+          const entry = Array.from(records).find(
+            ([, record]) => record.scope.credentialId === credentialId,
+          );
+          if (!entry) return [false, { records }] as const;
+          const [tokenHash, record] = entry;
+          const profile = record.scope.profile;
+          if (profile.kind !== "voice-controller") {
+            return [false, { records }] as const;
+          }
+          const current = profile.providerIdentity;
+          if (current !== undefined && current.codexProviderThreadId !== codexProviderThreadId) {
+            return [false, { records }] as const;
+          }
+          next.set(tokenHash, {
+            ...record,
+            scope: {
+              ...record.scope,
+              profile: {
+                ...profile,
+                providerIdentity: { codexProviderThreadId },
+              },
+            },
+          });
+          return [true, { records: next }] as const;
+        });
+      },
+    );
+
   const revokeWhere = (predicate: (record: CredentialRecord) => boolean) =>
     SynchronizedRef.update(state, ({ records }) => ({
       records: new Map(Array.from(records).filter(([, record]) => !predicate(record))),
@@ -189,7 +302,11 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   return McpSessionRegistry.of({
     issue,
     resolve,
+    bindControllerProviderIdentity,
     touch,
+    revokeCredential: Effect.fn("McpSessionRegistry.revokeCredential")(function* (credentialId) {
+      yield* revokeWhere((record) => record.scope.credentialId === credentialId);
+    }),
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {
         yield* revokeWhere((record) => record.scope.providerSessionId === providerSessionId);
@@ -226,9 +343,7 @@ export const issueActiveMcpCredential = (
   request: McpCredentialRequest,
 ): Effect.Effect<McpIssuedCredential | undefined> =>
   activeMcpSessionRegistry
-    ? activeMcpSessionRegistry
-        .revokeThread(request.threadId)
-        .pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
+    ? activeMcpSessionRegistry.issue(request)
     : Effect.sync((): McpIssuedCredential | undefined => undefined);
 
 /**
@@ -240,6 +355,16 @@ export const touchActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
 
 export const revokeActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeThread(threadId) : Effect.void;
+
+export const bindActiveControllerMcpProviderIdentity = (
+  credentialId: string,
+  identity: {
+    readonly codexProviderThreadId: string;
+  },
+): Effect.Effect<boolean> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.bindControllerProviderIdentity(credentialId, identity)
+    : Effect.succeed(false);
 
 export const revokeAllActiveMcpCredentials = (): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeAll : Effect.void;

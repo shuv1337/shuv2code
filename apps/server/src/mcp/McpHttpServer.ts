@@ -75,7 +75,7 @@ const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
           authorization?.startsWith("Bearer ") === true
             ? authorization.slice("Bearer ".length).trim()
             : "";
-        const invocation = yield* registry.resolve(token);
+        const invocation = yield* registry.resolve(token, "standard-provider");
         if (!invocation) {
           // Without this the only symptom of a dead credential is the agent
           // quietly losing the whole `shuv2code` toolkit for the rest of its

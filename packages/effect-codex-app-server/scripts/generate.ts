@@ -17,7 +17,15 @@ import {
 } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const UPSTREAM_REF = "678157acaa819d5510adfe359abb5d0392cfe461";
+const UPSTREAM_REF = "e363b08c9175ac1cbe5893615dd2cb9ddf95043b";
+const REALTIME_REQUEST_METHODS = [
+  "thread/realtime/start",
+  "thread/realtime/appendAudio",
+  "thread/realtime/appendText",
+  "thread/realtime/appendSpeech",
+  "thread/realtime/stop",
+  "thread/realtime/listVoices",
+] as const;
 const USER_AGENT = "effect-codex-app-server-generator";
 const GITHUB_API_BASE =
   "https://api.github.com/repos/openai/codex/contents/codex-rs/app-server-protocol";
@@ -51,6 +59,7 @@ interface GeneratedPaths {
 interface MethodEntry {
   readonly method: string;
   readonly paramsType?: string;
+  readonly responseType?: string;
 }
 
 interface JsonSchemaFile {
@@ -69,6 +78,31 @@ class GeneratorError extends Schema.TaggedErrorClass<GeneratorError>()("Generato
     return this.detail;
   }
 }
+
+const RealtimeVoiceSchema = {
+  type: "string",
+  enum: [
+    "alloy",
+    "arbor",
+    "ash",
+    "ballad",
+    "breeze",
+    "cedar",
+    "coral",
+    "cove",
+    "echo",
+    "ember",
+    "juniper",
+    "maple",
+    "marin",
+    "sage",
+    "shimmer",
+    "sol",
+    "spruce",
+    "vale",
+    "verse",
+  ],
+} satisfies Schema.Json;
 
 const ManualSchemas: Record<string, Schema.Json> = {
   GetAuthStatusParams: {
@@ -142,6 +176,169 @@ const ManualSchemas: Record<string, Schema.Json> = {
       },
     },
     required: ["authMethod", "authToken", "requiresOpenaiAuth"],
+  },
+  ThreadRealtimeStartParams: {
+    type: "object",
+    title: "ThreadRealtimeStartParams",
+    properties: {
+      threadId: { type: "string" },
+      clientManagedHandoffs: { type: ["boolean", "null"] },
+      flushTranscriptTailOnSessionEnd: { type: ["boolean", "null"] },
+      codexResponsesAsItems: { type: ["boolean", "null"] },
+      codexResponseItemPrefix: { type: ["string", "null"] },
+      codexResponseHandoffMode: {
+        anyOf: [{ type: "string", enum: ["thinking", "commentary", "bemTags"] }, { type: "null" }],
+      },
+      model: { type: ["string", "null"] },
+      outputModality: { type: "string", enum: ["text", "audio"] },
+      includeStartupContext: { type: ["boolean", "null"] },
+      initialItems: {
+        anyOf: [
+          {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                role: { type: "string", enum: ["user", "developer", "assistant"] },
+                text: { type: "string" },
+              },
+              required: ["role", "text"],
+            },
+          },
+          { type: "null" },
+        ],
+      },
+      prompt: { type: ["string", "null"] },
+      realtimeSessionId: { type: ["string", "null"] },
+      transport: {
+        anyOf: [
+          {
+            oneOf: [
+              {
+                type: "object",
+                properties: { type: { const: "websocket" } },
+                required: ["type"],
+              },
+              {
+                type: "object",
+                properties: {
+                  type: { const: "webrtc" },
+                  sdp: { type: "string" },
+                },
+                required: ["type", "sdp"],
+              },
+            ],
+          },
+          { type: "null" },
+        ],
+      },
+      version: {
+        anyOf: [{ type: "string", enum: ["v1", "v2", "v3"] }, { type: "null" }],
+      },
+      voice: {
+        anyOf: [RealtimeVoiceSchema, { type: "null" }],
+      },
+    },
+    required: ["threadId", "outputModality"],
+  },
+  ThreadRealtimeStartResponse: {
+    type: "object",
+    title: "ThreadRealtimeStartResponse",
+    properties: {},
+  },
+  ThreadRealtimeAppendAudioParams: {
+    type: "object",
+    title: "ThreadRealtimeAppendAudioParams",
+    properties: {
+      threadId: { type: "string" },
+      audio: {
+        type: "object",
+        properties: {
+          data: { type: "string" },
+          sampleRate: { type: "integer", minimum: 0, maximum: 4_294_967_295 },
+          numChannels: { type: "integer", minimum: 0, maximum: 65_535 },
+          samplesPerChannel: {
+            anyOf: [{ type: "integer", minimum: 0, maximum: 4_294_967_295 }, { type: "null" }],
+          },
+          itemId: { type: ["string", "null"] },
+        },
+        required: ["data", "sampleRate", "numChannels"],
+      },
+    },
+    required: ["threadId", "audio"],
+  },
+  ThreadRealtimeAppendAudioResponse: {
+    type: "object",
+    title: "ThreadRealtimeAppendAudioResponse",
+    properties: {},
+  },
+  ThreadRealtimeAppendTextParams: {
+    type: "object",
+    title: "ThreadRealtimeAppendTextParams",
+    properties: {
+      threadId: { type: "string" },
+      text: { type: "string" },
+      role: {
+        type: "string",
+        enum: ["user", "developer", "assistant"],
+        default: "user",
+      },
+    },
+    required: ["threadId", "text"],
+  },
+  ThreadRealtimeAppendTextResponse: {
+    type: "object",
+    title: "ThreadRealtimeAppendTextResponse",
+    properties: {},
+  },
+  ThreadRealtimeAppendSpeechParams: {
+    type: "object",
+    title: "ThreadRealtimeAppendSpeechParams",
+    properties: {
+      threadId: { type: "string" },
+      text: { type: "string" },
+    },
+    required: ["threadId", "text"],
+  },
+  ThreadRealtimeAppendSpeechResponse: {
+    type: "object",
+    title: "ThreadRealtimeAppendSpeechResponse",
+    properties: {},
+  },
+  ThreadRealtimeStopParams: {
+    type: "object",
+    title: "ThreadRealtimeStopParams",
+    properties: {
+      threadId: { type: "string" },
+    },
+    required: ["threadId"],
+  },
+  ThreadRealtimeStopResponse: {
+    type: "object",
+    title: "ThreadRealtimeStopResponse",
+    properties: {},
+  },
+  ThreadRealtimeListVoicesParams: {
+    type: "object",
+    title: "ThreadRealtimeListVoicesParams",
+    properties: {},
+  },
+  ThreadRealtimeListVoicesResponse: {
+    type: "object",
+    title: "ThreadRealtimeListVoicesResponse",
+    properties: {
+      voices: {
+        type: "object",
+        properties: {
+          v1: { type: "array", items: RealtimeVoiceSchema },
+          v2: { type: "array", items: RealtimeVoiceSchema },
+          defaultV1: RealtimeVoiceSchema,
+          defaultV2: RealtimeVoiceSchema,
+        },
+        required: ["v1", "v2", "defaultV1", "defaultV2"],
+      },
+    },
+    required: ["voices"],
   },
 };
 
@@ -317,6 +514,31 @@ function parseNotificationEntries(fileContents: string): ReadonlyArray<MethodEnt
   return entries;
 }
 
+function parseExperimentalRealtimeRequestEntries(fileContents: string): ReadonlyArray<MethodEntry> {
+  const entryPattern =
+    /#\[experimental\("([^"]+)"\)\]\s*[A-Za-z0-9_]+\s*=>\s*"([^"]+)"\s*\{\s*params:\s*(?:v2::)?([A-Za-z0-9_]+),[\s\S]*?response:\s*(?:v2::)?([A-Za-z0-9_]+),\s*\}/g;
+  const entries: Array<MethodEntry> = [];
+  let match: RegExpExecArray | null;
+  while ((match = entryPattern.exec(fileContents)) !== null) {
+    const experimentalReason = match[1]!;
+    const method = match[2]!;
+    if (!method.startsWith("thread/realtime/")) {
+      continue;
+    }
+    if (experimentalReason !== method) {
+      throw new Error(
+        `Experimental realtime reason '${experimentalReason}' does not match method '${method}'`,
+      );
+    }
+    entries.push({
+      method,
+      paramsType: match[3]!,
+      responseType: match[4]!,
+    });
+  }
+  return entries;
+}
+
 function resolveSchemaTypeName(
   rawTypeName: string,
   generatedSchemaNames: ReadonlySet<string>,
@@ -344,7 +566,11 @@ function resolveResponseTypeName(
   method: string,
   paramsType: string | undefined,
   generatedSchemaNames: ReadonlySet<string>,
+  responseType?: string,
 ): string {
+  if (responseType) {
+    return resolveSchemaTypeName(responseType, generatedSchemaNames);
+  }
   const overrides: Record<string, string> = {
     "account/logout": "LogoutAccountResponse",
     "account/rateLimits/read": "GetAccountRateLimitsResponse",
@@ -623,8 +849,25 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   const serverNotificationRaw = yield* fetchText(
     `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts`,
   );
+  const protocolCommonRaw = yield* fetchText(
+    `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/src/protocol/common.rs`,
+  );
 
-  const clientRequestEntries = parseRequestEntries(clientRequestRaw);
+  const clientRequestEntries = [
+    ...parseRequestEntries(clientRequestRaw),
+    ...parseExperimentalRealtimeRequestEntries(protocolCommonRaw),
+  ];
+  const generatedRealtimeMethods = clientRequestEntries
+    .map((entry) => entry.method)
+    .filter((method) => method.startsWith("thread/realtime/"));
+  if (
+    generatedRealtimeMethods.length !== REALTIME_REQUEST_METHODS.length ||
+    REALTIME_REQUEST_METHODS.some((method) => !generatedRealtimeMethods.includes(method))
+  ) {
+    throw new Error(
+      `Pinned Codex realtime request surface changed: ${generatedRealtimeMethods.join(", ")}`,
+    );
+  }
   const clientNotificationEntries = parseNotificationEntries(clientNotificationRaw);
   const serverRequestEntries = parseRequestEntries(serverRequestRaw);
   const serverNotificationEntries = parseNotificationEntries(serverNotificationRaw);
@@ -647,6 +890,8 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     ...prelude,
     'import * as CodexSchema from "./schema.gen.ts";',
     "",
+    `export const UPSTREAM_PROTOCOL_REF = "${UPSTREAM_REF}" as const;`,
+    "",
     renderMethodConstants("CLIENT_REQUEST_METHODS", clientRequestEntries),
     renderMethodConstants("CLIENT_NOTIFICATION_METHODS", clientNotificationEntries),
     renderMethodConstants("SERVER_REQUEST_METHODS", serverRequestEntries),
@@ -663,7 +908,12 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     ),
     renderTypeInterface("ClientRequestResponsesByMethod", clientRequestEntries, (entry) =>
       renderSchemaTypeReference(
-        resolveResponseTypeName(entry.method, entry.paramsType, generatedSchemaNames),
+        resolveResponseTypeName(
+          entry.method,
+          entry.paramsType,
+          generatedSchemaNames,
+          entry.responseType,
+        ),
       ),
     ),
     renderTypeInterface("ClientNotificationParamsByMethod", clientNotificationEntries, (entry) =>
@@ -690,7 +940,12 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
       resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),
     ),
     renderSchemaMap("CLIENT_REQUEST_RESPONSES", clientRequestEntries, (entry) =>
-      resolveResponseTypeName(entry.method, entry.paramsType, generatedSchemaNames),
+      resolveResponseTypeName(
+        entry.method,
+        entry.paramsType,
+        generatedSchemaNames,
+        entry.responseType,
+      ),
     ),
     renderSchemaMap("CLIENT_NOTIFICATION_PARAMS", clientNotificationEntries, (entry) =>
       resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),

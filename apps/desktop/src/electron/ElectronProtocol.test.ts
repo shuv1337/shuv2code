@@ -3,15 +3,22 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import { beforeEach, vi } from "vite-plus/test";
 
-const { handleMock, netFetchMock, unhandleMock } = vi.hoisted(() => ({
-  handleMock: vi.fn(),
-  netFetchMock: vi.fn(),
-  unhandleMock: vi.fn(),
-}));
+const { handleMock, netFetchMock, registerSchemesAsPrivilegedMock, unhandleMock } = vi.hoisted(
+  () => ({
+    handleMock: vi.fn(),
+    netFetchMock: vi.fn(),
+    registerSchemesAsPrivilegedMock: vi.fn(),
+    unhandleMock: vi.fn(),
+  }),
+);
 
 vi.mock("electron", () => ({
   net: { fetch: netFetchMock },
-  protocol: { handle: handleMock, unhandle: unhandleMock },
+  protocol: {
+    handle: handleMock,
+    registerSchemesAsPrivileged: registerSchemesAsPrivilegedMock,
+    unhandle: unhandleMock,
+  },
 }));
 
 import * as ElectronProtocol from "./ElectronProtocol.ts";
@@ -20,7 +27,33 @@ describe("ElectronProtocol", () => {
   beforeEach(() => {
     handleMock.mockReset();
     netFetchMock.mockReset();
+    registerSchemesAsPrivilegedMock.mockReset();
     unhandleMock.mockReset();
+  });
+
+  it("registers production and development renderer schemes as secure standard origins", () => {
+    ElectronProtocol.registerDesktopSchemesAsPrivileged();
+
+    assert.deepEqual(registerSchemesAsPrivilegedMock.mock.calls, [
+      [
+        [
+          {
+            scheme: "shuv2code",
+            privileges: {
+              secure: true,
+              standard: true,
+            },
+          },
+          {
+            scheme: "shuv2code-dev",
+            privileges: {
+              secure: true,
+              standard: true,
+            },
+          },
+        ],
+      ],
+    ]);
   });
 
   it.effect("proxies the stable renderer origin to the current app server", () =>

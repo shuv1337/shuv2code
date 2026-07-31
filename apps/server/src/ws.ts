@@ -51,13 +51,19 @@ import {
   type TerminalError,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
+  WsSubscribeVoiceEventsRpc,
+  WsVoiceEnsureControllerRpc,
+  WsVoiceIngestRealtimeEventRpc,
+  WsVoiceListVoicesRpc,
+  WsVoiceResetControllerRpc,
+  WsVoiceStartRpc,
+  WsVoiceStopRpc,
   WS_METHODS,
   WsRpcGroup,
 } from "@shuv2code/contracts";
-import { clamp } from "effect/Number";
 import { resolveServerBackgroundActivitySettings } from "@shuv2code/shared/backgroundActivitySettings";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
-import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
+import { RpcGroup, RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
@@ -116,12 +122,145 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
+import * as VoiceController from "./voice/Services/VoiceControllerService.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@shuv2code/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const EDITOR_DISCOVERY_TIMEOUT = Duration.seconds(5);
+
+const makeAuthorizedRpcObservers = (currentSession: EnvironmentAuth.AuthenticatedSession) => {
+  const authorizationError = (requiredScope: AuthEnvironmentScope) =>
+    new EnvironmentAuthorizationError({
+      message: `The authenticated token is missing required scope: ${requiredScope}.`,
+      requiredScope,
+    });
+  const authorizeEffect = <A, E, R>(
+    requiredScope: AuthEnvironmentScope,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | EnvironmentAuthorizationError, R> =>
+    currentSession.scopes.includes(requiredScope)
+      ? effect
+      : Effect.fail(authorizationError(requiredScope));
+  const authorizeStream = <A, E, R>(
+    requiredScope: AuthEnvironmentScope,
+    stream: Stream.Stream<A, E, R>,
+  ): Stream.Stream<A, E | EnvironmentAuthorizationError, R> =>
+    currentSession.scopes.includes(requiredScope)
+      ? stream
+      : Stream.fail(authorizationError(requiredScope));
+  const observeRpcEffect = <A, E, R>(
+    method: string,
+    effect: Effect.Effect<A, E, R>,
+    traceAttributes?: Readonly<Record<string, unknown>>,
+  ) =>
+    instrumentRpcEffect(
+      method,
+      authorizeEffect(requiredScopeForRpcMethod(method), effect),
+      traceAttributes,
+    );
+  const observeRpcStream = <A, E, R>(
+    method: string,
+    stream: Stream.Stream<A, E, R>,
+    traceAttributes?: Readonly<Record<string, unknown>>,
+  ) =>
+    instrumentRpcStream(
+      method,
+      authorizeStream(requiredScopeForRpcMethod(method), stream),
+      traceAttributes,
+    );
+  const observeRpcStreamEffect = <A, StreamError, StreamContext, EffectError, EffectContext>(
+    method: string,
+    effect: Effect.Effect<Stream.Stream<A, StreamError, StreamContext>, EffectError, EffectContext>,
+    traceAttributes?: Readonly<Record<string, unknown>>,
+  ) =>
+    instrumentRpcStreamEffect(
+      method,
+      authorizeEffect(requiredScopeForRpcMethod(method), effect),
+      traceAttributes,
+    );
+  return { observeRpcEffect, observeRpcStream, observeRpcStreamEffect };
+};
+
+const makeVoiceRpcHandlers = (
+  currentSession: EnvironmentAuth.AuthenticatedSession,
+  voiceController: VoiceController.VoiceControllerService["Service"],
+) => {
+  const { observeRpcEffect, observeRpcStream } = makeAuthorizedRpcObservers(currentSession);
+  return {
+    [WS_METHODS.voiceEnsureController]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["ensureController"]>[0],
+    ) =>
+      observeRpcEffect(WS_METHODS.voiceEnsureController, voiceController.ensureController(input), {
+        "rpc.aggregate": "voice",
+      }),
+    [WS_METHODS.voiceListVoices]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["listVoices"]>[0],
+    ) =>
+      observeRpcEffect(WS_METHODS.voiceListVoices, voiceController.listVoices(input), {
+        "rpc.aggregate": "voice",
+      }),
+    [WS_METHODS.voiceResetController]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["resetController"]>[0],
+    ) =>
+      observeRpcEffect(WS_METHODS.voiceResetController, voiceController.resetController(input), {
+        "rpc.aggregate": "voice",
+      }),
+    [WS_METHODS.voiceStart]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["start"]>[0],
+    ) =>
+      observeRpcEffect(WS_METHODS.voiceStart, voiceController.start(input), {
+        "rpc.aggregate": "voice",
+      }),
+    [WS_METHODS.voiceIngestRealtimeEvent]: (
+      input: Parameters<
+        VoiceController.VoiceControllerService["Service"]["ingestRealtimeEvent"]
+      >[0],
+    ) =>
+      observeRpcEffect(
+        WS_METHODS.voiceIngestRealtimeEvent,
+        voiceController.ingestRealtimeEvent(input),
+        {
+          "rpc.aggregate": "voice",
+        },
+      ),
+    [WS_METHODS.voiceStop]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["stop"]>[0],
+    ) =>
+      observeRpcEffect(WS_METHODS.voiceStop, voiceController.stop(input), {
+        "rpc.aggregate": "voice",
+      }),
+    [WS_METHODS.subscribeVoiceEvents]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["subscribe"]>[0],
+    ) =>
+      observeRpcStream(WS_METHODS.subscribeVoiceEvents, voiceController.subscribe(input), {
+        "rpc.aggregate": "voice",
+      }),
+  };
+};
+
+/** The production voice RPC subset, exposed for focused in-memory integration tests. */
+export const VoiceWsRpcGroup = RpcGroup.make(
+  WsVoiceEnsureControllerRpc,
+  WsVoiceListVoicesRpc,
+  WsVoiceResetControllerRpc,
+  WsVoiceStartRpc,
+  WsVoiceIngestRealtimeEventRpc,
+  WsVoiceStopRpc,
+  WsSubscribeVoiceEventsRpc,
+);
+
+/**
+ * Builds the same authenticated voice handlers installed by the full
+ * WebSocket RPC route, without requiring unrelated server services.
+ *
+ * @internal
+ */
+export const makeVoiceWsRpcLayer = (
+  currentSession: EnvironmentAuth.AuthenticatedSession,
+  voiceController: VoiceController.VoiceControllerService["Service"],
+) => VoiceWsRpcGroup.toLayer(makeVoiceRpcHandlers(currentSession, voiceController));
 
 export const resolveAvailableEditorsForConfig = <A, E, R>(
   discovery: Effect.Effect<ReadonlyArray<A>, E, R>,
@@ -336,7 +475,14 @@ function toAuthAccessStreamEvent(
   }
 }
 
-const makeWsRpcLayer = (
+/**
+ * Builds the authenticated RPC handler layer used by the production WebSocket
+ * route. Exported so integration tests can exercise the exact authorization
+ * and handler wiring in memory without opening a network listener.
+ *
+ * @internal
+ */
+export const makeWsRpcLayer = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
 ) =>
@@ -403,60 +549,10 @@ const makeWsRpcLayer = (
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const automationService = yield* AutomationService.AutomationService;
+      const voiceController = yield* VoiceController.VoiceControllerService;
       const relayClient = yield* RelayClient.RelayClient;
-      const authorizationError = (requiredScope: AuthEnvironmentScope) =>
-        new EnvironmentAuthorizationError({
-          message: `The authenticated token is missing required scope: ${requiredScope}.`,
-          requiredScope,
-        });
-      const authorizeEffect = <A, E, R>(
-        requiredScope: AuthEnvironmentScope,
-        effect: Effect.Effect<A, E, R>,
-      ): Effect.Effect<A, E | EnvironmentAuthorizationError, R> =>
-        currentSession.scopes.includes(requiredScope)
-          ? effect
-          : Effect.fail(authorizationError(requiredScope));
-      const authorizeStream = <A, E, R>(
-        requiredScope: AuthEnvironmentScope,
-        stream: Stream.Stream<A, E, R>,
-      ): Stream.Stream<A, E | EnvironmentAuthorizationError, R> =>
-        currentSession.scopes.includes(requiredScope)
-          ? stream
-          : Stream.fail(authorizationError(requiredScope));
-      const observeRpcEffect = <A, E, R>(
-        method: string,
-        effect: Effect.Effect<A, E, R>,
-        traceAttributes?: Readonly<Record<string, unknown>>,
-      ) =>
-        instrumentRpcEffect(
-          method,
-          authorizeEffect(requiredScopeForRpcMethod(method), effect),
-          traceAttributes,
-        );
-      const observeRpcStream = <A, E, R>(
-        method: string,
-        stream: Stream.Stream<A, E, R>,
-        traceAttributes?: Readonly<Record<string, unknown>>,
-      ) =>
-        instrumentRpcStream(
-          method,
-          authorizeStream(requiredScopeForRpcMethod(method), stream),
-          traceAttributes,
-        );
-      const observeRpcStreamEffect = <A, StreamError, StreamContext, EffectError, EffectContext>(
-        method: string,
-        effect: Effect.Effect<
-          Stream.Stream<A, StreamError, StreamContext>,
-          EffectError,
-          EffectContext
-        >,
-        traceAttributes?: Readonly<Record<string, unknown>>,
-      ) =>
-        instrumentRpcStreamEffect(
-          method,
-          authorizeEffect(requiredScopeForRpcMethod(method), effect),
-          traceAttributes,
-        );
+      const { observeRpcEffect, observeRpcStream, observeRpcStreamEffect } =
+        makeAuthorizedRpcObservers(currentSession);
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
         isOrchestrationDispatchCommandError(cause)
           ? cause
@@ -1372,6 +1468,7 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "orchestration" },
           ),
+        ...makeVoiceRpcHandlers(currentSession, voiceController),
         [WS_METHODS.serverProbe]: (_input) =>
           observeRpcEffect(WS_METHODS.serverProbe, Effect.succeed({}), {
             "rpc.aggregate": "server",

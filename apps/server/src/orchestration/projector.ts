@@ -280,6 +280,7 @@ export function projectEvent(
           {
             id: payload.threadId,
             projectId: payload.projectId,
+            purpose: payload.purpose ?? "standard",
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,

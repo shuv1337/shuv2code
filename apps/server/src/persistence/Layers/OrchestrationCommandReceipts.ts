@@ -26,7 +26,10 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
           accepted_at,
           result_sequence,
           status,
-          error
+          error,
+          command_type,
+          canonical_command_hash,
+          actor_provenance_json
         )
         VALUES (
           ${receipt.commandId},
@@ -35,7 +38,10 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
           ${receipt.acceptedAt},
           ${receipt.resultSequence},
           ${receipt.status},
-          ${receipt.error}
+          ${receipt.error},
+          ${receipt.commandType ?? null},
+          ${receipt.canonicalCommandHash ?? null},
+          ${receipt.actorProvenanceJson ?? null}
         )
         ON CONFLICT (command_id)
         DO UPDATE SET
@@ -44,7 +50,10 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
           accepted_at = excluded.accepted_at,
           result_sequence = excluded.result_sequence,
           status = excluded.status,
-          error = excluded.error
+          error = excluded.error,
+          command_type = excluded.command_type,
+          canonical_command_hash = excluded.canonical_command_hash,
+          actor_provenance_json = excluded.actor_provenance_json
       `,
   });
 
@@ -60,7 +69,10 @@ const makeOrchestrationCommandReceiptRepository = Effect.gen(function* () {
           accepted_at AS "acceptedAt",
           result_sequence AS "resultSequence",
           status,
-          error
+          error,
+          command_type AS "commandType",
+          canonical_command_hash AS "canonicalCommandHash",
+          actor_provenance_json AS "actorProvenanceJson"
         FROM orchestration_command_receipts
         WHERE command_id = ${commandId}
       `,

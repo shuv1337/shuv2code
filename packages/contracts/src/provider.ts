@@ -4,6 +4,8 @@ import {
   ApprovalRequestId,
   EventId,
   IsoDateTime,
+  MessageId,
+  NonNegativeInt,
   ProviderItemId,
   ThreadId,
   TurnId,
@@ -20,6 +22,7 @@ import {
   ProviderSandboxMode,
   ProviderUserInputAnswers,
   RuntimeMode,
+  ThreadPurpose,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 
@@ -44,6 +47,9 @@ export const ProviderSession = Schema.Struct({
   threadId: ThreadId,
   resumeCursor: Schema.optional(Schema.Unknown),
   activeTurnId: Schema.optional(TurnId),
+  runtimeInstanceId: Schema.optional(TrimmedNonEmptyString),
+  providerSessionId: Schema.optional(TrimmedNonEmptyString),
+  providerThreadId: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),
@@ -60,6 +66,26 @@ export const ProviderSessionStartInput = Schema.Struct({
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
+  recoveryPolicy: Schema.optional(Schema.Literals(["allow", "forbid"])),
+  threadSource: Schema.optional(TrimmedNonEmptyString),
+  threadPurpose: Schema.optional(ThreadPurpose),
+  controllerGrant: Schema.optional(
+    Schema.Struct({
+      controllerThreadId: ThreadId,
+      runtimeInstanceId: TrimmedNonEmptyString,
+      authorizedRuntimeCeiling: RuntimeMode,
+      liveControllerRuntimeMode: RuntimeMode,
+      controlEpoch: NonNegativeInt,
+      controlEnabled: Schema.Boolean,
+    }),
+  ),
+  /**
+   * Trusted server-generated runtime identity used by managed voice
+   * controller/transport sessions. Provider RPC callers must not derive this
+   * value from model or client input.
+   */
+  runtimeInstanceId: Schema.optional(TrimmedNonEmptyString),
+  enableRealtimeConversation: Schema.optional(Schema.Boolean),
   runtimeMode: RuntimeMode,
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
@@ -74,6 +100,9 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  clientUserMessageId: Schema.optional(MessageId),
+  expectedTurnId: Schema.optional(Schema.Null),
+  recoveryPolicy: Schema.optional(Schema.Literals(["allow", "forbid"])),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 
@@ -84,9 +113,30 @@ export const ProviderTurnStartResult = Schema.Struct({
 });
 export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 
+export const ProviderSteerTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedTurnId: TurnId,
+  input: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  ),
+  attachments: Schema.optional(
+    Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
+  ),
+  modelSelection: Schema.optional(ModelSelection),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  clientUserMessageId: MessageId,
+});
+export type ProviderSteerTurnInput = typeof ProviderSteerTurnInput.Type;
+
+export const ProviderTurnSteerResult = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+});
+export type ProviderTurnSteerResult = typeof ProviderTurnSteerResult.Type;
+
 export const ProviderInterruptTurnInput = Schema.Struct({
   threadId: ThreadId,
-  turnId: Schema.optional(TurnId),
+  turnId: TurnId,
 });
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 

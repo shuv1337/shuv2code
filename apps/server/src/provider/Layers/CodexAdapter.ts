@@ -15,6 +15,7 @@ import {
   type ProviderEvent,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type ProviderSession,
   type ProviderRequestKind,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
@@ -23,6 +24,7 @@ import {
   ProviderApprovalDecision,
   ThreadId,
   ProviderSendTurnInput,
+  type ProviderSteerTurnInput,
 } from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
@@ -54,18 +56,27 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   CodexResumeCursorSchema,
+  CodexSessionRuntimeCreationRecoveryError,
   CodexSessionRuntimeThreadIdMissingError,
   makeCodexSessionRuntime,
   type CodexSessionRuntimeError,
   type CodexSessionRuntimeOptions,
+  type CodexSessionRuntimeRealtimeStartInput,
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import { sanitizeProviderObservabilityEvent } from "../RealtimeObservability.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
+const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+const isCodexAppServerProtocolParseError = Schema.is(CodexErrors.CodexAppServerProtocolParseError);
+const isProviderAdapterProcessError = Schema.is(ProviderAdapterProcessError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
   CodexSessionRuntimeThreadIdMissingError,
+);
+const isCodexSessionRuntimeCreationRecoveryError = Schema.is(
+  CodexSessionRuntimeCreationRecoveryError,
 );
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
@@ -145,6 +156,29 @@ function readPayload<A>(
 function trimText(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readRealtimeRoute(payload: unknown):
+  | {
+      readonly runtimeInstanceId: string;
+      readonly generation: number;
+      readonly realtimeSessionId: string;
+      readonly ingressSequence: number;
+    }
+  | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const route = Reflect.get(payload, "_shuv2codeRealtime");
+  if (typeof route !== "object" || route === null) return undefined;
+  const runtimeInstanceId = Reflect.get(route, "runtimeInstanceId");
+  const generation = Reflect.get(route, "generation");
+  const realtimeSessionId = Reflect.get(route, "realtimeSessionId");
+  const ingressSequence = Reflect.get(route, "ingressSequence");
+  return typeof runtimeInstanceId === "string" &&
+    Number.isSafeInteger(generation) &&
+    typeof realtimeSessionId === "string" &&
+    Number.isSafeInteger(ingressSequence)
+    ? { runtimeInstanceId, generation, realtimeSessionId, ingressSequence }
+    : undefined;
 }
 
 const FATAL_CODEX_STDERR_SNIPPETS = ["failed to connect to websocket"];
@@ -456,6 +490,21 @@ function runtimeEventBase(
   };
 }
 
+function sensitiveRuntimeEventBase(
+  event: ProviderEvent,
+  canonicalThreadId: ThreadId,
+): Omit<ProviderRuntimeEvent, "type" | "payload"> {
+  const base = runtimeEventBase(event, canonicalThreadId);
+  return {
+    ...base,
+    raw: {
+      source: eventRawSource(event),
+      method: event.method,
+      payload: {},
+    },
+  };
+}
+
 function mapItemLifecycle(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -494,22 +543,26 @@ function mapItemLifecycle(
   };
 }
 
-function mapToRuntimeEvents(
+function mapToRuntimeEventsWithoutRuntimeIdentity(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
+  sensitiveRuntime = false,
 ): ReadonlyArray<ProviderRuntimeEvent> {
   if (event.kind === "error") {
     if (!event.message) {
       return [];
     }
+    const base = sensitiveRuntime
+      ? sensitiveRuntimeEventBase(event, canonicalThreadId)
+      : runtimeEventBase(event, canonicalThreadId);
     return [
       {
-        ...runtimeEventBase(event, canonicalThreadId),
+        ...base,
         type: "runtime.error",
         payload: {
-          message: event.message,
+          message: sensitiveRuntime ? "Voice provider runtime reported an error." : event.message,
           class: "provider_error",
-          ...(event.payload !== undefined ? { detail: event.payload } : {}),
+          ...(!sensitiveRuntime && event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },
     ];
@@ -1174,6 +1227,7 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           realtimeSessionId: payload.realtimeSessionId ?? undefined,
+          ...(readRealtimeRoute(event.payload) ?? {}),
         },
       },
     ];
@@ -1193,6 +1247,51 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           item: payload.item,
+          ...(readRealtimeRoute(event.payload) ?? {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "thread/realtime/transcript/delta") {
+    const payload = readPayload(
+      EffectCodexSchema.V2ThreadRealtimeTranscriptDeltaNotification,
+      event.payload,
+    );
+    const route = readRealtimeRoute(event.payload);
+    if (!payload || !route) {
+      return [];
+    }
+    return [
+      {
+        type: "thread.realtime.transcript.delta",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          role: payload.role === "user" ? ("user" as const) : ("assistant" as const),
+          delta: payload.delta,
+          ...route,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "thread/realtime/transcript/done") {
+    const payload = readPayload(
+      EffectCodexSchema.V2ThreadRealtimeTranscriptDoneNotification,
+      event.payload,
+    );
+    const route = readRealtimeRoute(event.payload);
+    if (!payload || !route) {
+      return [];
+    }
+    return [
+      {
+        type: "thread.realtime.transcript.done",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          role: payload.role === "user" ? ("user" as const) : ("assistant" as const),
+          text: payload.text,
+          ...route,
         },
       },
     ];
@@ -1217,8 +1316,30 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "thread/realtime/sdp") {
+    const payload = readPayload(EffectCodexSchema.V2ThreadRealtimeSdpNotification, event.payload);
+    const route = readRealtimeRoute(event.payload);
+    if (!payload || !route) {
+      return [];
+    }
+    return [
+      {
+        type: "thread.realtime.sdp",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          sdp: payload.sdp,
+          ...route,
+        },
+      },
+    ];
+  }
+
   if (event.method === "thread/realtime/error") {
     const payload = readPayload(EffectCodexSchema.V2ThreadRealtimeErrorNotification, event.payload);
+    const route = readRealtimeRoute(event.payload);
+    if (!route) {
+      return [];
+    }
     const message = payload?.message ?? event.message ?? "Realtime error";
     return [
       {
@@ -1226,6 +1347,7 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           message,
+          ...route,
         },
       },
     ];
@@ -1236,12 +1358,17 @@ function mapToRuntimeEvents(
       EffectCodexSchema.V2ThreadRealtimeClosedNotification,
       event.payload,
     );
+    const route = readRealtimeRoute(event.payload);
+    if (!route) {
+      return [];
+    }
     return [
       {
         type: "thread.realtime.closed",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           reason: payload?.reason ?? event.message,
+          ...route,
         },
       },
     ];
@@ -1251,14 +1378,21 @@ function mapToRuntimeEvents(
     const payload = readPayload(EffectCodexSchema.V2ErrorNotification, event.payload);
     const message = payload?.error.message ?? event.message ?? "Provider runtime error";
     const willRetry = payload?.willRetry === true;
+    const base = sensitiveRuntime
+      ? sensitiveRuntimeEventBase(event, canonicalThreadId)
+      : runtimeEventBase(event, canonicalThreadId);
     return [
       {
         type: willRetry ? "runtime.warning" : "runtime.error",
-        ...runtimeEventBase(event, canonicalThreadId),
+        ...base,
         payload: {
-          message,
+          message: sensitiveRuntime
+            ? willRetry
+              ? "Voice provider runtime reported a retryable error."
+              : "Voice provider runtime reported an error."
+            : message,
           ...(!willRetry ? { class: "provider_error" as const } : {}),
-          ...(event.payload !== undefined ? { detail: event.payload } : {}),
+          ...(!sensitiveRuntime && event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },
     ];
@@ -1267,23 +1401,35 @@ function mapToRuntimeEvents(
   if (event.method === "process/stderr") {
     const message = event.message ?? "Codex process stderr";
     const isFatal = isFatalCodexProcessStderrMessage(message);
+    const observableBase = sensitiveRuntime
+      ? sensitiveRuntimeEventBase(event, canonicalThreadId)
+      : runtimeEventBase(event, canonicalThreadId);
+    const observableMessage = sensitiveRuntime
+      ? isFatal
+        ? "Voice provider runtime reported a fatal process error."
+        : "Voice provider runtime reported a process warning."
+      : message;
     return [
       isFatal
         ? {
             type: "runtime.error",
-            ...runtimeEventBase(event, canonicalThreadId),
+            ...observableBase,
             payload: {
-              message,
+              message: observableMessage,
               class: "provider_error" as const,
-              ...(event.payload !== undefined ? { detail: event.payload } : {}),
+              ...(!sensitiveRuntime && event.payload !== undefined
+                ? { detail: event.payload }
+                : {}),
             },
           }
         : {
             type: "runtime.warning",
-            ...runtimeEventBase(event, canonicalThreadId),
+            ...observableBase,
             payload: {
-              message,
-              ...(event.payload !== undefined ? { detail: event.payload } : {}),
+              message: observableMessage,
+              ...(!sensitiveRuntime && event.payload !== undefined
+                ? { detail: event.payload }
+                : {}),
             },
           },
     ];
@@ -1344,6 +1490,37 @@ function mapToRuntimeEvents(
   return [];
 }
 
+function mapToRuntimeEvents(
+  event: ProviderEvent,
+  canonicalThreadId: ThreadId,
+  runtimeInstanceId: string,
+  sensitiveRuntime = false,
+): ReadonlyArray<ProviderRuntimeEvent> {
+  return mapToRuntimeEventsWithoutRuntimeIdentity(event, canonicalThreadId, sensitiveRuntime).map(
+    (runtimeEvent): ProviderRuntimeEvent => {
+      if (runtimeEvent.type === "session.exited") {
+        return {
+          ...runtimeEvent,
+          payload: {
+            ...runtimeEvent.payload,
+            runtimeInstanceId,
+          },
+        };
+      }
+      if (runtimeEvent.type === "runtime.error") {
+        return {
+          ...runtimeEvent,
+          payload: {
+            ...runtimeEvent.payload,
+            runtimeInstanceId,
+          },
+        };
+      }
+      return runtimeEvent;
+    },
+  );
+}
+
 /**
  * Build a Codex provider adapter bound to a specific `CodexSettings` payload.
  *
@@ -1374,7 +1551,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
 
-  const startSession: CodexAdapterShape["startSession"] = (input) =>
+  const startSessionInternal = (
+    input: Parameters<CodexAdapterShape["startSession"]>[0],
+    creationRecoveryThreadSource?: string,
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
         if (input.provider !== undefined && input.provider !== PROVIDER) {
@@ -1394,7 +1574,14 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
-        const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const mcpSessions = McpProviderSession.readMcpProviderSessions(input.threadId);
+        const standardMcpSession = mcpSessions.find(
+          (entry) => entry.profile.kind === "standard-provider",
+        );
+        const controllerMcpSession =
+          input.threadPurpose === "voice-controller"
+            ? mcpSessions.find((entry) => entry.profile.kind === "voice-controller")
+            : undefined;
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -1406,25 +1593,58 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
             : {}),
+          ...(input.threadSource !== undefined ? { threadSource: input.threadSource } : {}),
+          ...(creationRecoveryThreadSource !== undefined ? { creationRecoveryThreadSource } : {}),
+          ...(input.runtimeInstanceId !== undefined
+            ? { runtimeInstanceId: input.runtimeInstanceId }
+            : {}),
+          ...(input.threadPurpose !== undefined ? { threadPurpose: input.threadPurpose } : {}),
+          ...(input.enableRealtimeConversation === true
+            ? { enableRealtimeConversation: true }
+            : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
-          ...(mcpSession
+          ...(standardMcpSession || controllerMcpSession
             ? {
                 environment: {
                   ...(options?.environment ?? process.env),
-                  SHUV2CODE_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(
-                    /^Bearer\s+/,
-                    "",
-                  ),
+                  ...(standardMcpSession
+                    ? {
+                        SHUV2CODE_MCP_BEARER_TOKEN: standardMcpSession.authorizationHeader.replace(
+                          /^Bearer\s+/,
+                          "",
+                        ),
+                      }
+                    : {}),
+                  ...(controllerMcpSession
+                    ? {
+                        SHUV2CODE_CONTROLLER_MCP_BEARER_TOKEN:
+                          controllerMcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
+                      }
+                    : {}),
                 },
                 appServerArgs: [
-                  "-c",
-                  `mcp_servers.shuv2code.url=${mcpSession.endpoint}`,
-                  "-c",
-                  'mcp_servers.shuv2code.bearer_token_env_var="SHUV2CODE_MCP_BEARER_TOKEN"',
+                  ...(standardMcpSession
+                    ? [
+                        "-c",
+                        `mcp_servers.shuv2code.url=${standardMcpSession.endpoint}`,
+                        "-c",
+                        'mcp_servers.shuv2code.bearer_token_env_var="SHUV2CODE_MCP_BEARER_TOKEN"',
+                      ]
+                    : []),
+                  ...(controllerMcpSession
+                    ? [
+                        "-c",
+                        `mcp_servers.shuv2code_controller.url=${controllerMcpSession.endpoint}`,
+                        "-c",
+                        'mcp_servers.shuv2code_controller.bearer_token_env_var="SHUV2CODE_CONTROLLER_MCP_BEARER_TOKEN"',
+                        "-c",
+                        'mcp_servers.shuv2code_controller.default_tools_approval_mode="approve"',
+                      ]
+                    : []),
                 ],
               }
             : {}),
@@ -1452,8 +1672,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
-            yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+            const sensitiveRuntime =
+              input.threadPurpose === "voice-controller" ||
+              input.threadPurpose === "voice-transport";
+            yield* writeNativeEvent(event, sensitiveRuntime);
+            // Capture the identity from this concrete runtime closure. A late
+            // exit from an old runtime must never be relabeled with the
+            // currently active runtime identity for the same thread.
+            const runtimeEvents = mapToRuntimeEvents(
+              event,
+              event.threadId,
+              runtime.runtimeInstanceId,
+              sensitiveRuntime,
+            );
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,
@@ -1485,6 +1716,23 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ),
           ),
         );
+        const codexIdentity = yield* runtime.getCodexIdentity.pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: cause.message,
+                cause,
+              }),
+          ),
+        );
+        const startedWithIdentity: ProviderSession = {
+          ...started,
+          runtimeInstanceId: runtime.runtimeInstanceId,
+          providerSessionId: codexIdentity.sessionId,
+          providerThreadId: codexIdentity.threadId,
+        };
 
         sessions.set(input.threadId, {
           threadId: input.threadId,
@@ -1495,12 +1743,43 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         });
         sessionScopeTransferred = true;
 
-        return started;
+        return startedWithIdentity;
       }),
     );
 
+  const startSession: CodexAdapterShape["startSession"] = (input) => startSessionInternal(input);
+
+  const recoverSessionByThreadSource: NonNullable<
+    CodexAdapterShape["recoverSessionByThreadSource"]
+  > = (input) =>
+    Effect.gen(function* () {
+      const attempted = yield* Effect.result(startSessionInternal(input, input.threadSource));
+      if (attempted._tag === "Success") {
+        return { state: "adopted" as const, session: attempted.success };
+      }
+      const error = attempted.failure;
+      {
+        if (!isProviderAdapterProcessError(error)) {
+          return yield* error;
+        }
+        const cause = error.cause;
+        if (
+          !isCodexSessionRuntimeCreationRecoveryError(cause) ||
+          cause.reason === "protocol_violation"
+        ) {
+          return yield* error;
+        }
+        return cause.reason === "not_found"
+          ? ({ state: "not_found" } as const)
+          : ({
+              state: "ambiguous",
+              candidateCount: cause.candidateCount ?? 2,
+            } as const);
+      }
+    });
+
   const resolveAttachment = Effect.fn("resolveAttachment")(function* (
-    input: ProviderSendTurnInput,
+    input: ProviderSendTurnInput | ProviderSteerTurnInput,
     attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
   ) {
     const attachmentPath = resolveAttachmentPath({
@@ -1560,9 +1839,170 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           : {}),
         ...(serviceTier ? { serviceTier } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+        ...(input.clientUserMessageId !== undefined
+          ? { clientUserMessageId: input.clientUserMessageId }
+          : {}),
+        ...(input.expectedTurnId === null ? { expectedTurnId: null } : {}),
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+  });
+
+  const steerTurn: NonNullable<CodexAdapterShape["steerTurn"]> = Effect.fn("steerTurn")(
+    function* (input) {
+      const codexAttachments = yield* Effect.forEach(
+        input.attachments ?? [],
+        (attachment) => resolveAttachment(input, attachment),
+        { concurrency: 1 },
+      );
+      const session = yield* requireSession(input.threadId);
+      return yield* session.runtime
+        .steerTurn({
+          expectedTurnId: input.expectedTurnId,
+          ...(input.input !== undefined ? { input: input.input } : {}),
+          ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+          clientUserMessageId: input.clientUserMessageId,
+        })
+        .pipe(
+          Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/steer", cause)),
+        );
+    },
+  );
+
+  const startRealtime: NonNullable<CodexAdapterShape["startRealtime"]> = Effect.fn("startRealtime")(
+    function* (input) {
+      const session = yield* requireSession(input.threadId);
+      yield* session.runtime
+        .startRealtime({
+          generation: input.generation,
+          realtimeSessionId: input.realtimeSessionId,
+          version: "v3",
+          outputModality: "audio",
+          clientManagedHandoffs: input.clientManagedHandoffs,
+          transport: {
+            type: "webrtc",
+            sdp: input.offerSdp,
+          },
+          ...(input.voiceId
+            ? {
+                voice: input.voiceId as NonNullable<CodexSessionRuntimeRealtimeStartInput["voice"]>,
+              }
+            : {}),
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            mapCodexRuntimeError(input.threadId, "thread/realtime/start", cause),
+          ),
+        );
+    },
+  );
+
+  const appendRealtimeText: NonNullable<CodexAdapterShape["appendRealtimeText"]> = Effect.fn(
+    "appendRealtimeText",
+  )(function* (input) {
+    const session = yield* requireSession(input.threadId);
+    yield* session.runtime
+      .appendRealtimeText({
+        generation: input.generation,
+        text: input.text,
+        ...(input.role ? { role: input.role } : {}),
+      })
+      .pipe(
+        Effect.mapError((cause) =>
+          mapCodexRuntimeError(input.threadId, "thread/realtime/appendText", cause),
+        ),
+      );
+  });
+
+  const appendRealtimeSpeech: NonNullable<CodexAdapterShape["appendRealtimeSpeech"]> = Effect.fn(
+    "appendRealtimeSpeech",
+  )(function* (input) {
+    const session = yield* requireSession(input.threadId);
+    yield* session.runtime
+      .appendRealtimeSpeech({
+        generation: input.generation,
+        text: input.text,
+      })
+      .pipe(
+        Effect.mapError((cause) =>
+          mapCodexRuntimeError(input.threadId, "thread/realtime/appendSpeech", cause),
+        ),
+      );
+  });
+
+  const stopRealtime: NonNullable<CodexAdapterShape["stopRealtime"]> = Effect.fn("stopRealtime")(
+    function* (input) {
+      const session = yield* requireSession(input.threadId);
+      yield* session.runtime
+        .stopRealtime(input.generation)
+        .pipe(
+          Effect.mapError((cause) =>
+            mapCodexRuntimeError(input.threadId, "thread/realtime/stop", cause),
+          ),
+        );
+    },
+  );
+
+  const listRealtimeVoices: NonNullable<CodexAdapterShape["listRealtimeVoices"]> = Effect.fn(
+    "listRealtimeVoices",
+  )(function* (threadId) {
+    const session = yield* requireSession(threadId);
+    if (session.runtime.listExperimentalFeatures === undefined) {
+      return {
+        voices: [],
+        defaultVoiceId: null,
+        unsupportedReason: "method_unavailable",
+      };
+    }
+    const featureResult = yield* Effect.result(session.runtime.listExperimentalFeatures);
+    if (featureResult._tag === "Failure") {
+      const failure = featureResult.failure;
+      return {
+        voices: [],
+        defaultVoiceId: null,
+        unsupportedReason:
+          isCodexAppServerRequestError(failure) && failure.code === -32601
+            ? "method_unavailable"
+            : isCodexAppServerProtocolParseError(failure) || isCodexAppServerRequestError(failure)
+              ? "incompatible_version"
+              : "incompatible_version",
+      };
+    }
+    const realtimeFeature = featureResult.success.data.find(
+      (feature) => feature.name === "realtime_conversation",
+    );
+    if (realtimeFeature === undefined) {
+      return {
+        voices: [],
+        defaultVoiceId: null,
+        unsupportedReason: "method_unavailable",
+      };
+    }
+    if (!realtimeFeature.enabled) {
+      return {
+        voices: [],
+        defaultVoiceId: null,
+        unsupportedReason: "feature_disabled",
+      };
+    }
+    const response = yield* session.runtime.listRealtimeVoices.pipe(
+      Effect.mapError((cause) =>
+        mapCodexRuntimeError(threadId, "thread/realtime/listVoices", cause),
+      ),
+    );
+    // Codex realtime v3 uses the v1 voice family and default. The upstream
+    // catalog has no separate v3 field in the pinned 0.146.0 protocol.
+    const voices = response.voices.v1.map((id) => ({ id }));
+    return voices.length === 0
+      ? {
+          voices,
+          defaultVoiceId: null,
+          unsupportedReason: "empty_voice_catalog",
+        }
+      : {
+          voices,
+          defaultVoiceId: response.voices.defaultV1,
+        };
   });
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {
@@ -1649,11 +2089,18 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
-  const writeNativeEvent = Effect.fnUntraced(function* (event: ProviderEvent) {
+  const writeNativeEvent = Effect.fnUntraced(function* (
+    event: ProviderEvent,
+    sensitiveRuntime = false,
+  ) {
     if (!nativeEventLogger) {
       return;
     }
-    yield* nativeEventLogger.write(event, event.threadId);
+    const safeEvent = sanitizeProviderObservabilityEvent("native", event, { sensitiveRuntime });
+    if (safeEvent === undefined) {
+      return;
+    }
+    yield* nativeEventLogger.write(safeEvent, event.threadId);
   });
 
   const stopSessionInternal = Effect.fn("stopSessionInternal")(function* (
@@ -1706,9 +2153,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      turnSteering: "same-turn",
     },
     startSession,
+    recoverSessionByThreadSource,
     sendTurn,
+    steerTurn,
+    startRealtime,
+    appendRealtimeText,
+    appendRealtimeSpeech,
+    stopRealtime,
+    listRealtimeVoices,
     interruptTurn,
     readThread,
     rollbackThread,

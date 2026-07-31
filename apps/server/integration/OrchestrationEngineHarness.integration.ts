@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ApprovalRequestId,
   CodexSettings,
+  EnvironmentId,
   ProviderDriverKind,
   type OrchestrationEvent,
   type OrchestrationThread,
@@ -21,6 +22,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { HttpServer } from "effect/unstable/http";
 
 import * as CheckpointStore from "../src/checkpointing/CheckpointStore.ts";
 import { TextGeneration, type TextGenerationShape } from "../src/textGeneration/TextGeneration.ts";
@@ -78,6 +80,8 @@ import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
 import * as AgentAwarenessRelay from "../src/relay/AgentAwarenessRelay.ts";
+import * as ServerEnvironment from "../src/environment/ServerEnvironment.ts";
+import * as McpSessionRegistry from "../src/mcp/McpSessionRegistry.ts";
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
@@ -225,6 +229,11 @@ interface MakeOrchestrationIntegrationHarnessOptions {
   readonly realCodex?: boolean;
 }
 
+const traceRealCodexHarness = (enabled: boolean, stage: string) =>
+  enabled && process.env.CODEX_INTEGRATION_TRACE === "1"
+    ? Effect.logInfo(`real-codex harness: ${stage}`)
+    : Effect.void;
+
 export const makeOrchestrationIntegrationHarness = (
   options?: MakeOrchestrationIntegrationHarnessOptions,
 ) =>
@@ -280,6 +289,27 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(providerSessionDirectoryLayer),
     );
     const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers);
+    const integrationMcpRegistryLayer = McpSessionRegistry.layer.pipe(
+      Layer.provide(
+        Layer.succeed(
+          ServerEnvironment.ServerEnvironment,
+          ServerEnvironment.ServerEnvironment.of({
+            getEnvironmentId: Effect.succeed(EnvironmentId.make("orchestration-integration")),
+            getDescriptor: Effect.die("unused"),
+          }),
+        ),
+      ),
+      Layer.provide(
+        Layer.succeed(
+          HttpServer.HttpServer,
+          HttpServer.HttpServer.of({
+            address: { _tag: "TcpAddress", hostname: "127.0.0.1", port: 43123 },
+            serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
+          }),
+        ),
+      ),
+      Layer.provide(NodeServices.layer),
+    );
     const providerLayer = useRealCodex
       ? makeProviderServiceLive().pipe(
           Layer.provide(providerSessionDirectoryLayer),
@@ -384,13 +414,18 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(NodeServices.layer),
     );
 
-    const runtime = ManagedRuntime.make(layer);
+    const runtime = ManagedRuntime.make(
+      useRealCodex ? layer.pipe(Layer.provideMerge(integrationMcpRegistryLayer)) : layer,
+    );
+    yield* traceRealCodexHarness(useRealCodex, "managed runtime created");
     const engine = yield* tryRuntimePromise("load OrchestrationEngine service", () =>
       runtime.runPromise(Effect.service(OrchestrationEngineService)),
     ).pipe(Effect.orDie);
+    yield* traceRealCodexHarness(useRealCodex, "orchestration engine loaded");
     const reactor = yield* tryRuntimePromise("load OrchestrationReactor service", () =>
       runtime.runPromise(Effect.service(OrchestrationReactor)),
     ).pipe(Effect.orDie);
+    yield* traceRealCodexHarness(useRealCodex, "orchestration reactor loaded");
     const snapshotQuery = yield* tryRuntimePromise("load ProjectionSnapshotQuery service", () =>
       runtime.runPromise(Effect.service(ProjectionSnapshotQuery)),
     ).pipe(Effect.orDie);
@@ -416,6 +451,7 @@ export const makeOrchestrationIntegrationHarness = (
     yield* tryRuntimePromise("start OrchestrationReactor", () =>
       runtime.runPromise(reactor.start().pipe(Scope.provide(scope))),
     ).pipe(Effect.orDie);
+    yield* traceRealCodexHarness(useRealCodex, "orchestration reactor started");
     const receiptHistory = yield* Ref.make<ReadonlyArray<OrchestrationRuntimeReceipt>>([]);
     yield* Stream.runForEach(runtimeReceiptBus.streamEventsForTest, (receipt) =>
       Ref.update(receiptHistory, (history) => [...history, receipt]).pipe(Effect.asVoid),

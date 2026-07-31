@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
+
 import type {
   OrchestrationEvent,
   OrchestrationReadModel,
@@ -5,6 +8,7 @@ import type {
   ThreadId,
 } from "@shuv2code/contracts";
 import { OrchestrationCommand } from "@shuv2code/contracts";
+import { stableStringify } from "@shuv2code/shared/relaySigning";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -52,8 +56,14 @@ const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvar
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
+  actorProvenanceJson: string;
+  canonicalCommandHash: string;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
+}
+
+function canonicalCommandHash(command: OrchestrationCommand): string {
+  return NodeCrypto.createHash("sha256").update(stableStringify(command), "utf8").digest("hex");
 }
 
 function commandToAggregateRef(command: OrchestrationCommand): {
@@ -74,6 +84,63 @@ function commandToAggregateRef(command: OrchestrationCommand): {
         aggregateId: command.threadId,
       };
   }
+}
+
+function assertVoiceControllerLifecycleCommandAllowed(
+  sql: SqlClient.SqlClient,
+  command: OrchestrationCommand,
+): Effect.Effect<void, OrchestrationDispatchError> {
+  if (command.type === "thread.archive" || command.type === "thread.delete") {
+    return sql<{ readonly protected: number }>`
+      SELECT 1 AS protected
+      FROM voice_controller_bindings
+      WHERE controller_thread_id = ${command.threadId}
+      LIMIT 1
+    `.pipe(
+      Effect.mapError(
+        toPersistenceSqlError(
+          "OrchestrationEngine.assertVoiceControllerLifecycleCommandAllowed:query",
+        ),
+      ),
+      Effect.flatMap((rows) =>
+        rows.length === 0
+          ? Effect.void
+          : Effect.fail(
+              new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: `Thread '${command.threadId}' is the designated realtime voice controller. Use the authenticated voice controller reset flow before archiving or deleting it.`,
+              }),
+            ),
+      ),
+    );
+  }
+
+  if (command.type === "project.delete") {
+    return sql<{ readonly protected: number }>`
+      SELECT 1 AS protected
+      FROM voice_controller_bindings
+      WHERE host_project_id = ${command.projectId}
+      LIMIT 1
+    `.pipe(
+      Effect.mapError(
+        toPersistenceSqlError(
+          "OrchestrationEngine.assertVoiceControllerLifecycleCommandAllowed:query",
+        ),
+      ),
+      Effect.flatMap((rows) =>
+        rows.length === 0
+          ? Effect.void
+          : Effect.fail(
+              new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: `Project '${command.projectId}' hosts the designated realtime voice controller. Reset or transfer the controller before deleting the project.`,
+              }),
+            ),
+      ),
+    );
+  }
+
+  return Effect.void;
 }
 
 const makeOrchestrationEngine = Effect.gen(function* () {
@@ -139,6 +206,20 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           commandId: envelope.command.commandId,
         });
         if (Option.isSome(existingReceipt)) {
+          const receipt = existingReceipt.value;
+          const conflicts =
+            (receipt.commandType != null && receipt.commandType !== envelope.command.type) ||
+            (receipt.canonicalCommandHash != null &&
+              receipt.canonicalCommandHash !== envelope.canonicalCommandHash) ||
+            (receipt.actorProvenanceJson != null &&
+              receipt.actorProvenanceJson !== envelope.actorProvenanceJson);
+          if (conflicts) {
+            return yield* new OrchestrationCommandPreviouslyRejectedError({
+              commandId: envelope.command.commandId,
+              detail:
+                "Command id conflict: this id was already used with different command data or actor provenance.",
+            });
+          }
           if (existingReceipt.value.status === "accepted") {
             return {
               sequence: existingReceipt.value.resultSequence,
@@ -149,6 +230,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             detail: existingReceipt.value.error ?? "Previously rejected.",
           });
         }
+
+        yield* assertVoiceControllerLifecycleCommandAllowed(sql, envelope.command);
 
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
@@ -195,6 +278,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 resultSequence: lastSavedEvent.sequence,
                 status: "accepted",
                 error: null,
+                commandType: envelope.command.type,
+                canonicalCommandHash: envelope.canonicalCommandHash,
+                actorProvenanceJson: envelope.actorProvenanceJson,
               });
 
               return {
@@ -286,6 +372,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                   resultSequence: commandReadModel.snapshotSequence,
                   status: "rejected",
                   error: error.message,
+                  commandType: envelope.command.type,
+                  canonicalCommandHash: envelope.canonicalCommandHash,
+                  actorProvenanceJson: envelope.actorProvenanceJson,
                 })
                 .pipe(Effect.catch(() => Effect.void));
             }
@@ -309,11 +398,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive, limit) =>
     eventStore.readFromSequence(fromSequenceExclusive, limit);
 
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+  const dispatch: OrchestrationEngineShape["dispatch"] = (command, options) =>
     Effect.gen(function* () {
       const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
       yield* Queue.offer(commandQueue, {
         command,
+        actorProvenanceJson: stableStringify(
+          options?.actorProvenance ?? { actorKind: "unspecified" },
+        ),
+        canonicalCommandHash: canonicalCommandHash(command),
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
       });

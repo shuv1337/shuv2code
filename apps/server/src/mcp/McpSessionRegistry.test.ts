@@ -1,6 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@shuv2code/contracts";
+import {
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+  VoiceRuntimeInstanceId,
+} from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
 import { HttpServer } from "effect/unstable/http";
 
@@ -126,5 +131,71 @@ it.effect("does not keep credentials of other threads alive", () =>
     timestamp += 2;
 
     expect(yield* registry.resolve(token)).toBeUndefined();
+  }),
+);
+
+it.effect(
+  "keeps ordinary and controller credentials together while rejecting cross-profile bearer use",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* makeRegistry(() => 1_000);
+      const threadId = ThreadId.make("controller-thread");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const standard = yield* registry.issue({ threadId, providerInstanceId });
+      const controller = yield* registry.issue({
+        threadId,
+        providerInstanceId,
+        profile: {
+          kind: "voice-controller",
+          controllerThreadId: threadId,
+          runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime-1"),
+          authorizedRuntimeCeiling: "full-access",
+          liveControllerRuntimeMode: "full-access",
+          controlEpoch: 7,
+          controlEnabled: true,
+        },
+      });
+      const standardToken = standard.config.authorizationHeader.replace(/^Bearer\s+/, "");
+      const controllerToken = controller.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+      expect(standard.config.endpoint).toBe("http://127.0.0.1:43123/mcp");
+      expect(controller.config.endpoint).toBe("http://127.0.0.1:43123/mcp/controller");
+      expect((yield* registry.resolve(standardToken, "standard-provider"))?.profile?.kind).toBe(
+        "standard-provider",
+      );
+      expect((yield* registry.resolve(controllerToken, "voice-controller"))?.profile?.kind).toBe(
+        "voice-controller",
+      );
+      expect(yield* registry.resolve(standardToken, "voice-controller")).toBeUndefined();
+      expect(yield* registry.resolve(controllerToken, "standard-provider")).toBeUndefined();
+    }),
+);
+
+it.effect("replaces only the matching profile for a thread", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const threadId = ThreadId.make("profile-replacement-thread");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const originalStandard = yield* registry.issue({ threadId, providerInstanceId });
+    const controller = yield* registry.issue({
+      threadId,
+      providerInstanceId,
+      profile: {
+        kind: "voice-controller",
+        controllerThreadId: threadId,
+        runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime-2"),
+        authorizedRuntimeCeiling: "full-access",
+        liveControllerRuntimeMode: "full-access",
+        controlEpoch: 1,
+        controlEnabled: true,
+      },
+    });
+    const replacementStandard = yield* registry.issue({ threadId, providerInstanceId });
+    const token = (issued: McpSessionRegistry.McpIssuedCredential) =>
+      issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    expect(yield* registry.resolve(token(originalStandard))).toBeUndefined();
+    expect(yield* registry.resolve(token(replacementStandard), "standard-provider")).toBeDefined();
+    expect(yield* registry.resolve(token(controller), "voice-controller")).toBeDefined();
   }),
 );

@@ -7,6 +7,8 @@ import {
   ProviderDriverKind,
   type ProjectId,
   type OrchestrationSession,
+  type ProviderEffectOperation,
+  type ProviderEffectOutcomeState,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
@@ -29,9 +31,11 @@ import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
+import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -46,6 +50,18 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+const decodeActorProvenanceJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      actorKind: Schema.String,
+    }),
+  ),
+);
+const sensitiveProviderActorKinds = new Set([
+  "voice-controller",
+  "voice-controller-supervisor",
+  "voice-transport",
+]);
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -53,6 +69,7 @@ type ProviderIntentEvent = Extract<
     type:
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
+      | "thread.turn-steer-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
@@ -192,6 +209,7 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
@@ -221,6 +239,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly kind:
       | "provider.turn.start.failed"
+      | "provider.turn.steer.failed"
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
@@ -257,7 +276,39 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
+  const classifyProviderEffectFailure = (
+    cause: Cause.Cause<unknown>,
+  ): {
+    readonly state: Exclude<ProviderEffectOutcomeState, "pending" | "confirmed">;
+    readonly sanitizedCode: string;
+  } => {
+    const failReason = cause.reasons.find(Cause.isFailReason);
+    const error = failReason?.error;
+    const tag =
+      typeof error === "object" && error !== null && "_tag" in error
+        ? String((error as { readonly _tag: unknown })._tag)
+        : "";
+    const detail = isProviderAdapterRequestError(error) ? error.detail.toLowerCase() : "";
+    if (detail.includes("stale_target") || detail.includes("already_terminal")) {
+      return { state: "stale", sanitizedCode: "stale_target" };
+    }
+    if (
+      tag === "ProviderAdapterRequestError" ||
+      tag === "ProviderAdapterProcessError" ||
+      tag === "ProviderSessionDirectoryPersistenceError"
+    ) {
+      return { state: "indeterminate", sanitizedCode: "provider_outcome_unknown" };
+    }
+    return { state: "failed", sanitizedCode: "provider_rejected" };
+  };
+
+  const formatFailureDetail = (
+    cause: Cause.Cause<unknown>,
+    sensitiveProviderEffect = false,
+  ): string => {
+    if (sensitiveProviderEffect) {
+      return classifyProviderEffectFailure(cause).sanitizedCode;
+    }
     const failReason = cause.reasons.find(Cause.isFailReason);
     const providerError = isProviderAdapterRequestError(failReason?.error)
       ? failReason.error
@@ -267,6 +318,63 @@ const make = Effect.gen(function* () {
     }
     return Cause.pretty(cause);
   };
+
+  const hasSensitiveProviderProvenance = Effect.fnUntraced(function* (event: ProviderIntentEvent) {
+    if (event.commandId === null) {
+      return false;
+    }
+    return yield* commandReceiptRepository.getByCommandId({ commandId: event.commandId }).pipe(
+      Effect.match({
+        // A persistence failure leaves provenance unknown. Fail closed so an
+        // unstructured provider cause cannot cross the persistence boundary.
+        onFailure: () => true,
+        onSuccess: (receiptOption) => {
+          if (Option.isNone(receiptOption)) {
+            return false;
+          }
+          const actorProvenanceJson = receiptOption.value.actorProvenanceJson;
+          if (actorProvenanceJson === null || actorProvenanceJson === undefined) {
+            return false;
+          }
+          const provenance = decodeActorProvenanceJson(actorProvenanceJson);
+          return Option.isSome(provenance)
+            ? sensitiveProviderActorKinds.has(provenance.value.actorKind)
+            : true;
+        },
+      }),
+    );
+  });
+
+  const appendProviderEffectOutcome = Effect.fnUntraced(function* (input: {
+    readonly operationId: string;
+    readonly operation: ProviderEffectOperation;
+    readonly state: ProviderEffectOutcomeState;
+    readonly threadId: ThreadId;
+    readonly expectedTurnId: TurnId | null;
+    readonly actualTurnId: TurnId | null;
+    readonly sanitizedCode: string;
+    readonly createdAt: string;
+  }) {
+    yield* orchestrationEngine.dispatch({
+      type: "thread.provider-effect.outcome.set",
+      commandId: yield* serverCommandId("provider-effect-outcome"),
+      threadId: input.threadId,
+      outcome: {
+        operationId: input.operationId,
+        operation: input.operation,
+        state: input.state,
+        threadId: input.threadId,
+        expectedTurnId: input.expectedTurnId,
+        actualTurnId: input.actualTurnId,
+        sanitizedCode: input.sanitizedCode,
+        updatedAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
+  const providerOperationIdForEvent = (event: ProviderIntentEvent): string =>
+    String(event.commandId ?? event.eventId);
 
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
@@ -363,6 +471,8 @@ const make = Effect.gen(function* () {
     options?: {
       readonly modelSelection?: ModelSelection;
       readonly pendingTurnStart?: boolean;
+      readonly recoveryPolicy?: "forbid";
+      readonly threadSource?: string;
     },
   ) {
     const thread = yield* resolveThread(threadId);
@@ -507,6 +617,8 @@ const make = Effect.gen(function* () {
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+        ...(options?.recoveryPolicy === "forbid" ? { recoveryPolicy: "forbid" as const } : {}),
+        ...(options?.threadSource !== undefined ? { threadSource: options.threadSource } : {}),
         runtimeMode: desiredRuntimeMode,
       });
 
@@ -614,9 +726,13 @@ const make = Effect.gen(function* () {
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageText: string;
+    readonly clientUserMessageId: import("@shuv2code/contracts").MessageId;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
+    readonly expectedTurnId?: null;
+    readonly recoveryPolicy?: "forbid";
+    readonly threadSource?: string;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -628,6 +744,8 @@ const make = Effect.gen(function* () {
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       pendingTurnStart: true,
+      ...(input.recoveryPolicy === "forbid" ? { recoveryPolicy: "forbid" as const } : {}),
+      ...(input.threadSource !== undefined ? { threadSource: input.threadSource } : {}),
     });
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
@@ -668,6 +786,8 @@ const make = Effect.gen(function* () {
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      clientUserMessageId: input.clientUserMessageId,
+      ...(input.expectedTurnId === null ? { expectedTurnId: null } : {}),
     };
   });
 
@@ -780,6 +900,7 @@ const make = Effect.gen(function* () {
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
+    const sensitiveProviderEffect = yield* hasSensitiveProviderProvenance(event);
     const key = turnStartKeyForEvent(event);
     if (yield* hasHandledTurnStartRecently(key)) {
       return;
@@ -838,7 +959,7 @@ const make = Effect.gen(function* () {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
       }
-      const detail = formatFailureDetail(cause);
+      const detail = formatFailureDetail(cause, sensitiveProviderEffect);
       return setThreadSessionErrorOnTurnStartFailure({
         threadId: event.payload.threadId,
         detail,
@@ -864,8 +985,10 @@ const make = Effect.gen(function* () {
           Effect.logWarning("provider command reactor failed to recover turn start failure", {
             eventType: event.type,
             threadId: event.payload.threadId,
-            cause: Cause.pretty(recoveryCause),
-            originalCause: Cause.pretty(cause),
+            cause: sensitiveProviderEffect
+              ? "provider_failure_recovery_failed"
+              : Cause.pretty(recoveryCause),
+            originalCause: formatFailureDetail(cause, sensitiveProviderEffect),
           }),
         ),
       );
@@ -873,11 +996,19 @@ const make = Effect.gen(function* () {
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
       messageText: message.text,
+      clientUserMessageId: event.payload.messageId,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }
         : {}),
       interactionMode: event.payload.interactionMode,
+      ...(event.payload.expectedTurnId === null ? { expectedTurnId: null } : {}),
+      ...(event.payload.providerRecoveryPolicy === "forbid"
+        ? { recoveryPolicy: "forbid" as const }
+        : {}),
+      ...(event.payload.providerThreadSource !== undefined
+        ? { threadSource: event.payload.providerThreadSource }
+        : {}),
       createdAt: event.payload.createdAt,
     }).pipe(
       Effect.map(Option.some),
@@ -888,14 +1019,134 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    const operationId = providerOperationIdForEvent(event);
+    yield* appendProviderEffectOutcome({
+      operationId,
+      operation: "start",
+      state: "pending",
+      threadId: event.payload.threadId,
+      expectedTurnId: null,
+      actualTurnId: null,
+      sanitizedCode: "dispatch_pending",
+      createdAt: event.payload.createdAt,
+    });
+    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.tap((turn) =>
+        appendProviderEffectOutcome({
+          operationId,
+          operation: "start",
+          state: "confirmed",
+          threadId: event.payload.threadId,
+          expectedTurnId: null,
+          actualTurnId: turn.turnId,
+          sanitizedCode: "provider_acknowledged",
+          createdAt: event.payload.createdAt,
+        }),
+      ),
+      Effect.catchCause((cause) => {
+        const outcome = classifyProviderEffectFailure(cause);
+        return appendProviderEffectOutcome({
+          operationId,
+          operation: "start",
+          ...outcome,
+          threadId: event.payload.threadId,
+          expectedTurnId: null,
+          actualTurnId: null,
+          createdAt: event.payload.createdAt,
+        }).pipe(Effect.andThen(recoverTurnStartFailure(cause)));
+      }),
+      Effect.forkScoped,
+    );
+  });
+
+  const processTurnSteerRequested = Effect.fn("processTurnSteerRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.turn-steer-requested" }>,
+  ) {
+    const sensitiveProviderEffect = yield* hasSensitiveProviderProvenance(event);
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread) {
+      return;
+    }
+    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
+    if (!message || message.role !== "user") {
+      yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.steer.failed",
+        summary: "Provider turn steer failed",
+        detail: `User message '${event.payload.messageId}' was not found for turn steer request.`,
+        turnId: event.payload.expectedTurnId,
+        createdAt: event.payload.createdAt,
+      });
+      return;
+    }
+
+    const operationId = providerOperationIdForEvent(event);
+    yield* appendProviderEffectOutcome({
+      operationId,
+      operation: "steer",
+      state: "pending",
+      threadId: event.payload.threadId,
+      expectedTurnId: event.payload.expectedTurnId,
+      actualTurnId: null,
+      sanitizedCode: "dispatch_pending",
+      createdAt: event.payload.createdAt,
+    });
     yield* providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+      .steerTurn({
+        threadId: event.payload.threadId,
+        expectedTurnId: event.payload.expectedTurnId,
+        ...(toNonEmptyProviderInput(message.text) !== undefined
+          ? { input: toNonEmptyProviderInput(message.text) }
+          : {}),
+        ...(message.attachments !== undefined && message.attachments.length > 0
+          ? { attachments: message.attachments }
+          : {}),
+        clientUserMessageId: event.payload.clientUserMessageId,
+      })
+      .pipe(
+        Effect.tap((turn) =>
+          appendProviderEffectOutcome({
+            operationId,
+            operation: "steer",
+            state: "confirmed",
+            threadId: event.payload.threadId,
+            expectedTurnId: event.payload.expectedTurnId,
+            actualTurnId: turn.turnId,
+            sanitizedCode: "provider_acknowledged",
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+        Effect.catchCause((cause) => {
+          const outcome = classifyProviderEffectFailure(cause);
+          return appendProviderEffectOutcome({
+            operationId,
+            operation: "steer",
+            ...outcome,
+            threadId: event.payload.threadId,
+            expectedTurnId: event.payload.expectedTurnId,
+            actualTurnId: null,
+            createdAt: event.payload.createdAt,
+          }).pipe(
+            Effect.andThen(
+              appendProviderFailureActivity({
+                threadId: event.payload.threadId,
+                kind: "provider.turn.steer.failed",
+                summary: "Provider turn steer failed",
+                detail: formatFailureDetail(cause, sensitiveProviderEffect),
+                turnId: event.payload.expectedTurnId,
+                createdAt: event.payload.createdAt,
+              }),
+            ),
+          );
+        }),
+        Effect.forkScoped,
+      );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
+    const sensitiveProviderEffect = yield* hasSensitiveProviderProvenance(event);
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
       return;
@@ -912,8 +1163,59 @@ const make = Effect.gen(function* () {
       });
     }
 
-    // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    const operationId = providerOperationIdForEvent(event);
+    yield* appendProviderEffectOutcome({
+      operationId,
+      operation: "interrupt",
+      state: "pending",
+      threadId: event.payload.threadId,
+      expectedTurnId: event.payload.turnId,
+      actualTurnId: null,
+      sanitizedCode: "dispatch_pending",
+      createdAt: event.payload.createdAt,
+    });
+    yield* providerService
+      .interruptTurn({
+        threadId: event.payload.threadId,
+        turnId: event.payload.turnId,
+      })
+      .pipe(
+        Effect.tap(() =>
+          appendProviderEffectOutcome({
+            operationId,
+            operation: "interrupt",
+            state: "confirmed",
+            threadId: event.payload.threadId,
+            expectedTurnId: event.payload.turnId,
+            actualTurnId: event.payload.turnId,
+            sanitizedCode: "provider_acknowledged",
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+        Effect.catchCause((cause) => {
+          const outcome = classifyProviderEffectFailure(cause);
+          return appendProviderEffectOutcome({
+            operationId,
+            operation: "interrupt",
+            ...outcome,
+            threadId: event.payload.threadId,
+            expectedTurnId: event.payload.turnId,
+            actualTurnId: null,
+            createdAt: event.payload.createdAt,
+          }).pipe(
+            Effect.andThen(
+              appendProviderFailureActivity({
+                threadId: event.payload.threadId,
+                kind: "provider.turn.interrupt.failed",
+                summary: "Provider turn interrupt failed",
+                detail: formatFailureDetail(cause, sensitiveProviderEffect),
+                turnId: event.payload.turnId,
+                createdAt: event.payload.createdAt,
+              }),
+            ),
+          );
+        }),
+      );
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
@@ -1063,6 +1365,9 @@ const make = Effect.gen(function* () {
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
+      case "thread.turn-steer-requested":
+        yield* processTurnSteerRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1080,15 +1385,21 @@ const make = Effect.gen(function* () {
 
   const processDomainEventSafely = (event: ProviderIntentEvent) =>
     processDomainEvent(event).pipe(
-      Effect.catchCause((cause) => {
-        if (Cause.hasInterruptsOnly(cause)) {
-          return Effect.failCause(cause);
-        }
-        return Effect.logWarning("provider command reactor failed to process event", {
-          eventType: event.type,
-          cause: Cause.pretty(cause),
-        });
-      }),
+      Effect.catchCause((cause) =>
+        hasSensitiveProviderProvenance(event).pipe(
+          Effect.flatMap((sensitiveProviderEffect) => {
+            if (Cause.hasInterruptsOnly(cause)) {
+              return Effect.failCause(cause);
+            }
+            return Effect.logWarning("provider command reactor failed to process event", {
+              eventType: event.type,
+              cause: sensitiveProviderEffect
+                ? classifyProviderEffectFailure(cause).sanitizedCode
+                : Cause.pretty(cause),
+            });
+          }),
+        ),
+      ),
     );
 
   const worker = yield* makeDrainableWorker(processDomainEventSafely);
@@ -1098,6 +1409,7 @@ const make = Effect.gen(function* () {
       if (
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
+        event.type === "thread.turn-steer-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
@@ -1118,4 +1430,6 @@ const make = Effect.gen(function* () {
   } satisfies ProviderCommandReactorShape;
 });
 
-export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make);
+export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make).pipe(
+  Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+);

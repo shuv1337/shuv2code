@@ -33,6 +33,82 @@ const decodeConsumeRateLimitResetCreditResponse = Schema.decodeUnknownEffect(
   CodexRpc.CLIENT_REQUEST_RESPONSES["account/rateLimitResetCredit/consume"],
 );
 
+const REALTIME_REQUEST_METHODS = [
+  "thread/realtime/start",
+  "thread/realtime/appendAudio",
+  "thread/realtime/appendText",
+  "thread/realtime/appendSpeech",
+  "thread/realtime/stop",
+  "thread/realtime/listVoices",
+] as const;
+
+const REALTIME_NOTIFICATION_METHODS = [
+  "thread/realtime/started",
+  "thread/realtime/itemAdded",
+  "thread/realtime/transcript/delta",
+  "thread/realtime/transcript/done",
+  "thread/realtime/outputAudio/delta",
+  "thread/realtime/sdp",
+  "thread/realtime/error",
+  "thread/realtime/closed",
+] as const;
+
+it("keeps the complete realtime request and notification surface on one upstream pin", () => {
+  assert.match(CodexRpc.UPSTREAM_PROTOCOL_REF, /^[0-9a-f]{40}$/);
+  for (const method of REALTIME_REQUEST_METHODS) {
+    assert.equal(CodexRpc.CLIENT_REQUEST_METHODS[method], method);
+    assert.exists(CodexRpc.CLIENT_REQUEST_PARAMS[method]);
+    assert.exists(CodexRpc.CLIENT_REQUEST_RESPONSES[method]);
+  }
+  for (const method of REALTIME_NOTIFICATION_METHODS) {
+    assert.equal(CodexRpc.SERVER_NOTIFICATION_METHODS[method], method);
+    assert.exists(CodexRpc.SERVER_NOTIFICATION_PARAMS[method]);
+  }
+});
+
+it("redacts realtime, steering, and raw protocol payloads before logger callbacks", () => {
+  const secret = "voice-protocol-secret";
+  const events: ReadonlyArray<CodexProtocol.CodexAppServerProtocolLogEvent> = [
+    {
+      direction: "outgoing",
+      stage: "raw",
+      payload: JSON.stringify({ method: "thread/realtime/appendText", text: secret }),
+    },
+    {
+      direction: "outgoing",
+      stage: "decoded",
+      payload: {
+        id: 1,
+        method: "turn/steer",
+        params: { input: [{ type: "text", text: secret }] },
+      },
+    },
+    {
+      direction: "incoming",
+      stage: "decoded",
+      payload: {
+        method: "thread/realtime/transcript/done",
+        params: { threadId: "thread-1", role: "user", text: secret },
+      },
+    },
+    {
+      direction: "incoming",
+      stage: "decoded",
+      payload: {
+        method: "thread/realtime/error",
+        params: { threadId: "thread-1", message: secret },
+      },
+    },
+  ];
+
+  const sanitized = events.map(CodexProtocol.sanitizeCodexAppServerProtocolLogEvent);
+  assert.notInclude(JSON.stringify(sanitized), secret);
+  assert.deepEqual(sanitized[3]?.payload, {
+    method: "thread/realtime/error",
+    params: { threadId: "thread-1", code: "realtime_error" },
+  });
+});
+
 it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
   it.effect("maps account usage responses to the upstream token usage schema", () =>
     Effect.gen(function* () {

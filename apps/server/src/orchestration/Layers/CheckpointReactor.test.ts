@@ -105,6 +105,12 @@ function createProviderServiceHarness(
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
+    steerTurn: () => unsupported(),
+    startRealtime: () => unsupported(),
+    appendRealtimeText: () => unsupported(),
+    appendRealtimeSpeech: () => unsupported(),
+    stopRealtime: () => unsupported(),
+    listRealtimeVoices: () => unsupported(),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),

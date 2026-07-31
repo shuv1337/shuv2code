@@ -40,6 +40,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import * as ControllerMcpHttpServer from "./mcp/ControllerMcpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -101,6 +102,11 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as AutomationStore from "./automations/AutomationStore.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import { ThreadControlServiceLive } from "./orchestration/Layers/ThreadControlService.ts";
+import { VoiceControlPersistenceLayerLive } from "./persistence/Layers/VoiceControl.ts";
+import { ControllerActionContextResolverLive } from "./voice/Layers/ControllerActionContextResolver.ts";
+import { VoiceControllerServiceLive } from "./voice/Layers/VoiceControllerService.ts";
+import { VoiceRuntimeGatewayLive } from "./voice/Layers/VoiceRuntimeGateway.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -237,6 +243,38 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
 
 const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
 
+const VoiceControlPersistenceLive = VoiceControlPersistenceLayerLive.pipe(
+  Layer.provide(PersistenceLayerLive),
+);
+
+const McpSessionRegistryLayerLive = McpSessionRegistry.layer;
+
+const ThreadControlLayerLive = ThreadControlServiceLive;
+
+const ControllerActionContextResolverLayerLive = ControllerActionContextResolverLive;
+
+const VoiceRuntimeGatewayLayerLive = VoiceRuntimeGatewayLive.pipe(
+  Layer.provideMerge(ProviderLayerLive),
+  Layer.provideMerge(ProviderRegistryLive),
+  Layer.provideMerge(McpSessionRegistryLayerLive),
+);
+
+const VoiceControllerLayerLive = VoiceControllerServiceLive.pipe(
+  Layer.provideMerge(VoiceRuntimeGatewayLayerLive),
+);
+
+const VoiceControlServicesLayerLive = Layer.mergeAll(
+  ThreadControlLayerLive,
+  ControllerActionContextResolverLayerLive,
+  VoiceControllerLayerLive,
+).pipe(
+  Layer.provideMerge(VoiceControlPersistenceLive),
+  Layer.provideMerge(OrchestrationLayerLive),
+  Layer.provideMerge(ServerSettingsLayerLive),
+  Layer.provideMerge(ServerEnvironment.layer),
+  Layer.provideMerge(McpSessionRegistryLayerLive),
+);
+
 const AutomationStoreLayerLive = AutomationStore.layer.pipe(Layer.provide(PersistenceLayerLive));
 
 const AutomationServiceLayerLive = AutomationService.layer.pipe(
@@ -346,7 +384,7 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(ServerSettingsLayerLive),
   Layer.provideMerge(CheckpointingLayerLive),
@@ -393,6 +431,10 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   ),
 );
 
+const RuntimeCoreDependenciesLive = VoiceControlServicesLayerLive.pipe(
+  Layer.provideMerge(RuntimeCoreDependenciesBaseLive),
+);
+
 const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   // Misc.
   Layer.provideMerge(BackgroundLayerLive),
@@ -423,7 +465,9 @@ export const makeRoutesLayer = Layer.mergeAll(
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
-  McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer)),
+  Layer.mergeAll(McpHttpServer.layer, ControllerMcpHttpServer.layer).pipe(
+    Layer.provide(McpSessionRegistryLayerLive),
+  ),
 ).pipe(
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer),

@@ -1,13 +1,15 @@
-import { assert, describe, it } from "vite-plus/test";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeTest from "node:test";
 
 import {
+  MAC_MICROPHONE_USAGE_DESCRIPTION,
   makeDevelopmentLauncherScript,
   resolveElectronBinaryPath,
   resolveMacLauncherPaths,
 } from "./electron-launcher.mjs";
 
-describe("electron development launcher", () => {
-  it("uses captured values only as fallbacks for a live runner environment", () => {
+NodeTest.describe("electron development launcher", () => {
+  NodeTest.it("uses captured values only as fallbacks for a live runner environment", () => {
     const script = makeDevelopmentLauncherScript({
       electronBinaryPath: "/repo/node_modules/electron/Electron",
       mainEntryPath: "/repo/apps/desktop/dist-electron/main.cjs",
@@ -19,18 +21,18 @@ describe("electron development launcher", () => {
       },
     });
 
-    assert.include(
+    NodeAssert.match(
       script,
-      "if [ -z \"${VITE_DEV_SERVER_URL:-}\" ]; then export VITE_DEV_SERVER_URL='http://127.0.0.1:8526'; fi",
+      /if \[ -z "\$\{VITE_DEV_SERVER_URL:-\}" \]; then export VITE_DEV_SERVER_URL='http:\/\/127\.0\.0\.1:8526'; fi/,
     );
-    assert.notInclude(script, "\nexport VITE_DEV_SERVER_URL=");
-    assert.include(
+    NodeAssert.doesNotMatch(script, /\nexport VITE_DEV_SERVER_URL=/);
+    NodeAssert.match(
       script,
-      "exec '/repo/node_modules/electron/Electron' --shuv2code-dev-root='/repo/apps/desktop' '/repo/apps/desktop/dist-electron/main.cjs' \"$@\"",
+      /exec '\/repo\/node_modules\/electron\/Electron' --shuv2code-dev-root='\/repo\/apps\/desktop' '\/repo\/apps\/desktop\/dist-electron\/main\.cjs' "\$@"/,
     );
   });
 
-  it("repairs Electron before loading the package entrypoint", () => {
+  NodeTest.it("repairs Electron before loading the package entrypoint", () => {
     const calls = [];
     const electronPath = resolveElectronBinaryPath({
       ensureRuntime: () => {
@@ -43,25 +45,25 @@ describe("electron development launcher", () => {
       moduleUrl: import.meta.url,
     });
 
-    assert.equal(
+    NodeAssert.strictEqual(
       electronPath,
       "/repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
     );
-    assert.deepEqual(calls, ["ensure", "require:electron"]);
+    NodeAssert.deepStrictEqual(calls, ["ensure", "require:electron"]);
   });
 
-  it("keeps the native Electron executable name inside the branded macOS bundle", () => {
+  NodeTest.it("keeps the native Electron executable name inside the branded macOS bundle", () => {
     const paths = resolveMacLauncherPaths(
       "/repo/apps/desktop/.electron-runtime/shuv2code (Dev).app",
       "shuv2code (Dev)",
     );
 
-    assert.equal(paths.launcherExecutableName, "shuv2code (Dev) Launcher");
-    assert.equal(
+    NodeAssert.strictEqual(paths.launcherExecutableName, "shuv2code (Dev) Launcher");
+    NodeAssert.strictEqual(
       paths.launcherBinaryPath,
       "/repo/apps/desktop/.electron-runtime/shuv2code (Dev).app/Contents/MacOS/shuv2code (Dev) Launcher",
     );
-    assert.equal(
+    NodeAssert.strictEqual(
       paths.runtimeElectronBinaryPath,
       "/repo/apps/desktop/.electron-runtime/shuv2code (Dev).app/Contents/MacOS/Electron",
     );
@@ -72,10 +74,17 @@ describe("electron development launcher", () => {
       desktopRoot: "/repo/apps/desktop",
       environment: {},
     });
-    assert.include(
+    NodeAssert.match(
       script,
-      "exec '/repo/apps/desktop/.electron-runtime/shuv2code (Dev).app/Contents/MacOS/Electron'",
+      /exec '\/repo\/apps\/desktop\/\.electron-runtime\/shuv2code \(Dev\)\.app\/Contents\/MacOS\/Electron'/,
     );
-    assert.notInclude(script, "node_modules/electron");
+    NodeAssert.doesNotMatch(script, /node_modules\/electron/);
+  });
+
+  NodeTest.it("declares why the development bundle needs microphone access", () => {
+    NodeAssert.strictEqual(
+      MAC_MICROPHONE_USAGE_DESCRIPTION,
+      "shuv2code needs microphone access for real-time voice control.",
+    );
   });
 });

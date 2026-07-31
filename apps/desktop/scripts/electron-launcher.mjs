@@ -20,7 +20,9 @@ export const APP_BUNDLE_ID = isDevelopment
   ? `dev.shuv.shuv2code.dev.${devBundleIdSuffix || "local"}`
   : "dev.shuv.shuv2code";
 const APP_PROTOCOL_SCHEMES = isDevelopment ? ["shuv2code-dev"] : ["shuv2code"];
-const LAUNCHER_VERSION = 14;
+const LAUNCHER_VERSION = 15;
+export const MAC_MICROPHONE_USAGE_DESCRIPTION =
+  "shuv2code needs microphone access for real-time voice control.";
 const defaultIconPath = NodePath.join(desktopDir, "resources", "icon.icns");
 const developmentMacIconPngPath = NodePath.join(
   repoRoot,
@@ -227,6 +229,7 @@ function patchMainBundleInfoPlist(appBundlePath, iconPath, executableName) {
   setPlistString(infoPlistPath, "CFBundleIdentifier", APP_BUNDLE_ID);
   setPlistString(infoPlistPath, "CFBundleExecutable", executableName);
   setPlistString(infoPlistPath, "CFBundleIconFile", "icon.icns");
+  setPlistString(infoPlistPath, "NSMicrophoneUsageDescription", MAC_MICROPHONE_USAGE_DESCRIPTION);
   setPlistJson(infoPlistPath, "CFBundleURLTypes", [
     {
       CFBundleURLName: APP_BUNDLE_ID,

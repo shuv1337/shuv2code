@@ -20,6 +20,109 @@ export interface CodexAppServerProtocolLogEvent {
   readonly payload: unknown;
 }
 
+const SENSITIVE_REQUEST_METHODS = new Set([
+  "turn/start",
+  "turn/steer",
+  "thread/realtime/start",
+  "thread/realtime/appendAudio",
+  "thread/realtime/appendText",
+  "thread/realtime/appendSpeech",
+]);
+
+const SAFE_REALTIME_CLOSE_REASONS = new Set([
+  "client_request",
+  "completed",
+  "connection_closed",
+  "session_ended",
+]);
+
+function sanitizeDecodedProtocolPayload(payload: unknown): unknown {
+  if (!isObject(payload)) {
+    return { redacted: true };
+  }
+  const id =
+    typeof payload.id === "string" || typeof payload.id === "number" ? payload.id : undefined;
+  const method = typeof payload.method === "string" ? payload.method : undefined;
+  if (method === undefined && ("result" in payload || "error" in payload)) {
+    return {
+      ...(id === undefined ? {} : { id }),
+      response: "redacted",
+    };
+  }
+  if (method === undefined) {
+    return payload;
+  }
+  if (SENSITIVE_REQUEST_METHODS.has(method)) {
+    return {
+      ...(id === undefined ? {} : { id }),
+      method,
+      params: "redacted",
+    };
+  }
+  if (method === "thread/realtime/started") {
+    const params = isObject(payload.params) ? payload.params : {};
+    return {
+      method,
+      params: {
+        ...(typeof params.threadId === "string" ? { threadId: params.threadId } : {}),
+        ...(typeof params.realtimeSessionId === "string"
+          ? { realtimeSessionId: params.realtimeSessionId }
+          : {}),
+        ...(params.version === "v1" || params.version === "v2" || params.version === "v3"
+          ? { version: params.version }
+          : {}),
+      },
+    };
+  }
+  if (method === "thread/realtime/closed") {
+    const params = isObject(payload.params) ? payload.params : {};
+    const reason =
+      typeof params.reason === "string" && SAFE_REALTIME_CLOSE_REASONS.has(params.reason)
+        ? params.reason
+        : "unknown";
+    return {
+      method,
+      params: {
+        ...(typeof params.threadId === "string" ? { threadId: params.threadId } : {}),
+        reason,
+      },
+    };
+  }
+  if (method === "thread/realtime/error") {
+    const params = isObject(payload.params) ? payload.params : {};
+    return {
+      method,
+      params: {
+        ...(typeof params.threadId === "string" ? { threadId: params.threadId } : {}),
+        code: "realtime_error",
+      },
+    };
+  }
+  if (method.startsWith("thread/realtime/")) {
+    return {
+      ...(id === undefined ? {} : { id }),
+      method,
+      params: "redacted",
+    };
+  }
+  return payload;
+}
+
+export function sanitizeCodexAppServerProtocolLogEvent(
+  event: CodexAppServerProtocolLogEvent,
+): CodexAppServerProtocolLogEvent {
+  if (event.stage === "raw") {
+    return {
+      ...event,
+      payload: { redacted: true },
+    };
+  }
+  return {
+    ...event,
+    payload: sanitizeDecodedProtocolPayload(event.payload),
+  };
+}
+
 export interface CodexAppServerIncomingNotification {
   readonly method: string;
   readonly params?: unknown;
@@ -167,9 +270,12 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       if (event.direction === "outgoing" && !options.logOutgoing) {
         return Effect.void;
       }
+      const sanitizedEvent = sanitizeCodexAppServerProtocolLogEvent(event);
       return (
-        options.logger?.(event) ??
-        Effect.logDebug("Codex App Server protocol event").pipe(Effect.annotateLogs({ event }))
+        options.logger?.(sanitizedEvent) ??
+        Effect.logDebug("Codex App Server protocol event").pipe(
+          Effect.annotateLogs({ event: sanitizedEvent }),
+        )
       );
     };
 

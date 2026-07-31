@@ -492,6 +492,9 @@ export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  enableRealtimeVoice: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  enableVoiceThreadRead: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  enableVoiceThreadControl: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   backgroundActivity: BackgroundActivitySettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
@@ -650,6 +653,9 @@ export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
+  enableRealtimeVoice: Schema.optionalKey(Schema.Boolean),
+  enableVoiceThreadRead: Schema.optionalKey(Schema.Boolean),
+  enableVoiceThreadControl: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),

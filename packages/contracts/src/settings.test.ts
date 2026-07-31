@@ -206,6 +206,30 @@ describe("ServerSettings.sourceControlWritingStyle", () => {
   });
 });
 
+describe("ServerSettings voice control policy", () => {
+  it("defaults every voice capability off for legacy settings", () => {
+    const settings = decodeServerSettings({});
+
+    expect(settings.enableRealtimeVoice).toBe(false);
+    expect(settings.enableVoiceThreadRead).toBe(false);
+    expect(settings.enableVoiceThreadControl).toBe(false);
+  });
+
+  it("accepts independent voice capability patches", () => {
+    expect(
+      decodeServerSettingsPatch({
+        enableRealtimeVoice: true,
+        enableVoiceThreadRead: true,
+        enableVoiceThreadControl: true,
+      }),
+    ).toMatchObject({
+      enableRealtimeVoice: true,
+      enableVoiceThreadRead: true,
+      enableVoiceThreadControl: true,
+    });
+  });
+});
+
 describe("ServerSettings.textToSpeech", () => {
   it("defaults legacy configs to a disabled OpenAI-compatible provider", () => {
     expect(decodeServerSettings({}).textToSpeech).toEqual({

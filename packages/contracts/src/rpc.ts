@@ -172,6 +172,23 @@ import {
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import {
+  VoiceControllerError,
+  VoiceEnsureControllerInput,
+  VoiceEnsureControllerResult,
+  VoiceListVoicesInput,
+  VoiceListVoicesResult,
+  VoiceRealtimeIngressInput,
+  VoiceRealtimeIngressResult,
+  VoiceResetControllerInput,
+  VoiceResetControllerResult,
+  VoiceSessionEvent,
+  VoiceSessionStartInput,
+  VoiceSessionStartResult,
+  VoiceSessionStopInput,
+  VoiceSessionStopResult,
+  VoiceSubscribeEventsInput,
+} from "./realtimeVoice.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -260,6 +277,14 @@ export const WS_METHODS = {
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
 
+  // Realtime voice controller
+  voiceEnsureController: "voice.ensureController",
+  voiceListVoices: "voice.listVoices",
+  voiceResetController: "voice.resetController",
+  voiceStart: "voice.start",
+  voiceIngestRealtimeEvent: "voice.ingestRealtimeEvent",
+  voiceStop: "voice.stop",
+
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -280,6 +305,7 @@ export const WS_METHODS = {
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
+  subscribeVoiceEvents: "subscribeVoiceEvents",
 } as const;
 
 export const WsAutomationsListRpc = Rpc.make(WS_METHODS.automationsList, {
@@ -467,6 +493,49 @@ export const WsServerGetBackgroundPolicyRpc = Rpc.make(WS_METHODS.serverGetBackg
   payload: Schema.Struct({}),
   success: BackgroundPolicySnapshot,
   error: EnvironmentAuthorizationError,
+});
+
+export const WsVoiceEnsureControllerRpc = Rpc.make(WS_METHODS.voiceEnsureController, {
+  payload: VoiceEnsureControllerInput,
+  success: VoiceEnsureControllerResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoiceListVoicesRpc = Rpc.make(WS_METHODS.voiceListVoices, {
+  payload: VoiceListVoicesInput,
+  success: VoiceListVoicesResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoiceResetControllerRpc = Rpc.make(WS_METHODS.voiceResetController, {
+  payload: VoiceResetControllerInput,
+  success: VoiceResetControllerResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoiceStartRpc = Rpc.make(WS_METHODS.voiceStart, {
+  payload: VoiceSessionStartInput,
+  success: VoiceSessionStartResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoiceIngestRealtimeEventRpc = Rpc.make(WS_METHODS.voiceIngestRealtimeEvent, {
+  payload: VoiceRealtimeIngressInput,
+  success: VoiceRealtimeIngressResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoiceStopRpc = Rpc.make(WS_METHODS.voiceStop, {
+  payload: VoiceSessionStopInput,
+  success: VoiceSessionStopResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsSubscribeVoiceEventsRpc = Rpc.make(WS_METHODS.subscribeVoiceEvents, {
+  payload: VoiceSubscribeEventsInput,
+  success: VoiceSessionEvent,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+  stream: true,
 });
 
 export const WsSourceControlLookupRepositoryRpc = Rpc.make(
@@ -856,6 +925,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,
+  WsVoiceEnsureControllerRpc,
+  WsVoiceListVoicesRpc,
+  WsVoiceResetControllerRpc,
+  WsVoiceStartRpc,
+  WsVoiceIngestRealtimeEventRpc,
+  WsVoiceStopRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
   WsSourceControlLookupRepositoryRpc,
@@ -907,6 +982,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
+  WsSubscribeVoiceEventsRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,

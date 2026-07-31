@@ -23,6 +23,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, vi } from "@effect/vitest";
 
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -35,18 +36,25 @@ import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
+  type CodexSessionRuntimeRealtimeAudioInput,
+  type CodexSessionRuntimeRealtimeSpeechInput,
+  type CodexSessionRuntimeRealtimeStartInput,
+  type CodexSessionRuntimeRealtimeTextInput,
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeSendTurnInput,
+  type CodexSessionRuntimeSteerTurnInput,
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 
 // Test-local service tag so the rest of the file can keep using `yield* CodexAdapter`.
 class CodexAdapter extends Context.Service<CodexAdapter, CodexAdapterShape>()(
@@ -116,6 +124,9 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   public readonly closeImpl = vi.fn(() => Promise.resolve(undefined));
 
   readonly options: CodexSessionRuntimeOptions;
+  get runtimeInstanceId() {
+    return this.options.runtimeInstanceId ?? "runtime-test-1";
+  }
 
   constructor(options: CodexSessionRuntimeOptions) {
     this.options = options;
@@ -125,11 +136,71 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Effect.promise(() => this.startImpl());
   }
 
-  getSession = Effect.promise(() => this.startImpl());
+  getSession = Effect.promise(() => this.startImpl()).pipe(
+    Effect.map((session) => ({
+      ...session,
+      runtimeInstanceId: this.runtimeInstanceId,
+      providerSessionId: "provider-session-1",
+      providerThreadId: "provider-thread-1",
+    })),
+  );
+
+  getCodexIdentity = Effect.succeed({
+    sessionId: "provider-session-1",
+    threadId: "provider-thread-1",
+  });
 
   sendTurn(input: CodexSessionRuntimeSendTurnInput) {
     return Effect.promise(() => this.sendTurnImpl(input));
   }
+
+  steerTurn(input: CodexSessionRuntimeSteerTurnInput) {
+    return Effect.succeed({
+      threadId: this.options.threadId,
+      turnId: input.expectedTurnId,
+    });
+  }
+
+  startRealtime(_input: CodexSessionRuntimeRealtimeStartInput) {
+    return Effect.void;
+  }
+
+  appendRealtimeAudio(_input: CodexSessionRuntimeRealtimeAudioInput) {
+    return Effect.void;
+  }
+
+  appendRealtimeText(_input: CodexSessionRuntimeRealtimeTextInput) {
+    return Effect.void;
+  }
+
+  appendRealtimeSpeech(_input: CodexSessionRuntimeRealtimeSpeechInput) {
+    return Effect.void;
+  }
+
+  stopRealtime(_generation: number) {
+    return Effect.void;
+  }
+
+  listRealtimeVoices = Effect.succeed({
+    voices: {
+      v1: ["juniper", "cove"] as const,
+      v2: ["marin"] as const,
+      defaultV1: "cove" as const,
+      defaultV2: "marin" as const,
+    },
+  });
+
+  listExperimentalFeatures = Effect.succeed({
+    data: [
+      {
+        name: "realtime_conversation",
+        enabled: true,
+        defaultEnabled: false,
+        stage: "underDevelopment" as const,
+      },
+    ],
+    nextCursor: null,
+  });
 
   interruptTurn(turnId?: TurnId) {
     return Effect.promise(() => this.interruptTurnImpl(turnId));
@@ -287,6 +358,108 @@ validationLayer("CodexAdapterLive validation", (it) => {
         runtimeMode: "full-access",
       });
     }),
+  );
+  it.effect("forwards the trusted runtime identity to voice transport runtimes", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      const session = yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("voice-transport-1"),
+        threadPurpose: "voice-transport",
+        runtimeInstanceId: "voice-runtime-1",
+        enableRealtimeConversation: true,
+        runtimeMode: "approval-required",
+      });
+
+      NodeAssert.equal(session.runtimeInstanceId, "voice-runtime-1");
+      const listedSession = (yield* adapter.listSessions()).find(
+        (candidate) => candidate.threadId === session.threadId,
+      );
+      NodeAssert.equal(listedSession?.runtimeInstanceId, "voice-runtime-1");
+      NodeAssert.equal(listedSession?.providerSessionId, "provider-session-1");
+      NodeAssert.equal(listedSession?.providerThreadId, "provider-thread-1");
+      NodeAssert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0], {
+        binaryPath: "codex",
+        cwd: process.cwd(),
+        launchArgs: "",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId: asThreadId("voice-transport-1"),
+        threadPurpose: "voice-transport",
+        runtimeInstanceId: "voice-runtime-1",
+        enableRealtimeConversation: true,
+        runtimeMode: "approval-required",
+      });
+    }),
+  );
+
+  it.effect(
+    "lists v3-compatible voices from a controller without enabling transport realtime",
+    () =>
+      Effect.gen(function* () {
+        validationRuntimeFactory.factory.mockClear();
+        const adapter = yield* CodexAdapter;
+        const threadId = asThreadId("voice-controller-catalog");
+        McpProviderSession.setMcpProviderSession({
+          credentialId: "controller-credential",
+          environmentId: "environment-test" as never,
+          threadId,
+          providerSessionId: "pending-controller-session",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          profile: {
+            kind: "voice-controller",
+            controllerThreadId: threadId,
+            runtimeInstanceId: "voice-controller-runtime" as never,
+            providerIdentity: {
+              codexProviderThreadId: "provider-thread-1",
+            },
+            scope: {
+              kind: "managed-codex-environment",
+              environmentId: "environment-test" as never,
+            },
+            authorizedRuntimeCeiling: "approval-required",
+            liveControllerRuntimeMode: "approval-required",
+            controlEpoch: 1,
+          },
+          endpoint: "http://127.0.0.1/mcp/controller",
+          authorizationHeader: "Bearer controller-token",
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          threadPurpose: "voice-controller",
+          runtimeInstanceId: "voice-controller-runtime",
+          runtimeMode: "approval-required",
+        });
+        const listVoices = adapter.listRealtimeVoices;
+        NodeAssert.ok(listVoices);
+        const catalog = yield* listVoices(threadId);
+
+        NodeAssert.deepStrictEqual(catalog, {
+          voices: [{ id: "juniper" }, { id: "cove" }],
+          defaultVoiceId: "cove",
+        });
+        NodeAssert.equal(
+          validationRuntimeFactory.factory.mock.calls[0]?.[0].enableRealtimeConversation,
+          undefined,
+        );
+        NodeAssert.deepStrictEqual(
+          validationRuntimeFactory.factory.mock.calls[0]?.[0].appServerArgs,
+          [
+            "-c",
+            "mcp_servers.shuv2code_controller.url=http://127.0.0.1/mcp/controller",
+            "-c",
+            'mcp_servers.shuv2code_controller.bearer_token_env_var="SHUV2CODE_CONTROLLER_MCP_BEARER_TOKEN"',
+            "-c",
+            'mcp_servers.shuv2code_controller.default_tools_approval_mode="approve"',
+          ],
+        );
+      }),
   );
 });
 
@@ -497,13 +670,16 @@ const lifecycleLayer = it.layer(
   ),
 );
 
-function startLifecycleRuntime() {
+function startLifecycleRuntime(
+  threadPurpose?: "standard" | "voice-transport" | "voice-controller",
+) {
   return Effect.gen(function* () {
     const adapter = yield* CodexAdapter;
     yield* adapter.startSession({
       provider: ProviderDriverKind.make("codex"),
       threadId: asThreadId("thread-1"),
       runtimeMode: "full-access",
+      ...(threadPurpose !== undefined ? { threadPurpose } : {}),
     });
     const runtime = lifecycleRuntimeFactory.lastRuntime;
     NodeAssert.ok(runtime);
@@ -719,6 +895,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         return;
       }
       NodeAssert.equal(firstEvent.value.threadId, "thread-1");
+      NodeAssert.equal(firstEvent.value.payload.runtimeInstanceId, runtime.runtimeInstanceId);
       NodeAssert.equal(firstEvent.value.payload.reason, "Session stopped");
     }),
   );
@@ -793,6 +970,125 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         "The filename or extension is too long. (os error 206)",
       );
     }),
+  );
+
+  it.effect("redacts process stderr before publishing voice-runtime canonical events", () =>
+    Effect.gen(function* () {
+      const secret = "VOICE_STDERR_TRANSCRIPT_SDP_SECRET";
+      const { adapter, runtime } = yield* startLifecycleRuntime("voice-transport");
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-voice-process-stderr"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "process/stderr",
+        message: `provider echoed transcript and SDP: ${secret}`,
+        payload: { raw: secret },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.type, "runtime.warning");
+      if (firstEvent.value.type !== "runtime.warning") {
+        return;
+      }
+      NodeAssert.equal(
+        firstEvent.value.payload.message,
+        "Voice provider runtime reported a process warning.",
+      );
+      NodeAssert.equal((yield* encodeUnknownJson(firstEvent.value)).includes(secret), false);
+      NodeAssert.equal("detail" in firstEvent.value.payload, false);
+    }),
+  );
+
+  it.effect(
+    "redacts generic provider errors before publishing voice-runtime canonical events",
+    () =>
+      Effect.gen(function* () {
+        const secret = "VOICE_GENERIC_ERROR_TRANSCRIPT_SDP_SECRET";
+        const { adapter, runtime } = yield* startLifecycleRuntime("voice-controller");
+        const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+        yield* runtime.emit({
+          id: asEventId("evt-voice-generic-error"),
+          kind: "error",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method: "runtime/internal",
+          message: `provider echoed transcript and SDP: ${secret}`,
+          payload: { transcript: secret, sdp: secret },
+        } satisfies ProviderEvent);
+
+        const firstEvent = yield* Fiber.join(firstEventFiber);
+        NodeAssert.equal(firstEvent._tag, "Some");
+        if (firstEvent._tag !== "Some") {
+          return;
+        }
+        NodeAssert.equal(firstEvent.value.type, "runtime.error");
+        if (firstEvent.value.type !== "runtime.error") {
+          return;
+        }
+        NodeAssert.equal(
+          firstEvent.value.payload.message,
+          "Voice provider runtime reported an error.",
+        );
+        NodeAssert.equal((yield* encodeUnknownJson(firstEvent.value)).includes(secret), false);
+        NodeAssert.equal("detail" in firstEvent.value.payload, false);
+        NodeAssert.deepEqual(firstEvent.value.raw?.payload, {});
+      }),
+  );
+
+  it.effect(
+    "redacts app-server error notifications before publishing voice-runtime canonical events",
+    () =>
+      Effect.gen(function* () {
+        const secret = "VOICE_NOTIFICATION_ERROR_TRANSCRIPT_SDP_SECRET";
+        const { adapter, runtime } = yield* startLifecycleRuntime("voice-transport");
+        const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+        yield* runtime.emit({
+          id: asEventId("evt-voice-error-notification"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method: "error",
+          turnId: asTurnId("turn-1"),
+          message: `provider echoed transcript and SDP: ${secret}`,
+          payload: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            error: { message: secret },
+            willRetry: true,
+            transcript: secret,
+            sdp: secret,
+          },
+        } satisfies ProviderEvent);
+
+        const firstEvent = yield* Fiber.join(firstEventFiber);
+        NodeAssert.equal(firstEvent._tag, "Some");
+        if (firstEvent._tag !== "Some") {
+          return;
+        }
+        NodeAssert.equal(firstEvent.value.type, "runtime.warning");
+        if (firstEvent.value.type !== "runtime.warning") {
+          return;
+        }
+        NodeAssert.equal(
+          firstEvent.value.payload.message,
+          "Voice provider runtime reported a retryable error.",
+        );
+        NodeAssert.equal((yield* encodeUnknownJson(firstEvent.value)).includes(secret), false);
+        NodeAssert.equal("detail" in firstEvent.value.payload, false);
+        NodeAssert.deepEqual(firstEvent.value.raw?.payload, {});
+      }),
   );
 
   it.effect("maps realtime started notifications with upstream realtime session ids", () =>
@@ -1300,6 +1596,179 @@ it.effect("flushes managed native logs when the adapter layer shuts down", () =>
         yield* Scope.close(scope, Exit.void);
       }
       NodeFS.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }),
+);
+
+it.effect("classifies realtime payloads before invoking an injected native logger", () =>
+  Effect.gen(function* () {
+    const runtimeFactory = makeRuntimeFactory();
+    const observed: Array<unknown> = [];
+    const observedLifecycle = yield* Deferred.make<void>();
+    const secret = "VOICE_SECRET_SHOULD_NEVER_REACH_NATIVE_LOGGER";
+    const scope = yield* Scope.make("sequential");
+    let scopeClosed = false;
+
+    try {
+      const layer = Layer.effect(
+        CodexAdapter,
+        Effect.gen(function* () {
+          const codexConfig = decodeCodexSettings({});
+          return yield* makeCodexAdapter(codexConfig, {
+            makeRuntime: runtimeFactory.factory,
+            nativeEventLogger: {
+              filePath: "memory://codex-native-events",
+              write: (event) =>
+                Effect.gen(function* () {
+                  observed.push(event);
+                  if (observed.length === 4) {
+                    yield* Deferred.succeed(observedLifecycle, undefined);
+                  }
+                }),
+              close: () => Effect.void,
+            },
+          });
+        }),
+      ).pipe(
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(ServerSettingsService.layerTest()),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      const context = yield* Layer.buildWithScope(layer, scope);
+      const adapter = yield* Effect.service(CodexAdapter).pipe(Effect.provide(context));
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-realtime-native-logger"),
+        runtimeMode: "full-access",
+        threadPurpose: "voice-controller",
+      });
+
+      const runtime = runtimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      const eventBase = {
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-realtime-native-logger"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as const;
+
+      yield* runtime.emit({
+        ...eventBase,
+        id: asEventId("evt-append-text"),
+        kind: "request",
+        method: "thread/realtime/appendText",
+        message: secret,
+        payload: { text: secret },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        ...eventBase,
+        id: asEventId("evt-audio"),
+        kind: "notification",
+        method: "thread/realtime/outputAudio/delta",
+        message: secret,
+        payload: { audio: { data: secret } },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        ...eventBase,
+        id: asEventId("evt-transcript"),
+        kind: "notification",
+        method: "thread/realtime/transcript/done",
+        message: secret,
+        payload: { role: "user", text: secret },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        ...eventBase,
+        id: asEventId("evt-stderr"),
+        kind: "notification",
+        method: "process/stderr",
+        message: `provider echoed transcript and SDP: ${secret}`,
+        payload: { raw: secret },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        ...eventBase,
+        id: asEventId("evt-tool-result"),
+        kind: "notification",
+        method: "item/completed",
+        message: secret,
+        payload: {
+          item: {
+            type: "mcpToolCall",
+            arguments: { authorization: secret },
+            result: { content: secret },
+          },
+        },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        ...eventBase,
+        id: asEventId("evt-provider-error"),
+        kind: "error",
+        method: "error",
+        message: secret,
+        payload: {
+          transcript: secret,
+          sdp: secret,
+          audio: secret,
+          cause: new Error(secret),
+        },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        ...eventBase,
+        id: asEventId("evt-started"),
+        kind: "notification",
+        method: "thread/realtime/started",
+        message: secret,
+        payload: {
+          threadId: "thread-realtime-native-logger",
+          realtimeSessionId: secret,
+          version: "v3",
+          sdp: secret,
+        },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        ...eventBase,
+        id: asEventId("evt-error"),
+        kind: "notification",
+        method: "thread/realtime/error",
+        message: secret,
+        payload: {
+          threadId: "thread-realtime-native-logger",
+          code: "protocol_violation",
+          message: secret,
+          retryable: true,
+        },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        ...eventBase,
+        id: asEventId("evt-closed"),
+        kind: "notification",
+        method: "thread/realtime/closed",
+        message: secret,
+        payload: {
+          threadId: "thread-realtime-native-logger",
+          reason: secret,
+        },
+      } satisfies ProviderEvent);
+
+      yield* Deferred.await(observedLifecycle);
+
+      NodeAssert.equal(observed.length, 4);
+      NodeAssert.deepEqual(
+        observed.map((event) => Reflect.get(event as object, "method")),
+        ["error", "thread/realtime/started", "thread/realtime/error", "thread/realtime/closed"],
+      );
+      const serialized = yield* encodeUnknownJson(observed);
+      NodeAssert.equal(serialized.includes(secret), false);
+      NodeAssert.equal(serialized.includes("mcpToolCall"), false);
+      NodeAssert.equal(serialized.includes('"payload"'), false);
+      NodeAssert.equal(serialized.includes("protocol_violation"), true);
+      NodeAssert.equal(serialized.includes('"version":"v3"'), true);
+      NodeAssert.equal(serialized.includes('"reasonCode":"unknown"'), true);
+    } finally {
+      if (!scopeClosed) {
+        yield* Scope.close(scope, Exit.void);
+        scopeClosed = true;
+      }
     }
   }),
 );

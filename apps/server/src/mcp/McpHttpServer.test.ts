@@ -17,10 +17,12 @@ const threadId = ThreadId.make("thread-mcp-test");
 const tabId = PreviewTabId.make("tab-mcp-test");
 const alternateTabId = PreviewTabId.make("tab-mcp-alternate");
 const invocation = {
+  credentialId: "credential-mcp-test",
   environmentId,
   threadId,
   providerSessionId: "provider-session-mcp-test",
   providerInstanceId: ProviderInstanceId.make("codex"),
+  profile: { kind: "standard-provider" as const },
   capabilities: new Set(["preview"] as const),
   issuedAt: 1,
 };

@@ -4,12 +4,14 @@ import * as Schema from "effect/Schema";
 import {
   ProviderEvent,
   ProviderSendTurnInput,
+  ProviderSteerTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
 } from "./provider.ts";
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
+const decodeProviderSteerTurnInput = Schema.decodeUnknownSync(ProviderSteerTurnInput);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
 
@@ -115,6 +117,18 @@ describe("ProviderSessionStartInput", () => {
 });
 
 describe("ProviderSendTurnInput", () => {
+  it("accepts stable client identity and an explicit no-active-turn precondition", () => {
+    const parsed = decodeProviderSendTurnInput({
+      threadId: "thread-1",
+      input: "Start the investigation.",
+      clientUserMessageId: "message-1",
+      expectedTurnId: null,
+    });
+
+    expect(parsed.clientUserMessageId).toBe("message-1");
+    expect(parsed.expectedTurnId).toBeNull();
+  });
+
   it("accepts codex modelSelection", () => {
     const parsed = decodeProviderSendTurnInput({
       threadId: "thread-1",
@@ -150,6 +164,30 @@ describe("ProviderSendTurnInput", () => {
     expect(parsed.modelSelection?.instanceId).toBe("claudeAgent");
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("ultrathink");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
+  });
+});
+
+describe("ProviderSteerTurnInput", () => {
+  it("requires exact turn and stable client message identities", () => {
+    const parsed = decodeProviderSteerTurnInput({
+      threadId: "thread-1",
+      expectedTurnId: "turn-1",
+      input: "Focus on the failing tests.",
+      clientUserMessageId: "message-steer-1",
+    });
+
+    expect(parsed.expectedTurnId).toBe("turn-1");
+    expect(parsed.clientUserMessageId).toBe("message-steer-1");
+  });
+
+  it("rejects a steer without an expected turn id", () => {
+    expect(() =>
+      decodeProviderSteerTurnInput({
+        threadId: "thread-1",
+        input: "Focus elsewhere.",
+        clientUserMessageId: "message-steer-2",
+      }),
+    ).toThrow();
   });
 });
 

@@ -4,7 +4,7 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
-import { DEFAULT_MODEL, ThreadId } from "@shuv2code/contracts";
+import { DEFAULT_MODEL, ThreadId, TurnId } from "@shuv2code/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -16,9 +16,14 @@ import {
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
+  CODEX_VOICE_CONTROLLER_DEVELOPER_INSTRUCTIONS,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
+  materializeVoiceControllerThread,
   openCodexThread,
+  persistedTurnTerminalStatus,
+  recoverCodexThreadBySource,
+  transitionRealtimeLaneForNotification,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -36,6 +41,36 @@ describe("CodexSessionRuntimeIdentifierGenerationError", () => {
       error.message,
       "Failed to generate Codex App Server identifier for provider-event.",
     );
+  });
+});
+
+describe("persistedTurnTerminalStatus", () => {
+  const expectedTurnId = TurnId.make("turn-expected");
+
+  it("accepts only an explicit terminal state for the exact turn", () => {
+    const snapshot = {
+      threadId: "provider-thread-1",
+      turns: [
+        { id: TurnId.make("turn-other"), items: [], status: "completed" as const },
+        { id: expectedTurnId, items: [], status: "interrupted" as const },
+      ],
+    };
+
+    NodeAssert.equal(persistedTurnTerminalStatus(snapshot, expectedTurnId), "interrupted");
+  });
+
+  it("does not infer completion from absence or an in-progress state", () => {
+    const inProgress = {
+      threadId: "provider-thread-1",
+      turns: [{ id: expectedTurnId, items: [], status: "inProgress" as const }],
+    };
+    const absent = {
+      threadId: "provider-thread-1",
+      turns: [{ id: TurnId.make("turn-other"), items: [], status: "completed" as const }],
+    };
+
+    NodeAssert.equal(persistedTurnTerminalStatus(inProgress, expectedTurnId), null);
+    NodeAssert.equal(persistedTurnTerminalStatus(absent, expectedTurnId), null);
   });
 });
 
@@ -343,6 +378,64 @@ describe("codexSessionAppServerArgs", () => {
       ],
     );
   });
+
+  it("adds realtime_conversation only when the caller selects the voice transport policy", () => {
+    NodeAssert.deepStrictEqual(
+      codexSessionAppServerArgs(undefined, undefined, {
+        enableRealtimeConversation: true,
+      }),
+      ["app-server", "--enable", "realtime_conversation"],
+    );
+    NodeAssert.deepStrictEqual(codexSessionAppServerArgs(undefined, undefined), ["app-server"]);
+  });
+});
+
+describe("transitionRealtimeLaneForNotification", () => {
+  it("preserves a startup error with its generation and releases the lane", () => {
+    const transition = transitionRealtimeLaneForNotification(
+      {
+        state: "starting",
+        generation: 7,
+        realtimeSessionId: "realtime-7",
+      },
+      { method: "thread/realtime/error" },
+    );
+
+    NodeAssert.deepStrictEqual(transition, {
+      accepted: true,
+      nextState: { state: "idle" },
+    });
+  });
+
+  it("rejects a stale started notification and accepts the exact session", () => {
+    const state = {
+      state: "starting",
+      generation: 7,
+      realtimeSessionId: "realtime-7",
+    } as const;
+
+    NodeAssert.deepStrictEqual(
+      transitionRealtimeLaneForNotification(state, {
+        method: "thread/realtime/started",
+        realtimeSessionId: "stale",
+      }),
+      { accepted: false, nextState: state },
+    );
+    NodeAssert.deepStrictEqual(
+      transitionRealtimeLaneForNotification(state, {
+        method: "thread/realtime/started",
+        realtimeSessionId: "realtime-7",
+      }),
+      {
+        accepted: true,
+        nextState: {
+          state: "active",
+          generation: 7,
+          realtimeSessionId: "realtime-7",
+        },
+      },
+    );
+  });
 });
 
 describe("isRecoverableThreadResumeError", () => {
@@ -393,6 +486,74 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  it.effect("passes immutable voice-controller instructions on start and resume", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
+      const client = {
+        request: <M extends "thread/start" | "thread/resume">(
+          method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed(
+            makeThreadOpenResponse(
+              "controller-thread",
+            ) as CodexRpc.ClientRequestResponsesByMethod[M],
+          );
+        },
+      };
+
+      yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-controller"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: undefined,
+        threadPurpose: "voice-controller",
+        threadSource: "voice-controller:creation-1",
+      });
+      yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-controller"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "controller-thread",
+        threadPurpose: "voice-controller",
+        threadSource: "voice-controller:creation-1",
+      });
+
+      const startPayload = calls[0]?.payload as Record<string, unknown>;
+      const resumePayload = calls[1]?.payload as Record<string, unknown>;
+      NodeAssert.equal(
+        startPayload.developerInstructions,
+        CODEX_VOICE_CONTROLLER_DEVELOPER_INSTRUCTIONS,
+      );
+      NodeAssert.equal(
+        resumePayload.developerInstructions,
+        CODEX_VOICE_CONTROLLER_DEVELOPER_INSTRUCTIONS,
+      );
+      NodeAssert.equal(startPayload.threadSource, "voice-controller:creation-1");
+      NodeAssert.equal("threadSource" in resumePayload, false);
+      for (const requiredRule of [
+        "exact project, thread, and turn IDs",
+        "exactly one server-bound voice action",
+        "untrusted data",
+        "provider-confirmed",
+        "expectedTurnId",
+        "Never widen permissions",
+        "delete or archive",
+        "target this controller",
+        "mute, end-voice, barge-in",
+      ]) {
+        NodeAssert.match(CODEX_VOICE_CONTROLLER_DEVELOPER_INSTRUCTIONS, new RegExp(requiredRule));
+      }
+    }),
+  );
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
@@ -466,6 +627,131 @@ describe("openCodexThread", () => {
 
       NodeAssert.ok(isCodexAppServerRequestError(error));
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
+    }),
+  );
+});
+
+describe("materializeVoiceControllerThread", () => {
+  it.effect("names only controller threads so empty provider identities survive restart", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly method: string; readonly payload: unknown }> = [];
+      const client = {
+        request: <M extends "thread/name/set">(
+          method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed({} as CodexRpc.ClientRequestResponsesByMethod[M]);
+        },
+      };
+
+      yield* materializeVoiceControllerThread(client, "standard", "provider-standard");
+      yield* materializeVoiceControllerThread(client, "voice-controller", "provider-controller");
+
+      NodeAssert.deepStrictEqual(calls, [
+        {
+          method: "thread/name/set",
+          payload: {
+            threadId: "provider-controller",
+            name: "Voice controller",
+          },
+        },
+      ]);
+    }),
+  );
+});
+
+describe("recoverCodexThreadBySource", () => {
+  const source = "shuv2code/voice-create:action-1";
+  const cwd = "/tmp/project";
+  const makeCandidate = (id: string, threadSource = source) =>
+    ({
+      id,
+      cwd,
+      threadSource,
+      sessionId: `session-${id}`,
+    }) as unknown as CodexRpc.ClientRequestResponsesByMethod["thread/list"]["data"][number];
+
+  const runRecovery = (
+    candidates: ReadonlyArray<
+      CodexRpc.ClientRequestResponsesByMethod["thread/list"]["data"][number]
+    >,
+  ) => {
+    const calls: Array<string> = [];
+    const client = {
+      request: <M extends "thread/list" | "thread/read" | "thread/resume">(
+        method: M,
+        payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        calls.push(method);
+        if (method === "thread/list") {
+          return Effect.succeed({
+            data: candidates,
+            nextCursor: null,
+          } as CodexRpc.ClientRequestResponsesByMethod[M]);
+        }
+        const threadId = (payload as { readonly threadId: string }).threadId;
+        if (method === "thread/read") {
+          const candidate = candidates.find((entry) => entry.id === threadId);
+          return Effect.succeed({
+            thread: candidate,
+          } as CodexRpc.ClientRequestResponsesByMethod[M]);
+        }
+        return Effect.succeed(
+          makeThreadOpenResponse(threadId) as CodexRpc.ClientRequestResponsesByMethod[M],
+        );
+      },
+    };
+    return {
+      calls,
+      effect: recoverCodexThreadBySource({
+        client,
+        runtimeMode: "full-access",
+        cwd,
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        threadSource: source,
+      }),
+    };
+  };
+
+  it.effect("adopts exactly one list-and-read verified candidate", () =>
+    Effect.gen(function* () {
+      const recovery = runRecovery([makeCandidate("provider-thread-1")]);
+      const resumed = yield* recovery.effect;
+
+      NodeAssert.equal(resumed.thread.id, "provider-thread-1");
+      NodeAssert.deepStrictEqual(recovery.calls, ["thread/list", "thread/read", "thread/resume"]);
+    }),
+  );
+
+  it.effect("fails closed when no exact source candidate exists", () =>
+    Effect.gen(function* () {
+      const recovery = runRecovery([makeCandidate("wrong-thread", "another/source")]);
+      const error = yield* recovery.effect.pipe(Effect.flip);
+
+      NodeAssert.equal(error._tag, "CodexSessionRuntimeCreationRecoveryError");
+      if (error._tag === "CodexSessionRuntimeCreationRecoveryError") {
+        NodeAssert.equal(error.reason, "not_found");
+      }
+      NodeAssert.deepStrictEqual(recovery.calls, ["thread/list"]);
+    }),
+  );
+
+  it.effect("fails closed when multiple exact candidates verify", () =>
+    Effect.gen(function* () {
+      const recovery = runRecovery([
+        makeCandidate("provider-thread-1"),
+        makeCandidate("provider-thread-2"),
+      ]);
+      const error = yield* recovery.effect.pipe(Effect.flip);
+
+      NodeAssert.equal(error._tag, "CodexSessionRuntimeCreationRecoveryError");
+      if (error._tag === "CodexSessionRuntimeCreationRecoveryError") {
+        NodeAssert.equal(error.reason, "ambiguous");
+        NodeAssert.equal(error.candidateCount, 2);
+      }
+      NodeAssert.deepStrictEqual(recovery.calls, ["thread/list", "thread/read", "thread/read"]);
     }),
   );
 });
