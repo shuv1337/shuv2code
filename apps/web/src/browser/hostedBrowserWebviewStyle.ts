@@ -16,7 +16,7 @@ export interface HostedBrowserWebviewWrapperStyle {
   readonly visibility?: "visible";
 }
 
-export const HIDDEN_BROWSER_WEBVIEW_OFFSET = -100_000;
+export const HIDDEN_BROWSER_WEBVIEW_OFFSET = 0;
 
 export function resolveHostedBrowserWebviewWrapperStyle(input: {
   readonly active: boolean;
@@ -44,9 +44,10 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
     height: hiddenSize.height,
     zIndex: -1,
     pointerEvents: "none",
-    // Keep the guest CSS-visible even while physically offscreen. Electron
-    // webviews can keep metadata/status alive under `visibility:hidden` while
-    // CDP Runtime/Input commands stall, which breaks offscreen automation.
+    // Keep the guest inside the window compositor but behind application UI.
+    // Moving it far outside the viewport makes Electron capturePage fail with
+    // UnknownVizError, which breaks screenshot evidence for background agents.
+    // visibility:hidden is not viable either because CDP Runtime/Input stalls.
     visibility: "visible",
   };
 }

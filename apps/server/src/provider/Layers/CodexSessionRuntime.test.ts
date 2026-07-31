@@ -337,6 +337,8 @@ describe("shuv2code browser developer instructions", () => {
       NodeAssert.match(instructions, /shuv2code/);
       NodeAssert.match(instructions, /preview_status/);
       NodeAssert.match(instructions, /preview_open/);
+      NodeAssert.match(instructions, /includeScreenshot=true/);
+      NodeAssert.match(instructions, /background-only tabs/);
       NodeAssert.match(instructions, /Do not switch to global browser skills/);
     }
   });
