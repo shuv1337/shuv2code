@@ -207,12 +207,12 @@ describe("ServerSettings.sourceControlWritingStyle", () => {
 });
 
 describe("ServerSettings voice control policy", () => {
-  it("defaults every voice capability off for legacy settings", () => {
+  it("keeps voice available for legacy settings without hidden feature flags", () => {
     const settings = decodeServerSettings({});
 
-    expect(settings.enableRealtimeVoice).toBe(false);
-    expect(settings.enableVoiceThreadRead).toBe(false);
-    expect(settings.enableVoiceThreadControl).toBe(false);
+    expect(settings.enableRealtimeVoice).toBe(true);
+    expect(settings.enableVoiceThreadRead).toBe(true);
+    expect(settings.enableVoiceThreadControl).toBe(true);
   });
 
   it("accepts independent voice capability patches", () => {
