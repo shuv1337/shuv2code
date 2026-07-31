@@ -15,7 +15,6 @@ import {
   type WatchedVoiceTarget,
 } from "../Services/VoiceTargetMonitor.ts";
 import { VoiceTransportCoordinator } from "../Services/VoiceTransportCoordinator.ts";
-import { VoiceRuntimeGateway } from "../Services/VoiceRuntimeGateway.ts";
 import {
   claimVoiceTargetPhase,
   targetPhaseOf,
@@ -28,7 +27,6 @@ export const makeVoiceTargetMonitor = Effect.fn("VoiceTargetMonitor.make")(funct
   const bindings = yield* VoiceControllerBindingRepository;
   const actions = yield* VoiceControllerActionRepository;
   const mutations = yield* VoiceControllerMutationRepository;
-  const runtime = yield* VoiceRuntimeGateway;
   const transport = yield* VoiceTransportCoordinator;
   const watchedTargetsRef = yield* Ref.make(new Map<string, WatchedVoiceTarget>());
   const watchedTargetPhasesRef = yield* Ref.make(new Map<string, VoiceTargetPhase>());
@@ -102,13 +100,14 @@ export const makeVoiceTargetMonitor = Effect.fn("VoiceTargetMonitor.make")(funct
       snapshotSequence: shell.snapshotSequence,
       observedAt: shell.updatedAt,
     });
-    yield* runtime
-      .appendTransportText({
-        transportThreadId: session.fence.transportThreadId,
-        generation: session.fence.generation,
-        text: statusText,
-      })
-      .pipe(Effect.ignore);
+    yield* transport.deliverAssistantUpdate({
+      session,
+      kind: "target_phase",
+      text: statusText,
+      voiceActionId: watch.voiceActionId,
+      targetThreadId: target.id,
+      phase,
+    });
   });
 
   const seedWatchedTargets: VoiceTargetMonitorShape["seedWatchedTargets"] = Effect.fn(

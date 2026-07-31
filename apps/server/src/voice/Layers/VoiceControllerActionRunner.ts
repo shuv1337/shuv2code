@@ -255,15 +255,15 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
             : terminalState === "completed"
               ? "The controller action completed."
               : "The controller action failed.";
-        yield* runtime
-          .appendTransportText({
-            transportThreadId: session.fence.transportThreadId,
-            generation: session.fence.generation,
-            text: speakable,
-          })
-          .pipe(Effect.ignore);
-        // Keep completion delivery text/tray-only until M0 proves appendSpeech
-        // audibility and barge-in on the minimum supported Codex build.
+        yield* transport.deliverAssistantUpdate({
+          session,
+          kind:
+            terminalState === "completed"
+              ? "controller_action_completed"
+              : "controller_action_failed",
+          text: speakable,
+          voiceActionId: queued.voiceActionId,
+        });
         yield* transport.emit(queued.sessionId, {
           type: "action.status",
           voiceActionId: queued.voiceActionId,

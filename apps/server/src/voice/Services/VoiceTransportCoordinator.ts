@@ -13,11 +13,13 @@ import type {
   VoiceSessionStopInput,
   VoiceSessionStopResult,
   VoiceSubscribeEventsInput,
+  VoiceTargetPhase,
 } from "@shuv2code/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type { ProactiveSpeechKind } from "../VoiceProactiveSpeechPolicy.ts";
 import type { VoiceCodexIdentity } from "./VoiceRuntimeGateway.ts";
 
 export interface ControllerRuntimeState extends VoiceCodexIdentity {
@@ -91,6 +93,18 @@ export interface VoiceTransportCoordinatorShape {
   ) => Effect.Effect<ControllerRuntimeState | undefined>;
   readonly deleteControllerRuntime: (controllerThreadId: ThreadId) => Effect.Effect<void>;
   readonly fenceMatches: (session: ActiveVoiceSession, fence: VoiceSessionFence) => boolean;
+  /**
+   * Always appends bounded tray text. Conditionally queues proactive speech
+   * when policy allows. Never maps barge-in or speech failure to target interrupt.
+   */
+  readonly deliverAssistantUpdate: (input: {
+    readonly session: ActiveVoiceSession;
+    readonly kind: ProactiveSpeechKind;
+    readonly text: string;
+    readonly voiceActionId?: string;
+    readonly targetThreadId?: ThreadId;
+    readonly phase?: VoiceTargetPhase;
+  }) => Effect.Effect<void>;
 }
 
 export class VoiceTransportCoordinator extends Context.Service<
