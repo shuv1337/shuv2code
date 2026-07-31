@@ -123,6 +123,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       enableVoiceThreadControl: true,
     };
 
+    // Availability only — not MCP authorization for threads.read/control.
     assert.deepEqual(ServerSettingsModule.resolveVoiceControlPolicy(enabled, {}), {
       realtime: true,
       read: true,

@@ -171,6 +171,24 @@ it.effect(
     }),
 );
 
+it.effect("never grants threads.read or threads.control to a non-controller provider session", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const standard = yield* registry.issue({
+      threadId: ThreadId.make("standard-no-thread-caps"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    const token = standard.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const resolved = yield* registry.resolve(token, "standard-provider");
+
+    expect(resolved?.profile.kind).toBe("standard-provider");
+    expect(resolved?.capabilities).toEqual(new Set(["preview", "automations"]));
+    expect(resolved?.capabilities.has("threads.read")).toBe(false);
+    expect(resolved?.capabilities.has("threads.control")).toBe(false);
+    expect(yield* registry.resolve(token, "voice-controller")).toBeUndefined();
+  }),
+);
+
 it.effect("replaces only the matching profile for a thread", () =>
   Effect.gen(function* () {
     const registry = yield* makeRegistry(() => 1_000);
