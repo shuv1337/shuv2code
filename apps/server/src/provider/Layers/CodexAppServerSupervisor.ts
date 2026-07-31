@@ -5,7 +5,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
-import * as crypto from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -28,7 +28,7 @@ interface SupervisedProcess {
 }
 
 const hashKey = (material: string): string =>
-  crypto.createHash("sha256").update(material).digest("hex").slice(0, 24);
+  NodeCrypto.createHash("sha256").update(material).digest("hex").slice(0, 24);
 
 export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.make")(
   function* () {

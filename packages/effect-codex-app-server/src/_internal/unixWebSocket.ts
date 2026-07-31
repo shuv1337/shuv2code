@@ -4,7 +4,7 @@ import * as Queue from "effect/Queue";
 import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
-import * as crypto from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as net from "node:net";
 
 import * as CodexError from "../errors.ts";
@@ -38,7 +38,7 @@ export const makeUnixWebSocketStdio = Effect.fn("effect-codex-app-server/makeUni
       catch: transportFail,
     });
 
-    const key = crypto.randomBytes(16).toString("base64");
+    const key = NodeCrypto.randomBytes(16).toString("base64");
     const handshake = [
       "GET / HTTP/1.1",
       "Host: localhost",
@@ -153,7 +153,7 @@ export const makeUnixWebSocketStdio = Effect.fn("effect-codex-app-server/makeUni
             header.writeBigUInt64BE(BigInt(len), 2);
           }
           header[1] = header[1]! | 0x80;
-          const mask = crypto.randomBytes(4);
+          const mask = NodeCrypto.randomBytes(4);
           const masked = Buffer.from(payload);
           for (let i = 0; i < masked.length; i++) {
             masked[i] = masked[i]! ^ mask[i % 4]!;
