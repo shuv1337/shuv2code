@@ -28,6 +28,11 @@ import type {
 
 export interface TestTurnResponse {
   readonly events: ReadonlyArray<FixtureProviderRuntimeEvent>;
+  /**
+   * Defaults to true. Set false when an integration fixture needs to exercise
+   * behavior against a provider turn that remains active.
+   */
+  readonly autoComplete?: boolean;
   readonly mutateWorkspace?: (input: {
     readonly cwd: string;
     readonly turnCount: number;
@@ -376,7 +381,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
           turns: [...state.snapshot.turns, nextTurn],
         };
 
-        if (deferredTurnCompletedEvents.length === 0) {
+        if (deferredTurnCompletedEvents.length === 0 && response.autoComplete !== false) {
           yield* emit({
             type: "turn.completed",
             eventId: EventId.make(yield* randomUUIDv4(input.threadId)),

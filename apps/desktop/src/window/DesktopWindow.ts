@@ -181,6 +181,109 @@ export function isRetryableDevelopmentRendererLoadFailure(input: {
   );
 }
 
+function hasExpectedDesktopOrigin(value: string, expectedOrigin: string): boolean {
+  try {
+    const candidate = new URL(value);
+    const expected = new URL(expectedOrigin);
+    return (
+      candidate.protocol === expected.protocol &&
+      candidate.host === expected.host &&
+      candidate.username === "" &&
+      candidate.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function shouldGrantMainWindowMediaRequest(input: {
+  readonly mainWebContents: Electron.WebContents;
+  readonly requestingWebContents: Electron.WebContents | null;
+  readonly permission: string;
+  readonly mediaTypes: readonly string[] | undefined;
+  readonly isMainFrame: boolean;
+  readonly requestingUrl: string;
+  readonly securityOrigin: string | undefined;
+  readonly applicationUrl: string;
+}): boolean {
+  return (
+    input.requestingWebContents === input.mainWebContents &&
+    input.permission === "media" &&
+    input.mediaTypes?.length === 1 &&
+    input.mediaTypes[0] === "audio" &&
+    input.isMainFrame &&
+    hasExpectedDesktopOrigin(input.requestingUrl, input.applicationUrl) &&
+    (input.securityOrigin === undefined ||
+      hasExpectedDesktopOrigin(input.securityOrigin, input.applicationUrl)) &&
+    hasExpectedDesktopOrigin(input.mainWebContents.getURL(), input.applicationUrl)
+  );
+}
+
+export function shouldGrantMainWindowMediaCheck(input: {
+  readonly mainWebContents: Electron.WebContents;
+  readonly requestingWebContents: Electron.WebContents | null;
+  readonly permission: string;
+  readonly mediaType: string | undefined;
+  readonly isMainFrame: boolean;
+  readonly requestingOrigin: string;
+  readonly requestingUrl: string | undefined;
+  readonly securityOrigin: string | undefined;
+  readonly applicationUrl: string;
+}): boolean {
+  return (
+    input.requestingWebContents === input.mainWebContents &&
+    input.permission === "media" &&
+    input.mediaType === "audio" &&
+    input.isMainFrame &&
+    hasExpectedDesktopOrigin(input.requestingOrigin, input.applicationUrl) &&
+    input.requestingUrl !== undefined &&
+    hasExpectedDesktopOrigin(input.requestingUrl, input.applicationUrl) &&
+    (input.securityOrigin === undefined ||
+      hasExpectedDesktopOrigin(input.securityOrigin, input.applicationUrl)) &&
+    hasExpectedDesktopOrigin(input.mainWebContents.getURL(), input.applicationUrl)
+  );
+}
+
+function installMainWindowMediaPermissionPolicy(
+  window: Electron.BrowserWindow,
+  applicationUrl: string,
+): void {
+  const mainWebContents = window.webContents;
+  const mainSession = mainWebContents.session;
+  mainSession.setPermissionRequestHandler(
+    (requestingWebContents, permission, callback, details) => {
+      const mediaDetails =
+        permission === "media" ? (details as Electron.MediaAccessPermissionRequest) : undefined;
+      callback(
+        shouldGrantMainWindowMediaRequest({
+          mainWebContents,
+          requestingWebContents,
+          permission,
+          mediaTypes: mediaDetails?.mediaTypes,
+          isMainFrame: details.isMainFrame,
+          requestingUrl: details.requestingUrl,
+          securityOrigin: mediaDetails?.securityOrigin,
+          applicationUrl,
+        }),
+      );
+    },
+  );
+  mainSession.setPermissionCheckHandler(
+    (requestingWebContents, permission, requestingOrigin, details) =>
+      shouldGrantMainWindowMediaCheck({
+        mainWebContents,
+        requestingWebContents,
+        permission,
+        mediaType: details.mediaType,
+        isMainFrame: details.isMainFrame,
+        requestingOrigin,
+        requestingUrl: details.requestingUrl,
+        securityOrigin: details.securityOrigin,
+        applicationUrl,
+      }),
+  );
+}
+
 function getWindowTitleBarOptions(
   shouldUseDarkColors: boolean,
   platform: NodeJS.Platform,
@@ -338,6 +441,7 @@ export const make = Effect.gen(function* () {
         webviewTag: true,
       },
     });
+    installMainWindowMediaPermissionPolicy(window, applicationUrl);
 
     if (environment.platform === "darwin") {
       window.setAutoHideCursor(false);

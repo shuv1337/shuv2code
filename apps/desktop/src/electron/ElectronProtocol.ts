@@ -12,6 +12,18 @@ export const DESKTOP_HOST = "app";
 export const DESKTOP_PRODUCTION_SCHEME = "shuv2code";
 export const DESKTOP_DEVELOPMENT_SCHEME = "shuv2code-dev";
 
+export function registerDesktopSchemesAsPrivileged(): void {
+  Electron.protocol.registerSchemesAsPrivileged(
+    [DESKTOP_PRODUCTION_SCHEME, DESKTOP_DEVELOPMENT_SCHEME].map((scheme) => ({
+      scheme,
+      privileges: {
+        secure: true,
+        standard: true,
+      },
+    })),
+  );
+}
+
 export function getDesktopScheme(isDevelopment: boolean): string {
   return isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME;
 }

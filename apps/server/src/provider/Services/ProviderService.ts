@@ -18,18 +18,30 @@ import type {
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
+  ProviderSteerTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
   ThreadId,
   ProviderTurnStartResult,
+  ProviderTurnSteerResult,
 } from "@shuv2code/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterCapabilities,
+  ProviderCreationRecoveryInput,
+  ProviderCreationRecoveryResult,
+  ProviderRealtimeSpeechInput,
+  ProviderRealtimeStartInput,
+  ProviderRealtimeStopInput,
+  ProviderRealtimeTextInput,
+  ProviderRealtimeVoicesResult,
+  ProviderThreadSnapshot,
+} from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -44,12 +56,43 @@ export interface ProviderServiceShape {
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, ProviderServiceError>;
 
+  readonly recoverCreatedSession?: (
+    input: ProviderCreationRecoveryInput,
+  ) => Effect.Effect<ProviderCreationRecoveryResult, ProviderServiceError>;
+
   /**
    * Send a provider turn.
    */
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+
+  /**
+   * Add input to the exact currently active provider turn.
+   */
+  readonly steerTurn: (
+    input: ProviderSteerTurnInput,
+  ) => Effect.Effect<ProviderTurnSteerResult, ProviderServiceError>;
+
+  readonly startRealtime: (
+    input: ProviderRealtimeStartInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly appendRealtimeText: (
+    input: ProviderRealtimeTextInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly appendRealtimeSpeech: (
+    input: ProviderRealtimeSpeechInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly stopRealtime: (
+    input: ProviderRealtimeStopInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly listRealtimeVoices: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderRealtimeVoicesResult, ProviderServiceError>;
 
   /**
    * Interrupt a running provider turn.
@@ -96,6 +139,14 @@ export interface ProviderServiceShape {
   readonly getInstanceInfo: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderInstanceRoutingInfo, ProviderServiceError>;
+
+  /**
+   * Read the provider's persisted thread history. This may recover the
+   * session needed to perform the read, but never starts or replays a turn.
+   */
+  readonly readThread?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderThreadSnapshot, ProviderServiceError>;
 
   /**
    * Roll back provider conversation state by a number of turns.

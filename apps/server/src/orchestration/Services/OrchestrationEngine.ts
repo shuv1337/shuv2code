@@ -48,6 +48,9 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
+    options?: {
+      readonly actorProvenance?: Readonly<Record<string, unknown>>;
+    },
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
 
   /**

@@ -21,6 +21,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
 import type { ResourceAttribution } from "../../resourceTelemetry/ResourceAttribution.ts";
+import { sanitizeProviderObservabilityEvent } from "../RealtimeObservability.ts";
 
 const MEBIBYTE = 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -165,6 +166,12 @@ function resolveThreadSegment(raw: string | null | undefined): string {
 
 function resolveStreamLabel(stream: EventNdjsonStream): string {
   return stream === "native" ? "NTIVE" : stream === "orchestration" ? "ORCH" : "CANON";
+}
+
+function isManagedVoiceRuntimeThread(threadId: ThreadId | null): boolean {
+  if (threadId === null) return false;
+  const value = String(threadId);
+  return value.startsWith("voice-controller:") || value.startsWith("voice-transport:");
 }
 
 function providerLogPrefix(filePath: string): string {
@@ -555,8 +562,14 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
     if (existing) return existing;
 
     const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
-      if (!shouldPersist(stream, event)) return;
-      const payload = yield* serializeEvent(event);
+      // Defense in depth: managed voice ids are server-owned namespaces. Even
+      // if an adapter/service call site forgets to pass runtime sensitivity,
+      // the durable writer never accepts raw controller/transport records.
+      const safeEvent = sanitizeProviderObservabilityEvent(stream, event, {
+        sensitiveRuntime: isManagedVoiceRuntimeThread(threadId),
+      });
+      if (safeEvent === undefined || !shouldPersist(stream, safeEvent)) return;
+      const payload = yield* serializeEvent(safeEvent);
       if (payload === undefined) return;
 
       const observedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));

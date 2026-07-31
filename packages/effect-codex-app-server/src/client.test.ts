@@ -154,4 +154,71 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       assert.equal(initialized.userAgent, "mock-codex-app-server");
     }),
   );
+
+  it.effect("uses typed steering and all realtime request methods", () =>
+    Effect.gen(function* () {
+      const started = yield* Ref.make<Array<unknown>>([]);
+      const handle = yield* makeHandle();
+      const scope = yield* Scope.make();
+      const context = yield* Layer.buildWithScope(CodexClient.layerChildProcess(handle), scope);
+
+      yield* Effect.gen(function* () {
+        const client = yield* CodexClient.CodexAppServerClient;
+        yield* client.handleServerNotification("thread/realtime/started", (payload) =>
+          Ref.update(started, (current) => [...current, payload]),
+        );
+
+        const steered = yield* client.request("turn/steer", {
+          threadId: "thread-1",
+          expectedTurnId: "turn-1",
+          clientUserMessageId: "message-1",
+          input: [{ type: "text", text: "steer" }],
+        });
+        assert.deepEqual(steered, { turnId: "turn-1" });
+
+        yield* client.request("thread/realtime/start", {
+          threadId: "thread-1",
+          realtimeSessionId: "realtime-1",
+          version: "v3",
+          outputModality: "audio",
+          clientManagedHandoffs: true,
+          transport: { type: "webrtc", sdp: "offer" },
+        });
+        yield* client.request("thread/realtime/appendAudio", {
+          threadId: "thread-1",
+          audio: {
+            data: "AQID",
+            sampleRate: 24_000,
+            numChannels: 1,
+            samplesPerChannel: 3,
+          },
+        });
+        yield* client.request("thread/realtime/appendText", {
+          threadId: "thread-1",
+          text: "context",
+          role: "developer",
+        });
+        yield* client.request("thread/realtime/appendSpeech", {
+          threadId: "thread-1",
+          text: "spoken update",
+        });
+        const voices = yield* client.request("thread/realtime/listVoices", {});
+        assert.deepEqual(voices.voices, {
+          v1: ["cove"],
+          v2: ["marin"],
+          defaultV1: "cove",
+          defaultV2: "marin",
+        });
+        yield* client.request("thread/realtime/stop", { threadId: "thread-1" });
+        yield* Effect.yieldNow;
+        assert.deepEqual(yield* Ref.get(started), [
+          {
+            threadId: "thread-1",
+            realtimeSessionId: "realtime-1",
+            version: "v3",
+          },
+        ]);
+      }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
+    }),
+  );
 });

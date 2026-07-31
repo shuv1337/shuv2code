@@ -105,10 +105,12 @@ describe("automation MCP authority", () => {
       const serviceCalls = yield* Ref.make(0);
       const layer = Layer.mergeAll(
         Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          credentialId: "credential-1",
           environmentId: EnvironmentId.make("environment-1"),
           threadId: ThreadId.make("thread-1"),
           providerSessionId: "provider-session-1",
           providerInstanceId: ProviderInstanceId.make("codex"),
+          profile: { kind: "standard-provider" },
           capabilities: new Set<McpInvocationContext.McpCapability>(["preview"]),
           issuedAt: 1,
         }),
@@ -156,10 +158,12 @@ describe("automation MCP authority", () => {
       };
       const layer = Layer.mergeAll(
         Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          credentialId: "credential-1",
           environmentId: EnvironmentId.make("environment-1"),
           threadId: ThreadId.make("thread-1"),
           providerSessionId: "provider-session-1",
           providerInstanceId: ProviderInstanceId.make("codex"),
+          profile: { kind: "standard-provider" },
           capabilities: new Set<McpInvocationContext.McpCapability>(["preview", "automations"]),
           issuedAt: 1,
         }),
@@ -226,10 +230,12 @@ describe("automation MCP authority", () => {
       };
       const layer = Layer.mergeAll(
         Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          credentialId: "credential-1",
           environmentId: EnvironmentId.make("environment-1"),
           threadId: ThreadId.make("approval-thread"),
           providerSessionId: "provider-session-1",
           providerInstanceId: ProviderInstanceId.make("codex"),
+          profile: { kind: "standard-provider" },
           capabilities: new Set<McpInvocationContext.McpCapability>(["preview", "automations"]),
           issuedAt: 1,
         }),

@@ -84,8 +84,10 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadControlService } from "./orchestration/Services/ThreadControlService.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
+import { VoiceControllerBindingRepository } from "./persistence/Services/VoiceControllerBindings.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -100,6 +102,8 @@ import * as Shuv2CodeProjectFileLoader from "./project/Shuv2CodeProjectFileLoade
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
+import { ControllerActionContextResolver } from "./voice/Services/ControllerActionContextResolver.ts";
+import { VoiceControllerService } from "./voice/Services/VoiceControllerService.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
@@ -568,6 +572,12 @@ const buildAppUnderTest = (options?: {
             streamChanges: Stream.empty,
             ...options?.layers?.keybindings,
           }),
+          Layer.mock(VoiceControllerService)({
+            subscribe: () => Stream.empty,
+          }),
+          Layer.mock(ThreadControlService)({}),
+          Layer.mock(ControllerActionContextResolver)({}),
+          Layer.mock(VoiceControllerBindingRepository)({}),
         ),
       ),
       Layer.provide(

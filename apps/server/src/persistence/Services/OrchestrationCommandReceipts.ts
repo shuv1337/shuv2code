@@ -30,6 +30,9 @@ export const OrchestrationCommandReceipt = Schema.Struct({
   resultSequence: NonNegativeInt,
   status: OrchestrationCommandReceiptStatus,
   error: Schema.NullOr(Schema.String),
+  commandType: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  canonicalCommandHash: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  actorProvenanceJson: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type OrchestrationCommandReceipt = typeof OrchestrationCommandReceipt.Type;
 

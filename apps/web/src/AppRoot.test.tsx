@@ -7,14 +7,21 @@ import { PreviewAutomationHosts } from "./components/preview/PreviewAutomationHo
 import { AppAtomRegistryProvider } from "./rpc/atomRegistry";
 import type { AppRouter } from "./router";
 import { AppRoot } from "./AppRoot";
+import { VoiceSessionProvider } from "./voice/VoiceSessionProvider";
 
 describe("AppRoot", () => {
   it("shares the application atom registry with routed UI and renderer-wide desktop hosts", () => {
     const root = AppRoot({ router: {} as AppRouter });
 
     expect(root.type).toBe(AppAtomRegistryProvider);
-    const children = Children.toArray(
+    const registryChildren = Children.toArray(
       (root as ReactElement<{ readonly children: ReactNode }>).props.children,
+    );
+    expect(registryChildren).toHaveLength(1);
+    const voiceProvider = registryChildren[0];
+    expect(isValidElement(voiceProvider) && voiceProvider.type).toBe(VoiceSessionProvider);
+    const children = Children.toArray(
+      (voiceProvider as ReactElement<{ readonly children: ReactNode }>).props.children,
     );
     expect(children).toHaveLength(3);
     expect(isValidElement(children[0]) && children[0].type).toBe(RouterProvider);

@@ -1531,6 +1531,9 @@ export function resolveDesktopProductName(version: string): string {
     : (desktopPackageJson.productName ?? "shuv2code");
 }
 
+export const MAC_MICROPHONE_USAGE_DESCRIPTION =
+  "shuv2code needs microphone access for real-time voice control.";
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -1584,6 +1587,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           schemes: ["shuv2code", "shuv2code-dev"],
         },
       ],
+      extendInfo: {
+        NSMicrophoneUsageDescription: MAC_MICROPHONE_USAGE_DESCRIPTION,
+      },
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,

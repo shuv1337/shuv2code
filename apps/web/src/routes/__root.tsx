@@ -26,6 +26,7 @@ import {
   ToastProvider,
   toastManager,
 } from "../components/ui/toast";
+import { VoiceSessionTray } from "../components/voice/VoiceSessionTray";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { useClientSettings } from "../hooks/useSettings";
 import {
@@ -102,6 +103,7 @@ function RootRouteView() {
       <>
         <DocumentTitleSync />
         <Outlet />
+        <VoiceSessionTray />
       </>
     );
   }
@@ -111,6 +113,7 @@ function RootRouteView() {
       <>
         <DocumentTitleSync />
         <Outlet />
+        <VoiceSessionTray />
       </>
     );
   }
@@ -137,6 +140,7 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
         {appShell}
+        <VoiceSessionTray />
       </AnchoredToastProvider>
     </ToastProvider>
   );

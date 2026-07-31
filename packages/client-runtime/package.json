@@ -31,6 +31,10 @@
       "types": "./src/operations/projects.ts",
       "default": "./src/operations/projects.ts"
     },
+    "./operations/realtime-voice": {
+      "types": "./src/operations/realtimeVoice.ts",
+      "default": "./src/operations/realtimeVoice.ts"
+    },
     "./platform": {
       "types": "./src/platform/index.ts",
       "default": "./src/platform/index.ts"
@@ -94,6 +98,10 @@
     "./state/relay": {
       "types": "./src/state/relayDiscovery.ts",
       "default": "./src/state/relayDiscovery.ts"
+    },
+    "./state/realtime-voice": {
+      "types": "./src/state/realtimeVoice.ts",
+      "default": "./src/state/realtimeVoice.ts"
     },
     "./state/review": {
       "types": "./src/state/review.ts",

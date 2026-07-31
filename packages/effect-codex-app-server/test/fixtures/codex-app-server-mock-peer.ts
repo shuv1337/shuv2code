@@ -103,6 +103,62 @@ const handleMethod = (message: Record<string, unknown>) => {
       });
       return;
     }
+    case "turn/steer": {
+      const params = message.params as { readonly expectedTurnId?: string };
+      respond(message.id as number | string, {
+        turnId: params.expectedTurnId ?? "turn-1",
+      });
+      return;
+    }
+    case "thread/realtime/start": {
+      const params = message.params as {
+        readonly realtimeSessionId?: string;
+        readonly threadId?: string;
+        readonly version?: string;
+      };
+      respond(message.id as number | string, {});
+      writeMessage({
+        method: "thread/realtime/started",
+        params: {
+          threadId: params.threadId,
+          realtimeSessionId: params.realtimeSessionId,
+          version: params.version ?? "v3",
+        },
+      });
+      return;
+    }
+    case "thread/realtime/appendAudio":
+    case "thread/realtime/appendText":
+    case "thread/realtime/appendSpeech":
+    case "thread/realtime/stop": {
+      respond(message.id as number | string, {});
+      return;
+    }
+    case "thread/realtime/listVoices": {
+      respond(message.id as number | string, {
+        voices: {
+          v1: ["cove"],
+          v2: ["marin"],
+          defaultV1: "cove",
+          defaultV2: "marin",
+        },
+      });
+      return;
+    }
+    case "experimentalFeature/list": {
+      respond(message.id as number | string, {
+        data: [
+          {
+            name: "realtime_conversation",
+            enabled: true,
+            defaultEnabled: false,
+            stage: "underDevelopment",
+          },
+        ],
+        nextCursor: null,
+      });
+      return;
+    }
     default: {
       if (message.id !== undefined) {
         respondError(message.id as number | string, -32601, `Unhandled request: ${method}`);

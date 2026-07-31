@@ -2,6 +2,7 @@ import {
   CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EnvironmentId,
   MessageId,
   ProjectId,
   ThreadId,
@@ -23,10 +24,12 @@ import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { VoiceControllerBindingRepositoryLive } from "../../persistence/Layers/VoiceControllerBindings.ts";
 import {
   OrchestrationEventStore,
   type OrchestrationEventStoreShape,
 } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { VoiceControllerBindingRepository } from "../../persistence/Services/VoiceControllerBindings.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
@@ -54,6 +57,7 @@ async function createOrchestrationSystem() {
       Layer.provide(OrchestrationProjectionPipelineLive),
     ),
     OrchestrationProjectionSnapshotQueryLive,
+    VoiceControllerBindingRepositoryLive,
   ).pipe(
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
@@ -65,8 +69,12 @@ async function createOrchestrationSystem() {
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
+  const voiceControllerBindings = await runtime.runPromise(
+    Effect.service(VoiceControllerBindingRepository),
+  );
   return {
     engine,
+    voiceControllerBindings,
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     dispose: () => runtime.dispose(),
@@ -89,6 +97,130 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("blocks generic controller lifecycle commands until the binding is cleared", async () => {
+    const createdAt = now();
+    const projectId = asProjectId("project-voice-controller-host");
+    const controllerThreadId = ThreadId.make("thread-voice-controller");
+    const system = await createOrchestrationSystem();
+    const { engine, voiceControllerBindings } = system;
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-voice-project-create"),
+        projectId,
+        title: "Voice Controller Host",
+        workspaceRoot: "/tmp/project-voice-controller-host",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-voice-controller-create"),
+        threadId: controllerThreadId,
+        projectId,
+        purpose: "voice-controller",
+        title: "Realtime Voice Controller",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    const reservation = await system.run(
+      voiceControllerBindings.reserve({
+        environmentId: EnvironmentId.make("environment-voice-controller"),
+        controllerThreadId,
+        hostProjectId: projectId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        authorizedRuntimeCeiling: "approval-required",
+        bindingGeneration: 1,
+        controlEpoch: 0,
+        createdAt,
+      }),
+    );
+    expect(reservation._tag).toBe("created");
+
+    await expect(
+      system.run(
+        engine.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("cmd-generic-controller-archive"),
+          threadId: controllerThreadId,
+        }),
+      ),
+    ).rejects.toThrow("authenticated voice controller reset flow");
+    await expect(
+      system.run(
+        engine.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("cmd-generic-controller-delete"),
+          threadId: controllerThreadId,
+        }),
+      ),
+    ).rejects.toThrow("authenticated voice controller reset flow");
+    await expect(
+      system.run(
+        engine.dispatch({
+          type: "project.delete",
+          commandId: CommandId.make("cmd-generic-controller-project-delete"),
+          projectId,
+          force: true,
+        }),
+      ),
+    ).rejects.toThrow("Reset or transfer the controller");
+
+    const blockedSnapshot = await system.readModel();
+    expect(
+      blockedSnapshot.projects.find((project) => project.id === projectId)?.deletedAt,
+    ).toBeNull();
+    expect(
+      blockedSnapshot.threads.find((thread) => thread.id === controllerThreadId)?.archivedAt,
+    ).toBeNull();
+    expect(
+      blockedSnapshot.threads.find((thread) => thread.id === controllerThreadId)?.deletedAt,
+    ).toBeNull();
+
+    expect(
+      await system.run(
+        voiceControllerBindings.compareAndSetState({
+          environmentId: reservation.binding.environmentId,
+          expectedState: reservation.binding.state,
+          nextState: "resetting",
+          expectedControlEpoch: reservation.binding.controlEpoch,
+          updatedAt: createdAt,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      await system.run(voiceControllerBindings.deleteResetting(reservation.binding.environmentId)),
+    ).toBe(true);
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("cmd-reset-controller-archive"),
+        threadId: controllerThreadId,
+      }),
+    );
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === controllerThreadId)
+        ?.archivedAt,
+    ).not.toBeNull();
+
+    await system.dispose();
+  });
+
   it("bootstraps command handling from persisted projections without reading the full snapshot", async () => {
     let nextSequence = 8;
     const eventStore: OrchestrationEventStoreShape = {
@@ -1188,6 +1320,67 @@ describe("OrchestrationEngine", () => {
         }),
       ),
     ).rejects.toThrow("already exists");
+
+    await system.dispose();
+  });
+
+  it("rejects replaying a command id with different canonical command data", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const commandId = CommandId.make("cmd-canonical-conflict");
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId,
+        projectId: asProjectId("project-canonical-conflict"),
+        title: "Original title",
+        workspaceRoot: "/tmp/project-canonical-conflict",
+        createdAt: now(),
+      }),
+    );
+
+    await expect(
+      system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId,
+          projectId: asProjectId("project-canonical-conflict"),
+          title: "Changed title",
+          workspaceRoot: "/tmp/project-canonical-conflict",
+          createdAt: now(),
+        }),
+      ),
+    ).rejects.toThrow("Command id conflict");
+
+    await system.dispose();
+  });
+
+  it("rejects replaying a command id with different trusted actor provenance", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const command = {
+      type: "project.create" as const,
+      commandId: CommandId.make("cmd-actor-conflict"),
+      projectId: asProjectId("project-actor-conflict"),
+      title: "Actor Project",
+      workspaceRoot: "/tmp/project-actor-conflict",
+      createdAt: now(),
+    };
+
+    await system.run(
+      engine.dispatch(command, {
+        actorProvenance: { actorKind: "voice-controller", controllerThreadId: "controller-a" },
+      }),
+    );
+
+    await expect(
+      system.run(
+        engine.dispatch(command, {
+          actorProvenance: { actorKind: "voice-controller", controllerThreadId: "controller-b" },
+        }),
+      ),
+    ).rejects.toThrow("Command id conflict");
 
     await system.dispose();
   });

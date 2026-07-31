@@ -22,6 +22,7 @@ import {
   UnsupportedDesktopBuildArchitectureError,
   isMacPasskeySigningConfigurationError,
   LinuxIconResizeError,
+  MAC_MICROPHONE_USAGE_DESCRIPTION,
   MacPasskeySigningConfigurationResolutionError,
   MissingMacPasskeyProvisioningProfileError,
   renderMacPasskeyEntitlements,
@@ -550,6 +551,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual(mac.protocols, [
         { name: "shuv2code", schemes: ["shuv2code", "shuv2code-dev"] },
       ]);
+      assert.deepStrictEqual(mac.extendInfo, {
+        NSMicrophoneUsageDescription: MAC_MICROPHONE_USAGE_DESCRIPTION,
+      });
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 

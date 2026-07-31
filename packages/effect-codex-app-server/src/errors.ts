@@ -115,6 +115,7 @@ export const CodexAppServerTransportOperation = Schema.Literals([
 export type CodexAppServerTransportOperation = typeof CodexAppServerTransportOperation.Type;
 
 export const CodexAppServerIdentifierPurpose = Schema.Literals([
+  "runtime-instance",
   "provider-event",
   "command-approval-request",
   "file-change-approval-request",

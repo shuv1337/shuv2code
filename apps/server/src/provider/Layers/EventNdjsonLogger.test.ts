@@ -127,6 +127,89 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("enforces managed voice privacy at the durable writer boundary", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "shuv2code-provider-log-"));
+      const basePath = NodePath.join(tempDir, "provider-events.ndjson");
+      const controllerThreadId = ThreadId.make("voice-controller:privacy-audit");
+      const transportThreadId = ThreadId.make("voice-transport:privacy-audit");
+      const secret = "DURABLE_VOICE_LOG_SECRET";
+      const hostilePayload = {
+        transcript: secret,
+        arguments: { bearer: secret },
+        result: { output: secret },
+        sdp: secret,
+        audio: secret,
+        error: new Error(secret),
+      };
+
+      try {
+        const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+        const native = store.logger("native");
+        const canonical = store.logger("canonical");
+
+        yield* native.write(
+          {
+            method: "item/completed",
+            message: secret,
+            payload: hostilePayload,
+          },
+          controllerThreadId,
+        );
+        yield* native.write(
+          {
+            method: "error",
+            message: secret,
+            payload: hostilePayload,
+          },
+          controllerThreadId,
+        );
+        yield* canonical.write(
+          {
+            type: "item.completed",
+            payload: hostilePayload,
+            raw: { payload: hostilePayload },
+          },
+          transportThreadId,
+        );
+        yield* canonical.write(
+          {
+            type: "session.exited",
+            eventId: "event-exited",
+            provider: "codex",
+            threadId: transportThreadId,
+            payload: { state: "stopped", reason: secret, detail: hostilePayload },
+            raw: { payload: hostilePayload },
+          },
+          transportThreadId,
+        );
+        yield* store.close();
+
+        const controllerLog = NodeFS.readFileSync(
+          ownedLogPath(basePath, "voice-controller-privacy-audit"),
+          "utf8",
+        );
+        const transportLog = NodeFS.readFileSync(
+          ownedLogPath(basePath, "voice-transport-privacy-audit"),
+          "utf8",
+        );
+        const durableOutput = `${controllerLog}\n${transportLog}`;
+
+        assert.notInclude(durableOutput, secret);
+        assert.notInclude(durableOutput, '"payload"');
+        assert.notInclude(durableOutput, '"raw"');
+        assert.notInclude(durableOutput, "item.completed");
+        assert.notInclude(durableOutput, "arguments");
+        assert.notInclude(durableOutput, "result");
+        assert.include(controllerLog, '"code":"internal_error"');
+        assert.include(transportLog, '"name":"session.exited"');
+        assert.include(transportLog, '"state":"stopped"');
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect(
     "falls back to a global segment when orchestration thread id is missing or invalid",
     () =>
@@ -318,6 +401,108 @@ describe("EventNdjsonLogger", () => {
             { stream: "NTIVE", payload: '{"type":"content.delta","id":"native-delta"}' },
           ],
         );
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("drops realtime media and text while retaining only sanitized lifecycle codes", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "shuv2code-provider-log-"));
+      const basePath = NodePath.join(tempDir, "events.log");
+      const secret = "VOICE_SECRET_SHOULD_NEVER_REACH_NDJSON";
+
+      try {
+        const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+        const native = store.logger("native");
+        const canonical = store.logger("canonical");
+        const threadId = ThreadId.make("thread-realtime-sensitive");
+
+        for (const method of [
+          "thread/realtime/start",
+          "thread/realtime/appendAudio",
+          "thread/realtime/appendText",
+          "thread/realtime/appendSpeech",
+          "thread/realtime/itemAdded",
+          "thread/realtime/transcript/delta",
+          "thread/realtime/transcript/done",
+          "thread/realtime/outputAudio/delta",
+          "thread/realtime/sdp",
+        ]) {
+          yield* native.write(
+            {
+              method,
+              message: secret,
+              payload: { data: secret, sdp: secret, text: secret, item: secret },
+            },
+            threadId,
+          );
+        }
+
+        yield* canonical.write(
+          {
+            type: "thread.realtime.transcript.done",
+            payload: { text: secret },
+            raw: { payload: secret },
+          },
+          threadId,
+        );
+        yield* native.write(
+          {
+            id: "event-started",
+            kind: "notification",
+            provider: "codex",
+            threadId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            method: "thread/realtime/started",
+            message: secret,
+            payload: {
+              version: "v3",
+              realtimeSessionId: secret,
+              answerSdp: secret,
+            },
+          },
+          threadId,
+        );
+        yield* canonical.write(
+          {
+            type: "thread.realtime.error",
+            threadId,
+            payload: {
+              code: "protocol_violation",
+              message: secret,
+              retryable: true,
+            },
+            raw: { payload: secret },
+          },
+          threadId,
+        );
+        yield* native.write(
+          {
+            method: "thread/realtime/closed",
+            payload: { reason: secret },
+            message: secret,
+          },
+          threadId,
+        );
+        yield* store.close();
+
+        const contents = NodeFS.readFileSync(
+          ownedLogPath(basePath, "thread-realtime-sensitive"),
+          "utf8",
+        );
+        assert.notInclude(contents, secret);
+        assert.notInclude(contents, "appendAudio");
+        assert.notInclude(contents, "appendText");
+        assert.notInclude(contents, "appendSpeech");
+        assert.notInclude(contents, "transcript");
+        assert.notInclude(contents, '"raw"');
+        assert.include(contents, '"state":"started"');
+        assert.include(contents, '"version":"v3"');
+        assert.include(contents, '"code":"protocol_violation"');
+        assert.include(contents, '"state":"closed"');
+        assert.include(contents, '"reasonCode":"unknown"');
       } finally {
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }

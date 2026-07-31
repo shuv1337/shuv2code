@@ -14,10 +14,12 @@ import type {
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
+  ProviderSteerTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
   ThreadId,
   ProviderTurnStartResult,
+  ProviderTurnSteerResult,
   TurnId,
 } from "@shuv2code/contracts";
 import type * as Effect from "effect/Effect";
@@ -30,17 +32,82 @@ export interface ProviderAdapterCapabilities {
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+  /**
+   * Declares whether the adapter can add input to an existing provider turn
+   * without starting or superseding it.
+   */
+  readonly turnSteering?: "same-turn" | "unsupported";
 }
 
 export interface ProviderThreadTurnSnapshot {
   readonly id: TurnId;
   readonly items: ReadonlyArray<unknown>;
+  /**
+   * Provider-authoritative persisted turn state, when the adapter exposes it.
+   * Absence must never be treated as evidence that a turn is terminal.
+   */
+  readonly status?: "completed" | "interrupted" | "failed" | "inProgress";
+  /**
+   * Whether `items` is complete enough for absence checks. Adapters that do
+   * not expose this metadata leave it undefined; callers may still use a
+   * present exact item as positive evidence.
+   */
+  readonly itemsView?: "notLoaded" | "summary" | "full";
 }
 
 export interface ProviderThreadSnapshot {
   readonly threadId: ThreadId;
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
 }
+
+export interface ProviderRealtimeStartInput {
+  readonly threadId: ThreadId;
+  readonly generation: number;
+  readonly realtimeSessionId: string;
+  readonly offerSdp: string;
+  readonly voiceId?: string;
+  readonly clientManagedHandoffs: true;
+}
+
+export interface ProviderRealtimeTextInput {
+  readonly threadId: ThreadId;
+  readonly generation: number;
+  readonly text: string;
+  readonly role?: "user" | "assistant";
+}
+
+export interface ProviderRealtimeSpeechInput {
+  readonly threadId: ThreadId;
+  readonly generation: number;
+  readonly text: string;
+}
+
+export interface ProviderRealtimeStopInput {
+  readonly threadId: ThreadId;
+  readonly generation: number;
+}
+
+export interface ProviderRealtimeVoicesResult {
+  readonly voices: ReadonlyArray<{ readonly id: string; readonly label?: string }>;
+  readonly defaultVoiceId: string | null;
+  readonly unsupportedReason?:
+    | "feature_disabled"
+    | "method_unavailable"
+    | "incompatible_version"
+    | "empty_voice_catalog";
+}
+
+export type ProviderCreationRecoveryInput = Omit<
+  ProviderSessionStartInput,
+  "resumeCursor" | "recoveryPolicy" | "threadSource"
+> & {
+  readonly threadSource: string;
+};
+
+export type ProviderCreationRecoveryResult =
+  | { readonly state: "adopted"; readonly session: ProviderSession }
+  | { readonly state: "not_found" }
+  | { readonly state: "ambiguous"; readonly candidateCount: number };
 
 export interface ProviderAdapterShape<TError> {
   /**
@@ -56,12 +123,40 @@ export interface ProviderAdapterShape<TError> {
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, TError>;
 
+  readonly recoverSessionByThreadSource?: (
+    input: ProviderCreationRecoveryInput,
+  ) => Effect.Effect<ProviderCreationRecoveryResult, TError>;
+
   /**
    * Send a turn to an active provider session.
    */
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
+
+  /**
+   * Add user input to the exact active provider turn.
+   */
+  readonly steerTurn?: (
+    input: ProviderSteerTurnInput,
+  ) => Effect.Effect<ProviderTurnSteerResult, TError>;
+
+  /**
+   * Start the realtime lane on an already-active voice transport session.
+   */
+  readonly startRealtime?: (input: ProviderRealtimeStartInput) => Effect.Effect<void, TError>;
+
+  readonly appendRealtimeText?: (input: ProviderRealtimeTextInput) => Effect.Effect<void, TError>;
+
+  readonly appendRealtimeSpeech?: (
+    input: ProviderRealtimeSpeechInput,
+  ) => Effect.Effect<void, TError>;
+
+  readonly stopRealtime?: (input: ProviderRealtimeStopInput) => Effect.Effect<void, TError>;
+
+  readonly listRealtimeVoices?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderRealtimeVoicesResult, TError>;
 
   /**
    * Interrupt an active turn.

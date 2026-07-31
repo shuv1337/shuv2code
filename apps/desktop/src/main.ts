@@ -61,6 +61,10 @@ import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 
+// Electron requires privileged custom schemes to be registered synchronously,
+// before app.whenReady() and before any renderer session is created.
+ElectronProtocol.registerDesktopSchemesAsPrivileged();
+
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
     const metadata = yield* Effect.service(ElectronApp.ElectronApp).pipe(

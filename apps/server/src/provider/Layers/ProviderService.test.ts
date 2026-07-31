@@ -13,6 +13,7 @@ import type {
 import {
   ApprovalRequestId,
   EventId,
+  MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionStartInput,
@@ -30,6 +31,7 @@ import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -42,7 +44,10 @@ import {
   ProviderValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
-import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import type {
+  ProviderAdapterShape,
+  ProviderCreationRecoveryInput,
+} from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
@@ -65,6 +70,7 @@ const asRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make
 const asEventId = (value: string): EventId => EventId.make(value);
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
+const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 const codexInstanceId = ProviderInstanceId.make("codex");
 const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
@@ -111,6 +117,29 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     }),
   );
 
+  const recoverSessionByThreadSource = vi.fn((input: ProviderCreationRecoveryInput) =>
+    Effect.sync(() => {
+      const now = "2026-01-01T00:00:00.000Z";
+      const providerThreadId = `recovered-${input.threadSource}`;
+      const session: ProviderSession = {
+        provider,
+        ...(input.providerInstanceId !== undefined
+          ? { providerInstanceId: input.providerInstanceId }
+          : {}),
+        status: "ready",
+        runtimeMode: input.runtimeMode,
+        threadId: input.threadId,
+        providerThreadId,
+        resumeCursor: { threadId: providerThreadId },
+        cwd: input.cwd ?? process.cwd(),
+        createdAt: now,
+        updatedAt: now,
+      };
+      sessions.set(session.threadId, session);
+      return { state: "adopted" as const, session };
+    }),
+  );
+
   const sendTurn = vi.fn(
     (
       input: ProviderSendTurnInput,
@@ -129,6 +158,24 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
         turnId: TurnId.make(`turn-${String(input.threadId)}`),
       });
     },
+  );
+
+  const steerTurn = vi.fn((input: import("@shuv2code/contracts").ProviderSteerTurnInput) =>
+    Effect.succeed({
+      threadId: input.threadId,
+      turnId: input.expectedTurnId,
+    }),
+  );
+
+  const startRealtime = vi.fn(() => Effect.void);
+  const appendRealtimeText = vi.fn(() => Effect.void);
+  const appendRealtimeSpeech = vi.fn(() => Effect.void);
+  const stopRealtime = vi.fn(() => Effect.void);
+  const listRealtimeVoices = vi.fn(() =>
+    Effect.succeed({
+      voices: [{ id: "alloy" }],
+      defaultVoiceId: "alloy",
+    }),
   );
 
   const interruptTurn = vi.fn(
@@ -174,7 +221,11 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     ): Effect.Effect<
       {
         threadId: ThreadId;
-        turns: ReadonlyArray<{ id: TurnId; items: readonly [] }>;
+        turns: ReadonlyArray<{
+          id: TurnId;
+          items: readonly [];
+          status?: "completed" | "interrupted" | "failed" | "inProgress";
+        }>;
       },
       ProviderAdapterError
     > =>
@@ -203,9 +254,17 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     provider,
     capabilities: {
       sessionModelSwitch: "in-session",
+      turnSteering: "same-turn",
     },
     startSession,
+    recoverSessionByThreadSource,
     sendTurn,
+    steerTurn,
+    startRealtime,
+    appendRealtimeText,
+    appendRealtimeSpeech,
+    stopRealtime,
+    listRealtimeVoices,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -240,7 +299,14 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     emit,
     updateSession,
     startSession,
+    recoverSessionByThreadSource,
     sendTurn,
+    steerTurn,
+    startRealtime,
+    appendRealtimeText,
+    appendRealtimeSpeech,
+    stopRealtime,
+    listRealtimeVoices,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -642,6 +708,233 @@ it.effect("ProviderServiceLive writes canonical events to the emitting thread se
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("ProviderServiceLive classifies realtime payloads before the canonical logger", () =>
+  Effect.gen(function* () {
+    const codex = makeFakeCodexAdapter();
+    const canonicalEvents: Array<unknown> = [];
+    const secret = "VOICE_SECRET_SHOULD_NEVER_REACH_CANONICAL_LOGGER";
+    const registry = makeAdapterRegistryMock({
+      [ProviderDriverKind.make("codex")]: codex.adapter,
+    });
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const providerLayer = makeProviderServiceLive({
+      canonicalEventLogger: {
+        filePath: "memory://provider-canonical-sensitive-events",
+        write: (event) =>
+          Effect.sync(() => {
+            canonicalEvents.push(event);
+          }),
+        close: () => Effect.void,
+      },
+    }).pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+
+    yield* Effect.gen(function* () {
+      yield* ProviderService.ProviderService;
+      yield* advanceTestClock(10);
+      const eventBase = {
+        eventId: asEventId("evt-canonical-realtime"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-canonical-realtime"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as const;
+
+      for (const [index, type] of [
+        "thread.realtime.item-added",
+        "thread.realtime.transcript.delta",
+        "thread.realtime.transcript.done",
+        "thread.realtime.audio.delta",
+        "thread.realtime.sdp",
+      ].entries()) {
+        codex.emit({
+          ...eventBase,
+          eventId: asEventId(`evt-canonical-sensitive-${index}`),
+          type,
+          payload: { text: secret, item: secret, audio: secret, sdp: secret },
+          raw: { payload: secret },
+        });
+      }
+      codex.emit({
+        ...eventBase,
+        eventId: asEventId("evt-canonical-started"),
+        type: "thread.realtime.started",
+        payload: {
+          version: "v3",
+          realtimeSessionId: secret,
+          transcript: secret,
+        },
+        raw: { payload: secret },
+      });
+      codex.emit({
+        ...eventBase,
+        eventId: asEventId("evt-canonical-error"),
+        type: "thread.realtime.error",
+        payload: {
+          code: "protocol_violation",
+          message: secret,
+          retryable: true,
+        },
+        raw: { payload: secret },
+      });
+      codex.emit({
+        ...eventBase,
+        eventId: asEventId("evt-canonical-closed"),
+        type: "thread.realtime.closed",
+        payload: { reason: secret },
+        raw: { payload: secret },
+      });
+      yield* advanceTestClock(50);
+    }).pipe(Effect.provide(providerLayer));
+
+    assert.equal(canonicalEvents.length, 3);
+    assert.deepEqual(
+      canonicalEvents.map((event) => Reflect.get(event as object, "type")),
+      ["thread.realtime.started", "thread.realtime.error", "thread.realtime.closed"],
+    );
+    const serialized = yield* encodeUnknownJson(canonicalEvents);
+    assert.notInclude(serialized, secret);
+    assert.notInclude(serialized, '"raw"');
+    assert.include(serialized, '"version":"v3"');
+    assert.include(serialized, '"code":"protocol_violation"');
+    assert.include(serialized, '"reasonCode":"unknown"');
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "ProviderServiceLive never writes raw native-derived events for managed voice threads",
+  () =>
+    Effect.gen(function* () {
+      const codex = makeFakeCodexAdapter();
+      const canonicalEvents: Array<unknown> = [];
+      const secret = "VOICE_CONTROLLER_NATIVE_EVENT_SECRET";
+      const voiceThreadId = asThreadId("voice-transport:canonical-log-test");
+      const registry = makeAdapterRegistryMock({
+        [ProviderDriverKind.make("codex")]: codex.adapter,
+      });
+      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive({
+        canonicalEventLogger: {
+          filePath: "memory://provider-canonical-voice-runtime-events",
+          write: (event) =>
+            Effect.sync(() => {
+              canonicalEvents.push(event);
+            }),
+          close: () => Effect.void,
+        },
+      }).pipe(
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        yield* provider.startSession(voiceThreadId, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          threadId: voiceThreadId,
+          threadPurpose: "voice-transport",
+          runtimeInstanceId: "voice-runtime-log-test",
+          enableRealtimeConversation: true,
+          runtimeMode: "approval-required",
+        });
+        yield* advanceTestClock(10);
+
+        const eventBase = {
+          provider: ProviderDriverKind.make("codex"),
+          threadId: voiceThreadId,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        } as const;
+        codex.emit({
+          ...eventBase,
+          eventId: asEventId("evt-voice-item"),
+          type: "item.completed",
+          payload: {
+            itemType: "mcp_tool_call",
+            arguments: { authorization: secret },
+            result: { content: secret },
+            transcript: secret,
+          },
+          raw: {
+            source: "codex.app-server.notification",
+            method: "item/completed",
+            payload: { sdp: secret, audio: secret },
+          },
+        });
+        codex.emit({
+          ...eventBase,
+          eventId: asEventId("evt-voice-runtime-error"),
+          type: "runtime.error",
+          payload: {
+            message: secret,
+            class: "provider_error",
+            detail: { cause: secret },
+            runtimeInstanceId: "voice-runtime-log-test",
+          },
+          raw: {
+            source: "codex.app-server.notification",
+            method: "error",
+            payload: { error: secret },
+          },
+        });
+        yield* provider.stopSession({ threadId: voiceThreadId });
+        codex.emit({
+          ...eventBase,
+          eventId: asEventId("evt-voice-late-exit"),
+          type: "session.exited",
+          payload: {
+            state: "stopped",
+            reason: secret,
+            runtimeInstanceId: "voice-runtime-log-test",
+          },
+          raw: {
+            source: "codex.app-server.notification",
+            method: "session/closed",
+            payload: { transcript: secret },
+          },
+        });
+        yield* advanceTestClock(50);
+      }).pipe(Effect.provide(providerLayer));
+
+      assert.equal(canonicalEvents.length, 2);
+      assert.deepEqual(
+        canonicalEvents.map((event) => Reflect.get(event as object, "type")),
+        ["runtime.error", "session.exited"],
+      );
+      const serialized = yield* encodeUnknownJson(canonicalEvents);
+      assert.notInclude(serialized, secret);
+      assert.notInclude(serialized, '"raw"');
+      assert.notInclude(serialized, '"payload"');
+      assert.include(serialized, '"code":"internal_error"');
+      assert.include(serialized, '"state":"stopped"');
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", () =>
   Effect.gen(function* () {
     const tempDir = NodeFS.mkdtempSync(
@@ -843,6 +1136,48 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("reconciles an exact terminal turn before an idle-only send", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-terminal-history");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const first = yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "first",
+        attachments: [],
+        expectedTurnId: null,
+      });
+      routing.codex.readThread.mockImplementationOnce(() =>
+        Effect.succeed({
+          threadId,
+          turns: [{ id: first.turnId, items: [], status: "completed" }],
+        }),
+      );
+
+      const second = yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "second",
+        attachments: [],
+        expectedTurnId: null,
+      });
+
+      assert.equal(second.turnId, first.turnId);
+      assert.equal(routing.codex.readThread.mock.calls.length, 1);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 2);
+      yield* provider.stopSession({ threadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.readThread.mockClear();
+      routing.codex.stopSession.mockClear();
+    }),
+  );
+
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
@@ -859,15 +1194,66 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const sessions = yield* provider.listSessions();
       assert.equal(sessions.length, 1);
 
-      yield* provider.sendTurn({
+      yield* provider.startRealtime({
+        threadId: session.threadId,
+        generation: 1,
+        realtimeSessionId: "realtime-session-1",
+        offerSdp: "v=0",
+        clientManagedHandoffs: true,
+      });
+      yield* provider.appendRealtimeText({
+        threadId: session.threadId,
+        generation: 1,
+        text: "hello transport",
+        role: "user",
+      });
+      yield* provider.appendRealtimeSpeech({
+        threadId: session.threadId,
+        generation: 1,
+        text: "hello voice",
+      });
+      const voices = yield* provider.listRealtimeVoices(session.threadId);
+      assert.deepEqual(voices, {
+        voices: [{ id: "alloy" }],
+        defaultVoiceId: "alloy",
+      });
+      yield* provider.stopRealtime({ threadId: session.threadId, generation: 1 });
+      assert.equal(routing.codex.startRealtime.mock.calls.length, 1);
+      assert.equal(routing.codex.appendRealtimeText.mock.calls.length, 1);
+      assert.equal(routing.codex.appendRealtimeSpeech.mock.calls.length, 1);
+      assert.equal(routing.codex.stopRealtime.mock.calls.length, 1);
+
+      const turn = yield* provider.sendTurn({
         threadId: session.threadId,
         input: "hello",
         attachments: [],
       });
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
 
-      yield* provider.interruptTurn({ threadId: session.threadId });
-      assert.deepEqual(routing.codex.interruptTurn.mock.calls, [[session.threadId, undefined]]);
+      const steered = yield* provider.steerTurn({
+        threadId: session.threadId,
+        expectedTurnId: turn.turnId,
+        input: "focus on tests",
+        clientUserMessageId: MessageId.make("message-steer"),
+      });
+      assert.equal(steered.turnId, turn.turnId);
+      assert.deepEqual(routing.codex.steerTurn.mock.calls[0]?.[0], {
+        threadId: session.threadId,
+        expectedTurnId: turn.turnId,
+        input: "focus on tests",
+        attachments: [],
+        clientUserMessageId: MessageId.make("message-steer"),
+      });
+
+      yield* provider.interruptTurn({ threadId: session.threadId, turnId: turn.turnId });
+      assert.deepEqual(routing.codex.interruptTurn.mock.calls, [[session.threadId, turn.turnId]]);
+
+      const providerSnapshot = yield* provider.readThread!(session.threadId);
+      assert.deepEqual(providerSnapshot, {
+        threadId: session.threadId,
+        turns: [{ id: asTurnId("turn-1"), items: [] }],
+      });
+      assert.deepEqual(routing.codex.readThread.mock.calls, [[session.threadId]]);
 
       yield* provider.respondToRequest({
         threadId: session.threadId,
@@ -1162,6 +1548,40 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("does not recover a missing runtime for steer", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-no-steer-recovery");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      const turn = yield* provider.sendTurn({
+        threadId,
+        input: "start",
+      });
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.steerTurn.mockClear();
+
+      const exit = yield* Effect.exit(
+        provider.steerTurn({
+          threadId,
+          expectedTurnId: turn.turnId,
+          input: "steer",
+          clientUserMessageId: MessageId.make("message-no-recovery"),
+        }),
+      );
+
+      assert.equal(exit._tag, "Failure");
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      assert.equal(routing.codex.steerTurn.mock.calls.length, 0);
+    }),
+  );
+
   it.effect("recovers stale claudeAgent sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
@@ -1281,6 +1701,35 @@ routing.layer("ProviderServiceLive routing", (it) => {
           assert.equal(runtimePayload.lastError, null);
           assert.equal(runtimePayload.lastRuntimeEvent, "provider.sendTurn");
         }
+      }
+    }),
+  );
+
+  it.effect("persists the exact resume cursor adopted by creation recovery", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-creation-recovery");
+      const recovered = yield* provider.recoverCreatedSession!({
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-creation-recovery",
+        runtimeMode: "full-access",
+        threadSource: "shuv2code_voice_controller_v11",
+      });
+
+      assert.equal(recovered.state, "adopted");
+      if (recovered.state !== "adopted") {
+        return assert.fail("expected the unique provider thread to be adopted");
+      }
+      const persisted = yield* runtimeRepository.getByThreadId({ threadId });
+      assert.equal(Option.isSome(persisted), true);
+      if (Option.isSome(persisted)) {
+        assert.deepEqual(persisted.value.resumeCursor, recovered.session.resumeCursor);
+        assert.deepEqual(persisted.value.resumeCursor, {
+          threadId: "recovered-shuv2code_voice_controller_v11",
+        });
       }
     }),
   );
@@ -1678,7 +2127,11 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         runtimeMode: "full-access",
       });
 
-      yield* provider.interruptTurn({ threadId: session.threadId });
+      const turn = yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "metrics",
+      });
+      yield* provider.interruptTurn({ threadId: session.threadId, turnId: turn.turnId });
       yield* provider.respondToRequest({
         threadId: session.threadId,
         requestId: asRequestId("req-metrics-1"),
@@ -1785,6 +2238,66 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
 
 const validation = makeProviderServiceLayer();
 validation.layer("ProviderServiceLive validation", (it) => {
+  it.effect("reserves trusted runtime identity and realtime mode for managed voice purposes", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      validation.codex.startSession.mockClear();
+      const base = {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        runtimeMode: "approval-required" as const,
+      };
+      const reject = (threadId: string, input: Record<string, unknown>, issue: string) =>
+        Effect.gen(function* () {
+          const failure = yield* Effect.flip(
+            provider.startSession(asThreadId(threadId), {
+              ...base,
+              threadId: asThreadId(threadId),
+              ...input,
+            }),
+          );
+          assert.instanceOf(failure, ProviderValidationError);
+          assert.include(failure.issue, issue);
+        });
+
+      yield* reject(
+        "standard-runtime-override",
+        { runtimeInstanceId: "runtime-standard" },
+        "reserved for managed voice sessions",
+      );
+      yield* reject(
+        "standard-realtime",
+        { enableRealtimeConversation: true },
+        "reserved for voice transport sessions",
+      );
+      yield* reject(
+        "controller-missing-runtime",
+        { threadPurpose: "voice-controller" },
+        "require a trusted runtime instance id",
+      );
+      yield* reject(
+        "controller-realtime",
+        {
+          threadPurpose: "voice-controller",
+          runtimeInstanceId: "runtime-controller",
+          enableRealtimeConversation: true,
+        },
+        "reserved for voice transport sessions",
+      );
+      yield* reject(
+        "transport-missing-runtime",
+        { threadPurpose: "voice-transport", enableRealtimeConversation: true },
+        "require a trusted runtime instance id",
+      );
+      yield* reject(
+        "transport-missing-realtime",
+        { threadPurpose: "voice-transport", runtimeInstanceId: "runtime-transport" },
+        "require realtime conversation mode",
+      );
+      assert.equal(validation.codex.startSession.mock.calls.length, 0);
+    }),
+  );
+
   it.effect("rejects session starts without an explicit provider instance id", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
