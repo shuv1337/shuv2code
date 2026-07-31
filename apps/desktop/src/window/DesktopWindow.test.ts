@@ -440,84 +440,13 @@ describe("DesktopWindow", () => {
         assert.deepEqual(fakeWindow.setAutoHideCursor.mock.calls, [[false]]);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["shuv2code-dev://app/"]);
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);
-        assert.equal(fakeWindow.mainSession.setPermissionRequestHandler.mock.calls.length, 1);
-        assert.equal(fakeWindow.mainSession.setPermissionCheckHandler.mock.calls.length, 1);
+        // Preserve Electron's established default permission behavior. Installing
+        // a media-only handler here implicitly denies unrelated application APIs.
+        assert.equal(fakeWindow.mainSession.setPermissionRequestHandler.mock.calls.length, 0);
+        assert.equal(fakeWindow.mainSession.setPermissionCheckHandler.mock.calls.length, 0);
       }).pipe(Effect.provide(layer));
     }),
   );
-
-  it("allows audio capture only for the exact active main renderer", () => {
-    const fakeWindow = makeFakeBrowserWindow();
-    const mainWebContents = fakeWindow.window.webContents;
-    const otherWebContents = { getURL: () => "shuv2code-dev://app/" } as Electron.WebContents;
-    const baseRequest = {
-      mainWebContents,
-      requestingWebContents: mainWebContents,
-      permission: "media",
-      mediaTypes: ["audio"],
-      isMainFrame: true,
-      requestingUrl: "shuv2code-dev://app/voice",
-      securityOrigin: "shuv2code-dev://app",
-      applicationUrl: "shuv2code-dev://app/",
-    } as const;
-
-    assert.isTrue(DesktopWindow.shouldGrantMainWindowMediaRequest(baseRequest));
-    assert.isFalse(
-      DesktopWindow.shouldGrantMainWindowMediaRequest({
-        ...baseRequest,
-        requestingWebContents: otherWebContents,
-      }),
-    );
-    assert.isFalse(
-      DesktopWindow.shouldGrantMainWindowMediaRequest({
-        ...baseRequest,
-        mediaTypes: ["video"],
-      }),
-    );
-    assert.isFalse(
-      DesktopWindow.shouldGrantMainWindowMediaRequest({
-        ...baseRequest,
-        mediaTypes: ["audio", "video"],
-      }),
-    );
-    assert.isFalse(
-      DesktopWindow.shouldGrantMainWindowMediaRequest({
-        ...baseRequest,
-        permission: "notifications",
-      }),
-    );
-    assert.isFalse(
-      DesktopWindow.shouldGrantMainWindowMediaRequest({
-        ...baseRequest,
-        securityOrigin: "shuv2code-dev://preview",
-      }),
-    );
-
-    const baseCheck = {
-      mainWebContents,
-      requestingWebContents: mainWebContents,
-      permission: "media",
-      mediaType: "audio",
-      isMainFrame: true,
-      requestingOrigin: "shuv2code-dev://app/",
-      requestingUrl: "shuv2code-dev://app/voice",
-      securityOrigin: "shuv2code-dev://app",
-      applicationUrl: "shuv2code-dev://app/",
-    } as const;
-    assert.isTrue(DesktopWindow.shouldGrantMainWindowMediaCheck(baseCheck));
-    assert.isFalse(
-      DesktopWindow.shouldGrantMainWindowMediaCheck({
-        ...baseCheck,
-        mediaType: "video",
-      }),
-    );
-    assert.isFalse(
-      DesktopWindow.shouldGrantMainWindowMediaCheck({
-        ...baseCheck,
-        requestingOrigin: "https://example.com",
-      }),
-    );
-  });
 
   it.effect("uses the persisted main window bounds when opening the window", () =>
     Effect.gen(function* () {
