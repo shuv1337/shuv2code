@@ -153,6 +153,7 @@ describe("VoiceSessionController", () => {
         runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
         realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
         answerSdp: "answer",
+        transportType: "webrtc" as const,
         eventCursor: VoiceEventSequence.make(0),
       }),
       ingestRealtimeEvent: ingress,
@@ -199,7 +200,7 @@ describe("VoiceSessionController", () => {
           close: () => {},
         }) as unknown as WebRtcVoiceTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
 
     await controller.start({
@@ -259,6 +260,7 @@ describe("VoiceSessionController", () => {
         runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
         realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
         answerSdp: "answer",
+        transportType: "webrtc" as const,
         eventCursor: VoiceEventSequence.make(0),
       }),
       stop,
@@ -279,7 +281,7 @@ describe("VoiceSessionController", () => {
       api,
       createTransport: () => transport as unknown as WebRtcVoiceTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
 
     await controller.start({
@@ -357,6 +359,7 @@ describe("VoiceSessionController", () => {
           runtimeInstanceId: VoiceRuntimeInstanceId.make(`runtime-${input.generation}`),
           realtimeSessionId: VoiceRealtimeSessionId.make(`session-${input.generation}`),
           answerSdp: "answer",
+          transportType: "webrtc" as const,
           eventCursor: VoiceEventSequence.make(0),
         };
       },
@@ -379,7 +382,7 @@ describe("VoiceSessionController", () => {
       api,
       createTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
     const input = {
       environmentId,
@@ -392,8 +395,16 @@ describe("VoiceSessionController", () => {
     await controller.reconnect();
 
     expect(starts).toMatchObject([
-      { clientSessionId: "client", generation: 1, offerSdp: "offer" },
-      { clientSessionId: "client", generation: 2, offerSdp: "offer" },
+      {
+        clientSessionId: "client",
+        generation: 1,
+        transport: { type: "webrtc", offerSdp: "offer" },
+      },
+      {
+        clientSessionId: "client",
+        generation: 2,
+        transport: { type: "webrtc", offerSdp: "offer" },
+      },
     ]);
     expect(JSON.stringify(starts)).not.toContain("transcript");
     expect(JSON.stringify(starts)).not.toContain("utterance");
@@ -416,6 +427,7 @@ describe("VoiceSessionController", () => {
         runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
         realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
         answerSdp: "answer",
+        transportType: "webrtc" as const,
         eventCursor: VoiceEventSequence.make(0),
       }),
       stop: vi.fn(async () => ({ stopped: true })),
@@ -442,7 +454,7 @@ describe("VoiceSessionController", () => {
       api,
       createTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
       scheduleRetry: (retry) => {
         retry();
         return () => {};
@@ -496,7 +508,7 @@ describe("VoiceSessionController", () => {
       api,
       createTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
     const starting = controller.start({
       environmentId,
@@ -526,6 +538,7 @@ describe("VoiceSessionController", () => {
         runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
         realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
         answerSdp: "answer",
+        transportType: "webrtc" as const,
         eventCursor: VoiceEventSequence.make(0),
       };
     });
@@ -559,7 +572,7 @@ describe("VoiceSessionController", () => {
         } as unknown as WebRtcVoiceTransport;
       },
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
 
     await controller.start({
@@ -595,7 +608,7 @@ describe("VoiceSessionController", () => {
       api,
       createTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
 
     await controller.start({
@@ -640,7 +653,7 @@ describe("VoiceSessionController", () => {
       api,
       createTransport: () => transport as unknown as WebRtcVoiceTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
     const starting = controller.start({
       environmentId,
@@ -659,6 +672,7 @@ describe("VoiceSessionController", () => {
       runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
       realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
       answerSdp: "answer",
+      transportType: "webrtc" as const,
       eventCursor: VoiceEventSequence.make(0),
     });
     await starting;
@@ -689,6 +703,7 @@ describe("VoiceSessionController", () => {
         runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
         realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
         answerSdp: "answer",
+        transportType: "webrtc" as const,
         eventCursor: VoiceEventSequence.make(0),
       }),
       stop,
@@ -708,7 +723,7 @@ describe("VoiceSessionController", () => {
       api,
       createTransport: () => transport as unknown as WebRtcVoiceTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
     await controller.start({
       environmentId,
@@ -747,6 +762,7 @@ describe("VoiceSessionController", () => {
         runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
         realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
         answerSdp: "answer",
+        transportType: "webrtc" as const,
         eventCursor: VoiceEventSequence.make(0),
       }),
       stop,
@@ -767,7 +783,7 @@ describe("VoiceSessionController", () => {
           close: () => {},
         }) as unknown as WebRtcVoiceTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
     await controller.start({
       environmentId,
@@ -800,6 +816,7 @@ describe("VoiceSessionController", () => {
         runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
         realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
         answerSdp: "answer",
+        transportType: "webrtc" as const,
         eventCursor: VoiceEventSequence.make(0),
       }),
       stop: async () => ({ stopped: true }),
@@ -823,7 +840,7 @@ describe("VoiceSessionController", () => {
           close: () => {},
         }) as unknown as WebRtcVoiceTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
     await controller.start({
       environmentId,
@@ -884,6 +901,7 @@ describe("VoiceSessionController", () => {
         runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
         realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
         answerSdp: "answer",
+        transportType: "webrtc" as const,
         eventCursor: VoiceEventSequence.make(0),
       }),
       stop,
@@ -893,7 +911,7 @@ describe("VoiceSessionController", () => {
       api,
       createTransport: () => transport as unknown as WebRtcVoiceTransport,
       createClientSessionId: () => "client",
-      detectSupport: () => ({ supported: true }),
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
     });
 
     await controller.start({

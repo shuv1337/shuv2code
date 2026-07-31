@@ -35,6 +35,10 @@
       "types": "./src/operations/realtimeVoice.ts",
       "default": "./src/operations/realtimeVoice.ts"
     },
+    "./voice": {
+      "types": "./src/voice/RealtimeVoiceTransport.ts",
+      "default": "./src/voice/RealtimeVoiceTransport.ts"
+    },
     "./platform": {
       "types": "./src/platform/index.ts",
       "default": "./src/platform/index.ts"

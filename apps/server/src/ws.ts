@@ -52,6 +52,7 @@ import {
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
   WsSubscribeVoiceEventsRpc,
+  WsVoiceAppendAudioRpc,
   WsVoiceEnsureControllerRpc,
   WsVoiceIngestRealtimeEventRpc,
   WsVoiceListVoicesRpc,
@@ -225,6 +226,12 @@ const makeVoiceRpcHandlers = (
           "rpc.aggregate": "voice",
         },
       ),
+    [WS_METHODS.voiceAppendAudio]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["appendAudio"]>[0],
+    ) =>
+      observeRpcEffect(WS_METHODS.voiceAppendAudio, voiceController.appendAudio(input), {
+        "rpc.aggregate": "voice",
+      }),
     [WS_METHODS.voiceStop]: (
       input: Parameters<VoiceController.VoiceControllerService["Service"]["stop"]>[0],
     ) =>
@@ -247,6 +254,7 @@ export const VoiceWsRpcGroup = RpcGroup.make(
   WsVoiceResetControllerRpc,
   WsVoiceStartRpc,
   WsVoiceIngestRealtimeEventRpc,
+  WsVoiceAppendAudioRpc,
   WsVoiceStopRpc,
   WsSubscribeVoiceEventsRpc,
 );

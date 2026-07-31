@@ -1128,15 +1128,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const startRealtime: ProviderServiceMethod<"startRealtime"> = Effect.fn("startRealtime")(
     function* (input) {
+      const transportType = input.transportType ?? "webrtc";
       if (
         !Number.isSafeInteger(input.generation) ||
         input.generation < 1 ||
         input.realtimeSessionId.trim().length === 0 ||
-        input.offerSdp.length === 0
+        (transportType === "webrtc" && (input.offerSdp?.length ?? 0) === 0)
       ) {
         return yield* toValidationError(
           "ProviderService.startRealtime",
-          "A positive generation, realtime session id, and WebRTC offer SDP are required.",
+          "A positive generation, realtime session id, and matching transport payload are required.",
         );
       }
       const routed = yield* requireRealtimeAdapter(input.threadId, "ProviderService.startRealtime");
@@ -1200,6 +1201,32 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
     yield* routed.adapter.appendRealtimeSpeech(input);
+  });
+
+  const appendRealtimeAudio: ProviderServiceMethod<"appendRealtimeAudio"> = Effect.fn(
+    "appendRealtimeAudio",
+  )(function* (input) {
+    if (
+      !Number.isSafeInteger(input.generation) ||
+      input.generation < 1 ||
+      input.audioBase64.length === 0
+    ) {
+      return yield* toValidationError(
+        "ProviderService.appendRealtimeAudio",
+        "A positive generation and non-empty audio chunk are required.",
+      );
+    }
+    const routed = yield* requireRealtimeAdapter(
+      input.threadId,
+      "ProviderService.appendRealtimeAudio",
+    );
+    if (routed.adapter.appendRealtimeAudio === undefined) {
+      return yield* toValidationError(
+        "ProviderService.appendRealtimeAudio",
+        `Provider '${routed.adapter.provider}' does not support realtime audio input.`,
+      );
+    }
+    yield* routed.adapter.appendRealtimeAudio(input);
   });
 
   const stopRealtime: ProviderServiceMethod<"stopRealtime"> = Effect.fn("stopRealtime")(
@@ -1701,6 +1728,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startRealtime,
     appendRealtimeText,
     appendRealtimeSpeech,
+    appendRealtimeAudio,
     stopRealtime,
     listRealtimeVoices,
     interruptTurn,

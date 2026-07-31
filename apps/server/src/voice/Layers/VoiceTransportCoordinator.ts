@@ -1,13 +1,13 @@
 import {
   CommandId,
   ThreadId,
-  VoiceClientSessionId,
-  VoiceControllerError,
+  VOICE_PCM_DEFAULT_CHANNELS,
+  VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ,
   VoiceEventSequence,
   VoiceGeneration,
   VoiceRealtimeSessionId,
   VoiceRuntimeInstanceId,
-  type VoiceControllerIdentity,
+  resolveVoiceSessionStartTransport,
   type VoiceSessionEvent,
   type VoiceSessionFence,
 } from "@shuv2code/contracts";
@@ -222,6 +222,16 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
             runtimeInstanceId: inMemory.fence.runtimeInstanceId,
             realtimeSessionId: inMemory.fence.realtimeSessionId,
             answerSdp: inMemory.answerSdp,
+            transportType: inMemory.transportType,
+            ...(inMemory.transportType === "websocket"
+              ? {
+                  inputAudio: {
+                    format: "pcm16" as const,
+                    sampleRateHz: VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ,
+                    channels: VOICE_PCM_DEFAULT_CHANNELS,
+                  },
+                }
+              : {}),
             eventCursor: VoiceEventSequence.make(inMemory.eventCursor),
           };
         }
@@ -231,6 +241,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           false,
         );
       }
+      const startTransportKind = resolveVoiceSessionStartTransport(startInput);
       // A browser client session may start multiple fenced generations over its
       // lifetime. The durable lease identity therefore includes the generation.
       const transportSessionId = `${startInput.clientSessionId}:${startInput.generation}`;
@@ -295,7 +306,10 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
             runtimeInstanceId,
             generation: startInput.generation,
             realtimeSessionId,
-            offerSdp: startInput.offerSdp,
+            transportType: startTransportKind.type,
+            ...(startTransportKind.type === "webrtc"
+              ? { offerSdp: startTransportKind.offerSdp }
+              : {}),
             ...(startInput.voiceId !== undefined ? { voiceId: startInput.voiceId } : {}),
             clientManagedHandoffs: true,
           })
@@ -303,7 +317,9 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
             Effect.mapError(
               mapInternalError(
                 "negotiation_failed",
-                "The WebRTC voice session could not be started.",
+                startTransportKind.type === "websocket"
+                  ? "The websocket voice session could not be started."
+                  : "The WebRTC voice session could not be started.",
               ),
             ),
           );
@@ -355,7 +371,9 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         providerInstanceId: binding.providerInstanceId,
         controller: controllerIdentity(binding),
         controllerRuntime,
+        transportType: negotiated.transportType,
         answerSdp: negotiated.answerSdp,
+        lastAudioSequence: 0,
         eventCursor: 0,
         history: [],
       };
@@ -376,6 +394,16 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         runtimeInstanceId,
         realtimeSessionId,
         answerSdp: negotiated.answerSdp,
+        transportType: negotiated.transportType,
+        ...(negotiated.transportType === "websocket"
+          ? {
+              inputAudio: {
+                format: "pcm16" as const,
+                sampleRateHz: VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ,
+                channels: VOICE_PCM_DEFAULT_CHANNELS,
+              },
+            }
+          : {}),
         eventCursor: VoiceEventSequence.make(current.eventCursor),
       };
     });
@@ -499,6 +527,41 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           return next;
         }),
       fenceMatches,
+      appendAudio: Effect.fn("VoiceTransportCoordinator.appendAudio")(function* (input) {
+        const session = (yield* Ref.get(sessionsRef)).get(input.clientSessionId);
+        if (session === undefined) {
+          return { accepted: false, code: "session_not_found" as const };
+        }
+        if (!fenceMatches(session, input)) {
+          return { accepted: false, code: "stale_generation" as const };
+        }
+        if (session.transportType !== "websocket") {
+          return { accepted: false, code: "unsupported_transport" as const };
+        }
+        if (input.sequence <= session.lastAudioSequence) {
+          return { accepted: false, code: "out_of_order" as const };
+        }
+        // Single-slot backpressure: reject when the previous chunk is still in flight
+        // by treating a large sequence gap as overload after a bounded queue of 8.
+        if (input.sequence > session.lastAudioSequence + 8) {
+          return { accepted: false, code: "overload" as const };
+        }
+        yield* Ref.update(sessionsRef, (sessions) => {
+          const current = sessions.get(input.clientSessionId);
+          if (current === undefined) return sessions;
+          const next = new Map(sessions);
+          next.set(input.clientSessionId, { ...current, lastAudioSequence: input.sequence });
+          return next;
+        });
+        yield* runtime
+          .appendTransportAudio({
+            transportThreadId: session.fence.transportThreadId,
+            generation: session.fence.generation,
+            audioBase64: input.audioBase64,
+          })
+          .pipe(Effect.ignore);
+        return { accepted: true };
+      }),
       deliverAssistantUpdate: Effect.fn("VoiceTransportCoordinator.deliverAssistantUpdate")(
         function* (input) {
           const { session } = input;

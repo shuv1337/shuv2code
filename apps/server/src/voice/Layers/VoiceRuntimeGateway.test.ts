@@ -243,6 +243,7 @@ function makeHarness(
         }),
       appendRealtimeText: vi.fn(() => Effect.void),
       appendRealtimeSpeech: vi.fn(() => Effect.void),
+      appendRealtimeAudio: vi.fn(() => Effect.void),
       stopRealtime: vi.fn(() => Effect.void),
       listRealtimeVoices: vi.fn(() =>
         Effect.succeed({
@@ -390,12 +391,14 @@ describe("VoiceRuntimeGateway", () => {
           runtimeInstanceId,
           generation: VoiceGeneration.make(3),
           realtimeSessionId: VoiceRealtimeSessionId.make("realtime-3"),
+          transportType: "webrtc",
           offerSdp: "offer-sdp",
           clientManagedHandoffs: true,
         });
 
         assert.strictEqual(opened.runtimeInstanceId, runtimeInstanceId);
         assert.strictEqual(opened.answerSdp, "answer-sdp");
+        assert.strictEqual(opened.transportType, "webrtc");
         assert.strictEqual(harness.starts[0]?.input.runtimeInstanceId, runtimeInstanceId);
         assert.strictEqual(harness.starts[0]?.input.threadPurpose, "voice-transport");
         assert.strictEqual(harness.starts[0]?.input.enableRealtimeConversation, true);
@@ -613,6 +616,7 @@ describe("VoiceRuntimeGateway", () => {
             runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime-failed-negotiation"),
             generation: VoiceGeneration.make(1),
             realtimeSessionId: VoiceRealtimeSessionId.make("realtime-failed-negotiation"),
+            transportType: "webrtc",
             offerSdp: "offer-sdp",
             clientManagedHandoffs: true,
           }),
@@ -647,6 +651,7 @@ describe("VoiceRuntimeGateway", () => {
             runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime-rejected-negotiation"),
             generation: VoiceGeneration.make(1),
             realtimeSessionId: VoiceRealtimeSessionId.make("realtime-rejected-negotiation"),
+            transportType: "webrtc",
             offerSdp: "offer-sdp",
             clientManagedHandoffs: true,
           }),

@@ -1872,6 +1872,21 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const startRealtime: NonNullable<CodexAdapterShape["startRealtime"]> = Effect.fn("startRealtime")(
     function* (input) {
       const session = yield* requireSession(input.threadId);
+      const transportType = input.transportType ?? "webrtc";
+      const transport =
+        transportType === "websocket"
+          ? ({ type: "websocket" } as const)
+          : ({
+              type: "webrtc" as const,
+              sdp: input.offerSdp ?? "",
+            } as const);
+      if (transport.type === "webrtc" && transport.sdp.length === 0) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "thread/realtime/start",
+          detail: "WebRTC realtime start requires offer SDP.",
+        });
+      }
       yield* session.runtime
         .startRealtime({
           generation: input.generation,
@@ -1879,10 +1894,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           version: "v3",
           outputModality: "audio",
           clientManagedHandoffs: input.clientManagedHandoffs,
-          transport: {
-            type: "webrtc",
-            sdp: input.offerSdp,
-          },
+          transport,
           ...(input.voiceId
             ? {
                 voice: input.voiceId as NonNullable<CodexSessionRuntimeRealtimeStartInput["voice"]>,
@@ -1926,6 +1938,26 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       .pipe(
         Effect.mapError((cause) =>
           mapCodexRuntimeError(input.threadId, "thread/realtime/appendSpeech", cause),
+        ),
+      );
+  });
+
+  const appendRealtimeAudio: NonNullable<CodexAdapterShape["appendRealtimeAudio"]> = Effect.fn(
+    "appendRealtimeAudio",
+  )(function* (input) {
+    const session = yield* requireSession(input.threadId);
+    yield* session.runtime
+      .appendRealtimeAudio({
+        generation: input.generation,
+        audio: {
+          data: input.audioBase64,
+          sampleRate: 24_000,
+          numChannels: 1,
+        },
+      })
+      .pipe(
+        Effect.mapError((cause) =>
+          mapCodexRuntimeError(input.threadId, "thread/realtime/appendAudio", cause),
         ),
       );
   });
@@ -2162,6 +2194,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     startRealtime,
     appendRealtimeText,
     appendRealtimeSpeech,
+    appendRealtimeAudio,
     stopRealtime,
     listRealtimeVoices,
     interruptTurn,

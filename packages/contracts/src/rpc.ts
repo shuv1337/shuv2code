@@ -177,6 +177,8 @@ import {
   VoiceEnsureControllerInput,
   VoiceEnsureControllerResult,
   VoiceListVoicesInput,
+  VoiceAppendAudioInput,
+  VoiceAppendAudioResult,
   VoiceListVoicesResult,
   VoiceRealtimeIngressInput,
   VoiceRealtimeIngressResult,
@@ -283,6 +285,7 @@ export const WS_METHODS = {
   voiceResetController: "voice.resetController",
   voiceStart: "voice.start",
   voiceIngestRealtimeEvent: "voice.ingestRealtimeEvent",
+  voiceAppendAudio: "voice.appendAudio",
   voiceStop: "voice.stop",
 
   // Cloud environment methods
@@ -522,6 +525,12 @@ export const WsVoiceStartRpc = Rpc.make(WS_METHODS.voiceStart, {
 export const WsVoiceIngestRealtimeEventRpc = Rpc.make(WS_METHODS.voiceIngestRealtimeEvent, {
   payload: VoiceRealtimeIngressInput,
   success: VoiceRealtimeIngressResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoiceAppendAudioRpc = Rpc.make(WS_METHODS.voiceAppendAudio, {
+  payload: VoiceAppendAudioInput,
+  success: VoiceAppendAudioResult,
   error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
 });
 
@@ -930,6 +939,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVoiceResetControllerRpc,
   WsVoiceStartRpc,
   WsVoiceIngestRealtimeEventRpc,
+  WsVoiceAppendAudioRpc,
   WsVoiceStopRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

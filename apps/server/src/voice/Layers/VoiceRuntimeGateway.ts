@@ -642,21 +642,34 @@ export const makeVoiceRuntimeGateway = Effect.fn("VoiceRuntimeGateway.make")(fun
             "The Codex transport returned an unexpected runtime identity.",
           );
         }
+        const transportType = input.transportType;
         yield* provider
           .startRealtime({
             threadId: input.transportThreadId,
             generation: input.generation,
             realtimeSessionId: input.realtimeSessionId,
-            offerSdp: input.offerSdp,
+            transportType,
+            ...(input.offerSdp !== undefined ? { offerSdp: input.offerSdp } : {}),
             ...(input.voiceId !== undefined ? { voiceId: input.voiceId } : {}),
             clientManagedHandoffs: true,
           })
           .pipe(
             mapProviderFailure(
               "realtime_start_failed",
-              "The realtime WebRTC negotiation could not be started.",
+              transportType === "websocket"
+                ? "The realtime websocket session could not be started."
+                : "The realtime WebRTC negotiation could not be started.",
             ),
           );
+        if (transportType === "websocket") {
+          // Websocket/PCM has no SDP answer; readiness is the successful start.
+          return {
+            codexProviderThreadId: session.providerThreadId,
+            runtimeInstanceId: input.runtimeInstanceId,
+            answerSdp: null,
+            transportType: "websocket" as const,
+          };
+        }
         const negotiation = yield* Stream.fromSubscription(subscription).pipe(
           Stream.filter(
             (event) =>
@@ -701,6 +714,7 @@ export const makeVoiceRuntimeGateway = Effect.fn("VoiceRuntimeGateway.make")(fun
           codexProviderThreadId: session.providerThreadId,
           runtimeInstanceId: input.runtimeInstanceId,
           answerSdp: answerEvent.payload.sdp,
+          transportType: "webrtc" as const,
         };
       }).pipe(
         // Once provider startup has been attempted, every negotiation failure
@@ -908,6 +922,19 @@ export const makeVoiceRuntimeGateway = Effect.fn("VoiceRuntimeGateway.make")(fun
           mapProviderFailure(
             "append_speech_failed",
             "The controller result could not be queued for speech.",
+          ),
+        ),
+    appendTransportAudio: (input) =>
+      provider
+        .appendRealtimeAudio({
+          threadId: input.transportThreadId,
+          generation: input.generation,
+          audioBase64: input.audioBase64,
+        })
+        .pipe(
+          mapProviderFailure(
+            "append_audio_failed",
+            "The PCM audio chunk could not be forwarded to the voice transport.",
           ),
         ),
     streamEvents: Stream.fromPubSub(gatewayEvents),

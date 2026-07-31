@@ -51,6 +51,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.voiceResetController]: AuthOrchestrationOperateScope,
   [WS_METHODS.voiceStart]: AuthOrchestrationOperateScope,
   [WS_METHODS.voiceIngestRealtimeEvent]: AuthOrchestrationOperateScope,
+  [WS_METHODS.voiceAppendAudio]: AuthOrchestrationOperateScope,
   [WS_METHODS.voiceStop]: AuthOrchestrationOperateScope,
   [WS_METHODS.subscribeVoiceEvents]: AuthOrchestrationReadScope,
   [WS_METHODS.cloudGetRelayClientStatus]: AuthRelayReadScope,
