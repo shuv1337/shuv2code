@@ -81,6 +81,8 @@ const threadControl = ThreadControlService.of({
 
 const ControllerServices = Layer.mergeAll(
   ServerSettings.layerTest({
+    // Availability defaults on does not authorize non-controller sessions.
+    enableRealtimeVoice: true,
     enableVoiceThreadRead: true,
     enableVoiceThreadControl: true,
   }),
@@ -148,6 +150,15 @@ it.effect("serves only the five controller tools and enforces profile and turn m
         }),
       ).toBe(true);
 
+      // Product availability flags are all true; standard provider credentials
+      // still cannot obtain controller threads.read / threads.control.
+      const standardResolved = yield* registry.resolve(
+        standard.config.authorizationHeader.replace(/^Bearer\s+/, ""),
+        "standard-provider",
+      );
+      expect(standardResolved?.capabilities.has("threads.read")).toBe(false);
+      expect(standardResolved?.capabilities.has("threads.control")).toBe(false);
+
       const wrongProfile = yield* postJsonRpc(standard.config.authorizationHeader, {
         jsonrpc: "2.0",
         id: 1,
@@ -155,6 +166,9 @@ it.effect("serves only the five controller tools and enforces profile and turn m
         params: {},
       });
       expect(wrongProfile.status).toBe(401);
+      expect(wrongProfile.body).toMatchObject({
+        error: "invalid_controller_mcp_credential",
+      });
 
       const listed = yield* postJsonRpc(controller.config.authorizationHeader, {
         jsonrpc: "2.0",

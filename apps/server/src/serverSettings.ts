@@ -64,8 +64,17 @@ const forceDisabled = (value: string | undefined): boolean =>
   value === "1" || value?.toLowerCase() === "true";
 
 /**
- * Resolve the effective voice policy. Environment flags are startup-only
- * emergency denies: they can never enable a persisted capability.
+ * Resolve product availability for voice surfaces from persisted settings.
+ *
+ * These three fields are kill switches / product availability flags, not
+ * controller authorization. Default-on decoding for omitted keys only makes
+ * shipped voice UI and transport reachable; it does not grant any session
+ * `threads.read` or `threads.control`.
+ *
+ * Authorization remains: controller-only MCP credentials, immutable controller
+ * binding, runtime ceilings, control epochs, and exact target/turn
+ * preconditions. `SHUV2CODE_*_FORCE_DISABLED` env vars are startup-only
+ * emergency denies and can never enable a capability.
  */
 export function resolveVoiceControlPolicy(
   settings: Pick<
