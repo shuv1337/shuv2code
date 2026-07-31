@@ -40,7 +40,13 @@ import { VoiceControllerBindingRepository } from "./persistence/Services/VoiceCo
 import { VoiceControllerMutationRepository } from "./persistence/Services/VoiceControllerMutations.ts";
 import { VoiceTransportSessionRepository } from "./persistence/Services/VoiceTransportSessions.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import { makeVoiceControllerActionRunner } from "./voice/Layers/VoiceControllerActionRunner.ts";
 import { makeVoiceControllerService } from "./voice/Layers/VoiceControllerService.ts";
+import { makeVoiceTargetMonitor } from "./voice/Layers/VoiceTargetMonitor.ts";
+import { makeVoiceTransportCoordinator } from "./voice/Layers/VoiceTransportCoordinator.ts";
+import { VoiceControllerActionRunner } from "./voice/Services/VoiceControllerActionRunner.ts";
+import { VoiceTargetMonitor } from "./voice/Services/VoiceTargetMonitor.ts";
+import { VoiceTransportCoordinator } from "./voice/Services/VoiceTransportCoordinator.ts";
 import {
   VoiceRuntimeGateway,
   type VoiceRuntimeGatewayEvent,
@@ -220,16 +226,46 @@ describe("authenticated voice RPC vertical integration", () => {
           }),
         );
         const settings = Context.get(settingsContext, ServerSettings.ServerSettingsService);
+        const transportCoordinator = yield* makeVoiceTransportCoordinator().pipe(
+          Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(VoiceControllerBindingRepository, bindings),
+          Effect.provideService(VoiceTransportSessionRepository, transports),
+          Effect.provideService(VoiceControllerActionRepository, actions),
+          Effect.provideService(VoiceRuntimeGateway, runtime),
+          Effect.provide(NodeServices.layer),
+        );
+        const targetMonitor = yield* makeVoiceTargetMonitor().pipe(
+          Effect.provideService(ProjectionSnapshotQuery, projection),
+          Effect.provideService(VoiceControllerBindingRepository, bindings),
+          Effect.provideService(VoiceControllerActionRepository, actions),
+          Effect.provideService(VoiceControllerMutationRepository, mutations),
+          Effect.provideService(VoiceRuntimeGateway, runtime),
+          Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
+        );
+        const actionRunner = yield* makeVoiceControllerActionRunner().pipe(
+          Effect.provideService(ProjectionSnapshotQuery, projection),
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(VoiceControllerBindingRepository, bindings),
+          Effect.provideService(VoiceControllerActionRepository, actions),
+          Effect.provideService(VoiceControllerMutationRepository, mutations),
+          Effect.provideService(ServerSettings.ServerSettingsService, settings),
+          Effect.provideService(VoiceRuntimeGateway, runtime),
+          Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
+          Effect.provideService(VoiceTargetMonitor, targetMonitor),
+          Effect.provide(NodeServices.layer),
+        );
         const voiceController = yield* makeVoiceControllerService().pipe(
           Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
           Effect.provideService(ProjectionSnapshotQuery, projection),
           Effect.provideService(OrchestrationEngineService, engine),
           Effect.provideService(VoiceControllerBindingRepository, bindings),
-          Effect.provideService(VoiceTransportSessionRepository, transports),
-          Effect.provideService(VoiceControllerActionRepository, actions),
           Effect.provideService(VoiceControllerMutationRepository, mutations),
           Effect.provideService(ServerSettings.ServerSettingsService, settings),
           Effect.provideService(VoiceRuntimeGateway, runtime),
+          Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
+          Effect.provideService(VoiceTargetMonitor, targetMonitor),
+          Effect.provideService(VoiceControllerActionRunner, actionRunner),
           Effect.provide(NodeServices.layer),
         );
 
