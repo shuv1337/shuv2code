@@ -495,6 +495,14 @@ export const ServerSettings = Schema.Struct({
   enableRealtimeVoice: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   enableVoiceThreadRead: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   enableVoiceThreadControl: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Codex app-server process topology. `per-session` spawns one child per
+   * shuv2code provider session (legacy). `shared` uses one supervised process
+   * per Codex home. Cutover is restart-only; never mix owners for one home.
+   */
+  codexAppServerTopology: Schema.Literals(["per-session", "shared"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("per-session" as const)),
+  ),
   backgroundActivity: BackgroundActivitySettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
@@ -656,6 +664,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableRealtimeVoice: Schema.optionalKey(Schema.Boolean),
   enableVoiceThreadRead: Schema.optionalKey(Schema.Boolean),
   enableVoiceThreadControl: Schema.optionalKey(Schema.Boolean),
+  codexAppServerTopology: Schema.optionalKey(Schema.Literals(["per-session", "shared"])),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),

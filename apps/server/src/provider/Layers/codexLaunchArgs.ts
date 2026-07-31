@@ -39,18 +39,58 @@ export const codexExecLaunchArgs = (launchArgs?: string) => {
   return execArgs;
 };
 
+/**
+ * Strip user-supplied `--listen` tokens so a shared supervisor can own the
+ * control socket without colliding with ambient launch args.
+ */
+export const stripCodexListenArgs = (args: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const next: Array<string> = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === undefined) continue;
+    if (arg === "--listen") {
+      const value = args[index + 1];
+      if (value !== undefined && !value.startsWith("-")) index++;
+      continue;
+    }
+    if (arg.startsWith("--listen=")) continue;
+    next.push(arg);
+  }
+  return next;
+};
+
 export const codexSessionAppServerArgs = (
   appServerArgs: ReadonlyArray<string> | undefined,
   launchArgs: string | undefined,
   options: {
     readonly enableRealtimeConversation?: boolean;
+    /** When set, forces a private Unix listen path and strips user --listen. */
+    readonly listenUnixPath?: string;
   } = {},
 ) => {
   const launchAppServerArgs = codexAppServerArgs(launchArgs);
-  const effectiveAppServerArgs = appServerArgs
-    ? [...launchAppServerArgs, ...appServerArgs]
-    : launchAppServerArgs;
+  const merged = appServerArgs ? [...launchAppServerArgs, ...appServerArgs] : launchAppServerArgs;
+  const withoutListen =
+    options.listenUnixPath !== undefined ? stripCodexListenArgs(merged) : merged;
+  const withListen =
+    options.listenUnixPath !== undefined
+      ? [...withoutListen, "--listen", `unix://${options.listenUnixPath}`]
+      : withoutListen;
   return options.enableRealtimeConversation
-    ? [...effectiveAppServerArgs, "--enable", "realtime_conversation"]
-    : effectiveAppServerArgs;
+    ? [...withListen, "--enable", "realtime_conversation"]
+    : withListen;
 };
+
+/** Stable supervisor key material for one Codex home / binary / launch identity. */
+export const codexAppServerSupervisorKey = (input: {
+  readonly binaryPath: string;
+  readonly codexHome: string;
+  readonly launchArgs: string;
+  readonly enableRealtimeConversation: boolean;
+}): string =>
+  [
+    input.binaryPath,
+    input.codexHome,
+    input.launchArgs.trim(),
+    input.enableRealtimeConversation ? "realtime" : "text",
+  ].join("\u001f");
