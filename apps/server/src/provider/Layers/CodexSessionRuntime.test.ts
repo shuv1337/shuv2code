@@ -568,7 +568,7 @@ describe("openCodexThread", () => {
             return Effect.fail(
               new CodexErrors.CodexAppServerRequestError({
                 code: -32603,
-                errorMessage: "thread not found",
+                errorMessage: "no rollout found for thread id stale-thread",
               }),
             );
           }

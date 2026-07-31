@@ -59,6 +59,7 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
   "no such thread",
+  "no rollout found",
   "unknown thread",
   "does not exist",
 ];

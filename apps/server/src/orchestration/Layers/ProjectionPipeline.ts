@@ -96,6 +96,9 @@ const PROJECTORS_BY_ORCHESTRATION_EVENT_TYPE: Readonly<
     ORCHESTRATION_PROJECTOR_NAMES.threads,
   ],
   "thread.turn-start-requested": [ORCHESTRATION_PROJECTOR_NAMES.threadTurns],
+  // Provider steering is consumed by the command reactor and intentionally has
+  // no materialized projection.
+  "thread.turn-steer-requested": [],
   "thread.turn-interrupt-requested": [ORCHESTRATION_PROJECTOR_NAMES.threadTurns],
   "thread.approval-response-requested": [
     ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals,
@@ -131,6 +134,9 @@ const PROJECTORS_BY_ORCHESTRATION_EVENT_TYPE: Readonly<
     ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals,
     ORCHESTRATION_PROJECTOR_NAMES.threads,
   ],
+  // Provider effect outcomes are consumed by voice reconciliation and only
+  // need projector cursors advanced.
+  "thread.provider-effect-outcome-set": [],
 };
 
 export const orchestrationProjectorsForEventType = (

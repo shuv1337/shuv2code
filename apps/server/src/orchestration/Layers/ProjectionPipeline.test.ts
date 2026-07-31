@@ -82,6 +82,9 @@ it("classifies every orchestration event by interested projector", () => {
       ORCHESTRATION_PROJECTOR_NAMES.threads,
     ],
     "thread.turn-start-requested": [ORCHESTRATION_PROJECTOR_NAMES.threadTurns],
+    // Provider steering and effect outcomes are consumed by reactors and do not
+    // update a materialized read model, but every projector cursor must advance.
+    "thread.turn-steer-requested": [],
     "thread.turn-interrupt-requested": [ORCHESTRATION_PROJECTOR_NAMES.threadTurns],
     "thread.approval-response-requested": [
       ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals,
@@ -115,6 +118,7 @@ it("classifies every orchestration event by interested projector", () => {
       ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals,
       ORCHESTRATION_PROJECTOR_NAMES.threads,
     ],
+    "thread.provider-effect-outcome-set": [],
   } satisfies Record<OrchestrationEvent["type"], ReadonlyArray<ProjectorName>>;
 
   for (const eventType of Object.keys(expectedProjectorsByEventType) as Array<
