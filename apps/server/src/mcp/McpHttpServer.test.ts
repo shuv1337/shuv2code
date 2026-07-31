@@ -431,6 +431,8 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(snapshotTool?.tool.annotations?.readOnlyHint).toBe(true);
       expect(snapshotTool?.tool.annotations?.idempotentHint).toBe(true);
       expect(snapshotTool?.tool.annotations?.openWorldHint).toBe(true);
+      expect(snapshotTool?.tool.description).toContain("MUST set includeScreenshot=true");
+      expect(snapshotTool?.tool.description).toContain("background-only tabs");
 
       const clickTool = server.tools.find(({ tool }) => tool.name === "preview_click");
       expect(clickTool?.tool.annotations?.readOnlyHint).toBe(false);

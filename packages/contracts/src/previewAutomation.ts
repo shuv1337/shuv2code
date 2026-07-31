@@ -83,11 +83,11 @@ export const PreviewAutomationSnapshotInput = Schema.Struct({
   includeScreenshot: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "Attach a PNG screenshot. Defaults to false so semantic inspection does not pay the visual payload cost.",
+        "Set true to request a PNG screenshot, including from a background-only tab. Screenshots are never returned when this is omitted or false.",
     }),
   ).annotate({
     description:
-      "Attach a PNG screenshot. Defaults to false so semantic inspection does not pay the visual payload cost.",
+      "Set true to request a PNG screenshot, including from a background-only tab. Screenshots are never returned when this is omitted or false.",
   }),
 });
 export type PreviewAutomationSnapshotInput = typeof PreviewAutomationSnapshotInput.Type;
