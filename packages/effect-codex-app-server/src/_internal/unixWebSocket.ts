@@ -5,7 +5,7 @@ import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 import * as NodeCrypto from "node:crypto";
-import * as net from "node:net";
+import * as NodeNet from "node:net";
 
 import * as CodexError from "../errors.ts";
 
@@ -30,8 +30,8 @@ export const makeUnixWebSocketStdio = Effect.fn("effect-codex-app-server/makeUni
 
     const socket = yield* Effect.tryPromise({
       try: () =>
-        new Promise<net.Socket>((resolve, reject) => {
-          const sock = net.createConnection(socketPath);
+        new Promise<NodeNet.Socket>((resolve, reject) => {
+          const sock = NodeNet.createConnection(socketPath);
           sock.once("error", reject);
           sock.once("connect", () => resolve(sock));
         }),
