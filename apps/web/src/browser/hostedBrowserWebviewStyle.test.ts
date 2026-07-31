@@ -40,7 +40,7 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
     });
   });
 
-  it("keeps an inactive webview paintable while moving it offscreen", () => {
+  it("keeps an inactive webview paintable behind the application", () => {
     const style = resolveHostedBrowserWebviewWrapperStyle({
       active: false,
       rect: { x: 12, y: 34, width: 800, height: 600 },
