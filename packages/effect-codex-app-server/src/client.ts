@@ -17,6 +17,7 @@ import {
   runHandler,
 } from "./_internal/shared.ts";
 import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
+import { makeUnixWebSocketStdio } from "./_internal/unixWebSocket.ts";
 
 export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
@@ -260,6 +261,22 @@ export const layerChildProcess = (
   options: CodexAppServerClientOptions = {},
 ): Layer.Layer<CodexAppServerClient> =>
   Layer.effect(CodexAppServerClient, makeChildProcessClient(handle, options));
+
+/**
+ * Connect to a Codex app-server Unix control socket (WebSocket frames).
+ * Used by the shared app-server supervisor topology.
+ */
+export const layerUnixSocket = (
+  socketPath: string,
+  options: CodexAppServerClientOptions = {},
+): Layer.Layer<CodexAppServerClient, CodexError.CodexAppServerError, Scope.Scope> =>
+  Layer.effect(
+    CodexAppServerClient,
+    Effect.gen(function* () {
+      const stdio = yield* makeUnixWebSocketStdio(socketPath);
+      return yield* make(stdio, options);
+    }),
+  );
 
 const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",

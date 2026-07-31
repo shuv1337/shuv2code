@@ -23,6 +23,10 @@
     "./errors": {
       "types": "./src/errors.ts",
       "import": "./src/errors.ts"
+    },
+    "./transport": {
+      "types": "./src/transport.ts",
+      "import": "./src/transport.ts"
     }
   },
   "scripts": {

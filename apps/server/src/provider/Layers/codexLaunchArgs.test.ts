@@ -4,8 +4,11 @@ import { describe, it } from "vite-plus/test";
 
 import {
   codexAppServerArgs,
+  codexAppServerSupervisorKey,
   codexExecLaunchArgs,
+  codexSessionAppServerArgs,
   resolveCodexLaunchArgs,
+  stripCodexListenArgs,
 } from "./codexLaunchArgs.ts";
 
 describe("resolveCodexLaunchArgs", () => {
@@ -55,5 +58,58 @@ describe("codexExecLaunchArgs", () => {
     NodeAssert.deepStrictEqual(codexExecLaunchArgs("--config --strict-config --enable --disable"), [
       "--strict-config",
     ]);
+  });
+});
+
+describe("shared app-server launch identity", () => {
+  it("strips user --listen flags", () => {
+    NodeAssert.deepStrictEqual(
+      stripCodexListenArgs(["--strict-config", "--listen", "off", "--enable", "foo"]),
+      ["--strict-config", "--enable", "foo"],
+    );
+    NodeAssert.deepStrictEqual(stripCodexListenArgs(["--listen=unix:///tmp/x", "--enable", "a"]), [
+      "--enable",
+      "a",
+    ]);
+  });
+
+  it("forces a private unix listen path for shared topology", () => {
+    NodeAssert.deepStrictEqual(
+      codexSessionAppServerArgs(undefined, "--listen off --strict-config", {
+        listenUnixPath: "/tmp/shuv2code/codex.sock",
+        enableRealtimeConversation: true,
+      }),
+      [
+        "app-server",
+        "--strict-config",
+        "--listen",
+        "unix:///tmp/shuv2code/codex.sock",
+        "--enable",
+        "realtime_conversation",
+      ],
+    );
+  });
+
+  it("builds a stable supervisor key", () => {
+    const a = codexAppServerSupervisorKey({
+      binaryPath: "/usr/bin/codex",
+      codexHome: "/home/u/.codex",
+      launchArgs: "--strict-config",
+      enableRealtimeConversation: true,
+    });
+    const b = codexAppServerSupervisorKey({
+      binaryPath: "/usr/bin/codex",
+      codexHome: "/home/u/.codex",
+      launchArgs: "--strict-config",
+      enableRealtimeConversation: true,
+    });
+    const c = codexAppServerSupervisorKey({
+      binaryPath: "/usr/bin/codex",
+      codexHome: "/home/u/.codex",
+      launchArgs: "--strict-config",
+      enableRealtimeConversation: false,
+    });
+    NodeAssert.equal(a, b);
+    NodeAssert.notEqual(a, c);
   });
 });

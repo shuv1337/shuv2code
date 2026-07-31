@@ -70,13 +70,16 @@ describe("detectVoiceBrowserSupport", () => {
 
   it("allows PCM fallback when WebRTC is absent but AudioWorklet is present", () => {
     const getUserMedia = async () => ({}) as MediaStream;
+    const FakeAudioContext = function FakeAudioContext() {} as unknown as typeof AudioContext;
+    const FakeAudioWorkletNode =
+      function FakeAudioWorkletNode() {} as unknown as typeof AudioWorkletNode;
     expect(
       detectVoiceBrowserSupport({
         isSecureContext: true,
         mediaDevices: { getUserMedia },
         RTCPeerConnection: undefined,
-        AudioContext: class {} as unknown as typeof AudioContext,
-        AudioWorkletNode: class {} as unknown as typeof AudioWorkletNode,
+        AudioContext: FakeAudioContext,
+        AudioWorkletNode: FakeAudioWorkletNode,
       }),
     ).toEqual({ supported: true, webrtc: false, pcm: true });
   });
