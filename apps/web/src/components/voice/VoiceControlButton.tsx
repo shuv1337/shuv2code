@@ -56,6 +56,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
               type="button"
               size={props.compact ? "icon-sm" : "sm"}
               variant={active ? "secondary" : "ghost"}
+              className={active ? undefined : "text-muted-foreground/70 hover:text-foreground/80"}
               aria-label={
                 active
                   ? "Voice control active"
