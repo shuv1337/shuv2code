@@ -29,6 +29,7 @@ import {
   runSerializedVoiceActions,
   targetThreadIdFromVoiceMutation,
   targetPhaseOf,
+  voiceTargetStatusText,
 } from "./VoiceControllerService.ts";
 
 describe("VoiceControllerService coordination invariants", () => {
@@ -341,6 +342,25 @@ describe("VoiceControllerService coordination invariants", () => {
       );
     }),
   );
+
+  it("builds bounded watcher context for the realtime conversation", () => {
+    assert.strictEqual(
+      voiceTargetStatusText({
+        projectTitle: "shuv2code",
+        threadTitle: "Fix voice progress",
+        phase: "waiting_for_approval",
+      }),
+      'Voice target "Fix voice progress" in "shuv2code" is waiting for approval.',
+    );
+    assert.isAtMost(
+      voiceTargetStatusText({
+        projectTitle: "p".repeat(1_000),
+        threadTitle: "t".repeat(1_000),
+        phase: "completed",
+      }).length,
+      512,
+    );
+  });
 
   it("lets terminal and authoritative pending-start state suppress stale wait rows", () => {
     const phase = (input: {

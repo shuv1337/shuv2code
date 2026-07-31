@@ -248,6 +248,19 @@ export const claimVoiceTargetPhase = Effect.fn("VoiceControllerService.claimVoic
   },
 );
 
+export function voiceTargetStatusText(input: {
+  readonly projectTitle: string;
+  readonly threadTitle: string;
+  readonly phase: VoiceTargetPhase;
+}): string {
+  const projectTitle = input.projectTitle.slice(0, 160);
+  const threadTitle = input.threadTitle.slice(0, 160);
+  return `Voice target ${JSON.stringify(threadTitle)} in ${JSON.stringify(projectTitle)} is ${input.phase.replaceAll("_", " ")}.`.slice(
+    0,
+    512,
+  );
+}
+
 const domainEventTargetThreadId = (payload: unknown): ThreadId | undefined => {
   if (typeof payload !== "object" || payload === null || !("threadId" in payload)) {
     return undefined;
@@ -417,6 +430,11 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     const phase = targetPhaseOf(target);
     const shouldEmit = yield* claimVoiceTargetPhase(watchedTargetPhasesRef, watch, phase);
     if (!shouldEmit) return;
+    const statusText = voiceTargetStatusText({
+      projectTitle: project.title,
+      threadTitle: target.title,
+      phase,
+    });
     yield* emit(session.fence.clientSessionId, {
       type: "target.status",
       voiceActionId: watch.voiceActionId,
@@ -425,11 +443,18 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       projectTitle: project.title,
       threadTitle: target.title,
       phase,
-      statusText: `Target is ${phase.replaceAll("_", " ")}.`,
+      statusText,
       activeTurnId: target.session?.activeTurnId ?? null,
       snapshotSequence: shell.snapshotSequence,
       observedAt: shell.updatedAt,
     });
+    yield* runtime
+      .appendTransportText({
+        transportThreadId: session.fence.transportThreadId,
+        generation: session.fence.generation,
+        text: statusText,
+      })
+      .pipe(Effect.ignore);
   });
 
   const seedWatchedTargets = Effect.fn("VoiceControllerService.seedWatchedTargets")(function* (
