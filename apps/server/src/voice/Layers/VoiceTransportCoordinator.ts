@@ -35,6 +35,11 @@ import {
 } from "../Services/VoiceTransportCoordinator.ts";
 import { VoiceRuntimeGateway } from "../Services/VoiceRuntimeGateway.ts";
 import {
+  decideProactiveSpeech,
+  rememberProactiveSpeech,
+  type ProactiveSpeechMemoryEntry,
+} from "../VoiceProactiveSpeechPolicy.ts";
+import {
   appendVoiceSessionEvent,
   confirmedControllerModelSelection,
   controllerIdentity,
@@ -57,6 +62,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
     const eventMutex = yield* Semaphore.make(1);
     const sessionsRef = yield* Ref.make(new Map<string, ActiveVoiceSession>());
     const controllerRuntimesRef = yield* Ref.make(new Map<ThreadId, ControllerRuntimeState>());
+    const speechMemoryRef = yield* Ref.make(new Map<string, ProactiveSpeechMemoryEntry>());
     const randomUuid = crypto.randomUUIDv4.pipe(Effect.orDie);
 
     const emit: VoiceTransportCoordinatorShape["emit"] = Effect.fn(
@@ -493,6 +499,62 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           return next;
         }),
       fenceMatches,
+      deliverAssistantUpdate: Effect.fn("VoiceTransportCoordinator.deliverAssistantUpdate")(
+        function* (input) {
+          const { session } = input;
+          const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+          const optionalIdentity = {
+            ...(input.voiceActionId !== undefined ? { voiceActionId: input.voiceActionId } : {}),
+            ...(input.targetThreadId !== undefined ? { targetThreadId: input.targetThreadId } : {}),
+            ...(input.phase !== undefined ? { phase: input.phase } : {}),
+          };
+          const decision = yield* Ref.modify(speechMemoryRef, (memory) => {
+            const result = decideProactiveSpeech({
+              kind: input.kind,
+              text: input.text,
+              transportSessionId: session.transportSessionId,
+              generation: session.fence.generation,
+              nowMs,
+              memory,
+              expectedGeneration: session.fence.generation,
+              ...optionalIdentity,
+            });
+            if (result.speak) {
+              const next = new Map(memory);
+              rememberProactiveSpeech(next, {
+                kind: input.kind,
+                text: result.text,
+                transportSessionId: session.transportSessionId,
+                generation: session.fence.generation,
+                nowMs,
+                ...optionalIdentity,
+              });
+              return [result, next] as const;
+            }
+            return [result, memory] as const;
+          });
+          const trayText =
+            decision.text.length > 0 ? decision.text : input.text.trim().slice(0, 512);
+          if (trayText.length > 0) {
+            yield* runtime
+              .appendTransportText({
+                transportThreadId: session.fence.transportThreadId,
+                generation: session.fence.generation,
+                text: trayText,
+              })
+              .pipe(Effect.ignore);
+          }
+          if (decision.speak) {
+            yield* runtime
+              .appendTransportSpeech({
+                transportThreadId: session.fence.transportThreadId,
+                generation: session.fence.generation,
+                text: decision.text,
+              })
+              .pipe(Effect.ignore);
+          }
+        },
+      ),
     });
   },
 );

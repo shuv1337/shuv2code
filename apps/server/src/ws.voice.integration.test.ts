@@ -240,7 +240,6 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(VoiceControllerBindingRepository, bindings),
           Effect.provideService(VoiceControllerActionRepository, actions),
           Effect.provideService(VoiceControllerMutationRepository, mutations),
-          Effect.provideService(VoiceRuntimeGateway, runtime),
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
         );
         const actionRunner = yield* makeVoiceControllerActionRunner().pipe(
