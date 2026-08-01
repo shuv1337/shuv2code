@@ -26,6 +26,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
 import * as ProviderSessionRuntime from "./persistence/ProviderSessionRuntime.ts";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
+import { CodexAppServerSupervisorLive } from "./provider/Layers/CodexAppServerSupervisor.ts";
 import * as ProviderEventLoggers from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
@@ -407,7 +408,15 @@ const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
   // `ProviderService` (canonical stream, written after event normalization).
   // Provided once at the runtime level so every consumer sees the same
   // logger instances.
-  Layer.provideMerge(ProviderEventLoggers.layer),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      ProviderEventLoggers.layer,
+      // One shared Codex app-server owner per Codex home. Restart-only
+      // topology: the supervisor reads `codexAppServerTopology` once at
+      // construction; `per-session` keeps it a fail-closed no-spawn service.
+      CodexAppServerSupervisorLive.pipe(Layer.provide(ServerSettingsLayerLive)),
+    ),
+  ),
   // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
   // `ProviderRegistryLive` pulled `OpenCodeRuntimeLive` in for itself, but
   // the rewritten registry reads snapshots off the instance registry and

@@ -31,6 +31,7 @@ import * as Crypto from "effect/Crypto";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -63,9 +64,12 @@ import {
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeRealtimeStartInput,
   type CodexSessionRuntimeShape,
+  type CodexThreadConfigOverrides,
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import { expandHomePath } from "../../pathExpansion.ts";
+import { CodexAppServerSupervisor } from "../Services/CodexAppServerSupervisor.ts";
 import { sanitizeProviderObservabilityEvent } from "../RealtimeObservability.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
@@ -1539,6 +1543,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* Effect.service(ServerConfig);
+  // Shared app-server topology is active only when the supervisor service is
+  // wired in (server runtime) and the restart-only setting selects it.
+  // Test harnesses without the supervisor stay on per-session spawning.
+  const supervisorOption = yield* Effect.serviceOption(CodexAppServerSupervisor);
+  const sharedSupervisor =
+    Option.isSome(supervisorOption) && supervisorOption.value.topology === "shared"
+      ? supervisorOption.value
+      : undefined;
+  if (sharedSupervisor !== undefined) {
+    yield* Effect.logInfo("Codex adapter using shared app-server topology", {
+      instanceId: boundInstanceId,
+    });
+  }
   const nativeEventLogger =
     options?.nativeEventLogger ??
     (options?.nativeEventLogPath !== undefined
@@ -1582,12 +1599,41 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           input.threadPurpose === "voice-controller"
             ? mcpSessions.find((entry) => entry.profile.kind === "voice-controller")
             : undefined;
+        const resolvedLaunchArgs = resolveCodexLaunchArgs(
+          codexConfig.launchArgs,
+          options?.environment,
+        );
+        // Shared topology carries per-session MCP endpoints as per-thread
+        // config overrides on thread/start|resume; per-session topology keeps
+        // carrying them as launch args plus bearer-token env vars.
+        const mcpThreadConfigOverrides: CodexThreadConfigOverrides | undefined =
+          sharedSupervisor !== undefined && (standardMcpSession || controllerMcpSession)
+            ? {
+                ...(standardMcpSession
+                  ? {
+                      "mcp_servers.shuv2code.url": standardMcpSession.endpoint,
+                      "mcp_servers.shuv2code.http_headers": {
+                        Authorization: standardMcpSession.authorizationHeader,
+                      },
+                    }
+                  : {}),
+                ...(controllerMcpSession
+                  ? {
+                      "mcp_servers.shuv2code_controller.url": controllerMcpSession.endpoint,
+                      "mcp_servers.shuv2code_controller.http_headers": {
+                        Authorization: controllerMcpSession.authorizationHeader,
+                      },
+                      "mcp_servers.shuv2code_controller.default_tools_approval_mode": "approve",
+                    }
+                  : {}),
+              }
+            : undefined;
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,
-          launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
+          launchArgs: resolvedLaunchArgs,
           ...(options?.environment ? { environment: options.environment } : {}),
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(isCodexResumeCursorSchema(input.resumeCursor)
@@ -1607,7 +1653,24 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
-          ...(standardMcpSession || controllerMcpSession
+          ...(sharedSupervisor !== undefined
+            ? {
+                sharedAppServer: {
+                  acquireConnection: sharedSupervisor.acquireConnection({
+                    binaryPath: codexConfig.binaryPath,
+                    codexHome: codexConfig.homePath ? expandHomePath(codexConfig.homePath) : "",
+                    launchArgs: resolvedLaunchArgs,
+                    cwd: process.cwd(),
+                    ...(options?.environment ? { environment: options.environment } : {}),
+                    runtimeDir: serverConfig.stateDir,
+                  }),
+                  ...(mcpThreadConfigOverrides
+                    ? { threadConfigOverrides: mcpThreadConfigOverrides }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(sharedSupervisor === undefined && (standardMcpSession || controllerMcpSession)
             ? {
                 environment: {
                   ...(options?.environment ?? process.env),
