@@ -1539,6 +1539,71 @@ it.layer(
 });
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("compacts preview snapshots in the activity projection but not the event source", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const snapshotText = "snapshot-payload".repeat(10_000);
+      const event = yield* eventStore.append({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-preview-snapshot-compaction"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-preview-snapshot-compaction"),
+        occurredAt: "2026-08-01T00:00:00.000Z",
+        commandId: CommandId.make("cmd-preview-snapshot-compaction"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-preview-snapshot-compaction"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-preview-snapshot-compaction"),
+          activity: {
+            id: EventId.make("activity-preview-snapshot-compaction"),
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "shuv2code · preview_snapshot",
+            payload: {
+              itemType: "mcp_tool_call",
+              data: {
+                item: {
+                  type: "mcpToolCall",
+                  id: "preview-call-1",
+                  server: "shuv2code",
+                  tool: "preview_snapshot",
+                  arguments: { tabId: "tab_1" },
+                  durationMs: 100,
+                  status: "completed",
+                  result: { content: [{ type: "text", text: snapshotText }] },
+                },
+              },
+            },
+            turnId: null,
+            createdAt: "2026-08-01T00:00:00.000Z",
+          },
+        },
+      });
+
+      yield* projectionPipeline.projectEvent(event);
+
+      const projectionRows = yield* sql<{ readonly payloadJson: string }>`
+        SELECT payload_json AS "payloadJson"
+        FROM projection_thread_activities
+        WHERE activity_id = 'activity-preview-snapshot-compaction'
+      `;
+      const eventRows = yield* sql<{ readonly payloadJson: string }>`
+        SELECT payload_json AS "payloadJson"
+        FROM orchestration_events
+        WHERE event_id = 'evt-preview-snapshot-compaction'
+      `;
+
+      assert.strictEqual(projectionRows.length, 1);
+      assert.notInclude(projectionRows[0]!.payloadJson, snapshotText.slice(0, 100));
+      assert.include(projectionRows[0]!.payloadJson, "Preview snapshot omitted");
+      assert.strictEqual(eventRows.length, 1);
+      assert.include(eventRows[0]!.payloadJson, snapshotText.slice(0, 100));
+    }),
+  );
+
   it.effect("resumes from projector last_applied_sequence without replaying older events", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

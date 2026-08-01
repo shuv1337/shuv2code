@@ -104,6 +104,101 @@ function projectCommandData(data: Record<string, unknown>): Record<string, unkno
   return Object.keys(projectedItem).length > 0 ? projectedItem : undefined;
 }
 
+const PREVIEW_SNAPSHOT_COMPACTION_MARKER_PREFIX =
+  "[Preview snapshot omitted from activity history: original result length ";
+
+function previewSnapshotResultTextLength(value: unknown): number {
+  const result = asRecord(value);
+  const content = result?.content;
+  if (Array.isArray(content)) {
+    let length = 0;
+    let foundText = false;
+    for (const entry of content) {
+      const text = asRecord(entry)?.text;
+      if (typeof text !== "string") {
+        continue;
+      }
+      foundText = true;
+      length += text.length;
+    }
+    if (foundText) {
+      return length;
+    }
+  }
+
+  return 0;
+}
+
+function isCompactedPreviewSnapshotResult(value: unknown): boolean {
+  const content = asRecord(value)?.content;
+  return (
+    Array.isArray(content) &&
+    content.some((entry) => {
+      const text = asRecord(entry)?.text;
+      return typeof text === "string" && text.startsWith(PREVIEW_SNAPSHOT_COMPACTION_MARKER_PREFIX);
+    })
+  );
+}
+
+function compactPreviewSnapshotActivity(
+  activity: OrchestrationThreadActivity,
+): OrchestrationThreadActivity {
+  const payload = asRecord(activity.payload);
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  if (
+    payload?.itemType !== "mcp_tool_call" ||
+    item?.server !== "shuv2code" ||
+    item.tool !== "preview_snapshot" ||
+    !("result" in item) ||
+    isCompactedPreviewSnapshotResult(item.result)
+  ) {
+    return activity;
+  }
+
+  const originalResultLength = previewSnapshotResultTextLength(item.result);
+  const projectedItem: Record<string, unknown> = {};
+  for (const key of [
+    "type",
+    "id",
+    "server",
+    "tool",
+    "arguments",
+    "durationMs",
+    "status",
+  ] as const) {
+    if (key in item) {
+      projectedItem[key] = item[key];
+    }
+  }
+  projectedItem.result = {
+    content: [
+      {
+        type: "text",
+        text: `${PREVIEW_SNAPSHOT_COMPACTION_MARKER_PREFIX}${originalResultLength.toLocaleString("en-US")} characters]`,
+      },
+    ],
+  };
+
+  return {
+    ...activity,
+    payload: {
+      ...payload,
+      data: { item: projectedItem },
+    },
+  };
+}
+
+/**
+ * Keeps raw preview snapshots in the append-only event source while ensuring
+ * the hot activity projection never embeds them.
+ */
+export function projectActivityPayloadForPersistence(
+  activity: OrchestrationThreadActivity,
+): OrchestrationThreadActivity {
+  return compactPreviewSnapshotActivity(activity);
+}
+
 function projectImageData(data: Record<string, unknown>): Record<string, unknown> | undefined {
   const item = asRecord(data.item);
   if (!item || (item.type !== "imageView" && item.type !== "imageGeneration")) {
@@ -165,16 +260,18 @@ function projectRawOutput(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * Removes activity payload fields that no current client reads while retaining
- * the full payload in persistence and the event store.
+ * Removes activity payload fields that no current client reads. Raw provider
+ * payloads remain available in the append-only event store; preview snapshots
+ * are also compacted in the hot persistence projection.
  */
 export function projectActivityPayload(
   activity: OrchestrationThreadActivity,
 ): OrchestrationThreadActivity {
-  const payload = asRecord(activity.payload);
+  const persistenceSafeActivity = projectActivityPayloadForPersistence(activity);
+  const payload = asRecord(persistenceSafeActivity.payload);
   const data = asRecord(payload?.data);
   if (!payload || !data || payload.itemType === "mcp_tool_call") {
-    return activity;
+    return persistenceSafeActivity;
   }
 
   const projectedData: Record<string, unknown> = {};
@@ -206,7 +303,7 @@ export function projectActivityPayload(
   }
 
   return {
-    ...activity,
+    ...persistenceSafeActivity,
     payload: {
       ...payload,
       data: projectedData,

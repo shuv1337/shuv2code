@@ -52,6 +52,7 @@ import Migration0036 from "./Migrations/036_VoiceControllerBindings.ts";
 import Migration0037 from "./Migrations/037_VoiceControllerActions.ts";
 import Migration0038 from "./Migrations/038_CommandReceiptProvenance.ts";
 import Migration0039 from "./Migrations/039_VoiceControllerActiveTarget.ts";
+import Migration0040 from "./Migrations/040_CompactPreviewSnapshotActivities.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -103,6 +104,7 @@ export const migrationEntries = [
   [37, "VoiceControllerActions", Migration0037],
   [38, "CommandReceiptProvenance", Migration0038],
   [39, "VoiceControllerActiveTarget", Migration0039],
+  [40, "CompactPreviewSnapshotActivities", Migration0040],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
