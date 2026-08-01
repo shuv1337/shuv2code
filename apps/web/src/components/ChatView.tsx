@@ -221,6 +221,7 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { resolveComposerTurnDispatch } from "./chat/composerTurnDispatch";
 import {
   FILE_ONLY_BOOTSTRAP_PROMPT,
   IMAGE_ONLY_BOOTSTRAP_PROMPT,

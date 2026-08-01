@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
+import { formatPendingPrimaryActionLabel, runningComposerActions } from "./ComposerPrimaryActions";
+
+describe("runningComposerActions", () => {
+  it("shows Stop and Send while running with draft content", () => {
+    expect(runningComposerActions({ isRunning: true, hasSendableContent: true })).toEqual({
+      showSend: true,
+      showStop: true,
+    });
+  });
+
+  it("shows only Stop while running without draft content", () => {
+    expect(runningComposerActions({ isRunning: true, hasSendableContent: false })).toEqual({
+      showSend: false,
+      showStop: true,
+    });
+  });
+});
 
 describe("formatPendingPrimaryActionLabel", () => {
   it("returns 'Submitting...' while responding", () => {

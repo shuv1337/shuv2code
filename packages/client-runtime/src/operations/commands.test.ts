@@ -2,8 +2,10 @@ import {
   CommandId,
   EnvironmentId,
   ORCHESTRATION_WS_METHODS,
+  MessageId,
   ProjectId,
   ThreadId,
+  TurnId,
   type ClientOrchestrationCommand,
 } from "@shuv2code/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -25,6 +27,8 @@ import {
   archiveThread,
   createProject,
   settleThread,
+  startThreadTurn,
+  steerThreadTurn,
   stopThreadSession,
   unsettleThread,
 } from "./commands.ts";
@@ -94,6 +98,46 @@ describe("environment commands", () => {
           title: "Project",
           workspaceRoot: "/workspace/project",
           createdAt: "2026-06-06T00:00:00.000Z",
+        },
+      ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("marks starts as idle-only and dispatches running-turn messages as steers", () =>
+    Effect.gen(function* () {
+      const dispatched: ClientOrchestrationCommand[] = [];
+      const supervisor = yield* makeSupervisor(dispatched);
+      const message = {
+        messageId: MessageId.make("message-1"),
+        role: "user" as const,
+        text: "Keep going with this guidance.",
+        attachments: [],
+      };
+
+      yield* startThreadTurn({
+        threadId: ThreadId.make("thread-1"),
+        message,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt: "2026-06-06T00:00:00.000Z",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      yield* steerThreadTurn({
+        threadId: ThreadId.make("thread-1"),
+        expectedTurnId: TurnId.make("turn-1"),
+        message,
+        createdAt: "2026-06-06T00:00:01.000Z",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(dispatched).toMatchObject([
+        {
+          type: "thread.turn.start",
+          threadId: "thread-1",
+          expectedTurnId: null,
+        },
+        {
+          type: "thread.turn.steer",
+          threadId: "thread-1",
+          expectedTurnId: "turn-1",
         },
       ]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
