@@ -44,6 +44,16 @@ export const ASSET_ROUTE_PREFIX = "/api/assets";
 
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
+const VIEWED_IMAGE_ASSET_EXTENSIONS = new Set([
+  ".avif",
+  ".bmp",
+  ".gif",
+  ".ico",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".webp",
+]);
 const PREVIEW_ASSET_EXTENSIONS = new Set([
   ...WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
   ...WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
@@ -79,6 +89,12 @@ const AssetClaimsSchema = Schema.Union([
   }),
   Schema.Struct({
     version: Schema.Literal(1),
+    kind: Schema.Literal("viewed-image"),
+    canonicalPath: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
     kind: Schema.Literal("project-favicon"),
     workspaceRoot: Schema.String,
     relativePath: Schema.NullOr(Schema.String),
@@ -92,6 +108,25 @@ const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
 export type ResolvedAsset = { readonly kind: "file"; readonly path: string };
+
+type ThreadActivityLike = {
+  readonly kind: string;
+  readonly payload: unknown;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function isCompletedImageViewForPath(activity: ThreadActivityLike, requestedPath: string): boolean {
+  if (activity.kind !== "tool.completed") return false;
+  const payload = asRecord(activity.payload);
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  return item?.type === "imageView" && item.path === requestedPath;
+}
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
   try {
@@ -347,6 +382,81 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   };
 });
 
+/**
+ * Issues an exact-file capability for an image path that a provider actually viewed in this
+ * thread. This intentionally does not broaden workspace-file access: callers must supply the
+ * persisted thread activities that authorize the exact path, and the resulting capability cannot
+ * address siblings or directories.
+ */
+export const issueViewedImageAssetUrl = Effect.fn("AssetAccess.issueViewedImageAssetUrl")(
+  function* (input: {
+    readonly resource: Extract<AssetResource, { readonly _tag: "workspace-file" }>;
+    readonly activities: ReadonlyArray<ThreadActivityLike>;
+  }) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const requestedPath = input.resource.path;
+    if (
+      !path.isAbsolute(requestedPath) ||
+      !input.activities.some((activity) => isCompletedImageViewForPath(activity, requestedPath))
+    ) {
+      return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
+    }
+    if (!VIEWED_IMAGE_ASSET_EXTENSIONS.has(path.extname(requestedPath).toLowerCase())) {
+      return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
+    }
+
+    const canonicalPath = yield* optionOnNotFound(fileSystem.realPath(requestedPath)).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AssetWorkspaceAssetInspectionError({
+            resource: input.resource,
+            cause,
+          }),
+      ),
+    );
+    if (Option.isNone(canonicalPath)) {
+      return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
+    }
+    const info = yield* optionOnNotFound(fileSystem.stat(canonicalPath.value)).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AssetWorkspaceAssetInspectionError({
+            resource: input.resource,
+            cause,
+          }),
+      ),
+    );
+    if (Option.isNone(info) || info.value.type !== "File") {
+      return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
+    }
+
+    const expiresAt = (yield* Clock.currentTimeMillis) + ASSET_TOKEN_TTL_MS;
+    const claims: AssetClaims = {
+      version: 1,
+      kind: "viewed-image",
+      canonicalPath: canonicalPath.value,
+      expiresAt,
+    };
+    const secretStore = yield* ServerSecretStore.ServerSecretStore;
+    const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AssetSigningKeyLoadError({
+            resource: input.resource,
+            cause,
+          }),
+      ),
+    );
+    const encodedPayload = base64UrlEncode(encodeAssetClaims(claims));
+    const token = `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`;
+    return {
+      relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(path.basename(canonicalPath.value))}`,
+      expiresAt,
+    };
+  },
+);
+
 export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   token: string,
   relativePath: string,
@@ -385,6 +495,36 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     );
     return Option.isSome(info) && info.value.type === "File"
       ? ({ kind: "file", path: attachmentPath } satisfies ResolvedAsset)
+      : null;
+  }
+
+  if (claims.kind === "viewed-image") {
+    const decodedPath = decodeRelativePath(relativePath);
+    if (decodedPath === null) return null;
+    const path = yield* Path.Path;
+    if (decodedPath !== path.basename(claims.canonicalPath)) return null;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const canonicalPath = yield* optionOnNotFound(fileSystem.realPath(claims.canonicalPath)).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to resolve viewed image asset.", {
+          path: claims.canonicalPath,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    if (Option.isNone(canonicalPath) || canonicalPath.value !== claims.canonicalPath) return null;
+    const info = yield* optionOnNotFound(fileSystem.stat(canonicalPath.value)).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to inspect viewed image asset.", {
+          path: canonicalPath.value,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    return Option.isSome(info) && info.value.type === "File"
+      ? ({ kind: "file", path: canonicalPath.value } satisfies ResolvedAsset)
       : null;
   }
 
