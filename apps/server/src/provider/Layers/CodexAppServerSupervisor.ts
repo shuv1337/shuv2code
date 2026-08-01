@@ -38,6 +38,11 @@ interface SupervisedProcess {
   readonly lockPath: string;
   readonly child: ChildProcessSpawner.ChildProcessHandle;
   readonly childScope: Scope.Closeable;
+  /**
+   * Informational only: a respawn resets this to 1 for the replacement
+   * process, so a release racing that respawn can decrement the wrong
+   * process's count. Never gate teardown decisions on this field.
+   */
   readonly refCount: number;
 }
 
@@ -109,7 +114,19 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
     topologySetting === "shared" ? yield* resolveSharedRealtimeEnablement() : false;
   const processesRef = yield* Ref.make(new Map<string, SupervisedProcess>());
   const crashesRef = yield* Ref.make(new Map<string, SupervisedCrashState>());
-  const acquireLane = yield* Semaphore.make(1);
+  // Per-digest acquisition lanes: only concurrent acquisitions of the SAME
+  // digest must serialize (to avoid a double-spawn). Reads/writes here happen
+  // as plain synchronous JS between `yield*` points in a generator, so they
+  // are atomic under Effect's single-threaded runtime — no other fiber can
+  // interleave a lookup with the following `set`.
+  const acquireLanes = new Map<string, Semaphore.Semaphore>();
+  const acquireLaneFor = (digest: string): Semaphore.Semaphore => {
+    const existing = acquireLanes.get(digest);
+    if (existing !== undefined) return existing;
+    const lane = Semaphore.makeUnsafe(1);
+    acquireLanes.set(digest, lane);
+    return lane;
+  };
   const connect = options.connect ?? connectUnixSocket;
 
   const recordCrash = (digest: string) =>
@@ -134,10 +151,13 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
       return next;
     });
 
-  const removeSocketState = (supervised: SupervisedProcess) =>
+  const removeSocketPaths = (socketPath: string, lockPath: string) =>
     fs
-      .remove(supervised.socketPath)
-      .pipe(Effect.ignore, Effect.andThen(fs.remove(supervised.lockPath).pipe(Effect.ignore)));
+      .remove(socketPath)
+      .pipe(Effect.ignore, Effect.andThen(fs.remove(lockPath).pipe(Effect.ignore)));
+
+  const removeSocketState = (supervised: SupervisedProcess) =>
+    removeSocketPaths(supervised.socketPath, supervised.lockPath);
 
   const handleProcessExit = (
     digest: string,
@@ -154,7 +174,12 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
         next.delete(digest);
         return next;
       });
-      yield* recordCrash(digest);
+      // Clean exit-code-0 shutdowns are not crashes: only non-zero or
+      // unknown exit codes should incur restart backoff on the next
+      // acquisition.
+      if (exitCode !== 0) {
+        yield* recordCrash(digest);
+      }
       yield* Scope.close(current.childScope, Exit.void).pipe(Effect.ignore);
       yield* removeSocketState(current);
       yield* Effect.logWarning("shared codex app-server process exited", {
@@ -231,6 +256,7 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
       if (!ready) {
         yield* Scope.close(childScope, Exit.void).pipe(Effect.ignore);
         yield* recordCrash(digest);
+        yield* removeSocketPaths(socketPath, lockPath);
         return yield* spawnError(
           keyInput.binaryPath,
           new Error("control socket was not created before readiness timeout"),
@@ -284,7 +310,9 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
         enableRealtimeConversation: sharedRealtimeEnabled,
       });
       const digest = hashKey(material);
-      const supervised = yield* acquireLane.withPermits(1)(ensureProcess(keyInput, digest));
+      const supervised = yield* acquireLaneFor(digest).withPermits(1)(
+        ensureProcess(keyInput, digest),
+      );
       yield* Effect.addFinalizer(() => releaseConnection(digest));
       return yield* connect(supervised.socketPath);
     });

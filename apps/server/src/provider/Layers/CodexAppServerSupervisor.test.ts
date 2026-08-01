@@ -295,4 +295,92 @@ describe("CodexAppServerSupervisor", () => {
       yield* Scope.close(supervisorScope, Exit.void);
     }).pipe(Effect.provide(testLayerWithTopology(state, "shared")));
   });
+
+  it.effect(
+    "does not head-of-line block acquisitions for a different digest behind another digest's backoff",
+    () => {
+      const state: FakeSpawnerState = { spawns: [] };
+      return Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const runtimeDir = yield* makeRuntimeDir;
+        const { supervisor, supervisorScope } = yield* sharedSupervisorHarness();
+        const keyA = makeKey(runtimeDir, "/tmp/home-a");
+        const keyB = makeKey(runtimeDir, "/tmp/home-b");
+
+        const connectionScopeA1 = yield* Scope.make();
+        yield* supervisor.acquireConnection(keyA).pipe(Scope.provide(connectionScopeA1));
+        NodeAssert.equal(state.spawns.length, 1);
+        const firstSocketPath = state.spawns[0]!.socketPath ?? "";
+
+        // Crash home-a's process and let the exit monitor settle, putting
+        // digest A into its backoff window.
+        yield* Deferred.succeed(state.spawns[0]!.exit, ChildProcessSpawner.ExitCode(1));
+        yield* TestClock.adjust("1 millis");
+        for (let attempt = 0; attempt < 1000 && (yield* fs.exists(firstSocketPath)); attempt++) {
+          yield* Effect.yieldNow;
+        }
+        NodeAssert.equal(yield* fs.exists(firstSocketPath), false);
+
+        // Start (but do not resolve) a re-acquisition of home-a: it must sit
+        // in home-a's backoff window without ever completing in this test.
+        const connectionScopeA2 = yield* Scope.make();
+        const fiberA = yield* supervisor
+          .acquireConnection(keyA)
+          .pipe(Scope.provide(connectionScopeA2), Effect.forkChild);
+        yield* Effect.yieldNow;
+        NodeAssert.equal(state.spawns.length, 1);
+
+        // A different digest (home-b) must spawn immediately: it must not
+        // wait behind home-a's backoff, so no TestClock advance beyond
+        // letting fibers settle is needed.
+        const connectionScopeB = yield* Scope.make();
+        yield* supervisor.acquireConnection(keyB).pipe(Scope.provide(connectionScopeB));
+        NodeAssert.equal(state.spawns.length, 2);
+        NodeAssert.equal(
+          state.spawns[1]!.env?.CODEX_HOME,
+          "/tmp/home-b",
+          "second spawn is the unrelated home-b process, not a delayed home-a respawn",
+        );
+
+        // Let home-a's backoff finish so the forked fiber can be joined
+        // cleanly during teardown.
+        yield* TestClock.adjust("500 millis");
+        yield* Fiber.join(fiberA);
+        NodeAssert.equal(state.spawns.length, 3);
+
+        yield* Scope.close(supervisorScope, Exit.void);
+      }).pipe(Effect.provide(testLayerWithTopology(state, "shared")));
+    },
+  );
+
+  it.effect("does not apply restart backoff after a clean exit-code-0 shutdown", () => {
+    const state: FakeSpawnerState = { spawns: [] };
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const runtimeDir = yield* makeRuntimeDir;
+      const { supervisor, supervisorScope } = yield* sharedSupervisorHarness();
+      const key = makeKey(runtimeDir, "/tmp/home-clean-exit");
+
+      const connectionScope1 = yield* Scope.make();
+      yield* supervisor.acquireConnection(key).pipe(Scope.provide(connectionScope1));
+      NodeAssert.equal(state.spawns.length, 1);
+      const firstSocketPath = state.spawns[0]!.socketPath ?? "";
+
+      // Clean exit (code 0): must not be recorded as a crash.
+      yield* Deferred.succeed(state.spawns[0]!.exit, ChildProcessSpawner.ExitCode(0));
+      yield* TestClock.adjust("1 millis");
+      for (let attempt = 0; attempt < 1000 && (yield* fs.exists(firstSocketPath)); attempt++) {
+        yield* Effect.yieldNow;
+      }
+      NodeAssert.equal(yield* fs.exists(firstSocketPath), false);
+
+      // The next acquisition respawns immediately, without waiting through
+      // any backoff window (no TestClock advance needed).
+      const connectionScope2 = yield* Scope.make();
+      yield* supervisor.acquireConnection(key).pipe(Scope.provide(connectionScope2));
+      NodeAssert.equal(state.spawns.length, 2);
+
+      yield* Scope.close(supervisorScope, Exit.void);
+    }).pipe(Effect.provide(testLayerWithTopology(state, "shared")));
+  });
 });
