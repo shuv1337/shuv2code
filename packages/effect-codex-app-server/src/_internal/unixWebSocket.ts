@@ -105,23 +105,23 @@ export const makeUnixWebSocketStdio = Effect.fn("effect-codex-app-server/makeUni
             }
             residual = residual.subarray(offset + maskLen + len);
             if (opcode === 0x8) {
-              void Queue.end(incoming);
+              Queue.endUnsafe(incoming);
               resume(Effect.void);
               return;
             }
             if (opcode === 0x1 || opcode === 0x2) {
               const text = decoder.decode(payload);
-              void Queue.offer(incoming, encoder.encode(`${text}\n`));
+              Queue.offerUnsafe(incoming, encoder.encode(`${text}\n`));
             }
           }
         };
         socket.on("data", onData);
         socket.on("close", () => {
-          void Queue.end(incoming);
+          Queue.endUnsafe(incoming);
           resume(Effect.void);
         });
         socket.on("error", (error) => {
-          void Queue.end(incoming);
+          Queue.endUnsafe(incoming);
           resume(Effect.die(error));
         });
         return Effect.sync(() => {
