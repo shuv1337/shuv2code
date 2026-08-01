@@ -1231,7 +1231,7 @@ function mapToRuntimeEventsWithoutRuntimeIdentity(
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           realtimeSessionId: payload.realtimeSessionId ?? undefined,
-          ...(readRealtimeRoute(event.payload) ?? {}),
+          ...readRealtimeRoute(event.payload),
         },
       },
     ];
@@ -1251,7 +1251,7 @@ function mapToRuntimeEventsWithoutRuntimeIdentity(
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           item: payload.item,
-          ...(readRealtimeRoute(event.payload) ?? {}),
+          ...readRealtimeRoute(event.payload),
         },
       },
     ];
