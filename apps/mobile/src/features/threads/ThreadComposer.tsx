@@ -69,6 +69,7 @@ import {
 } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
+import { collapsedComposerActions } from "./threadComposerActions";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -308,6 +309,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const showStopAction =
     props.selectedThread.session?.status === "running" ||
     props.selectedThread.session?.status === "starting";
+  const collapsedActions = collapsedComposerActions({
+    hasContent,
+    isRunning: showStopAction,
+  });
 
   const sendLabel =
     props.connectionState !== "connected" || props.activeThreadBusy || props.queueCount > 0
@@ -837,16 +842,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           ) : null}
           {!isExpanded ? (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
-              {showStopAction ? (
-                <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
-              ) : (
-                <ControlPill
-                  icon="arrow.up"
-                  variant="primary"
-                  disabled={!canSend}
-                  onPress={handleSend}
-                />
-              )}
+              <View className="flex-row gap-1.5">
+                {collapsedActions.showStop ? (
+                  <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
+                ) : null}
+                {collapsedActions.showSend ? (
+                  <ControlPill
+                    icon="arrow.up"
+                    variant="primary"
+                    disabled={!canSend}
+                    onPress={handleSend}
+                  />
+                ) : null}
+              </View>
             </Animated.View>
           ) : null}
         </ComposerSurface>

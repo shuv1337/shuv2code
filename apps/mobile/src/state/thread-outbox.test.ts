@@ -380,6 +380,15 @@ describe("thread outbox", () => {
         threadBusy: false,
       }),
     ).toBe("send");
+    expect(
+      resolveThreadOutboxDeliveryAction({
+        isCreation: false,
+        threadExists: true,
+        shellStatus: "live",
+        environmentConnected: true,
+        threadBusy: true,
+      }),
+    ).toBe("wait");
   });
 
   it("sends queued creations once connected and live, removing already-created ones", () => {

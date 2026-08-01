@@ -221,6 +221,7 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { resolveComposerTurnDispatch } from "./chat/composerTurnDispatch";
 import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "./chat/composerPromptHistory";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
@@ -1165,6 +1166,7 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const steerThreadTurn = useAtomCommand(threadEnvironment.steerTurn, { reportFailure: false });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -4597,6 +4599,21 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
 
+    const turnDispatch = resolveComposerTurnDispatch({
+      isServerThread,
+      session: activeThread.session,
+    });
+    if (turnDispatch._tag === "blocked") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Active turn is still synchronizing",
+          description: "Wait for the running turn to synchronize, then send again.",
+        }),
+      );
+      return;
+    }
+
     sendInFlightRef.current = true;
     if (isDraftHeroState && activeThreadKey) {
       let resolveDockStarted: (() => void) | undefined;
@@ -4798,24 +4815,36 @@ function ChatViewContent(props: ChatViewProps) {
             }
           : undefined;
       beginLocalDispatch({ preparingWorktree: false });
-      const startResult = await startThreadTurn({
-        environmentId,
-        input: {
-          threadId: threadIdForSend,
-          message: {
-            messageId: messageIdForSend,
-            role: "user",
-            text: outgoingMessageText,
-            attachments: turnAttachmentsResult.value,
-          },
-          modelSelection: ctxSelectedModelSelection,
-          titleSeed: title,
-          runtimeMode,
-          interactionMode,
-          ...(bootstrap ? { bootstrap } : {}),
-          createdAt: messageCreatedAt,
-        },
-      });
+      const message = {
+        messageId: messageIdForSend,
+        role: "user" as const,
+        text: outgoingMessageText,
+        attachments: turnAttachmentsResult.value,
+      };
+      const startResult =
+        turnDispatch._tag === "steer"
+          ? await steerThreadTurn({
+              environmentId,
+              input: {
+                threadId: threadIdForSend,
+                expectedTurnId: turnDispatch.expectedTurnId,
+                message,
+                createdAt: messageCreatedAt,
+              },
+            })
+          : await startThreadTurn({
+              environmentId,
+              input: {
+                threadId: threadIdForSend,
+                message,
+                modelSelection: ctxSelectedModelSelection,
+                titleSeed: title,
+                runtimeMode,
+                interactionMode,
+                ...(bootstrap ? { bootstrap } : {}),
+                createdAt: messageCreatedAt,
+              },
+            });
       if (startResult._tag === "Failure") {
         failure = startResult;
       } else {
