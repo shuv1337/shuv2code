@@ -91,7 +91,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
-import { issueAssetUrl } from "./assets/AssetAccess.ts";
+import { issueAssetUrl, issueViewedImageAssetUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
@@ -1767,20 +1767,21 @@ export const makeWsRpcLayer = (
               if (input.resource._tag !== "workspace-file") {
                 return yield* issueAssetUrl({ resource: input.resource });
               }
+              const resource = input.resource;
               const thread = yield* projectionSnapshotQuery
-                .getThreadShellById(input.resource.threadId)
+                .getThreadShellById(resource.threadId)
                 .pipe(
                   Effect.mapError(
                     (cause) =>
                       new AssetWorkspaceContextResolutionError({
-                        resource: input.resource,
+                        resource,
                         cause,
                       }),
                   ),
                 );
               if (Option.isNone(thread)) {
                 return yield* new AssetWorkspaceContextNotFoundError({
-                  resource: input.resource,
+                  resource,
                 });
               }
               const project = yield* projectionSnapshotQuery
@@ -1789,20 +1790,46 @@ export const makeWsRpcLayer = (
                   Effect.mapError(
                     (cause) =>
                       new AssetWorkspaceContextResolutionError({
-                        resource: input.resource,
+                        resource,
                         cause,
                       }),
                   ),
                 );
               if (Option.isNone(project)) {
                 return yield* new AssetWorkspaceContextNotFoundError({
-                  resource: input.resource,
+                  resource,
                 });
               }
-              return yield* issueAssetUrl({
-                resource: input.resource,
+              const workspaceAsset = issueAssetUrl({
+                resource,
                 workspaceRoot: thread.value.worktreePath ?? project.value.workspaceRoot,
               });
+              return yield* workspaceAsset.pipe(
+                Effect.catchTag("AssetWorkspacePathValidationError", () =>
+                  Effect.gen(function* () {
+                    const threadDetail = yield* projectionSnapshotQuery
+                      .getThreadDetailById(resource.threadId)
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new AssetWorkspaceContextResolutionError({
+                              resource,
+                              cause,
+                            }),
+                        ),
+                      );
+                    if (Option.isNone(threadDetail)) {
+                      return yield* new AssetWorkspaceContextNotFoundError({
+                        resource,
+                      });
+                    }
+                    return yield* issueViewedImageAssetUrl({
+                      resource,
+                      activities: threadDetail.value.activities,
+                    });
+                  }),
+                ),
+              );
             }),
             { "rpc.aggregate": "workspace" },
           ),

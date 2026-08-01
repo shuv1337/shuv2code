@@ -13,7 +13,12 @@ import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as Shuv2CodeProjectFileLoader from "../project/Shuv2CodeProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import { ASSET_ROUTE_PREFIX, issueAssetUrl, resolveAsset } from "./AssetAccess.ts";
+import {
+  ASSET_ROUTE_PREFIX,
+  issueAssetUrl,
+  issueViewedImageAssetUrl,
+  resolveAsset,
+} from "./AssetAccess.ts";
 
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "shuv2code-asset-access-test-",
@@ -101,6 +106,101 @@ describe("AssetAccess", () => {
         },
       });
       expect(error.cause).toBeInstanceOf(WorkspacePaths.WorkspacePathOutsideRootError);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("issues exact capabilities for external images viewed by the thread", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "shuv2code-viewed-image-",
+      });
+      const imagePath = path.join(outside, "result.png");
+      const siblingPath = path.join(outside, "secret.png");
+      yield* fileSystem.writeFile(imagePath, new Uint8Array([137, 80, 78, 71]));
+      yield* fileSystem.writeFile(siblingPath, new Uint8Array([137, 80, 78, 71]));
+      const canonicalImagePath = yield* fileSystem.realPath(imagePath);
+
+      const result = yield* issueViewedImageAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: imagePath,
+        },
+        activities: [
+          {
+            kind: "tool.completed",
+            payload: { data: { item: { type: "imageView", path: imagePath } } },
+          },
+        ],
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+
+      expect(yield* resolveAsset(token, "result.png")).toEqual({
+        kind: "file",
+        path: canonicalImagePath,
+      });
+      expect(yield* resolveAsset(token, "secret.png")).toBeNull();
+      expect(yield* resolveAsset(`${token}tampered`, "result.png")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects external image paths not authorized by a completed image view", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "shuv2code-unauthorized-image-",
+      });
+      const imagePath = path.join(outside, "result.png");
+      yield* fileSystem.writeFile(imagePath, new Uint8Array([137, 80, 78, 71]));
+
+      const error = yield* issueViewedImageAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: imagePath,
+        },
+        activities: [
+          {
+            kind: "tool.updated",
+            payload: { data: { item: { type: "imageView", path: imagePath } } },
+          },
+        ],
+      }).pipe(Effect.flip);
+
+      expect(error._tag).toBe("AssetWorkspaceAssetNotFoundError");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects non-image external files even when an image view claims the path", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "shuv2code-unsafe-viewed-image-",
+      });
+      const htmlPath = path.join(outside, "result.html");
+      yield* fileSystem.writeFileString(htmlPath, "<script>throw new Error('nope')</script>");
+
+      const error = yield* issueViewedImageAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: htmlPath,
+        },
+        activities: [
+          {
+            kind: "tool.completed",
+            payload: { data: { item: { type: "imageView", path: htmlPath } } },
+          },
+        ],
+      }).pipe(Effect.flip);
+
+      expect(error._tag).toBe("AssetPreviewTypeValidationError");
     }).pipe(Effect.provide(testLayer)),
   );
 
