@@ -418,6 +418,11 @@ export const issueViewedImageAssetUrl = Effect.fn("AssetAccess.issueViewedImageA
     if (Option.isNone(canonicalPath)) {
       return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
     }
+    // The requested path may be a symlink; the served file is the canonical
+    // target, so it must independently pass the browser-safe extension check.
+    if (!VIEWED_IMAGE_ASSET_EXTENSIONS.has(path.extname(canonicalPath.value).toLowerCase())) {
+      return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
+    }
     const info = yield* optionOnNotFound(fileSystem.stat(canonicalPath.value)).pipe(
       Effect.mapError(
         (cause) =>
