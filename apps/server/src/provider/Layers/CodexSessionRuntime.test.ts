@@ -1,10 +1,16 @@
 import * as NodeAssert from "node:assert/strict";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import { ChildProcessSpawner } from "effect/unstable/process";
 import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ThreadId, TurnId } from "@shuv2code/contracts";
+import type * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -19,6 +25,7 @@ import {
   CODEX_VOICE_CONTROLLER_DEVELOPER_INSTRUCTIONS,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
+  makeCodexSessionRuntime,
   materializeVoiceControllerThread,
   openCodexThread,
   persistedTurnTerminalStatus,
@@ -353,6 +360,17 @@ describe("hasConfiguredMcpServer", () => {
       true,
     );
   });
+
+  it("detects shared-topology per-thread MCP config overrides", () => {
+    NodeAssert.equal(hasConfiguredMcpServer(undefined, {}), false);
+    NodeAssert.equal(hasConfiguredMcpServer(undefined, { model: "gpt-5.4" }), false);
+    NodeAssert.equal(
+      hasConfiguredMcpServer(undefined, {
+        "mcp_servers.shuv2code.url": "http://127.0.0.1/mcp",
+      }),
+      true,
+    );
+  });
 });
 
 describe("codexSessionAppServerArgs", () => {
@@ -556,6 +574,53 @@ describe("openCodexThread", () => {
     }),
   );
 
+  it.effect("forwards per-thread config overrides on start and resume", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
+      const client = {
+        request: <M extends "thread/start" | "thread/resume">(
+          method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed(
+            makeThreadOpenResponse("shared-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+          );
+        },
+      };
+      const threadConfigOverrides = {
+        "mcp_servers.shuv2code.url": "http://127.0.0.1:4100/mcp/thread-1",
+        "mcp_servers.shuv2code.http_headers": { Authorization: "Bearer thread-1-token" },
+      };
+
+      yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-shared"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: undefined,
+        threadConfigOverrides,
+      });
+      yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-shared"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "shared-thread",
+        threadConfigOverrides,
+      });
+
+      const startPayload = calls[0]?.payload as Record<string, unknown>;
+      const resumePayload = calls[1]?.payload as Record<string, unknown>;
+      NodeAssert.deepStrictEqual(startPayload.config, threadConfigOverrides);
+      NodeAssert.deepStrictEqual(resumePayload.config, threadConfigOverrides);
+    }),
+  );
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
@@ -755,5 +820,121 @@ describe("recoverCodexThreadBySource", () => {
       }
       NodeAssert.deepStrictEqual(recovery.calls, ["thread/list", "thread/read", "thread/read"]);
     }),
+  );
+});
+
+describe("makeCodexSessionRuntime shared app-server topology", () => {
+  const failingSpawner = ChildProcessSpawner.make(() =>
+    Effect.die(new Error("shared topology must not spawn a per-session child")),
+  );
+
+  const makeFakeSharedClient = () => {
+    const requests: Array<{ method: string; payload: unknown }> = [];
+    const client = {
+      raw: {},
+      request: (method: string, payload: unknown) => {
+        requests.push({ method, payload });
+        if (method === "thread/start") {
+          return Effect.succeed(makeThreadOpenResponse("shared-thread-1"));
+        }
+        return Effect.succeed({ userAgent: "fake-shared-app-server" });
+      },
+      notify: () => Effect.void,
+      handleServerRequest: () => Effect.void,
+      handleServerNotification: () => Effect.void,
+      handleUnknownServerRequest: () => Effect.void,
+      handleUnknownServerNotification: () => Effect.void,
+    } as unknown as CodexClient.CodexAppServerClient["Service"];
+    return { client, requests };
+  };
+
+  it.effect(
+    "starts over the supervised connection, forwards MCP config overrides, and exits on connection loss",
+    () =>
+      Effect.gen(function* () {
+        const { client, requests } = makeFakeSharedClient();
+        const terminated = yield* Deferred.make<CodexErrors.CodexAppServerError>();
+        const runtimeScope = yield* Scope.make();
+        const threadConfigOverrides = {
+          "mcp_servers.shuv2code.url": "http://127.0.0.1:4100/mcp/thread-shared",
+          "mcp_servers.shuv2code.http_headers": { Authorization: "Bearer shared-token" },
+        };
+
+        const runtime = yield* makeCodexSessionRuntime({
+          threadId: ThreadId.make("thread-shared-runtime"),
+          binaryPath: "codex",
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+          sharedAppServer: {
+            acquireConnection: Effect.succeed({
+              client,
+              terminated: Deferred.await(terminated),
+            }),
+            threadConfigOverrides,
+          },
+        }).pipe(
+          Effect.provideService(Scope.Scope, runtimeScope),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, failingSpawner),
+        );
+
+        const session = yield* runtime.start();
+        NodeAssert.equal(session.status, "ready");
+        NodeAssert.equal(session.providerThreadId, "shared-thread-1");
+
+        NodeAssert.deepStrictEqual(
+          requests.map((request) => request.method),
+          ["initialize", "thread/start"],
+        );
+        const startPayload = requests[1]?.payload as Record<string, unknown>;
+        NodeAssert.deepStrictEqual(startPayload.config, threadConfigOverrides);
+
+        // Shared-connection loss is this session's exit signal.
+        yield* Deferred.succeed(
+          terminated,
+          new CodexErrors.CodexAppServerInputStreamEndedError({}),
+        );
+        for (
+          let attempt = 0;
+          attempt < 1000 && (yield* runtime.getSession).status !== "error";
+          attempt++
+        ) {
+          yield* Effect.yieldNow;
+        }
+        NodeAssert.equal((yield* runtime.getSession).status, "error");
+
+        yield* Scope.close(runtimeScope, Exit.void);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("self-initiated close stays silent on shared-connection teardown", () =>
+    Effect.gen(function* () {
+      const { client } = makeFakeSharedClient();
+      const terminated = yield* Deferred.make<CodexErrors.CodexAppServerError>();
+      const runtimeScope = yield* Scope.make();
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-shared-close"),
+        binaryPath: "codex",
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+        sharedAppServer: {
+          acquireConnection: Effect.succeed({
+            client,
+            terminated: Deferred.await(terminated),
+          }),
+        },
+      }).pipe(
+        Effect.provideService(Scope.Scope, runtimeScope),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, failingSpawner),
+      );
+
+      yield* runtime.start();
+      yield* runtime.close;
+      // The scope teardown ends the connection; the closed session must not
+      // flip to error when termination arrives afterwards.
+      yield* Deferred.succeed(terminated, new CodexErrors.CodexAppServerInputStreamEndedError({}));
+      yield* Effect.yieldNow;
+      NodeAssert.equal((yield* runtime.getSession).status, "closed");
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

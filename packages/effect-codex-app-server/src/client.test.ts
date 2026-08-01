@@ -1,15 +1,20 @@
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
+import * as Sink from "effect/Sink";
+import * as Stdio from "effect/Stdio";
+import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 
 import * as CodexClient from "./client.ts";
+import type * as CodexError from "./errors.ts";
 
 const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/codex-app-server-mock-peer.ts"),
@@ -152,6 +157,38 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       );
 
       assert.equal(initialized.userAgent, "mock-codex-app-server");
+    }),
+  );
+
+  it.effect("invokes onTermination exactly once when the transport input stream ends", () =>
+    Effect.gen(function* () {
+      const terminated = yield* Deferred.make<CodexError.CodexAppServerError>();
+      const terminationCount = yield* Ref.make(0);
+      const scope = yield* Scope.make();
+      const stdio = Stdio.make({
+        args: Effect.succeed([]),
+        stdin: Stream.empty,
+        stdout: () => Sink.drain,
+        stderr: () => Sink.drain,
+      });
+      const context = yield* Layer.buildWithScope(
+        CodexClient.layer(stdio, {
+          onTermination: (error) =>
+            Ref.update(terminationCount, (count) => count + 1).pipe(
+              Effect.andThen(Deferred.succeed(terminated, error)),
+              Effect.asVoid,
+            ),
+        }),
+        scope,
+      );
+
+      const error = yield* Effect.gen(function* () {
+        yield* Effect.service(CodexClient.CodexAppServerClient);
+        return yield* Deferred.await(terminated).pipe(Effect.timeout("5 seconds"));
+      }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
+
+      assert.equal(error._tag, "CodexAppServerInputStreamEndedError");
+      assert.equal(yield* Ref.get(terminationCount), 1);
     }),
   );
 
