@@ -2473,4 +2473,54 @@ describe("ProviderCommandReactor", () => {
         expect(thread?.session?.activeTurnId).toBeNull();
       }),
   );
+
+  effectIt.effect("keeps processing commands when a provider interrupt never resolves", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const now = "2026-01-01T00:00:00.000Z";
+      harness.interruptTurn.mockImplementation(() => Effect.never as never);
+
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-hung-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-hung-turn-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-1"),
+        createdAt: now,
+      });
+      yield* Effect.promise(() => waitFor(() => harness.interruptTurn.mock.calls.length === 1));
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.steer",
+        commandId: CommandId.make("cmd-steer-after-hung-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        expectedTurnId: asTurnId("turn-1"),
+        message: {
+          messageId: asMessageId("message-steer-after-hung-interrupt"),
+          role: "user",
+          text: "Keep working despite the stuck interrupt.",
+          attachments: [],
+        },
+        createdAt: now,
+      });
+
+      yield* Effect.promise(() => waitFor(() => harness.steerTurn.mock.calls.length === 1));
+      yield* Effect.promise(() => harness.drain());
+    }),
+  );
 });

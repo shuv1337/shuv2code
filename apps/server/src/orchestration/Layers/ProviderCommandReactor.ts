@@ -1215,6 +1215,7 @@ const make = Effect.gen(function* () {
             ),
           );
         }),
+        Effect.forkScoped,
       );
   });
 
