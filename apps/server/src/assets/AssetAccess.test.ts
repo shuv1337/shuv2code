@@ -204,6 +204,36 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("rejects image-named symlinks whose canonical target is not an image", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "shuv2code-symlinked-viewed-image-",
+      });
+      const htmlPath = path.join(outside, "payload.html");
+      const linkPath = path.join(outside, "result.png");
+      yield* fileSystem.writeFileString(htmlPath, "<script>throw new Error('nope')</script>");
+      yield* fileSystem.symlink(htmlPath, linkPath);
+
+      const error = yield* issueViewedImageAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: linkPath,
+        },
+        activities: [
+          {
+            kind: "tool.completed",
+            payload: { data: { item: { type: "imageView", path: linkPath } } },
+          },
+        ],
+      }).pipe(Effect.flip);
+
+      expect(error._tag).toBe("AssetPreviewTypeValidationError");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("preserves non-missing canonical path failures when issuing asset URLs", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
