@@ -13,6 +13,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 const BACKEND_READINESS_PATH = "/.well-known/shuv2code/environment";
 const DEFAULT_ATTACH_PROBE_TIMEOUT = Duration.millis(400);
 const DEFAULT_ATTACH_READINESS_TIMEOUT = Duration.seconds(2);
+const DEFAULT_ATTACH_RENDERER_TIMEOUT = Duration.seconds(1);
 
 const PersistedServerRuntimeState = Schema.Struct({
   version: Schema.Literal(1),
@@ -87,6 +88,17 @@ const probeReadyOrigin = (origin: string) =>
     Effect.orElseSucceed(() => false),
   );
 
+const probeUsableRendererOrigin = Effect.fn("desktop.probeUsableRendererOrigin")(function* (
+  origin: string,
+) {
+  const client = (yield* HttpClient.HttpClient).pipe(HttpClient.followRedirects());
+  const response = yield* client.get(`${origin.replace(/\/$/, "")}/`).pipe(
+    Effect.timeoutOption(DEFAULT_ATTACH_RENDERER_TIMEOUT),
+    Effect.orElseSucceed(() => Option.none()),
+  );
+  return Option.exists(response, (value) => value.status >= 200 && value.status < 300);
+});
+
 const candidateOrigins = (input: {
   readonly configuredPort: Option.Option<number>;
   readonly runtimeOrigin: Option.Option<string>;
@@ -141,6 +153,8 @@ export const discoverReusableLocalServer = Effect.fn("desktop.discoverReusableLo
       for (const origin of origins) {
         const ready = yield* probeReadyOrigin(origin);
         if (!ready) continue;
+        const rendererReady = yield* probeUsableRendererOrigin(origin);
+        if (!rendererReady) continue;
         const httpBaseUrl = new URL(origin.endsWith("/") ? origin : `${origin}/`);
         const port = Number(httpBaseUrl.port || (httpBaseUrl.protocol === "https:" ? 443 : 80));
         if (!Number.isFinite(port) || port <= 0) continue;
