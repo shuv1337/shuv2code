@@ -1573,7 +1573,12 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
                   arguments: { tabId: "tab_1" },
                   durationMs: 100,
                   status: "completed",
-                  result: { content: [{ type: "text", text: snapshotText }] },
+                  result: {
+                    content: [
+                      { type: "text", text: snapshotText },
+                      { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+                    ],
+                  },
                 },
               },
             },
@@ -1598,7 +1603,8 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
 
       assert.strictEqual(projectionRows.length, 1);
       assert.notInclude(projectionRows[0]!.payloadJson, snapshotText.slice(0, 100));
-      assert.include(projectionRows[0]!.payloadJson, "Preview snapshot omitted");
+      assert.include(projectionRows[0]!.payloadJson, "Preview snapshot payload compacted");
+      assert.include(projectionRows[0]!.payloadJson, "iVBORw0KGgo=");
       assert.strictEqual(eventRows.length, 1);
       assert.include(eventRows[0]!.payloadJson, snapshotText.slice(0, 100));
     }),

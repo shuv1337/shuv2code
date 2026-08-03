@@ -1,7 +1,10 @@
 import { EventId, type OrchestrationThreadActivity } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { projectActivityPayload } from "./ActivityPayloadProjection.ts";
+import {
+  PREVIEW_SNAPSHOT_COMPACTION_MARKER,
+  projectActivityPayload,
+} from "./ActivityPayloadProjection.ts";
 
 function imageActivity(item: Record<string, unknown>): OrchestrationThreadActivity {
   return {
@@ -16,7 +19,7 @@ function imageActivity(item: Record<string, unknown>): OrchestrationThreadActivi
 }
 
 describe("projectActivityPayload", () => {
-  it("retains MCP call metadata while replacing the full preview result", () => {
+  it("compacts preview semantics while retaining screenshots and MCP metadata", () => {
     const snapshotText = "snapshot-payload".repeat(10_000);
     const projected = projectActivityPayload({
       id: EventId.make("preview-snapshot-activity"),
@@ -37,8 +40,18 @@ describe("projectActivityPayload", () => {
             arguments: { tabId: "tab_1", includeScreenshot: true },
             durationMs: 125,
             status: "completed",
+            error: { code: "partial_snapshot", message: "One frame was skipped." },
             result: {
-              content: ["ignored", { type: "text", text: snapshotText }],
+              content: [
+                "ignored",
+                { type: "text", text: snapshotText },
+                {
+                  type: "image",
+                  data: "iVBORw0KGgo=",
+                  mimeType: "image/png",
+                  name: "Browser screenshot",
+                },
+              ],
               structuredContent: { snapshotText },
             },
           },
@@ -51,6 +64,7 @@ describe("projectActivityPayload", () => {
       itemType: "mcp_tool_call",
       status: "completed",
       data: {
+        completedAtMs: 1234,
         item: {
           type: "mcpToolCall",
           id: "preview-call-1",
@@ -59,11 +73,18 @@ describe("projectActivityPayload", () => {
           arguments: { tabId: "tab_1", includeScreenshot: true },
           durationMs: 125,
           status: "completed",
+          error: { code: "partial_snapshot", message: "One frame was skipped." },
           result: {
             content: [
               {
                 type: "text",
-                text: `[Preview snapshot omitted from activity history: original result length ${snapshotText.length.toLocaleString("en-US")} characters]`,
+                text: PREVIEW_SNAPSHOT_COMPACTION_MARKER,
+              },
+              {
+                type: "image",
+                data: "iVBORw0KGgo=",
+                mimeType: "image/png",
+                name: "Browser screenshot",
               },
             ],
           },

@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { PREVIEW_SNAPSHOT_COMPACTION_MARKER } from "../../orchestration/ActivityPayloadProjection.ts";
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
@@ -34,7 +35,7 @@ layer("040_CompactPreviewSnapshotActivities", (it) => {
             'tool',
             'tool.completed',
             'shuv2code · preview_snapshot',
-            '{"itemType":"mcp_tool_call","status":"completed","data":{"completedAtMs":1234,"item":{"type":"mcpToolCall","id":"preview-call","server":"shuv2code","tool":"preview_snapshot","arguments":{"tabId":"tab_1"},"durationMs":125,"status":"completed","result":{"content":["plain",{"type":"text","text":"SNAPSHOT_PAYLOAD_SHOULD_BE_REMOVED"},{"type":"text","text":"SECOND"}],"structuredContent":{"snapshot":"SNAPSHOT_PAYLOAD_SHOULD_BE_REMOVED"}}}}}',
+            '{"itemType":"mcp_tool_call","status":"completed","data":{"completedAtMs":1234,"item":{"type":"mcpToolCall","id":"preview-call","server":"shuv2code","tool":"preview_snapshot","arguments":{"tabId":"tab_1"},"durationMs":125,"status":"completed","error":{"code":"partial_snapshot"},"result":{"content":["plain",{"type":"text","text":"SNAPSHOT_PAYLOAD_SHOULD_BE_REMOVED"},{"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png","name":"Browser screenshot"},{"type":"text","text":"SECOND"}],"structuredContent":{"snapshot":"SNAPSHOT_PAYLOAD_SHOULD_BE_REMOVED"}}}}}',
             42,
             '2026-08-01T00:00:00.000Z'
           ),
@@ -56,9 +57,20 @@ layer("040_CompactPreviewSnapshotActivities", (it) => {
             'tool',
             'tool.completed',
             'shuv2code · preview_snapshot',
-            '{"itemType":"mcp_tool_call","data":{"item":{"server":"shuv2code","tool":"preview_snapshot","result":{"content":[{"type":"text","text":"[Preview snapshot omitted from activity history: original result length 99 characters]"}]}}}}',
+            '{"itemType":"mcp_tool_call","data":{"item":{"server":"shuv2code","tool":"preview_snapshot","result":{"content":[{"type":"image","data":"ALREADY_PRESERVED","mimeType":"image/png"},{"type":"text","text":"[Preview snapshot omitted from activity history: original result length 99 characters]"}]}}}}',
             44,
             '2026-08-01T00:00:02.000Z'
+          ),
+          (
+            'activity-malformed-json',
+            'thread-1',
+            'turn-1',
+            'tool',
+            'tool.completed',
+            'malformed',
+            '{not valid json',
+            45,
+            '2026-08-01T00:00:03.000Z'
           )
       `;
 
@@ -109,7 +121,11 @@ layer("040_CompactPreviewSnapshotActivities", (it) => {
         readonly tabId: string;
         readonly durationMs: number;
         readonly status: string;
+        readonly completedAtMs: number;
+        readonly errorCode: string;
         readonly resultText: string;
+        readonly imageType: string;
+        readonly imageData: string;
         readonly containsSnapshot: number;
       }>`
         SELECT
@@ -126,7 +142,11 @@ layer("040_CompactPreviewSnapshotActivities", (it) => {
           json_extract(payload_json, '$.data.item.arguments.tabId') AS "tabId",
           json_extract(payload_json, '$.data.item.durationMs') AS "durationMs",
           json_extract(payload_json, '$.data.item.status') AS "status",
+          json_extract(payload_json, '$.data.completedAtMs') AS "completedAtMs",
+          json_extract(payload_json, '$.data.item.error.code') AS "errorCode",
           json_extract(payload_json, '$.data.item.result.content[0].text') AS "resultText",
+          json_extract(payload_json, '$.data.item.result.content[1].type') AS "imageType",
+          json_extract(payload_json, '$.data.item.result.content[1].data') AS "imageData",
           instr(payload_json, 'SNAPSHOT_PAYLOAD_SHOULD_BE_REMOVED') AS "containsSnapshot"
         FROM projection_thread_activities
         WHERE activity_id = 'activity-preview'
@@ -146,8 +166,11 @@ layer("040_CompactPreviewSnapshotActivities", (it) => {
           tabId: "tab_1",
           durationMs: 125,
           status: "completed",
-          resultText:
-            "[Preview snapshot omitted from activity history: original result length 40 characters]",
+          completedAtMs: 1234,
+          errorCode: "partial_snapshot",
+          resultText: PREVIEW_SNAPSHOT_COMPACTION_MARKER,
+          imageType: "image",
+          imageData: "iVBORw0KGgo=",
           containsSnapshot: 0,
         },
       ]);
@@ -155,10 +178,16 @@ layer("040_CompactPreviewSnapshotActivities", (it) => {
       const untouchedRows = yield* sql<{
         readonly activityId: string;
         readonly resultText: string;
+        readonly imageData: string | null;
       }>`
         SELECT
           activity_id AS "activityId",
-          json_extract(payload_json, '$.data.item.result.content[0].text') AS "resultText"
+          CASE
+            WHEN activity_id = 'activity-already-compacted'
+            THEN json_extract(payload_json, '$.data.item.result.content[1].text')
+            ELSE json_extract(payload_json, '$.data.item.result.content[0].text')
+          END AS "resultText",
+          json_extract(payload_json, '$.data.item.result.content[0].data') AS "imageData"
         FROM projection_thread_activities
         WHERE activity_id IN ('activity-other-mcp', 'activity-already-compacted')
         ORDER BY activity_id
@@ -168,12 +197,21 @@ layer("040_CompactPreviewSnapshotActivities", (it) => {
           activityId: "activity-already-compacted",
           resultText:
             "[Preview snapshot omitted from activity history: original result length 99 characters]",
+          imageData: "ALREADY_PRESERVED",
         },
         {
           activityId: "activity-other-mcp",
           resultText: "SNAPSHOT_PAYLOAD_SHOULD_BE_REMOVED",
+          imageData: null,
         },
       ]);
+
+      const malformedRows = yield* sql<{ readonly payloadJson: string }>`
+        SELECT payload_json AS "payloadJson"
+        FROM projection_thread_activities
+        WHERE activity_id = 'activity-malformed-json'
+      `;
+      assert.deepEqual(malformedRows, [{ payloadJson: "{not valid json" }]);
 
       const eventRows = yield* sql<{ readonly payloadJson: string }>`
         SELECT payload_json AS "payloadJson"

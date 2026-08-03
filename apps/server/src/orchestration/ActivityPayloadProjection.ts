@@ -104,30 +104,10 @@ function projectCommandData(data: Record<string, unknown>): Record<string, unkno
   return Object.keys(projectedItem).length > 0 ? projectedItem : undefined;
 }
 
-const PREVIEW_SNAPSHOT_COMPACTION_MARKER_PREFIX =
-  "[Preview snapshot omitted from activity history: original result length ";
-
-function previewSnapshotResultTextLength(value: unknown): number {
-  const result = asRecord(value);
-  const content = result?.content;
-  if (Array.isArray(content)) {
-    let length = 0;
-    let foundText = false;
-    for (const entry of content) {
-      const text = asRecord(entry)?.text;
-      if (typeof text !== "string") {
-        continue;
-      }
-      foundText = true;
-      length += text.length;
-    }
-    if (foundText) {
-      return length;
-    }
-  }
-
-  return 0;
-}
+export const PREVIEW_SNAPSHOT_COMPACTION_MARKER =
+  "[Preview snapshot payload compacted in activity history]";
+const LEGACY_PREVIEW_SNAPSHOT_COMPACTION_MARKER_PREFIX =
+  "[Preview snapshot omitted from activity history:";
 
 function isCompactedPreviewSnapshotResult(value: unknown): boolean {
   const content = asRecord(value)?.content;
@@ -135,9 +115,23 @@ function isCompactedPreviewSnapshotResult(value: unknown): boolean {
     Array.isArray(content) &&
     content.some((entry) => {
       const text = asRecord(entry)?.text;
-      return typeof text === "string" && text.startsWith(PREVIEW_SNAPSHOT_COMPACTION_MARKER_PREFIX);
+      return (
+        typeof text === "string" &&
+        (text === PREVIEW_SNAPSHOT_COMPACTION_MARKER ||
+          text.startsWith(LEGACY_PREVIEW_SNAPSHOT_COMPACTION_MARKER_PREFIX))
+      );
     })
   );
+}
+
+function previewSnapshotImageBlocks(value: unknown): ReadonlyArray<Record<string, unknown>> {
+  const content = asRecord(value)?.content;
+  return Array.isArray(content)
+    ? content.flatMap((entry) => {
+        const block = asRecord(entry);
+        return block?.type === "image" ? [block] : [];
+      })
+    : [];
 }
 
 function compactPreviewSnapshotActivity(
@@ -156,35 +150,24 @@ function compactPreviewSnapshotActivity(
     return activity;
   }
 
-  const originalResultLength = previewSnapshotResultTextLength(item.result);
-  const projectedItem: Record<string, unknown> = {};
-  for (const key of [
-    "type",
-    "id",
-    "server",
-    "tool",
-    "arguments",
-    "durationMs",
-    "status",
-  ] as const) {
-    if (key in item) {
-      projectedItem[key] = item[key];
-    }
-  }
-  projectedItem.result = {
-    content: [
-      {
-        type: "text",
-        text: `${PREVIEW_SNAPSHOT_COMPACTION_MARKER_PREFIX}${originalResultLength.toLocaleString("en-US")} characters]`,
-      },
-    ],
+  const projectedItem: Record<string, unknown> = {
+    ...item,
+    result: {
+      content: [
+        {
+          type: "text",
+          text: PREVIEW_SNAPSHOT_COMPACTION_MARKER,
+        },
+        ...previewSnapshotImageBlocks(item.result),
+      ],
+    },
   };
 
   return {
     ...activity,
     payload: {
       ...payload,
-      data: { item: projectedItem },
+      data: { ...data, item: projectedItem },
     },
   };
 }
