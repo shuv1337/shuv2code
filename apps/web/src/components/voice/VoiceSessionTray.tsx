@@ -14,12 +14,19 @@ export function shouldShowVoiceTray(state: RealtimeVoiceSessionState): boolean {
   return state.phase.type !== "idle";
 }
 
+export function voiceTraySubtitle(state: RealtimeVoiceSessionState): string {
+  return state.phase.type === "error" || state.phase.type === "unsupported"
+    ? "Needs attention"
+    : realtimeVoiceStateLabel(state);
+}
+
 export function VoiceSessionTray() {
   const voice = useVoiceSession();
   if (!shouldShowVoiceTray(voice.state)) {
     return null;
   }
   const label = realtimeVoiceStateLabel(voice.state);
+  const subtitle = voiceTraySubtitle(voice.state);
   const actionableError =
     voice.state.phase.type === "error" || voice.state.phase.type === "unsupported";
 
@@ -40,7 +47,7 @@ export function VoiceSessionTray() {
           <p className="truncate text-sm font-medium">
             {voice.state.controller?.title ?? "Voice control"}
           </p>
-          <p className="truncate text-xs text-muted-foreground">{label}</p>
+          <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
         </div>
         {voice.state.controller ? (
           <Button
@@ -90,7 +97,12 @@ export function VoiceSessionTray() {
       </div>
       {actionableError ? (
         <div className="border-border/60 border-t px-3 py-2">
-          <p tabIndex={0} className="text-sm text-destructive-foreground">
+          <p
+            tabIndex={0}
+            className="text-sm text-destructive-foreground"
+            aria-live="polite"
+            aria-atomic="true"
+          >
             {label}
           </p>
         </div>
@@ -99,7 +111,7 @@ export function VoiceSessionTray() {
       )}
       {voice.state.activeTarget ? <VoiceTargetStrip target={voice.state.activeTarget} /> : null}
       <div className="sr-only" aria-live="polite" aria-atomic="true">
-        {label}
+        {actionableError ? null : label}
       </div>
     </aside>
   );

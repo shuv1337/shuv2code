@@ -3,8 +3,10 @@ import {
   type EnvironmentId,
   type VoiceAppendAudioInput,
   type VoiceEnsureControllerInput,
+  type VoiceGetControllerInput,
   type VoiceListVoicesInput,
   type VoiceRealtimeIngressInput,
+  type VoiceResetControllerInput,
   type VoiceSessionStartInput,
   type VoiceSessionStopInput,
   type VoiceSubscribeEventsInput,
@@ -88,6 +90,9 @@ export class RealtimeVoiceLeaseRelease {
 export const ensureVoiceController = (input: VoiceEnsureControllerInput) =>
   request(WS_METHODS.voiceEnsureController, input);
 
+export const getVoiceController = (input: VoiceGetControllerInput) =>
+  request(WS_METHODS.voiceGetController, input);
+
 export const listRealtimeVoices = (input: VoiceListVoicesInput) =>
   request(WS_METHODS.voiceListVoices, input);
 
@@ -102,6 +107,9 @@ export const appendRealtimeVoiceAudio = (input: VoiceAppendAudioInput) =>
 
 export const stopRealtimeVoice = (input: VoiceSessionStopInput) =>
   request(WS_METHODS.voiceStop, input);
+
+export const resetVoiceController = (input: VoiceResetControllerInput) =>
+  request(WS_METHODS.voiceResetController, input);
 
 export const subscribeRealtimeVoiceEvents = (
   input: VoiceSubscribeEventsInput,

@@ -22,6 +22,7 @@ import {
   textToSpeechApiKeyClearPatch,
   textToSpeechApiKeyReplacementPatch,
 } from "./SpeechSettingsPanel.logic";
+import { VoiceControllerSettings } from "./VoiceControllerSettings";
 
 const defaults = DEFAULT_SERVER_SETTINGS.textToSpeech;
 
@@ -44,6 +45,8 @@ export function SpeechSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <VoiceControllerSettings />
+
       <SettingsSection title="Speech" icon={<Volume2Icon className="size-5" />}>
         <SettingsRow
           title="Text-to-speech"

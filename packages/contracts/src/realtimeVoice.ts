@@ -72,6 +72,14 @@ export const VoiceEnsureControllerResult = Schema.Struct({
 });
 export type VoiceEnsureControllerResult = typeof VoiceEnsureControllerResult.Type;
 
+export const VoiceGetControllerInput = Schema.Struct({});
+export type VoiceGetControllerInput = typeof VoiceGetControllerInput.Type;
+
+export const VoiceGetControllerResult = Schema.Struct({
+  controller: Schema.NullOr(VoiceControllerIdentity),
+});
+export type VoiceGetControllerResult = typeof VoiceGetControllerResult.Type;
+
 export const VoiceResetControllerInput = Schema.Struct({
   controllerThreadId: ThreadId,
 });
