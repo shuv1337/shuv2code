@@ -10,6 +10,7 @@ import { MicIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
+import { verifyVoiceMicrophoneAccess } from "../../voice/voiceMicrophoneAccess";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -104,6 +105,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
     setBusy(true);
     setActionError(null);
     try {
+      await verifyVoiceMicrophoneAccess();
       if (bindingConflictError) {
         await voice.stop();
       }
@@ -137,6 +139,9 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
     setBusy(true);
     setActionError(null);
     try {
+      // Verify browser permission before destroying the durable binding. Otherwise a denied
+      // microphone immediately recreates a controller and makes a successful reset look broken.
+      await verifyVoiceMicrophoneAccess();
       const reset = await voice.resetController(props.environmentId, existing.controllerThreadId);
       if (!reset) {
         throw new Error("The controller changed before it could be reset. Refresh and try again.");
