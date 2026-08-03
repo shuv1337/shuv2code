@@ -71,6 +71,8 @@ const openControllerScope = Effect.gen(function* () {
   assert.isTrue(
     yield* bindings.compareAndSetState({
       environmentId,
+      expectedControllerThreadId: reserved.binding.controllerThreadId,
+      expectedBindingGeneration: reserved.binding.bindingGeneration,
       expectedState: "provisioning",
       nextState: "active",
       expectedControlEpoch: 0,

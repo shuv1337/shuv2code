@@ -61,6 +61,8 @@ const reserveBinding = Effect.gen(function* () {
   assert.isTrue(
     yield* bindings.compareAndSetState({
       environmentId,
+      expectedControllerThreadId: reservation.binding.controllerThreadId,
+      expectedBindingGeneration: reservation.binding.bindingGeneration,
       expectedState: "provisioning",
       nextState: "active",
       expectedControlEpoch: 0,
@@ -286,13 +288,21 @@ layer("VoiceControlRepositories", (it) => {
       assert.isTrue(
         yield* bindings.compareAndSetState({
           environmentId,
+          expectedControllerThreadId: beforeReset.controllerThreadId,
+          expectedBindingGeneration: beforeReset.bindingGeneration,
           expectedState: "active",
           nextState: "resetting",
           expectedControlEpoch: 0,
           updatedAt: now,
         }),
       );
-      assert.isTrue(yield* bindings.deleteResetting(environmentId));
+      assert.isTrue(
+        yield* bindings.deleteResetting({
+          environmentId,
+          expectedControllerThreadId: beforeReset.controllerThreadId,
+          expectedBindingGeneration: beforeReset.bindingGeneration,
+        }),
+      );
       const replacement = yield* bindings.reserve({
         environmentId,
         controllerThreadId: ThreadId.make("controller-2"),
@@ -305,6 +315,41 @@ layer("VoiceControlRepositories", (it) => {
       });
       assert.strictEqual(replacement._tag, "created");
       assert.strictEqual(replacement.binding.bindingGeneration, beforeReset.bindingGeneration + 1);
+      assert.isTrue(
+        yield* bindings.compareAndSetState({
+          environmentId,
+          expectedControllerThreadId: replacement.binding.controllerThreadId,
+          expectedBindingGeneration: replacement.binding.bindingGeneration,
+          expectedState: "provisioning",
+          nextState: "active",
+          expectedControlEpoch: replacement.binding.controlEpoch,
+          updatedAt: now,
+        }),
+      );
+      assert.isFalse(
+        yield* bindings.compareAndSetState({
+          environmentId,
+          expectedControllerThreadId: beforeReset.controllerThreadId,
+          expectedBindingGeneration: beforeReset.bindingGeneration,
+          expectedState: "active",
+          nextState: "resetting",
+          expectedControlEpoch: beforeReset.controlEpoch,
+          updatedAt: now,
+        }),
+      );
+      assert.isFalse(
+        yield* bindings.deleteResetting({
+          environmentId,
+          expectedControllerThreadId: beforeReset.controllerThreadId,
+          expectedBindingGeneration: beforeReset.bindingGeneration,
+        }),
+      );
+      const afterStaleReset = Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId));
+      assert.strictEqual(
+        afterStaleReset.controllerThreadId,
+        replacement.binding.controllerThreadId,
+      );
+      assert.strictEqual(afterStaleReset.state, "active");
     }),
   );
 

@@ -26,6 +26,50 @@ class FakeEventTarget {
 }
 
 describe("WebRtcVoiceTransport", () => {
+  it("uses a pre-acquired microphone stream without requesting a second one", async () => {
+    const track = { enabled: true, stop: vi.fn(), addEventListener: vi.fn() };
+    const stream = {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+    } as unknown as MediaStream;
+    const dataChannel = Object.assign(new FakeEventTarget(), { close: vi.fn() });
+    const peer = Object.assign(new FakeEventTarget(), {
+      iceGatheringState: "complete",
+      connectionState: "connected",
+      localDescription: null as RTCSessionDescription | null,
+      createDataChannel: vi.fn(() => dataChannel),
+      addTrack: vi.fn(),
+      createOffer: vi.fn(async () => ({ type: "offer", sdp: "offer-sdp" })),
+      setLocalDescription: vi.fn(async (description: RTCSessionDescriptionInit) => {
+        peer.localDescription = description as RTCSessionDescription;
+      }),
+      setRemoteDescription: vi.fn(async () => {}),
+      close: vi.fn(),
+    });
+    const getUserMedia = vi.fn();
+    const transport = new WebRtcVoiceTransport({
+      getUserMedia,
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      createAudioElement: () =>
+        ({
+          autoplay: false,
+          style: {},
+          srcObject: null,
+          setAttribute: vi.fn(),
+          removeAttribute: vi.fn(),
+          play: vi.fn(async () => {}),
+          pause: vi.fn(),
+        }) as unknown as HTMLAudioElement,
+    });
+
+    await transport.connect({ exchangeOffer: async () => "answer", onData: vi.fn() }, stream);
+
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(peer.addTrack).toHaveBeenCalledWith(track, stream);
+    transport.close();
+    expect(track.stop).toHaveBeenCalledTimes(1);
+  });
+
   it("creates oai-events before the offer and releases every browser resource once", async () => {
     const order: string[] = [];
     const track = { enabled: true, stop: vi.fn(), addEventListener: vi.fn() };

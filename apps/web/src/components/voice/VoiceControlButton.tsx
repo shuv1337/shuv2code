@@ -10,7 +10,10 @@ import { MicIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
-import { verifyVoiceMicrophoneAccess } from "../../voice/voiceMicrophoneAccess";
+import {
+  acquireVoiceMicrophoneStream,
+  releaseVoiceMicrophoneStream,
+} from "../../voice/voiceMicrophoneAccess";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -32,7 +35,10 @@ import {
 } from "../ui/dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { VoiceControllerConfigurationDetails } from "./VoiceControllerDetails";
-import { hasVoiceControllerBindingConflict } from "./VoiceControllerManagement.logic";
+import {
+  hasVoiceControllerBindingConflict,
+  replaceVoiceControllerAfterMicrophoneAccess,
+} from "./VoiceControllerManagement.logic";
 
 export interface VoiceControlButtonProps {
   readonly environmentId: EnvironmentId;
@@ -104,12 +110,15 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
   const startVoice = async (useExisting: boolean) => {
     setBusy(true);
     setActionError(null);
+    let microphoneStream: MediaStream | undefined;
     try {
-      await verifyVoiceMicrophoneAccess();
+      microphoneStream = await acquireVoiceMicrophoneStream();
       if (bindingConflictError) {
         await voice.stop();
       }
       setSetupOpen(false);
+      const preparedMicrophone = microphoneStream;
+      microphoneStream = undefined;
       await voice.start(
         useExisting && existing
           ? {
@@ -117,6 +126,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
               hostProjectId: existing.hostProjectId,
               providerInstanceId: existing.providerInstanceId,
               authorizedRuntimeCeiling: existing.authorizedRuntimeCeiling,
+              microphoneStream: preparedMicrophone,
             }
           : {
               environmentId: props.environmentId,
@@ -124,12 +134,14 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
               providerInstanceId: props.providerInstanceId,
               modelSelection: props.modelSelection,
               authorizedRuntimeCeiling: ceiling,
+              microphoneStream: preparedMicrophone,
             },
       );
     } catch (error) {
       setSetupOpen(true);
       setActionError(errorMessage(error));
     } finally {
+      releaseVoiceMicrophoneStream(microphoneStream);
       setBusy(false);
     }
   };
@@ -139,21 +151,25 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
     setBusy(true);
     setActionError(null);
     try {
-      // Verify browser permission before destroying the durable binding. Otherwise a denied
-      // microphone immediately recreates a controller and makes a successful reset look broken.
-      await verifyVoiceMicrophoneAccess();
-      const reset = await voice.resetController(props.environmentId, existing.controllerThreadId);
-      if (!reset) {
-        throw new Error("The controller changed before it could be reset. Refresh and try again.");
-      }
-      setResetConfirmOpen(false);
-      setSetupOpen(false);
-      await voice.start({
-        environmentId: props.environmentId,
-        hostProjectId: props.hostProjectId,
-        providerInstanceId: props.providerInstanceId,
-        modelSelection: props.modelSelection,
-        authorizedRuntimeCeiling: ceiling,
+      // Acquire the one stream startup will use before destroying the durable binding. A denied
+      // or unavailable microphone therefore cannot make a successful reset look broken.
+      await replaceVoiceControllerAfterMicrophoneAccess({
+        acquireMicrophone: acquireVoiceMicrophoneStream,
+        resetController: () =>
+          voice.resetController(props.environmentId, existing.controllerThreadId),
+        startWithMicrophone: async (microphoneStream) => {
+          setResetConfirmOpen(false);
+          setSetupOpen(false);
+          await voice.start({
+            environmentId: props.environmentId,
+            hostProjectId: props.hostProjectId,
+            providerInstanceId: props.providerInstanceId,
+            modelSelection: props.modelSelection,
+            authorizedRuntimeCeiling: ceiling,
+            microphoneStream,
+          });
+        },
+        releaseMicrophone: releaseVoiceMicrophoneStream,
       });
     } catch (error) {
       const message = errorMessage(error);
@@ -265,6 +281,10 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
                   authorizedRuntimeCeiling={ceiling}
                   model={props.modelSelection.model}
                 />
+              </>
+            )}
+            {lookup.type === "ready" ? (
+              <>
                 <label className="block space-y-1.5 text-sm font-medium">
                   Thread-control authority ceiling
                   <select
@@ -289,7 +309,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
                   </p>
                 ) : null}
               </>
-            )}
+            ) : null}
             {actionError ? (
               <p className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive-foreground">
                 {actionError}

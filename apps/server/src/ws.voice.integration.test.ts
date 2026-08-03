@@ -318,6 +318,12 @@ describe("authenticated voice RPC vertical integration", () => {
           (yield* readClient[WS_METHODS.voiceGetController]({})).controller,
           ensured.controller,
         );
+        const deniedReset = yield* Effect.flip(
+          readClient[WS_METHODS.voiceResetController]({ controllerThreadId }),
+        );
+        assert.strictEqual(deniedReset._tag, "EnvironmentAuthorizationError");
+        if (deniedReset._tag !== "EnvironmentAuthorizationError") return assert.fail();
+        assert.strictEqual(deniedReset.requiredScope, AuthOrchestrationOperateScope);
 
         const recoveredEnsure = yield* fullClient[WS_METHODS.voiceEnsureController]({
           hostProjectId,

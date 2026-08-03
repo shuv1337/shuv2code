@@ -89,7 +89,10 @@ export class WebRtcVoiceTransport {
     return this.#closed;
   }
 
-  async connect(input: WebRtcVoiceTransportConnectInput): Promise<void> {
+  async connect(
+    input: WebRtcVoiceTransportConnectInput,
+    microphoneStream?: MediaStream,
+  ): Promise<void> {
     if (this.#peer !== null) {
       throw new VoiceSessionError("transport-already-started", "Voice transport already started.");
     }
@@ -97,7 +100,8 @@ export class WebRtcVoiceTransport {
     const connectAbort = new AbortController();
     this.#connectAbort = connectAbort;
     try {
-      const microphone = await this.#dependencies.getUserMedia(VOICE_MICROPHONE_CONSTRAINTS);
+      const microphone =
+        microphoneStream ?? (await this.#dependencies.getUserMedia(VOICE_MICROPHONE_CONSTRAINTS));
       if (this.#closed) {
         microphone.getTracks().forEach((track) => track.stop());
         return;
