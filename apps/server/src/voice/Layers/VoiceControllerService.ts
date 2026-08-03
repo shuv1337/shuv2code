@@ -70,6 +70,22 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   );
   const previousPolicyRef = yield* Ref.make(yield* currentPolicy);
 
+  const getController: VoiceControllerService["Service"]["getController"] = Effect.fn(
+    "VoiceControllerService.getController",
+  )(function* () {
+    const environmentId = yield* environment.getEnvironmentId;
+    const binding = yield* bindings
+      .getByEnvironmentId(environmentId)
+      .pipe(
+        Effect.mapError(
+          mapInternalError("internal_error", "The controller binding could not be read."),
+        ),
+      );
+    return {
+      controller: Option.isSome(binding) ? controllerIdentity(binding.value) : null,
+    };
+  });
+
   const ensureController: VoiceControllerService["Service"]["ensureController"] = Effect.fn(
     "VoiceControllerService.ensureController",
   )(function* (input) {
@@ -667,6 +683,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   );
 
   return VoiceControllerService.of({
+    getController,
     ensureController,
     resetController,
     listVoices,

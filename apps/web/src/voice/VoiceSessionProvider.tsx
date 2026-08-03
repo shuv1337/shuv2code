@@ -3,7 +3,7 @@ import {
   initialRealtimeVoiceState,
   type RealtimeVoiceSessionState,
 } from "@shuv2code/client-runtime/state/realtime-voice";
-import type { EnvironmentId } from "@shuv2code/contracts";
+import type { EnvironmentId, ThreadId, VoiceControllerIdentity } from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import {
@@ -76,6 +76,11 @@ const browserVoiceApi: VoiceSessionControllerApi = {
 
 interface VoiceSessionContextValue {
   readonly state: RealtimeVoiceSessionState;
+  readonly getController: (environmentId: EnvironmentId) => Promise<VoiceControllerIdentity | null>;
+  readonly resetController: (
+    environmentId: EnvironmentId,
+    controllerThreadId: ThreadId,
+  ) => Promise<boolean>;
   readonly start: (input: StartVoiceSessionInput) => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly reconnect: () => Promise<void>;
@@ -101,15 +106,35 @@ export function VoiceSessionProvider({
   );
   const getSnapshot = useCallback(() => controller.state, [controller]);
   const state = useSyncExternalStore(subscribe, getSnapshot, () => initialRealtimeVoiceState);
+  const getController = useCallback(
+    async (environmentId: EnvironmentId) =>
+      (await runVoiceCommand(realtimeVoiceEnvironment.getController, environmentId, {})).controller,
+    [],
+  );
+  const resetController = useCallback(
+    async (environmentId: EnvironmentId, controllerThreadId: ThreadId) => {
+      if (controller.state.environmentId === environmentId) {
+        await controller.stop();
+      }
+      return (
+        await runVoiceCommand(realtimeVoiceEnvironment.resetController, environmentId, {
+          controllerThreadId,
+        })
+      ).reset;
+    },
+    [controller],
+  );
   const value = useMemo<VoiceSessionContextValue>(
     () => ({
       state,
+      getController,
+      resetController,
       start: (input) => controller.start(input),
       stop: () => controller.stop(),
       reconnect: () => controller.reconnect(),
       setMuted: (muted) => controller.setMuted(muted),
     }),
-    [controller, state],
+    [controller, getController, resetController, state],
   );
   useEffect(
     () => () => {

@@ -54,6 +54,7 @@ import {
   WsSubscribeVoiceEventsRpc,
   WsVoiceAppendAudioRpc,
   WsVoiceEnsureControllerRpc,
+  WsVoiceGetControllerRpc,
   WsVoiceIngestRealtimeEventRpc,
   WsVoiceListVoicesRpc,
   WsVoiceResetControllerRpc,
@@ -190,6 +191,12 @@ const makeVoiceRpcHandlers = (
 ) => {
   const { observeRpcEffect, observeRpcStream } = makeAuthorizedRpcObservers(currentSession);
   return {
+    [WS_METHODS.voiceGetController]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["getController"]>[0],
+    ) =>
+      observeRpcEffect(WS_METHODS.voiceGetController, voiceController.getController(input), {
+        "rpc.aggregate": "voice",
+      }),
     [WS_METHODS.voiceEnsureController]: (
       input: Parameters<VoiceController.VoiceControllerService["Service"]["ensureController"]>[0],
     ) =>
@@ -249,6 +256,7 @@ const makeVoiceRpcHandlers = (
 
 /** The production voice RPC subset, exposed for focused in-memory integration tests. */
 export const VoiceWsRpcGroup = RpcGroup.make(
+  WsVoiceGetControllerRpc,
   WsVoiceEnsureControllerRpc,
   WsVoiceListVoicesRpc,
   WsVoiceResetControllerRpc,

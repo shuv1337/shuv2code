@@ -290,6 +290,10 @@ describe("authenticated voice RPC vertical integration", () => {
           ),
         );
 
+        assert.deepStrictEqual(yield* readClient[WS_METHODS.voiceGetController]({}), {
+          controller: null,
+        });
+
         const deniedEnsure = yield* Effect.flip(
           readClient[WS_METHODS.voiceEnsureController]({
             hostProjectId,
@@ -310,6 +314,10 @@ describe("authenticated voice RPC vertical integration", () => {
         assert.strictEqual(ensured.controller.state, "active");
         const controllerThreadId = ensured.controller.controllerThreadId;
         assert.strictEqual(controllerRuntimeEnsures[0]?.creationDisposition, "fresh");
+        assert.deepStrictEqual(
+          (yield* readClient[WS_METHODS.voiceGetController]({})).controller,
+          ensured.controller,
+        );
 
         const recoveredEnsure = yield* fullClient[WS_METHODS.voiceEnsureController]({
           hostProjectId,

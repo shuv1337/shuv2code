@@ -8,10 +8,12 @@ import type {
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
   ensureVoiceController,
+  getVoiceController,
   ingestRealtimeVoiceEvent,
   listRealtimeVoices,
   startRealtimeVoice,
   stopRealtimeVoice,
+  resetVoiceController,
   subscribeRealtimeVoiceEvents,
 } from "../operations/realtimeVoice.ts";
 import { createEnvironmentCommand, createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";
@@ -310,6 +312,11 @@ export function createRealtimeVoiceEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
   return {
+    getController: createEnvironmentCommand(runtime, {
+      label: "environment-data:voice:get-controller",
+      execute: getVoiceController,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
     ensureController: createEnvironmentCommand(runtime, {
       label: "environment-data:voice:ensure-controller",
       execute: ensureVoiceController,
@@ -333,6 +340,11 @@ export function createRealtimeVoiceEnvironmentAtoms<R, E>(
     stop: createEnvironmentCommand(runtime, {
       label: "environment-data:voice:stop",
       execute: stopRealtimeVoice,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
+    resetController: createEnvironmentCommand(runtime, {
+      label: "environment-data:voice:reset-controller",
+      execute: resetVoiceController,
       concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
     }),
     events: createEnvironmentSubscriptionAtomFamily(runtime, {
