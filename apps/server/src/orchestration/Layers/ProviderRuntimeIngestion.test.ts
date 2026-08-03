@@ -96,6 +96,7 @@ function isLegacyTurnCompletedEvent(
 function createProviderServiceHarness() {
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const runtimeSessions: ProviderSession[] = [];
+  let listSessionsFailure: Error | null = null;
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const service: ProviderServiceShape = {
@@ -112,7 +113,8 @@ function createProviderServiceHarness() {
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
-    listSessions: () => Effect.succeed([...runtimeSessions]),
+    listSessions: () =>
+      listSessionsFailure ? Effect.die(listSessionsFailure) : Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     getInstanceInfo: (instanceId) => {
       const driverKind = ProviderDriverKind.make(String(instanceId));
@@ -165,6 +167,9 @@ function createProviderServiceHarness() {
     service,
     emit,
     setSession,
+    setListSessionsFailure: (failure: Error | null) => {
+      listSessionsFailure = failure;
+    },
   };
 }
 
@@ -225,7 +230,11 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness(options?: { serverSettings?: Partial<ServerSettings> }) {
+  async function createHarness(options?: {
+    serverSettings?: Partial<ServerSettings>;
+    startIngestion?: boolean;
+    seedProviderSession?: boolean;
+  }) {
     const workspaceRoot = makeTempDir("shuv2code-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -254,8 +263,12 @@ describe("ProviderRuntimeIngestion", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
+    const ingestionScope = await Effect.runPromise(Scope.make("sequential"));
+    scope = ingestionScope;
+    const start = () => Effect.runPromise(ingestion.start().pipe(Scope.provide(ingestionScope)));
+    if (options?.startIngestion !== false) {
+      await start();
+    }
     const drain = () => Effect.runPromise(ingestion.drain);
 
     const createdAt = "2026-01-01T00:00:00.000Z";
@@ -308,23 +321,191 @@ describe("ProviderRuntimeIngestion", () => {
         createdAt,
       }),
     );
-    provider.setSession({
-      provider: ProviderDriverKind.make("codex"),
-      status: "ready",
-      runtimeMode: "approval-required",
-      threadId: ThreadId.make("thread-1"),
-      createdAt,
-      updatedAt: createdAt,
-    });
+    if (options?.seedProviderSession !== false) {
+      provider.setSession({
+        provider: ProviderDriverKind.make("codex"),
+        status: "ready",
+        runtimeMode: "approval-required",
+        threadId: ThreadId.make("thread-1"),
+        createdAt,
+        updatedAt: createdAt,
+      });
+    }
 
     return {
       engine,
+      dispatch: (command: Parameters<typeof engine.dispatch>[0]) =>
+        runtime.runPromise(engine.dispatch(command)),
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
+      setListSessionsFailure: provider.setListSessionsFailure,
+      start,
       drain,
     };
   }
+
+  it("stops a projected running session that has no live provider session on startup", async () => {
+    const harness = await createHarness({
+      startIngestion: false,
+      seedProviderSession: false,
+    });
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-before-server-restart");
+
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-running-before-server-restart"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: turnId,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        lastError: null,
+      },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    await harness.start();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "stopped" && entry.session.activeTurnId === null,
+    );
+    expect(thread.session?.status).toBe("stopped");
+    expect(thread.session?.activeTurnId).toBeNull();
+  });
+
+  it("stops a projected starting session that has no live provider session on startup", async () => {
+    const harness = await createHarness({
+      startIngestion: false,
+      seedProviderSession: false,
+    });
+    const threadId = asThreadId("thread-1");
+
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-starting-before-server-restart"),
+      threadId,
+      session: {
+        threadId,
+        status: "starting",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        lastError: null,
+      },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    await harness.start();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "stopped",
+    );
+    expect(thread.session?.activeTurnId).toBeNull();
+  });
+
+  it("preserves a projected running session returned by the provider", async () => {
+    const harness = await createHarness({ startIngestion: false });
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-still-live-after-restart");
+
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-live-running-before-server-restart"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: turnId,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        lastError: null,
+      },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    await harness.start();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running",
+    );
+    expect(thread.session?.activeTurnId).toBe(turnId);
+  });
+
+  it("preserves an OpenCode session while durable startup recovery is still attaching", async () => {
+    const harness = await createHarness({
+      startIngestion: false,
+      seedProviderSession: false,
+    });
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-opencode-recovering");
+
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-opencode-recovering"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "opencode",
+        runtimeMode: "approval-required",
+        activeTurnId: turnId,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        lastError: null,
+      },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    await harness.start();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running",
+    );
+    expect(thread.session?.activeTurnId).toBe(turnId);
+  });
+
+  it("fails open when provider session discovery fails during startup", async () => {
+    const harness = await createHarness({
+      startIngestion: false,
+      seedProviderSession: false,
+    });
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-unknown-after-list-failure");
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-list-sessions-failure"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: turnId,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        lastError: null,
+      },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    harness.setListSessionsFailure(new Error("provider discovery unavailable"));
+
+    await expect(harness.start()).resolves.toBeUndefined();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running",
+    );
+    expect(thread.session?.activeTurnId).toBe(turnId);
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
