@@ -113,7 +113,10 @@ export function VoiceSessionProvider({
   );
   const resetController = useCallback(
     async (environmentId: EnvironmentId, controllerThreadId: ThreadId) => {
-      if (controller.state.environmentId === environmentId) {
+      if (
+        controller.state.environmentId === environmentId &&
+        controller.state.controller?.threadId === controllerThreadId
+      ) {
         await controller.stop();
       }
       return (

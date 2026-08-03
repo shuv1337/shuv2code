@@ -199,6 +199,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
           bindings
             .compareAndSetState({
               environmentId,
+              expectedControllerThreadId: binding.controllerThreadId,
+              expectedBindingGeneration: binding.bindingGeneration,
               expectedState: binding.state,
               nextState: "dormant",
               expectedControlEpoch: binding.controlEpoch,
@@ -220,6 +222,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       yield* bindings
         .compareAndSetState({
           environmentId,
+          expectedControllerThreadId: binding.controllerThreadId,
+          expectedBindingGeneration: binding.bindingGeneration,
           expectedState: binding.state,
           nextState: "dormant",
           expectedControlEpoch: binding.controlEpoch,
@@ -236,6 +240,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       const activated = yield* bindings
         .compareAndSetState({
           environmentId,
+          expectedControllerThreadId: binding.controllerThreadId,
+          expectedBindingGeneration: binding.bindingGeneration,
           expectedState: binding.state,
           nextState: "active",
           expectedControlEpoch: binding.controlEpoch,
@@ -286,6 +292,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         yield* bindings
           .compareAndSetState({
             environmentId: startupEnvironmentId,
+            expectedControllerThreadId: binding.controllerThreadId,
+            expectedBindingGeneration: binding.bindingGeneration,
             expectedState: "active",
             nextState: "dormant",
             expectedControlEpoch: binding.controlEpoch,
@@ -399,6 +407,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     const marked = yield* bindings
       .compareAndSetState({
         environmentId,
+        expectedControllerThreadId: binding.value.controllerThreadId,
+        expectedBindingGeneration: binding.value.bindingGeneration,
         expectedState: binding.value.state,
         nextState: "resetting",
         expectedControlEpoch: binding.value.controlEpoch,
@@ -426,7 +436,11 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         ),
       );
     const deleted = yield* bindings
-      .deleteResetting(environmentId)
+      .deleteResetting({
+        environmentId,
+        expectedControllerThreadId: binding.value.controllerThreadId,
+        expectedBindingGeneration: binding.value.bindingGeneration,
+      })
       .pipe(
         Effect.mapError(
           mapInternalError("internal_error", "The controller binding could not be cleared."),
@@ -469,6 +483,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         yield* bindings
           .compareAndSetState({
             environmentId: binding.value.environmentId,
+            expectedControllerThreadId: binding.value.controllerThreadId,
+            expectedBindingGeneration: binding.value.bindingGeneration,
             expectedState: "active",
             nextState: "dormant",
             expectedControlEpoch: binding.value.controlEpoch,
@@ -532,6 +548,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
               yield* bindings
                 .compareAndSetState({
                   environmentId: binding.value.environmentId,
+                  expectedControllerThreadId: binding.value.controllerThreadId,
+                  expectedBindingGeneration: binding.value.bindingGeneration,
                   expectedState: "dormant",
                   nextState: "active",
                   expectedControlEpoch: binding.value.controlEpoch,
@@ -651,6 +669,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
               yield* bindings
                 .compareAndSetState({
                   environmentId,
+                  expectedControllerThreadId: currentBinding.controllerThreadId,
+                  expectedBindingGeneration: currentBinding.bindingGeneration,
                   expectedState: "active",
                   nextState: "dormant",
                   expectedControlEpoch: currentBinding.controlEpoch,

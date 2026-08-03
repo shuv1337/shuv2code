@@ -4,10 +4,11 @@ import {
   ThreadId,
   type VoiceControllerIdentity,
 } from "@shuv2code/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   hasVoiceControllerBindingConflict,
+  replaceVoiceControllerAfterMicrophoneAccess,
   voiceControllerStateLabel,
 } from "./VoiceControllerManagement.logic";
 
@@ -66,5 +67,65 @@ describe("voice controller management", () => {
   it("uses human-readable binding states", () => {
     expect(voiceControllerStateLabel("active")).toBe("Active");
     expect(voiceControllerStateLabel("dormant")).toBe("Ready to reconnect");
+  });
+
+  it("does not reset when microphone acquisition fails", async () => {
+    const resetController = vi.fn();
+    const startWithMicrophone = vi.fn();
+
+    await expect(
+      replaceVoiceControllerAfterMicrophoneAccess({
+        acquireMicrophone: async () => {
+          throw new Error("permission denied");
+        },
+        resetController,
+        startWithMicrophone,
+        releaseMicrophone: vi.fn(),
+      }),
+    ).rejects.toThrow("permission denied");
+    expect(resetController).not.toHaveBeenCalled();
+    expect(startWithMicrophone).not.toHaveBeenCalled();
+  });
+
+  it("releases the microphone and never starts when the reset fence is stale", async () => {
+    const microphone = { id: "microphone" };
+    const releaseMicrophone = vi.fn();
+    const startWithMicrophone = vi.fn();
+
+    await expect(
+      replaceVoiceControllerAfterMicrophoneAccess({
+        acquireMicrophone: async () => microphone,
+        resetController: async () => false,
+        startWithMicrophone,
+        releaseMicrophone,
+      }),
+    ).rejects.toThrow("The controller changed before it could be reset");
+    expect(releaseMicrophone).toHaveBeenCalledWith(microphone);
+    expect(startWithMicrophone).not.toHaveBeenCalled();
+  });
+
+  it("acquires, resets, then transfers the single microphone to startup", async () => {
+    const order: string[] = [];
+    const microphone = { id: "microphone" };
+    const releaseMicrophone = vi.fn();
+
+    await replaceVoiceControllerAfterMicrophoneAccess({
+      acquireMicrophone: async () => {
+        order.push("acquire");
+        return microphone;
+      },
+      resetController: async () => {
+        order.push("reset");
+        return true;
+      },
+      startWithMicrophone: async (received) => {
+        order.push("start");
+        expect(received).toBe(microphone);
+      },
+      releaseMicrophone,
+    });
+
+    expect(order).toEqual(["acquire", "reset", "start"]);
+    expect(releaseMicrophone).not.toHaveBeenCalled();
   });
 });

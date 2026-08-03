@@ -1,4 +1,5 @@
-import { normalizeVoiceSessionError } from "./voiceErrors";
+import { detectVoiceBrowserSupport, type VoiceBrowserSupport } from "./voiceBrowserSupport";
+import { normalizeVoiceSessionError, VoiceSessionError } from "./voiceErrors";
 
 export const VOICE_MICROPHONE_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
@@ -9,20 +10,28 @@ export const VOICE_MICROPHONE_CONSTRAINTS: MediaStreamConstraints = {
   video: false,
 };
 
-export async function verifyVoiceMicrophoneAccess(
+export async function acquireVoiceMicrophoneStream(
   mediaDevices: Pick<MediaDevices, "getUserMedia"> | undefined = globalThis.navigator?.mediaDevices,
-): Promise<void> {
-  if (!mediaDevices) {
-    throw normalizeVoiceSessionError(
-      new DOMException("Microphone access is unavailable.", "NotFoundError"),
+  support: VoiceBrowserSupport = detectVoiceBrowserSupport(),
+): Promise<MediaStream> {
+  if (!support.supported) {
+    throw new VoiceSessionError(support.code, support.message);
+  }
+  if (!mediaDevices?.getUserMedia) {
+    throw new VoiceSessionError(
+      "media-devices-unavailable",
+      "This browser cannot access a microphone.",
     );
   }
   try {
-    const stream = await mediaDevices.getUserMedia(VOICE_MICROPHONE_CONSTRAINTS);
-    for (const track of stream.getTracks()) {
-      track.stop();
-    }
+    return await mediaDevices.getUserMedia(VOICE_MICROPHONE_CONSTRAINTS);
   } catch (error) {
     throw normalizeVoiceSessionError(error);
+  }
+}
+
+export function releaseVoiceMicrophoneStream(stream: MediaStream | undefined): void {
+  for (const track of stream?.getTracks() ?? []) {
+    track.stop();
   }
 }

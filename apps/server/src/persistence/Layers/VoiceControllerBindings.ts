@@ -197,6 +197,8 @@ const makeVoiceControllerBindingRepository = Effect.gen(function* () {
       UPDATE voice_controller_bindings
       SET state = ${input.nextState}, updated_at = ${input.updatedAt}
       WHERE environment_id = ${input.environmentId}
+        AND controller_thread_id = ${input.expectedControllerThreadId}
+        AND binding_generation = ${input.expectedBindingGeneration}
         AND state = ${input.expectedState}
         AND control_epoch = ${input.expectedControlEpoch}
       RETURNING environment_id
@@ -283,12 +285,12 @@ const makeVoiceControllerBindingRepository = Effect.gen(function* () {
         ),
       );
 
-  const deleteResetting: VoiceControllerBindingRepositoryShape["deleteResetting"] = (
-    environmentId,
-  ) =>
+  const deleteResetting: VoiceControllerBindingRepositoryShape["deleteResetting"] = (input) =>
     sql`
       DELETE FROM voice_controller_bindings
-      WHERE environment_id = ${environmentId}
+      WHERE environment_id = ${input.environmentId}
+        AND controller_thread_id = ${input.expectedControllerThreadId}
+        AND binding_generation = ${input.expectedBindingGeneration}
         AND state = 'resetting'
       RETURNING environment_id
     `.pipe(
