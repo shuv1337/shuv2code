@@ -17,7 +17,7 @@ export type ServicePreflightResult =
     };
 
 const localUpdateReason = (version: string) =>
-  `This version includes a database update and cannot be installed remotely. Run \`npx t3@${version} service update\` on the server machine.`;
+  `This version includes a database update and cannot be installed remotely. Run \`npx shuv2code@${version} service update\` on the server machine.`;
 
 const isMigrationRow = (
   value: unknown,

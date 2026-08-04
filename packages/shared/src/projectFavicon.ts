@@ -8,7 +8,7 @@ export function getProjectFaviconCacheKey(
   let revision = url;
 
   try {
-    const pathname = new URL(url, "https://t3.invalid").pathname;
+    const pathname = new URL(url, "https://shuv2code.invalid").pathname;
     revision = pathname.slice(pathname.lastIndexOf("/") + 1);
   } catch {
     // Keep the full value as a safe fallback for malformed URLs.

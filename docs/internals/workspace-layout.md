@@ -7,12 +7,12 @@ the task commands.
 
 ## apps
 
-- `apps/server` (`t3`): the execution runtime and the published CLI. Owns orchestration, provider
+- `apps/server` (`shuv2code`): the execution runtime and the published CLI. Owns orchestration, provider
   drivers, checkpointing, VCS, terminals, filesystem access, auth, and the HTTP + WebSocket surface.
   Also serves the built web app.
 - `apps/web` (`@shuv2code/web`): React + Vite UI. Consumes the shared client runtime and adds routing,
   components, and web-specific platform layers.
-- `apps/desktop` (`@shuv2code/desktop`): Electron shell. Supervises a desktop-scoped `t3` backend,
+- `apps/desktop` (`@shuv2code/desktop`): Electron shell. Supervises a desktop-scoped `shuv2code` backend,
   loads the web bundle over the `shuv2code://` protocol, and owns SSH-managed remote environments.
 - `apps/mobile` (`@shuv2code/mobile`): Expo/React Native client. Same client runtime composition as
   web, different platform layer and UI.
@@ -42,7 +42,7 @@ the task commands.
 - `infra/relay` (`shuv2code-relay`): the hosted shuv2code connect relay, deployed with Alchemy. Handles
   environment discovery, cloud-side records, and mobile notifications. It is not in the hot path;
   after connect, client traffic goes directly to the environment. See
-  [t3-connect.md](./t3-connect.md).
+  [shuv2code-connect.md](./shuv2code-connect.md).
 
 ## Other top-level directories
 

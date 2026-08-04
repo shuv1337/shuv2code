@@ -151,7 +151,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   };
 
   return yield* Effect.gen(function* () {
-    const installStep = "installing the pinned t3 runtime (this can take a few minutes)";
+    const installStep = "installing the pinned shuv2code runtime (this can take a few minutes)";
     yield* runner
       .run({
         command: "npm",

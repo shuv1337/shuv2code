@@ -37,7 +37,7 @@ authenticated.
 
 ### Dev state directories
 
-- Dev commands run from a linked **git worktree** default to that worktree's gitignored `.t3`, even
+- Dev commands run from a linked **git worktree** default to that worktree's gitignored `.shuv2code`, even
   when `SHUV2CODE_HOME` is set, storing state in `<worktree>/.shuv2code/userdata`. Pass `--home-dir <path>` to
   choose another isolated directory explicitly. Submodules are not worktrees and keep the normal
   precedence.
@@ -58,8 +58,8 @@ authenticated.
 - `vp run typecheck`: Strict TypeScript checks for all packages.
 - `vp run test`: Runs workspace tests.
 - `vp run lint:mobile`: Mobile native static analysis (`scripts/mobile-native-static-check.ts`).
-- `node apps/server/scripts/t3-sqlite-state.ts <query|exec> --base-dir <path> ...`: Inspects or seeds
-  an isolated T3 SQLite database; writes create a private backup first.
+- `node apps/server/scripts/shuv2code-sqlite-state.ts <query|exec> --base-dir <path> ...`: Inspects or seeds
+  an isolated shuv2code SQLite database; writes create a private backup first.
 
 ## Desktop artifacts
 
@@ -77,7 +77,7 @@ authenticated.
 - The DMG build uses `assets/prod/black-macos-1024.png` as the production app icon source.
 - Desktop production windows load the bundled UI from the `shuv2code://app/` root URL (not a
   `127.0.0.1` document URL, and not an explicit `index.html` path).
-- Desktop packaging includes `apps/server/dist` (the `t3` backend) and starts it on loopback with an
+- Desktop packaging includes `apps/server/dist` (the `shuv2code` backend) and starts it on loopback with an
   auth token for WebSocket/API traffic.
 - Your tester can still open it on macOS by right-clicking the app and choosing **Open** on first
   launch.

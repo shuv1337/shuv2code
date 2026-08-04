@@ -1,12 +1,12 @@
 /**
- * `t3 pair` - mint a pairing token for an already-running server and print it
+ * `shuv2code pair` - mint a pairing token for an already-running server and print it
  * as a QR code, without restarting anything.
  *
  * Discovery reads the `server-runtime.json` a live server persists next to its
  * database, then confirms the process is actually answering by fetching its
  * public environment descriptor. Inside a linked git worktree the worktree's
- * own `.t3` is checked first (matching dev-runner precedence); otherwise the
- * shared T3 home. `--tailscale` publishes the server over Tailscale Serve
+ * own `.shuv2code` is checked first (matching dev-runner precedence); otherwise the
+ * shared shuv2code home. `--tailscale` publishes the server over Tailscale Serve
  * HTTPS and pairs through the tailnet URL instead.
  */
 import {
@@ -55,7 +55,7 @@ import {
 } from "../startupAccess.ts";
 import { baseDirFlag, DurationFromString } from "./config.ts";
 
-const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/t3/environment";
+const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/shuv2code/environment";
 const PAIR_PROBE_TIMEOUT = Duration.millis(2_500);
 // Tailscale provisions an HTTPS certificate on the first request to a fresh
 // serve mapping, which can take a few seconds.
@@ -78,7 +78,7 @@ export class NoRunningServerError extends Schema.TaggedErrorClass<NoRunningServe
     return [
       "No running shuv2code server found.",
       ...this.checkedStatePaths.map((statePath) => `  checked ${statePath}`),
-      "Start one with `npx t3 serve`, or connect this machine with shuv2code connect: `npx t3 connect`.",
+      "Start one with `npx shuv2code serve`, or connect this machine with shuv2code connect: `npx shuv2code connect`.",
     ].join("\n");
   }
 }
@@ -193,14 +193,14 @@ export const formatPairOutput = (input: {
   ].join("\n");
 
 /**
- * Three outcomes, because they drive different decisions: a T3 descriptor
+ * Three outcomes, because they drive different decisions: a shuv2code descriptor
  * (pair with it), nothing answering (safe to configure Tailscale Serve), or
- * something answering that is not a T3 server (do NOT overwrite its mapping).
+ * something answering that is not a shuv2code server (do NOT overwrite its mapping).
  */
 type EnvironmentProbeResult =
   | { readonly _tag: "descriptor"; readonly descriptor: ExecutionEnvironmentDescriptor }
   | { readonly _tag: "unreachable" }
-  | { readonly _tag: "not-a-t3-server" };
+  | { readonly _tag: "not-a-shuv2code-server" };
 
 const probeEnvironmentDescriptor = (
   baseUrl: string,
@@ -215,7 +215,7 @@ const probeEnvironmentDescriptor = (
     );
     // Bad-gateway family means a proxy (Tailscale Serve) answered for a
     // backend that is gone — a stale mapping, not a live occupant. Treating
-    // it as unreachable lets `t3 pair --tailscale` repair its own mapping
+    // it as unreachable lets `shuv2code pair --tailscale` repair its own mapping
     // after the server's port changed.
     if (response.status === 502 || response.status === 503 || response.status === 504) {
       return { _tag: "unreachable" } as const;
@@ -224,7 +224,7 @@ const probeEnvironmentDescriptor = (
     // some other service.
     const descriptor = yield* HttpClientResponse.filterStatusOk(response).pipe(
       Effect.flatMap(HttpClientResponse.schemaBodyJson(ExecutionEnvironmentDescriptor)),
-      Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const),
+      Effect.mapError(() => ({ _tag: "not-a-shuv2code-server" }) as const),
     );
     return { _tag: "descriptor", descriptor } as const;
   }).pipe(Effect.catch((outcome) => Effect.succeed(outcome)));
@@ -254,8 +254,8 @@ const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
   if (explicitBaseDir !== undefined && explicitBaseDir.trim().length > 0) {
     bases.push(yield* resolveBaseDir(explicitBaseDir));
   } else {
-    // Same precedence as dev-runner: inside a linked worktree its own `.t3`
-    // outranks the shared home, so `t3 pair` in a worktree pairs with the dev
+    // Same precedence as dev-runner: inside a linked worktree its own `.shuv2code`
+    // outranks the shared home, so `shuv2code pair` in a worktree pairs with the dev
     // server under test rather than the daily-driver install.
     const worktreeHome = yield* resolveWorktreeT3Home(process.cwd());
     if (worktreeHome !== undefined) {
@@ -331,7 +331,7 @@ const makePairServerConfig = Effect.fn(function* (input: {
     otlpTracesUrl: undefined,
     otlpMetricsUrl: undefined,
     otlpExportIntervalMs: 10_000,
-    otlpServiceName: "t3-server",
+    otlpServiceName: "shuv2code-server",
     mode: "web",
     port: state.port,
     host: state.host,
@@ -381,7 +381,7 @@ const resolveTailscalePairingBase = Effect.fn("pair.resolveTailscalePairingBase"
     });
 
     // Only an unreachable port, or a mapping already fronting this exact
-    // environment, is safe to (re)configure. Any other responder — T3 or not
+    // environment, is safe to (re)configure. Any other responder — shuv2code or not
     // — must not have its mapping silently replaced.
     const existing = yield* probeEnvironmentDescriptor(baseUrl);
     if (existing._tag === "descriptor") {
@@ -397,7 +397,7 @@ const resolveTailscalePairingBase = Effect.fn("pair.resolveTailscalePairingBase"
         return { baseUrl, notes };
       }
     }
-    if (existing._tag === "not-a-t3-server") {
+    if (existing._tag === "not-a-shuv2code-server") {
       return yield* new ServePortOccupiedError({ servePort: input.servePort });
     }
 
@@ -442,7 +442,7 @@ const mintPairingLink = Effect.fn("pair.mintPairingLink")(function* (input: {
     return yield* environmentAuth.createPairingLink({
       scopes: AuthStandardClientScopes,
       subject: "one-time-token",
-      label: Option.getOrElse(input.label, () => "t3 pair"),
+      label: Option.getOrElse(input.label, () => "shuv2code pair"),
       ...(Option.isSome(input.ttl) ? { ttl: input.ttl.value } : {}),
     });
   }).pipe(

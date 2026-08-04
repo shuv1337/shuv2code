@@ -80,7 +80,7 @@ describe("buildHomeThreadGroups", () => {
       locator: {
         source: "git-remote" as const,
         remoteName: "origin",
-        remoteUrl: "git@github.com:pingdotgg/shuv2code.git",
+        remoteUrl: "git@github.com:shuv1337/shuv2code.git",
       },
     };
     const projects = [
@@ -123,7 +123,7 @@ describe("buildHomeThreadGroups", () => {
       locator: {
         source: "git-remote" as const,
         remoteName: "origin",
-        remoteUrl: "git@github.com:pingdotgg/shuv2code.git",
+        remoteUrl: "git@github.com:shuv1337/shuv2code.git",
       },
     };
     const local = makeProject({
@@ -187,7 +187,7 @@ describe("buildHomeThreadGroups", () => {
       locator: {
         source: "git-remote" as const,
         remoteName: "origin",
-        remoteUrl: "git@github.com:pingdotgg/shuv2code.git",
+        remoteUrl: "git@github.com:shuv1337/shuv2code.git",
       },
     };
     const projects = [
@@ -309,7 +309,7 @@ describe("buildHomeThreadGroups", () => {
       locator: {
         source: "git-remote" as const,
         remoteName: "origin",
-        remoteUrl: "git@github.com:pingdotgg/shuv2code.git",
+        remoteUrl: "git@github.com:shuv1337/shuv2code.git",
       },
     };
     const olderMember = makeProject({
@@ -386,7 +386,7 @@ describe("buildHomeThreadGroups", () => {
         locator: {
           source: "git-remote" as const,
           remoteName: "origin",
-          remoteUrl: "git@github.com:pingdotgg/shuv2code.git",
+          remoteUrl: "git@github.com:shuv1337/shuv2code.git",
         },
       },
     });
@@ -527,14 +527,14 @@ describe("buildHomeThreadGroups", () => {
   it("matches web repository, repository-path, and separate grouping modes", () => {
     const environmentId = EnvironmentId.make("environment-1");
     const repositoryIdentity = {
-      canonicalKey: "github.com/t3tools/shuv2code",
+      canonicalKey: "github.com/shuv2code/shuv2code",
       locator: {
         source: "git-remote" as const,
         remoteName: "origin",
-        remoteUrl: "git@github.com:t3tools/shuv2code.git",
+        remoteUrl: "git@github.com:shuv2code/shuv2code.git",
       },
       provider: "github",
-      owner: "t3tools",
+      owner: "shuv2code",
       name: "shuv2code",
       displayName: "shuv2code",
       rootPath: "/workspaces/shuv2code",
@@ -697,7 +697,7 @@ describe("buildHomeThreadGroups", () => {
       locator: {
         source: "git-remote" as const,
         remoteName: "origin",
-        remoteUrl: "git@github.com:pingdotgg/shuv2code.git",
+        remoteUrl: "git@github.com:shuv1337/shuv2code.git",
       },
     };
     const laptopProject = makeProject({

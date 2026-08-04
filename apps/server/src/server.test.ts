@@ -1342,7 +1342,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const staticDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-router-gate-" });
+      const staticDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "shuv2code-router-gate-",
+      });
       yield* fileSystem.writeFileString(path.join(staticDir, "index.html"), "ready");
       const entered = yield* Deferred.make<void>();
       const ready = yield* Deferred.make<void>();

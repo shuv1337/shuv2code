@@ -5,13 +5,13 @@ import { isAllowed, scanText, type AllowlistEntry } from "./check-brand-identity
 describe("check-brand-identity", () => {
   it("finds every observable legacy identity class", () => {
     const source = [
-      "shuv2code",
-      "shuv2code",
+      "T3 Code",
+      "t3code",
       "t3-code",
-      "@shuv2code/server",
-      "SHUV2CODE_HOME",
-      "com.t3tools.shuv2code",
-      "https://app.shuv.me",
+      "@t3tools/server",
+      "T3CODE_HOME",
+      "com.t3tools.t3code",
+      "https://app.t3.codes",
       "T3 Tools, Inc.",
       "npx t3",
       "T3 server",

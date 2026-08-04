@@ -79,7 +79,7 @@ You do not need any extra env vars. Just run the app normally and inspect `serve
 Examples:
 
 ```bash
-npx t3
+npx shuv2code
 ```
 
 ```bash
@@ -130,7 +130,7 @@ export SHUV2CODE_TRACE_TIMING_ENABLED=true
 CLI:
 
 ```bash
-npx t3
+npx shuv2code
 ```
 
 Monorepo web/server dev:
@@ -299,7 +299,7 @@ Recommended flow in Grafana:
 
 Good first searches:
 
-- service name such as `shuv2code-local`, `t3-dev`, or `shuv2code-desktop`
+- service name such as `shuv2code-local`, `shuv2code-dev`, or `shuv2code-desktop`
 - span names like `sendTurn` or a Git operation such as `GitVcsDriver.statusDetails.status`
 - Git spans whose `git.operation` attribute identifies the operation
 - orchestration spans with attributes like `orchestration.command_type`
@@ -313,18 +313,18 @@ Traces are best for one request. Metrics are best for trends.
 
 Good metric families to watch:
 
-- `t3_rpc_request_duration`
-- `t3_orchestration_command_duration`
-- `t3_orchestration_command_ack_duration`
-- `t3_provider_turn_duration`
-- `t3_git_command_duration`
+- `shuv2code_rpc_request_duration`
+- `shuv2code_orchestration_command_duration`
+- `shuv2code_orchestration_command_ack_duration`
+- `shuv2code_provider_turn_duration`
+- `shuv2code_git_command_duration`
 
 Counters tell you volume and failure rate:
 
-- `t3_rpc_requests_total`
-- `t3_orchestration_commands_total`
-- `t3_provider_turns_total`
-- `t3_git_commands_total`
+- `shuv2code_rpc_requests_total`
+- `shuv2code_orchestration_commands_total`
+- `shuv2code_provider_turns_total`
+- `shuv2code_git_commands_total`
 
 Use metrics when the question is:
 
@@ -340,7 +340,7 @@ Use traces when the question is:
 
 ### What The New Ack Metric Means
 
-`t3_orchestration_command_ack_duration` measures:
+`shuv2code_orchestration_command_ack_duration` measures:
 
 - start: command dispatch enters the orchestration engine
 - end: the first committed domain event for that command is published by the server
@@ -371,7 +371,7 @@ If you need those later, add client-side instrumentation or a dedicated server f
 
 ### "Did this command take too long to acknowledge?"
 
-1. Check `t3_orchestration_command_ack_duration` by `commandType`.
+1. Check `shuv2code_orchestration_command_ack_duration` by `commandType`.
 2. If it is high, inspect the corresponding orchestration trace.
 3. Look at child spans for projection, sqlite, provider, or git work.
 
@@ -521,7 +521,7 @@ OTLP export:
 - `SHUV2CODE_OTLP_TRACES_URL`: OTLP trace endpoint
 - `SHUV2CODE_OTLP_METRICS_URL`: OTLP metric endpoint
 - `SHUV2CODE_OTLP_EXPORT_INTERVAL_MS`: export interval, default `10000`
-- `SHUV2CODE_OTLP_SERVICE_NAME`: service name, default `t3-server`
+- `SHUV2CODE_OTLP_SERVICE_NAME`: service name, default `shuv2code-server`
 
 If the OTLP URLs are unset, local tracing still works and metrics stay in-process only.
 

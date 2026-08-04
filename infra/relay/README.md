@@ -9,7 +9,7 @@ optional mobile notifications and Live Activities.
 
 The relay is intentionally not in the hot path for normal shuv2code traffic. After a client connects,
 regular API and WebSocket traffic goes directly between that client and the selected environment.
-See the [shuv2code connect architecture overview](../../docs/internals/t3-code-connect-auth-flow.html) for the larger system
+See the [shuv2code connect architecture overview](../../docs/internals/shuv2code-connect-auth-flow.html) for the larger system
 design.
 
 ## Responsibilities
@@ -159,8 +159,8 @@ and hosted web builds.
 
 See:
 
-- [shuv2code connect Clerk Setup](../../docs/internals/t3-connect.md) for Clerk keys, JWT templates, and sign-up restrictions
+- [shuv2code connect Clerk Setup](../../docs/internals/shuv2code-connect.md) for Clerk keys, JWT templates, and sign-up restrictions
   setup.
 - [Relay Observability](../../docs/operations/relay-observability.md) for deployment tracing and diagnostics.
-- [shuv2code connect Architecture Overview](../../docs/internals/t3-code-connect-auth-flow.html) for the full link,
+- [shuv2code connect Architecture Overview](../../docs/internals/shuv2code-connect-auth-flow.html) for the full link,
   connect, endpoint, and notification flows.

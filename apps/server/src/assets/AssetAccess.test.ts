@@ -400,7 +400,7 @@ describe("AssetAccess", () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-favicon-expiry-",
+        prefix: "shuv2code-asset-favicon-expiry-",
       });
       yield* fileSystem.writeFileString(path.join(root, "favicon.svg"), "<svg />");
 

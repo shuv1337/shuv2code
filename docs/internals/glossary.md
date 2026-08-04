@@ -1,6 +1,6 @@
 # Glossary
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using shuv2code? See [docs/user](../user/).
 
 This is a living glossary for shuv2code. It explains what common terms mean in this codebase.
 

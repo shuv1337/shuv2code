@@ -26,11 +26,6 @@
       "reason": "The schema constrains the explicit upstream provenance field."
     },
     {
-      "path": "apps/server/src/provider/Layers/ClaudeAdapter.ts",
-      "patternId": "legacy-slug",
-      "reason": "The comment links to the exact upstream issue that explains the compatibility behavior."
-    },
-    {
       "path": "README.md",
       "patternId": "legacy-state",
       "reason": "The fresh-start policy names legacy state only to promise it is never touched."
@@ -44,11 +39,6 @@
       "path": "README.md",
       "patternId": "legacy-visible-word",
       "reason": "The provenance section identifies the upstream project."
-    },
-    {
-      "path": "README.md",
-      "patternId": "legacy-slug",
-      "reason": "The provenance link points to the upstream repository."
     },
     {
       "path": "apps/marketing/src/pages/terms-of-service.astro",

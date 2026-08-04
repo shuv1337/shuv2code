@@ -24,7 +24,7 @@ This document covers the unified release workflow for stable and nightly desktop
   - Nightly runs are always GitHub prereleases and never marked latest.
   - Automatically generated release notes are pinned to the previous tag in the same channel, so stable compares to the previous stable tag and nightly compares to the previous nightly tag.
 - Includes Electron auto-update metadata (for example `latest*.yml`, `nightly*.yml`, and `*.blockmap`) in release assets.
-- Publishes the CLI package (`apps/server`, npm package `t3`) with OIDC trusted publishing from the same workflow file:
+- Publishes the CLI package (`apps/server`, npm package `shuv2code`) with OIDC trusted publishing from the same workflow file:
   - stable releases publish npm dist-tag `latest`
   - nightly releases publish npm dist-tag `nightly`
 - Deploys the hosted web app to Vercel only after a release is published:
@@ -128,9 +128,9 @@ Required Vercel domains:
 - `nightly.app.shuv.me`: channel alias updated by nightly releases.
 
 The router domain uses `apps/web/vercel.ts` routes. Users opt into a channel by
-visiting `/__t3code/channel?channel=latest` or
-`/__t3code/channel?channel=nightly`; the router stores the
-`t3code_web_channel` cookie and rewrites future requests on `app.shuv.me` to
+visiting `/__shuv2code/channel?channel=latest` or
+`/__shuv2code/channel?channel=nightly`; the router stores the
+`shuv2code_web_channel` cookie and rewrites future requests on `app.shuv.me` to
 the matching channel alias.
 
 The release deploy job rewrites release package versions before upload so the
@@ -139,7 +139,7 @@ same deployment to both the `latest` channel and the router domain so the router
 rules stay current. Nightly deploys only alias the `nightly` channel. The job
 also passes `VITE_HOSTED_APP_CHANNEL=latest|nightly`, which renders the hosted
 update track selector in the About panel. Changing the selector navigates
-through `/__t3code/channel` on the router domain so the user's channel cookie is
+through `/__shuv2code/channel` on the router domain so the user's channel cookie is
 updated before redirecting to the hosted app root.
 
 One-time Vercel dashboard setup:
@@ -167,13 +167,13 @@ One-time Vercel dashboard setup:
   - `make_latest` is always `false`
 - Uses the next stable patch version as the nightly base. For example, `0.0.17` produces nightlies on `0.0.18-nightly.*`.
 - Publishes Electron auto-update metadata to the dedicated `nightly` updater channel, so desktop users can opt into that track independently from stable.
-- Publishes the CLI package (`apps/server`, npm package `t3`) to the `nightly` npm dist-tag using the same nightly version.
+- Publishes the CLI package (`apps/server`, npm package `shuv2code`) to the `nightly` npm dist-tag using the same nightly version.
 - Does not commit version bumps back to `main`.
 
 ## Server self-update release invariant
 
 Connected servers update to the client's exact version, not to an npm dist-tag. Every released
-desktop or hosted client version must therefore have a matching `t3@<version>` package available on
+desktop or hosted client version must therefore have a matching `shuv2code@<version>` package available on
 npm before users can receive that client.
 
 The workflow enforces this ordering:
@@ -185,11 +185,11 @@ The workflow enforces this ordering:
 Preserve these dependencies when changing the release graph. Publishing a client first would leave
 the **Update server** action targeting a package version that does not exist yet.
 
-For a release smoke test, confirm `npm view t3@<version> version` returns the expected version, then
+For a release smoke test, confirm `npm view shuv2code@<version> version` returns the expected version, then
 connect the new client to a server on the previous version and verify that the update action
 reconnects to the matching server. Use releases with identical migration manifests for the
 automatic path. When the manifest changed, verify that the remote action stops before restart and
-shows the exact local `npx t3@<version> service update` command. Also test the manual or
+shows the exact local `npx shuv2code@<version> service update` command. Also test the manual or
 desktop-managed guidance when those environments are available.
 
 ## Desktop auto-update notes
@@ -216,12 +216,12 @@ desktop-managed guidance when those environments are available.
 ## 0) npm OIDC trusted publishing setup (CLI)
 
 The workflow invokes `node apps/server/scripts/cli.ts publish` after aligning package versions. That
-script temporarily prepares the `t3` package, then runs `vp pm publish --filter t3 ...` from the
+script temporarily prepares the `shuv2code` package, then runs `vp pm publish --filter shuv2code ...` from the
 repository root so workspace publish configuration is applied correctly.
 
 Checklist:
 
-1. Confirm npm org/user owns package `t3` (or rename package first if needed).
+1. Confirm npm org/user owns package `shuv2code` (or rename package first if needed).
 2. In npm package settings, configure Trusted Publisher:
    - Provider: GitHub Actions
    - Repository: this repo
@@ -237,7 +237,7 @@ Checklist:
 ## 1) Release validation and unsigned builds
 
 There is no dry-run tag path. Pushing any accepted non-nightly tag, including
-`v0.0.0-test.1`, classifies the run as the stable channel. It publishes `t3` with npm dist-tag
+`v0.0.0-test.1`, classifies the run as the stable channel. It publishes `shuv2code` with npm dist-tag
 `latest`, creates a real GitHub Release, aliases the hosted app to `latest.app.shuv.me` and
 `app.shuv.me`, and can commit a version bump to `main` in the finalize job. Do not push a test tag
 to validate the workflow.
@@ -275,7 +275,7 @@ Checklist:
 
 1. Apple Developer account access:
    - Team has rights to create Developer ID certificates.
-2. Create an explicit App ID for `com.t3tools.shuv2code` and enable Associated Domains.
+2. Create an explicit App ID for `com.shuv2code.app` and enable Associated Domains.
 3. Create a `Developer ID Application` certificate and a compatible provisioning profile for that
    App ID with Associated Domains enabled.
 4. Export the certificate + private key as `.p12` from Keychain.
@@ -288,7 +288,7 @@ Checklist:
    - `APPLE_API_KEY`: contents of the downloaded `.p8`
    - `APPLE_API_KEY_ID`: Key ID
    - `APPLE_API_ISSUER`: Issuer ID
-10. Complete the Clerk Native API and AASA setup in [shuv2code connect Clerk Setup](../internals/t3-connect.md#desktop-passkeys).
+10. Complete the Clerk Native API and AASA setup in [shuv2code connect Clerk Setup](../internals/shuv2code-connect.md#desktop-passkeys).
 11. Re-run a tag release and confirm macOS artifacts are signed/notarized and contain the expected
     `com.apple.developer.associated-domains` entitlement.
 
@@ -342,7 +342,7 @@ Checklist:
 
 - macOS build unsigned when expected signed:
   - Check all Apple secrets plus `APPLE_TEAM_ID` are populated and non-empty.
-  - Confirm the provisioning profile belongs to `APPLE_TEAM_ID.com.t3tools.shuv2code` and includes
+  - Confirm the provisioning profile belongs to `APPLE_TEAM_ID.com.shuv2code.app` and includes
     Associated Domains.
 - Windows build unsigned when expected signed:
   - Check all Azure ATS and auth secrets are populated and non-empty.

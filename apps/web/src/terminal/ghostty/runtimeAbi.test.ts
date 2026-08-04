@@ -268,7 +268,7 @@ describe("vendored libghostty-vt WebAssembly", () => {
     expect(call("ghostty_terminal_new", 0, terminalSlot, terminalOptions)).toBe(0);
     const terminal = new DataView(memory.buffer).getUint32(terminalSlot, true);
     const input = new TextEncoder().encode(
-      "\u001b[?1000h\u001b[?1006h\u001b]8;;https://t3.codes/docs\u001b\\linked\u001b]8;;\u001b\\ plain",
+      "\u001b[?1000h\u001b[?1006h\u001b]8;;https://shuv.me/docs\u001b\\linked\u001b]8;;\u001b\\ plain",
     );
     const inputPointer = alloc(input.length);
     new Uint8Array(memory.buffer, inputPointer, input.length).set(input);
@@ -314,7 +314,7 @@ describe("vendored libghostty-vt WebAssembly", () => {
       0,
     );
     expect(new TextDecoder().decode(new Uint8Array(memory.buffer, hyperlink, hyperlinkSize))).toBe(
-      "https://t3.codes/docs",
+      "https://shuv.me/docs",
     );
 
     const wordOptions = alloc(24);

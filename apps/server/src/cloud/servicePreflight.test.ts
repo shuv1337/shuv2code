@@ -14,7 +14,9 @@ it.layer(NodeServices.layer)("service update preflight", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-preflight-test-" });
+      const root = yield* fs.makeTempDirectoryScoped({
+        prefix: "shuv2code-service-preflight-test-",
+      });
       const databasePath = path.join(root, "state.sqlite");
       const database = new NodeSqlite.DatabaseSync(databasePath);
       database.exec("CREATE TABLE effect_sql_migrations (migration_id INTEGER, name TEXT)");
@@ -40,7 +42,7 @@ it.layer(NodeServices.layer)("service update preflight", (it) => {
       });
       expect(blocked.status).toBe("blocked");
       if (blocked.status === "blocked") {
-        expect(blocked.reason).toContain("npx t3@1.2.3 service update");
+        expect(blocked.reason).toContain("npx shuv2code@1.2.3 service update");
       }
     }),
   );

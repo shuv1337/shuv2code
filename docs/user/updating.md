@@ -32,7 +32,7 @@ The available action depends on how that server was started. shuv2code does not 
 servers silently in the background.
 
 If the requested version includes a database update, remote installation stops before restart and
-asks you to run the exact `npx t3@<version> service update` command on the server machine. This is
+asks you to run the exact `npx shuv2code@<version> service update` command on the server machine. This is
 an intentional rollback-safety boundary.
 
 After selecting **Update server**, the warning becomes a three-step progress rail:
@@ -40,17 +40,17 @@ After selecting **Update server**, the warning becomes a three-step progress rai
 Connections, so navigating between them does not lose the update. A failed step remains visible
 with its error and an option to retry.
 
-**Copy update command** gives you `npx t3@<client-version>`, which relaunches the server directly
+**Copy update command** gives you `npx shuv2code@<client-version>`, which relaunches the server directly
 at the matching version. Add whatever startup options you normally use.
 
 If the server instead runs as the shuv2code background service, update the service on the host and
 pin the same version:
 
 ```sh
-npx t3@<client-version> service update
+npx shuv2code@<client-version> service update
 ```
 
-`service update` installs the version of the CLI that invoked it, so `npx t3@latest service update`
+`service update` installs the version of the CLI that invoked it, so `npx shuv2code@latest service update`
 only resolves the skew when your client happens to be on the latest release. The exact version from
 the warning always works.
 
@@ -67,7 +67,7 @@ If a step fails:
 
 1. Retry the offered action once.
 2. Make sure you updated the machine named in the warning, not only the device you are using.
-3. For a command-line server, relaunch it with `npx t3@<client-version>`, replacing
+3. For a command-line server, relaunch it with `npx shuv2code@<client-version>`, replacing
    `<client-version>` with the client version shown in the warning.
 
 For remote connection setup and access troubleshooting, see [Remote Access](./remote-access.md).

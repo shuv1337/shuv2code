@@ -1063,7 +1063,7 @@ export function HomeScreen(props: HomeScreenProps) {
                   className="mx-4 mt-2 items-center rounded-lg border border-dashed border-border py-2.5"
                   style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
                 >
-                  <Text className="text-xs font-t3-medium text-foreground-muted">
+                  <Text className="text-xs font-shuv2code-medium text-foreground-muted">
                     Show more ({threadListV2Layout.hiddenSettledCount} settled hidden)
                   </Text>
                 </Pressable>

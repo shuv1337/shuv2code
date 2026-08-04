@@ -48,7 +48,7 @@ export const SHOWCASE_TERMINAL_BUFFER = [
   "\u001b[38;5;75m~/Code/shuv2code\u001b[0m \u001b[38;5;212mfeat/remote-command-center\u001b[0m",
   "$ vp test run --changed",
   "",
-  "  \u001b[38;5;117mt3code-mobile\u001b[0m       184 passed",
+  "  \u001b[38;5;117mshuv2code-mobile\u001b[0m       184 passed",
   "  \u001b[38;5;213mclient-runtime\u001b[0m      263 passed",
   "  \u001b[38;5;221mserver\u001b[0m              165 passed",
   "",

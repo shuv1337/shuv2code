@@ -9,7 +9,7 @@ each piece lives. For the user-facing setup guide see
 
 ## The model
 
-T3 has one runtime boundary: a client talks to a T3 server over HTTP and WebSocket, and the server
+shuv2code has one runtime boundary: a client talks to a shuv2code server over HTTP and WebSocket, and the server
 owns orchestration, providers, terminals, git, and filesystem operations. Remoteness is expressed at
 the connection layer, never by splitting the runtime.
 
@@ -24,9 +24,9 @@ the connection layer, never by splitting the runtime.
 │  direct ws/wss, relay tunnel,                │
 │  Tailscale serve, desktop-managed ssh        │
 └───────────────┬──────────────────────────────┘
-                │ connects to one T3 server
+                │ connects to one shuv2code server
 ┌───────────────▼──────────────────────────────┐
-│ Execution environment = one T3 server        │
+│ Execution environment = one shuv2code server        │
 │  identity, providers, projects/threads,      │
 │  terminals, git, filesystem                  │
 └──────────────────────────────────────────────┘
@@ -34,7 +34,7 @@ the connection layer, never by splitting the runtime.
 
 ### ExecutionEnvironment
 
-One running T3 server instance. It owns provider availability and auth, model availability, projects
+One running shuv2code server instance. It owns provider availability and auth, model availability, projects
 and threads, terminal processes, filesystem access, git operations, and server settings.
 
 It is identified by a stable `environmentId`, persisted by the server at `<stateDir>/environment-id`
@@ -94,7 +94,7 @@ Endpoint providers contribute advertised endpoints without becoming part of the 
 model: core owns environments, pairing, and connection lifecycle, and providers return normalized
 `AdvertisedEndpoint` records.
 
-Tailscale is the first provider, and T3 manages more than discovery. When `tailscaleServeEnabled` is
+Tailscale is the first provider, and shuv2code manages more than discovery. When `tailscaleServeEnabled` is
 set, the server acquires a Tailscale serve mapping for its actual listening port at startup with
 `ensureTailscaleServe` and releases it with `disableTailscaleServe` on scope close
 (`apps/server/src/server.ts`, using [`@shuv2code/tailscale`](../../packages/tailscale/src/tailscale.ts)).
@@ -131,12 +131,12 @@ project in one environment.
 
 ## Access methods
 
-Access answers one question: how does the client speak WebSocket to a T3 server? It does not answer
+Access answers one question: how does the client speak WebSocket to a shuv2code server? It does not answer
 how the server got started or who manages the process.
 
 ### Direct WebSocket access
 
-`wss://t3.example.com` or `ws://10.0.0.15:3773`, paired as a bearer target. This is the base model.
+`wss://shuv2code.example.com` or `ws://10.0.0.15:3773`, paired as a bearer target. This is the base model.
 It works for desktop, mobile, and web with no client-side process management. Browser security rules
 are part of it: a hosted HTTPS client cannot connect to plain `ws://` or `http://` LAN backends.
 
@@ -147,11 +147,11 @@ behind NAT, inbound ports are unavailable, or mobile must reach a desktop-hosted
 the client's perspective this is still an ordinary WebSocket connection; the route is mediated. The
 relay Worker only brokers credentials and a managed endpoint; application traffic then flows over
 the provisioned Cloudflare tunnel hostname for the life of the connection, not through the relay
-Worker itself. See [t3-connect.md](./t3-connect.md).
+Worker itself. See [shuv2code-connect.md](./shuv2code-connect.md).
 
 ### Tailscale access
 
-A T3-managed `tailscale serve` mapping exposes the server on the tailnet over HTTPS, and the
+A shuv2code-managed `tailscale serve` mapping exposes the server on the tailnet over HTTPS, and the
 resulting private-network endpoints are advertised for pairing. Connection then follows the ordinary
 bearer path.
 
@@ -161,7 +161,7 @@ SSH is an access and launch helper, not a separate environment type. `DesktopSsh
 ([apps/desktop/src/ssh/DesktopSshEnvironment.ts][sshenv]) exposes `discoverHosts`,
 `ensureEnvironment`, and `disconnectEnvironment`. It discovers targets from SSH config and known
 hosts, owns password/askpass prompts, and delegates lifecycle to `SshEnvironmentManager` in
-[packages/ssh/src/tunnel.ts][sshtunnel], which resolves the target, launches or reuses the remote T3
+[packages/ssh/src/tunnel.ts][sshtunnel], which resolves the target, launches or reuses the remote shuv2code
 server, opens a local tunnel, checks HTTP readiness, optionally issues a remote pairing token, and
 returns local HTTP/WS endpoints. Disconnect closes the tunnel and stops the remote server if the
 launcher started it; a server that was already running (marked `external`) is left running.
@@ -177,17 +177,17 @@ before reconnecting the WebSocket client.
 
 ## Launch methods
 
-Launch answers a different question: how does a T3 server come to exist on the target machine? Keep
+Launch answers a different question: how does a shuv2code server come to exist on the target machine? Keep
 it separate from access.
 
-- **Pre-existing server.** The operator already runs T3 and the client connects directly or through a
+- **Pre-existing server.** The operator already runs shuv2code and the client connects directly or through a
   tunnel.
 - **Desktop-managed remote launch over SSH.** Desktop probes the machine, launches or reuses a remote
   server, forwards a port, and the renderer connects normally. The saved environment records that it
   came from SSH launch for reconnect and lifecycle UX only; that metadata never changes the protocol
   or the identity model.
 - **Client-managed local publish.** A local server is published through the relay with
-  `t3 connect link`, exposing a desktop-hosted environment to mobile without router or firewall
+  `shuv2code connect link`, exposing a desktop-hosted environment to mobile without router or firewall
   changes.
 
 The same `ExecutionEnvironment` can be reached several of these ways. Only the launch and access
@@ -225,7 +225,7 @@ supervisor owns the resulting disconnect and reconnect like any other involuntar
 These remain unbuilt and are listed to keep the model honest:
 
 - third-party tunnel products as additional endpoint providers;
-- a relay-hosted OAuth callback broker (see [t3-connect.md](./t3-connect.md));
+- a relay-hosted OAuth callback broker (see [shuv2code-connect.md](./shuv2code-connect.md));
 - richer multi-environment UI beyond the current connections list.
 
 [model]: ../../packages/client-runtime/src/connection/model.ts

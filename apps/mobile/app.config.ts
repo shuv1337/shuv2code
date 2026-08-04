@@ -9,9 +9,9 @@ const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
-const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
+const isIosPersonalTeamBuild = repoEnv.SHUV2CODE_IOS_PERSONAL_TEAM === "1";
 
-const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
+const personalTeamBundleIdentifier = repoEnv.SHUV2CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
 
 const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
@@ -22,7 +22,7 @@ if (
     !IOS_BUNDLE_IDENTIFIER_PATTERN.test(personalTeamBundleIdentifier))
 ) {
   throw new Error(
-    "T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.shuv2code when T3CODE_IOS_PERSONAL_TEAM=1.",
+    "SHUV2CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.shuv2code when SHUV2CODE_IOS_PERSONAL_TEAM=1.",
   );
 }
 
@@ -63,25 +63,25 @@ const VARIANT_CONFIG = {
   development: {
     appName: "shuv2code Dev",
     scheme: "shuv2code-dev",
-    iosBundleIdentifier: "com.t3tools.shuv2code.dev",
-    androidPackage: "com.t3tools.shuv2code.dev",
-    relyingParty: "clerk.t3.codes",
+    iosBundleIdentifier: "com.shuv2code.app.dev",
+    androidPackage: "com.shuv2code.app.dev",
+    relyingParty: "clerk.shuv.me",
     assets: DEVELOPMENT_ASSETS,
   },
   preview: {
     appName: "shuv2code Preview",
     scheme: "shuv2code-preview",
-    iosBundleIdentifier: "com.t3tools.shuv2code.preview",
-    androidPackage: "com.t3tools.shuv2code.preview",
-    relyingParty: "clerk.t3.codes",
+    iosBundleIdentifier: "com.shuv2code.app.preview",
+    androidPackage: "com.shuv2code.app.preview",
+    relyingParty: "clerk.shuv.me",
     assets: PREVIEW_ASSETS,
   },
   production: {
     appName: "shuv2code",
     scheme: "shuv2code",
-    iosBundleIdentifier: "com.t3tools.shuv2code",
-    androidPackage: "com.t3tools.shuv2code",
-    relyingParty: "clerk.t3.codes",
+    iosBundleIdentifier: "com.shuv2code.app",
+    androidPackage: "com.shuv2code.app",
+    relyingParty: "clerk.shuv.me",
     assets: RELEASE_ASSETS,
   },
 } as const;
@@ -158,7 +158,7 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 
 const config: ExpoConfig = {
   name: variant.appName,
-  slug: "t3-code",
+  slug: "shuv2code",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
   version: "1.0.1",
@@ -185,7 +185,7 @@ const config: ExpoConfig = {
     // showcase capture build requires full screen (see infoPlist below).
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
-    // Pin code signing to the shuv2code Tools team so non-interactive `expo run:ios`
+    // Pin code signing to the shuv team so non-interactive `expo run:ios`
     // does not fall back to a personal team (which cannot sign app groups,
     // Sign in with Apple, or push notification entitlements).
     appleTeamId: "ARK85ZXQ4Z",
@@ -344,7 +344,7 @@ const config: ExpoConfig = {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
     relay: {
-      url: repoEnv.T3CODE_RELAY_URL ?? null,
+      url: repoEnv.SHUV2CODE_RELAY_URL ?? null,
     },
     clerk: {
       publishableKey: repoEnv.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? null,
