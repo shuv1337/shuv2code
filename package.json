@@ -46,6 +46,7 @@
     "release:prepare-package": "node scripts/prepare-release-package.ts",
     "release:inspect-package": "node scripts/inspect-release-package.ts",
     "connect:announce-ga": "node scripts/announce-connect-ga.ts",
+    "redeploy:boot-service": "node scripts/redeploy-boot-service.ts",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist apps/*/dist-electron packages/*/dist .vite-plus apps/*/.vite-plus packages/*/.vite-plus",
     "sync:repos": "node scripts/sync-reference-repos.ts"
   },
