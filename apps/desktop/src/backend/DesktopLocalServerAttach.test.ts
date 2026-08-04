@@ -69,6 +69,43 @@ const listenReadyServer = Effect.callback<{
   });
 });
 
+const listenApiOnlyServer = Effect.callback<{
+  readonly origin: string;
+  readonly port: number;
+  readonly close: () => void;
+}>((resume) => {
+  const server = NodeHttp.createServer((req, res) => {
+    if (req.url === "/.well-known/shuv2code/environment") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "env" }));
+      return;
+    }
+    if (req.url === "/") {
+      res.writeHead(302, { location: "/unavailable-renderer" });
+      res.end();
+      return;
+    }
+    res.writeHead(503, { "content-type": "text/plain" });
+    res.end("renderer unavailable");
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      resume(Effect.die("expected tcp address"));
+      return;
+    }
+    resume(
+      Effect.succeed({
+        origin: `http://127.0.0.1:${address.port}`,
+        port: address.port,
+        close: () => {
+          server.close();
+        },
+      }),
+    );
+  });
+});
+
 describe("discoverReusableLocalServer", () => {
   it.effect("returns none when no attach credential exists", () =>
     Effect.gen(function* () {
@@ -135,6 +172,54 @@ describe("discoverReusableLocalServer", () => {
       assert.isTrue(Option.isSome(discovered));
       assert.strictEqual(Option.getOrThrow(discovered).bootstrapToken, "attach-credential");
       assert.strictEqual(Option.getOrThrow(discovered).port, ready.port);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici)),
+    ),
+  );
+
+  it.effect("rejects a healthy API when its renderer is unavailable", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "shuv2code-desktop-local-attach-renderer-unavailable-",
+      });
+      const stateDir = path.join(root, "userdata");
+      yield* fileSystem.makeDirectory(stateDir, { recursive: true });
+      const ready = yield* listenApiOnlyServer;
+      yield* Effect.addFinalizer(() => Effect.sync(ready.close));
+
+      yield* fileSystem.writeFileString(
+        path.join(stateDir, "server-runtime.json"),
+        `${encodeRuntimeState({
+          version: 1,
+          pid: process.pid,
+          host: "127.0.0.1",
+          port: ready.port,
+          origin: ready.origin,
+          startedAt: "2026-08-02T00:00:00.000Z",
+        })}\n`,
+      );
+      yield* fileSystem.writeFileString(
+        path.join(stateDir, "local-desktop-attach.json"),
+        `${encodeAttachCredential({ version: 1, credential: "attach-credential" })}\n`,
+      );
+
+      const environment = {
+        path,
+        stateDir,
+        configuredBackendPort: Option.some(ready.port),
+        baseDir: root,
+      } as unknown as DesktopEnvironment.DesktopEnvironment["Service"];
+
+      const discovered = yield* DesktopLocalServerAttach.discoverReusableLocalServer().pipe(
+        Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
+      );
+
+      if (Option.isSome(discovered)) {
+        assert.notEqual(discovered.value.port, ready.port);
+      }
     }).pipe(
       Effect.scoped,
       Effect.provide(Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici)),

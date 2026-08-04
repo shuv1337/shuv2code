@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { resolveServerSelfUpdateCapability } from "../cloud/selfUpdate.ts";
+import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
@@ -33,7 +34,7 @@ export class ServerEnvironment extends Context.Service<
     readonly getEnvironmentId: Effect.Effect<EnvironmentId>;
     readonly getDescriptor: Effect.Effect<ExecutionEnvironmentDescriptor>;
   }
->()("shuv2code/environment/ServerEnvironment") {}
+>()("@shuv2code/environment/ServerEnvironment") {}
 
 function platformOs(platform: NodeJS.Platform): ExecutionEnvironmentDescriptor["platform"]["os"] {
   switch (platform) {
@@ -125,8 +126,10 @@ export const make = Effect.gen(function* () {
   const environmentId = EnvironmentId.make(environmentIdRaw);
   const cwdBaseName = path.basename(serverConfig.cwd).trim();
   const label = yield* resolveServerEnvironmentLabel({ cwdBaseName });
-  const serverSelfUpdate = yield* resolveServerSelfUpdateCapability({
+  const launcher = yield* resolveServiceLauncherMode();
+  const serverSelfUpdate = resolveServerSelfUpdateCapability({
     desktopManaged: serverConfig.mode === "desktop",
+    launcherManaged: launcher.managed,
   });
 
   const descriptor: ExecutionEnvironmentDescriptor = {
@@ -142,7 +145,9 @@ export const make = Effect.gen(function* () {
       connectionProbe: true,
       threadSettlement: true,
       threadSnooze: true,
+      threadTitleRegeneration: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
+      ...(serverSelfUpdate === "boot-service" ? { serverSelfUpdateProgress: true } : {}),
     },
   };
 

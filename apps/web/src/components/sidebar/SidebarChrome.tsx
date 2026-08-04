@@ -85,7 +85,7 @@ function SidebarBrand({
     <Link
       aria-label="Go to threads"
       className={cn(
-        "sidebar-brand relative z-10 ml-[18px] h-8 w-fit min-w-0 shrink-0 items-center gap-2.5 overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2",
+        "sidebar-brand relative z-10 ml-[var(--workspace-sidebar-brand-left)] h-8 w-fit min-w-0 shrink-0 items-center gap-2.5 overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2",
         onBackdrop ? "text-white" : "text-foreground",
       )}
       to="/"
@@ -115,7 +115,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   }, [isMobile, navigate, setOpenMobile]);
 
   return (
-    <SidebarFooter className="p-2">
+    <SidebarFooter className="p-[var(--sidebar-content-inset)]">
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       <SidebarMenu>

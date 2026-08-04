@@ -17,7 +17,7 @@ export class HostPowerMonitor extends Context.Service<
     readonly report: (snapshot: HostPowerSnapshot) => Effect.Effect<void>;
     readonly streamChanges: Stream.Stream<HostPowerSnapshot>;
   }
->()("shuv2code/background/HostPowerMonitor") {}
+>()("@shuv2code/background/HostPowerMonitor") {}
 
 export const makeUnknownSnapshot = (
   source: HostPowerSnapshot["source"],

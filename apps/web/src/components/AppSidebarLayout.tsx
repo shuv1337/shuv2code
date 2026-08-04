@@ -134,7 +134,10 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const sidebarProviderStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
     ...(isMacosDesktop && !isWindowFullscreen
-      ? { "--workspace-controls-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET }
+      ? {
+          "--workspace-controls-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET,
+          "--workspace-sidebar-brand-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET,
+        }
       : {}),
   } as CSSProperties;
 

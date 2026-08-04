@@ -278,7 +278,7 @@ export class AutomationStore extends Context.Service<
     readonly listActiveRuns: () => Effect.Effect<ReadonlyArray<AutomationRun>, AutomationError>;
     readonly hasActiveRun: (automationId: AutomationId) => Effect.Effect<boolean, AutomationError>;
   }
->()("shuv2code/automations/AutomationStore") {}
+>()("@shuv2code/automations/AutomationStore") {}
 
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

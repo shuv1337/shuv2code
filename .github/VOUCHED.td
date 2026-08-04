@@ -25,6 +25,7 @@ github:Noojuno
 github:notkainoa
 github:PatrickBauer
 github:realAhmedRoach
+github:ShamanicArts
 github:shiroyasha9
 github:Yash-Singh1
 github:eggfriedrice24

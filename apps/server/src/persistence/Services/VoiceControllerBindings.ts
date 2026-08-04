@@ -115,4 +115,4 @@ export interface VoiceControllerBindingRepositoryShape {
 export class VoiceControllerBindingRepository extends Context.Service<
   VoiceControllerBindingRepository,
   VoiceControllerBindingRepositoryShape
->()("shuv2code/persistence/Services/VoiceControllerBindings/VoiceControllerBindingRepository") {}
+>()("@shuv2code/persistence/Services/VoiceControllerBindings/VoiceControllerBindingRepository") {}

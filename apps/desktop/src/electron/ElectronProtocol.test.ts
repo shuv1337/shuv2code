@@ -32,7 +32,7 @@ describe("ElectronProtocol", () => {
   });
 
   it("registers production and development renderer schemes as secure standard origins", () => {
-    ElectronProtocol.registerDesktopSchemesAsPrivileged();
+    ElectronProtocol.registerDesktopSchemePrivilegesSync();
 
     assert.deepEqual(registerSchemesAsPrivilegedMock.mock.calls, [
       [
@@ -40,15 +40,19 @@ describe("ElectronProtocol", () => {
           {
             scheme: "shuv2code",
             privileges: {
-              secure: true,
               standard: true,
+              secure: true,
+              supportFetchAPI: true,
+              corsEnabled: true,
             },
           },
           {
             scheme: "shuv2code-dev",
             privileges: {
-              secure: true,
               standard: true,
+              secure: true,
+              supportFetchAPI: true,
+              corsEnabled: true,
             },
           },
         ],
@@ -90,7 +94,7 @@ describe("ElectronProtocol", () => {
           assert.equal(yield* Effect.promise(() => response.text()), "ok");
           assert.include(
             response.headers.get("content-security-policy") ?? "",
-            "script-src 'self' 'unsafe-inline' https://clerk.shuv2code.example https://challenges.cloudflare.com",
+            "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://clerk.shuv2code.example https://challenges.cloudflare.com",
           );
           assert.include(
             response.headers.get("content-security-policy") ?? "",
@@ -245,6 +249,7 @@ describe("ElectronProtocol", () => {
     assert.deepEqual(directives["script-src"], [
       "'self'",
       "'unsafe-inline'",
+      "'wasm-unsafe-eval'",
       "https://clerk.shuv2code.example",
       "https://challenges.cloudflare.com",
     ]);

@@ -12,6 +12,8 @@ import type {
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
+  OrchestrationSearchThreadsInput,
+  OrchestrationSearchThreadsResult,
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
@@ -95,6 +97,14 @@ export interface ProjectionSnapshotQueryShape {
   >;
 
   /**
+   * Search active thread navigation metadata, user messages, and canonical
+   * assistant outputs without hydrating thread detail snapshots.
+   */
+  readonly searchThreads: (
+    input: OrchestrationSearchThreadsInput,
+  ) => Effect.Effect<OrchestrationSearchThreadsResult, ProjectionRepositoryError>;
+
+  /**
    * Read the latest projection snapshot sequence without hydrating read-model
    * entities.
    */
@@ -176,4 +186,4 @@ export interface ProjectionSnapshotQueryShape {
 export class ProjectionSnapshotQuery extends Context.Service<
   ProjectionSnapshotQuery,
   ProjectionSnapshotQueryShape
->()("shuv2code/orchestration/Services/ProjectionSnapshotQuery") {}
+>()("@shuv2code/orchestration/Services/ProjectionSnapshotQuery") {}

@@ -11,7 +11,7 @@ export class HttpResponseCompression extends Context.Service<
       options: HttpServerResponse.Options,
     ) => HttpServerResponse.HttpServerResponse;
   }
->()("shuv2code/httpCompression/HttpResponseCompression") {}
+>()("@shuv2code/httpCompression/HttpResponseCompression") {}
 
 export const layerNode = Layer.effect(
   HttpResponseCompression,

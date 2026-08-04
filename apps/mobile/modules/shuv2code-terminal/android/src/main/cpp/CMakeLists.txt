@@ -13,7 +13,7 @@ add_library(shuv2codeterminal SHARED shuv2code_terminal_jni.cpp)
 
 target_include_directories(
   shuv2codeterminal
-  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../../Vendor/libghostty-vt/include"
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../../../native/libghostty-vt/include"
 )
 
 target_link_options(
