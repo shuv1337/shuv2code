@@ -195,9 +195,6 @@ export function revokeUserMessagePreviewUrls(message: ChatMessage): void {
     return;
   }
   for (const attachment of message.attachments) {
-    if (attachment.type !== "image") {
-      continue;
-    }
     revokeBlobPreviewUrl(attachment.previewUrl);
   }
 }

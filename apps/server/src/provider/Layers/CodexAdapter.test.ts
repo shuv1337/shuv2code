@@ -35,6 +35,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -529,6 +530,50 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         model: "gpt-5.3-codex",
         effort: "high",
         serviceTier: "priority",
+      });
+    }),
+  );
+
+  it.effect("sends PDF attachments to Codex as local file mentions", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachment = {
+        type: "file" as const,
+        id: "sess-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "guide.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 9,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, "%PDF-1.7\n");
+      yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.rmSync(attachmentPath)));
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-pdf"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      yield* adapter.sendTurn({
+        threadId: asThreadId("sess-pdf"),
+        input: "Summarize this PDF",
+        attachments: [attachment],
+      });
+
+      NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
+        input: "Summarize this PDF",
+        attachments: [
+          {
+            type: "mention",
+            name: "guide.pdf",
+            path: attachmentPath,
+          },
+        ],
       });
     }),
   );

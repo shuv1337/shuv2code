@@ -133,7 +133,36 @@ describe("buildBootstrapInput", () => {
       1_500,
     );
 
-    expect(result.text).toContain("Attached image");
+    expect(result.text).toContain("Attached file");
     expect(result.text).toContain("screenshot.png");
+  });
+
+  it("includes PDF names in attachment summaries", () => {
+    const result = buildBootstrapInput(
+      [
+        {
+          id: messageId("u-pdf"),
+          role: "user",
+          text: "Summarize this",
+          attachments: [
+            {
+              type: "file",
+              id: "pdf-1",
+              name: "guide.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 2_048,
+            },
+          ],
+          createdAt: "2026-02-09T00:00:00.000Z",
+          turnId: null,
+          updatedAt: "2026-02-09T00:00:00.000Z",
+          streaming: false,
+        },
+      ],
+      "What does it say?",
+      1_500,
+    );
+
+    expect(result.text).toContain("[Attached file: guide.pdf]");
   });
 });

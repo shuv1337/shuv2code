@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeURL from "node:url";
+
 import {
   ApprovalRequestId,
   type GrokSettings,
@@ -951,7 +954,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               });
 
               const text = input.input?.trim();
-              const imagePromptParts = yield* Effect.forEach(
+              const attachmentPromptParts = yield* Effect.forEach(
                 input.attachments ?? [],
                 (attachment) =>
                   Effect.gen(function* () {
@@ -965,6 +968,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         method: "session/prompt",
                         detail: `Invalid attachment id '${attachment.id}'.`,
                       });
+                    }
+                    if (attachment.type === "file") {
+                      return {
+                        type: "resource_link",
+                        name: attachment.name,
+                        mimeType: attachment.mimeType,
+                        size: attachment.sizeBytes,
+                        uri: NodeURL.pathToFileURL(attachmentPath).href,
+                      } satisfies EffectAcpSchema.ContentBlock;
                     }
                     const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
                       Effect.mapError(
@@ -986,7 +998,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               );
               const promptParts: Array<EffectAcpSchema.ContentBlock> = [
                 ...(text ? [{ type: "text" as const, text }] : []),
-                ...imagePromptParts,
+                ...attachmentPromptParts,
               ];
 
               if (promptParts.length === 0) {

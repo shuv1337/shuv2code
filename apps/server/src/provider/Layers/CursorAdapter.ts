@@ -1,8 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * CursorAdapterLive — Cursor CLI (`agent acp`) via ACP.
  *
  * @module CursorAdapterLive
  */
+
+import * as NodeURL from "node:url";
 
 import {
   ApprovalRequestId,
@@ -976,6 +979,16 @@ export function makeCursorAdapter(
                   method: "session/prompt",
                   detail: `Invalid attachment id '${attachment.id}'.`,
                 });
+              }
+              if (attachment.type === "file") {
+                promptParts.push({
+                  type: "resource_link",
+                  name: attachment.name,
+                  mimeType: attachment.mimeType,
+                  size: attachment.sizeBytes,
+                  uri: NodeURL.pathToFileURL(attachmentPath).href,
+                });
+                continue;
               }
               const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
                 Effect.mapError(

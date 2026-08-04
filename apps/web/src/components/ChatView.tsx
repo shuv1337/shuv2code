@@ -221,7 +221,10 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
-import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "./chat/composerPromptHistory";
+import {
+  FILE_ONLY_BOOTSTRAP_PROMPT,
+  IMAGE_ONLY_BOOTSTRAP_PROMPT,
+} from "./chat/composerPromptHistory";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -3894,6 +3897,11 @@ function ChatViewContent(props: ChatViewProps) {
       );
     }, 0);
     for (const removedMessage of removedMessages) {
+      for (const attachment of removedMessage.attachments ?? []) {
+        if (attachment.type === "file") {
+          revokeBlobPreviewUrl(attachment.previewUrl);
+        }
+      }
       const previewUrls = collectUserMessageBlobPreviewUrls(removedMessage);
       if (previewUrls.length > 0) {
         handoffAttachmentPreviews(removedMessage.id, previewUrls);
@@ -4719,25 +4727,51 @@ function ChatViewContent(props: ChatViewProps) {
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+      text:
+        messageTextForSend ||
+        (composerImagesSnapshot.some((attachment) => attachment.type === "file")
+          ? FILE_ONLY_BOOTSTRAP_PROMPT
+          : IMAGE_ONLY_BOOTSTRAP_PROMPT),
     });
     const turnAttachmentsPromise = Promise.all(
-      composerImagesSnapshot.map(async (image) => ({
-        type: "image" as const,
-        name: image.name,
-        mimeType: image.mimeType,
-        sizeBytes: image.sizeBytes,
-        dataUrl: await readFileAsDataUrl(image.file),
-      })),
+      composerImagesSnapshot.map(async (attachment) => {
+        const dataUrl = await readFileAsDataUrl(attachment.file);
+        return attachment.type === "file"
+          ? {
+              type: "file" as const,
+              name: attachment.name,
+              mimeType: "application/pdf" as const,
+              sizeBytes: attachment.sizeBytes,
+              dataUrl,
+            }
+          : {
+              type: "image" as const,
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+              dataUrl,
+            };
+      }),
     );
-    const optimisticAttachments = composerImagesSnapshot.map((image) => ({
-      type: "image" as const,
-      id: image.id,
-      name: image.name,
-      mimeType: image.mimeType,
-      sizeBytes: image.sizeBytes,
-      previewUrl: image.previewUrl,
-    }));
+    const optimisticAttachments = composerImagesSnapshot.map((attachment) =>
+      attachment.type === "file"
+        ? {
+            type: "file" as const,
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: "application/pdf" as const,
+            sizeBytes: attachment.sizeBytes,
+            previewUrl: attachment.previewUrl,
+          }
+        : {
+            type: "image" as const,
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            previewUrl: attachment.previewUrl,
+          },
+    );
     // Sending always returns to the live edge. The new row becomes the
     // anchored end-space target so it lands near the top while the response
     // streams into the reserved space below it.
@@ -4783,17 +4817,17 @@ function ChatViewContent(props: ChatViewProps) {
     clearComposerDraftContent(composerDraftTarget);
     composerRef.current?.resetCursorState();
 
-    let firstComposerImageName: string | null = null;
+    let firstComposerAttachmentName: string | null = null;
     if (composerImagesSnapshot.length > 0) {
       const firstComposerImage = composerImagesSnapshot[0];
       if (firstComposerImage) {
-        firstComposerImageName = firstComposerImage.name;
+        firstComposerAttachmentName = firstComposerImage.name;
       }
     }
     let titleSeed = trimmed;
     if (!titleSeed) {
-      if (firstComposerImageName) {
-        titleSeed = `Image: ${firstComposerImageName}`;
+      if (firstComposerAttachmentName) {
+        titleSeed = `${composerImagesSnapshot[0]?.type === "file" ? "File" : "Image"}: ${firstComposerAttachmentName}`;
       } else if (composerTerminalContextsSnapshot.length > 0) {
         titleSeed = formatTerminalContextLabel(composerTerminalContextsSnapshot[0]!);
       } else if (composerElementContextsSnapshot.length > 0) {
@@ -5925,7 +5959,6 @@ function ChatViewContent(props: ChatViewProps) {
                             activeThreadId={activeThreadId}
                             activeThreadEnvironmentId={activeThread?.environmentId}
                             activeThread={activeThread}
-                            promptHistoryMessages={timelineMessages}
                             isServerThread={isServerThread}
                             isLocalDraftThread={isLocalDraftThread}
                             forceExpandedOnMobile={forceExpandedMobileComposer && isDraftHeroState}

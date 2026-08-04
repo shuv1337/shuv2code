@@ -3,10 +3,12 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
+  type ChatAttachment,
   type ClientOrchestrationCommand,
   type IsoDateTime,
   type OrchestrationCommand,
   OrchestrationDispatchCommandError,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@shuv2code/contracts";
 
@@ -112,16 +114,31 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       (attachment) =>
         Effect.gen(function* () {
           const parsed = parseBase64DataUrl(attachment.dataUrl);
-          if (!parsed || !parsed.mimeType.startsWith("image/")) {
+          const isImage = attachment.type === "image";
+          if (
+            !parsed ||
+            (isImage
+              ? !parsed.mimeType.startsWith("image/")
+              : parsed.mimeType !== "application/pdf")
+          ) {
             return yield* new OrchestrationDispatchCommandError({
-              message: `Invalid image attachment payload for '${attachment.name}'.`,
+              message: `Invalid ${isImage ? "image" : "PDF"} attachment payload for '${attachment.name}'.`,
             });
           }
 
           const bytes = Buffer.from(parsed.base64, "base64");
-          if (bytes.byteLength === 0 || bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+          if (
+            bytes.byteLength === 0 ||
+            bytes.byteLength >
+              (isImage ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES : PROVIDER_SEND_TURN_MAX_FILE_BYTES)
+          ) {
             return yield* new OrchestrationDispatchCommandError({
-              message: `Image attachment '${attachment.name}' is empty or too large.`,
+              message: `${isImage ? "Image" : "PDF"} attachment '${attachment.name}' is empty or too large.`,
+            });
+          }
+          if (!isImage && Buffer.from(bytes.subarray(0, 5)).toString("ascii") !== "%PDF-") {
+            return yield* new OrchestrationDispatchCommandError({
+              message: `Invalid PDF attachment payload for '${attachment.name}'.`,
             });
           }
 
@@ -132,13 +149,21 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             });
           }
 
-          const persistedAttachment = {
-            type: "image" as const,
-            id: attachmentId,
-            name: attachment.name,
-            mimeType: parsed.mimeType.toLowerCase(),
-            sizeBytes: bytes.byteLength,
-          };
+          const persistedAttachment: ChatAttachment = isImage
+            ? {
+                type: "image",
+                id: attachmentId,
+                name: attachment.name,
+                mimeType: parsed.mimeType.toLowerCase(),
+                sizeBytes: bytes.byteLength,
+              }
+            : {
+                type: "file",
+                id: attachmentId,
+                name: attachment.name,
+                mimeType: "application/pdf",
+                sizeBytes: bytes.byteLength,
+              };
 
           const attachmentPath = resolveAttachmentPath({
             attachmentsDir: serverConfig.attachmentsDir,

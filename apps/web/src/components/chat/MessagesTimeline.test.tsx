@@ -440,6 +440,35 @@ describe("MessagesTimeline", () => {
     expect(onAnchorSizeChanged).toHaveBeenCalledWith(secondEntry.message.id, 240);
   });
 
+  it("renders PDF attachments as openable document cards", () => {
+    const entry = {
+      ...buildUserTimelineEntry("Please read this."),
+      message: {
+        ...buildUserTimelineEntry("Please read this.").message,
+        attachments: [
+          {
+            type: "file" as const,
+            id: "attachment-pdf-1",
+            name: "guide.pdf",
+            mimeType: "application/pdf" as const,
+            sizeBytes: 128,
+            previewUrl: "https://example.test/assets/guide.pdf",
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+
+    expect(markup).toContain('aria-label="Open guide.pdf"');
+    expect(markup).toContain('href="https://example.test/assets/guide.pdf"');
+    expect(markup).toContain("guide.pdf");
+    expect(markup).toContain(">PDF<");
+    expect(markup).not.toContain("<img");
+  });
+
   it("renders collapse controls for long user messages", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline

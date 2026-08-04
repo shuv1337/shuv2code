@@ -9,6 +9,7 @@ import {
 } from "../../reviewCommentContext";
 import {
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
+  FILE_ONLY_BOOTSTRAP_PROMPT,
   isComposerPromptHistoryBlankHardEdge,
   isComposerPromptHistoryPositionValid,
   projectComposerPromptHistory,
@@ -131,6 +132,7 @@ describe("projectComposerPromptHistory", () => {
         message(" \n "),
         message(contextOnly),
         message(IMAGE_ONLY_BOOTSTRAP_PROMPT),
+        message(FILE_ONLY_BOOTSTRAP_PROMPT),
       ]),
     ).toEqual([]);
   });
