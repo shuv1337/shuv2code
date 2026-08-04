@@ -402,36 +402,6 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         }),
     ),
   );
-  if (claims.kind === "viewed-image") {
-    const decodedPath = decodeRelativePath(relativePath);
-    if (decodedPath === null) return null;
-    const path = yield* Path.Path;
-    if (decodedPath !== path.basename(claims.canonicalPath)) return null;
-    const fileSystem = yield* FileSystem.FileSystem;
-    const canonicalPath = yield* optionOnNotFound(fileSystem.realPath(claims.canonicalPath)).pipe(
-      Effect.tapError((cause) =>
-        Effect.logError("Failed to resolve viewed image asset.", {
-          path: claims.canonicalPath,
-          cause,
-        }),
-      ),
-      Effect.orElseSucceed(() => Option.none()),
-    );
-    if (Option.isNone(canonicalPath) || canonicalPath.value !== claims.canonicalPath) return null;
-    const info = yield* optionOnNotFound(fileSystem.stat(canonicalPath.value)).pipe(
-      Effect.tapError((cause) =>
-        Effect.logError("Failed to inspect viewed image asset.", {
-          path: canonicalPath.value,
-          cause,
-        }),
-      ),
-      Effect.orElseSucceed(() => Option.none()),
-    );
-    return Option.isSome(info) && info.value.type === "File"
-      ? ({ kind: "file", path: canonicalPath.value } satisfies ResolvedAsset)
-      : null;
-  }
-
   if (claims.kind === "project-favicon") {
     const issuedAt = yield* Clock.currentTimeMillis;
     expiresAt =
