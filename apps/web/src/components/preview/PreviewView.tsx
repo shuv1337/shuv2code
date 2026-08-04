@@ -26,6 +26,7 @@ import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/prev
 import { useRightPanelStore } from "~/rightPanelStore";
 
 import { previewBridge } from "./previewBridge";
+import { capturePreviewFocusRestorer } from "./previewFocusRestore";
 import { subscribePreviewAction } from "./previewActionBus";
 import { openPreviewSession } from "./openPreviewSession";
 import { PreviewChromeRow } from "./PreviewChromeRow";
@@ -517,8 +518,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     // focus into the guest webContents. We restore it when the pick
     // resolves so the user's typing context isn't lost — otherwise after
     // every pick they'd have to click back into the textarea.
-    const previouslyFocused =
-      typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+    const restoreFocus = capturePreviewFocusRestorer();
     pickActiveRef.current = true;
     setPickActive(true);
     void (async () => {
@@ -548,17 +548,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         // Best-effort: restore focus to whatever the user had before the
         // pick stole it into the guest webContents. Skip if the previously-
         // focused element was unmounted or is no longer focusable.
-        if (
-          previouslyFocused &&
-          previouslyFocused.isConnected &&
-          typeof previouslyFocused.focus === "function"
-        ) {
-          try {
-            previouslyFocused.focus({ preventScroll: true });
-          } catch {
-            // Some elements throw on .focus() (detached iframes, etc.).
-          }
-        }
+        restoreFocus();
       }
     })();
   }, [addImage, addPreviewAnnotation, runtimeTabId, threadRef]);
