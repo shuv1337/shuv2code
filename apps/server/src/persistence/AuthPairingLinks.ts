@@ -102,7 +102,7 @@ export class AuthPairingLinkRepository extends Context.Service<
       input: GetAuthPairingLinkByCredentialInput,
     ) => Effect.Effect<Option.Option<AuthPairingLinkRecord>, AuthPairingLinkRepositoryError>;
   }
->()("shuv2code/persistence/AuthPairingLinks/AuthPairingLinkRepository") {}
+>()("@shuv2code/persistence/AuthPairingLinks/AuthPairingLinkRepository") {}
 
 function toPersistenceSqlOrDecodeError(
   sqlOperation: string,

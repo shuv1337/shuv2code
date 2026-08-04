@@ -61,7 +61,7 @@ export class TraceDiagnostics extends Context.Service<
       options: TraceDiagnosticsOptions,
     ) => Effect.Effect<ServerTraceDiagnosticsResult>;
   }
->()("shuv2code/diagnostics/TraceDiagnostics") {}
+>()("@shuv2code/diagnostics/TraceDiagnostics") {}
 
 interface TraceDiagnosticsInput {
   readonly traceFilePath: string;

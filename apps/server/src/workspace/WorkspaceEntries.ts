@@ -101,7 +101,7 @@ export class WorkspaceEntries extends Context.Service<
     ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceEntriesError>;
     readonly refresh: (cwd: string) => Effect.Effect<void>;
   }
->()("shuv2code/workspace/WorkspaceEntries") {}
+>()("@shuv2code/workspace/WorkspaceEntries") {}
 
 function expandHomePath(input: string, path: Path.Path): string {
   if (input === "~") {

@@ -127,4 +127,4 @@ export class SourceControlProvider extends Context.Service<
       readonly force?: boolean;
     }) => Effect.Effect<void, SourceControlProviderError>;
   }
->()("shuv2code/sourceControl/SourceControlProvider") {}
+>()("@shuv2code/sourceControl/SourceControlProvider") {}

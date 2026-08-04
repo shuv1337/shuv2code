@@ -47,7 +47,7 @@ export class Shuv2CodeProjectFileLoader extends Context.Service<
      */
     readonly load: (workspaceRoot: string) => Effect.Effect<Option.Option<Shuv2CodeProjectFile>>;
   }
->()("shuv2code/project/Shuv2CodeProjectFileLoader") {}
+>()("@shuv2code/project/Shuv2CodeProjectFileLoader") {}
 
 const logShuv2CodeProjectFileLoadError = (error: Shuv2CodeProjectFileLoadError) =>
   Effect.logWarning(error).pipe(

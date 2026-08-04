@@ -60,7 +60,7 @@ export class ResourceMonitorBinary extends Context.Service<
   {
     readonly resolve: Effect.Effect<string, ResourceMonitorBinaryError>;
   }
->()("shuv2code/resourceTelemetry/ResourceMonitorBinary") {}
+>()("@shuv2code/resourceTelemetry/ResourceMonitorBinary") {}
 
 function binaryName(platform: NodeJS.Platform): string {
   return platform === "win32" ? "shuv2code-resource-monitor.exe" : "shuv2code-resource-monitor";

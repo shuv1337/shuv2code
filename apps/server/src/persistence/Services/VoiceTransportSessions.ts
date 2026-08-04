@@ -81,4 +81,4 @@ export interface VoiceTransportSessionRepositoryShape {
 export class VoiceTransportSessionRepository extends Context.Service<
   VoiceTransportSessionRepository,
   VoiceTransportSessionRepositoryShape
->()("shuv2code/persistence/Services/VoiceTransportSessions/VoiceTransportSessionRepository") {}
+>()("@shuv2code/persistence/Services/VoiceTransportSessions/VoiceTransportSessionRepository") {}

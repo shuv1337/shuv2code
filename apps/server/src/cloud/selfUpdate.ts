@@ -43,7 +43,7 @@ export class ServerSelfUpdate extends Context.Service<
       reportProgress?: (stage: ServerSelfUpdateProgressStage) => Effect.Effect<void>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
   }
->()("shuv2code/cloud/selfUpdate/ServerSelfUpdate") {}
+>()("@shuv2code/cloud/selfUpdate/ServerSelfUpdate") {}
 
 export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;

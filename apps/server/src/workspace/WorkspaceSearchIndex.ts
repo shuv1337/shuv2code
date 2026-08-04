@@ -120,7 +120,7 @@ export class WorkspaceSearchIndex extends Context.Service<
       WorkspaceSearchIndexRefreshFailed | WorkspaceSearchIndexScanTimedOut
     >;
   }
->()("shuv2code/workspace/WorkspaceSearchIndex") {}
+>()("@shuv2code/workspace/WorkspaceSearchIndex") {}
 
 function toPosixPath(input: string): string {
   return input.replaceAll("\\", "/");
@@ -553,7 +553,7 @@ export const layer = (key: string) => {
 };
 
 export class WorkspaceSearchIndexMap extends LayerMap.Service<WorkspaceSearchIndexMap>()(
-  "shuv2code/workspace/WorkspaceSearchIndexMap",
+  "@shuv2code/workspace/WorkspaceSearchIndexMap",
   {
     lookup: layer,
     idleTimeToLive: WORKSPACE_INDEX_IDLE_TTL,

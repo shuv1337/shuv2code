@@ -244,7 +244,7 @@ export class AcpSessionRuntime extends Context.Service<
       payload: unknown,
     ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   }
->()("shuv2code/provider/acp/AcpSessionRuntime") {}
+>()("@shuv2code/provider/acp/AcpSessionRuntime") {}
 
 interface AcpStartedState extends AcpSessionRuntimeStartResult {}
 

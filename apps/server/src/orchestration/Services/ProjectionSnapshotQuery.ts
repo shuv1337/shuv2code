@@ -186,4 +186,4 @@ export interface ProjectionSnapshotQueryShape {
 export class ProjectionSnapshotQuery extends Context.Service<
   ProjectionSnapshotQuery,
   ProjectionSnapshotQueryShape
->()("shuv2code/orchestration/Services/ProjectionSnapshotQuery") {}
+>()("@shuv2code/orchestration/Services/ProjectionSnapshotQuery") {}

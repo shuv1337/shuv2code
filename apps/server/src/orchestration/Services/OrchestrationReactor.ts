@@ -29,4 +29,4 @@ export interface OrchestrationReactorShape {
 export class OrchestrationReactor extends Context.Service<
   OrchestrationReactor,
   OrchestrationReactorShape
->()("shuv2code/orchestration/Services/OrchestrationReactor") {}
+>()("@shuv2code/orchestration/Services/OrchestrationReactor") {}

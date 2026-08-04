@@ -55,7 +55,7 @@ export class CheckpointDiffQuery extends Context.Service<
       input: OrchestrationGetFullThreadDiffInput,
     ) => Effect.Effect<OrchestrationGetFullThreadDiffResult, CheckpointServiceError>;
   }
->()("shuv2code/checkpointing/CheckpointDiffQuery") {}
+>()("@shuv2code/checkpointing/CheckpointDiffQuery") {}
 
 const isTurnDiffResult = Schema.is(OrchestrationGetTurnDiffResult);
 

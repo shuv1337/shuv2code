@@ -84,4 +84,4 @@ export interface ProviderInstanceRegistryShape {
 export class ProviderInstanceRegistry extends Context.Service<
   ProviderInstanceRegistry,
   ProviderInstanceRegistryShape
->()("shuv2code/provider/Services/ProviderInstanceRegistry") {}
+>()("@shuv2code/provider/Services/ProviderInstanceRegistry") {}
