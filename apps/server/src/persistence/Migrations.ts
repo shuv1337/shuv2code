@@ -109,6 +109,8 @@ export const migrationEntries = [
   [41, "CompactPreviewSnapshotActivities", Migration0041],
 ] as const;
 
+export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
+
 export const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
     Object.fromEntries(
