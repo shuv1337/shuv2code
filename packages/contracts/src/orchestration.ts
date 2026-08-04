@@ -937,6 +937,36 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
 });
 
+export const ProviderEffectOperation = Schema.Literals(["start", "steer", "interrupt"]);
+export type ProviderEffectOperation = typeof ProviderEffectOperation.Type;
+export const ProviderEffectOutcomeState = Schema.Literals([
+  "pending",
+  "confirmed",
+  "failed",
+  "indeterminate",
+  "stale",
+]);
+export type ProviderEffectOutcomeState = typeof ProviderEffectOutcomeState.Type;
+export const ProviderEffectOutcome = Schema.Struct({
+  operationId: TrimmedNonEmptyString,
+  operation: ProviderEffectOperation,
+  state: ProviderEffectOutcomeState,
+  threadId: ThreadId,
+  expectedTurnId: Schema.NullOr(TurnId),
+  actualTurnId: Schema.NullOr(TurnId),
+  sanitizedCode: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+export type ProviderEffectOutcome = typeof ProviderEffectOutcome.Type;
+
+const ThreadProviderEffectOutcomeSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.provider-effect.outcome.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  outcome: ProviderEffectOutcome,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -946,6 +976,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
   ThreadTitleRegenerationCompleteCommand,
+  ThreadProviderEffectOutcomeSetCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
@@ -1146,6 +1177,12 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadProviderEffectOutcomeSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  outcome: ProviderEffectOutcome,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
@@ -1313,6 +1350,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.provider-effect-outcome-set"),
+    payload: ThreadProviderEffectOutcomeSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
