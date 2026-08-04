@@ -17,6 +17,7 @@ import {
   serverEnvironmentHttpApiLayer,
   staticAndDevRouteLayer,
   browserApiCorsLayer,
+  textToSpeechRouteLayer,
   httpCompressionLayer,
 } from "./http.ts";
 import { fixPath } from "./os-jank.ts";
@@ -61,7 +62,7 @@ import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
-import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
+import * as Shuv2CodeProjectFileLoader from "./project/Shuv2CodeProjectFileLoader.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
@@ -101,7 +102,16 @@ import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClien
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
+import * as AutomationStore from "./automations/AutomationStore.ts";
+import * as AutomationService from "./automations/AutomationService.ts";
+import { ThreadControlServiceLive } from "./orchestration/Layers/ThreadControlService.ts";
+import { VoiceControlPersistenceLayerLive } from "./persistence/Layers/VoiceControl.ts";
+import { ControllerActionContextResolverLive } from "./voice/Layers/ControllerActionContextResolver.ts";
+import { VoiceControllerServiceLive } from "./voice/Layers/VoiceControllerService.ts";
+import { VoiceRuntimeGatewayLive } from "./voice/Layers/VoiceRuntimeGateway.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import { CodexAppServerSupervisorLive } from "./provider/Layers/CodexAppServerSupervisor.ts";
+import * as ControllerMcpHttpServer from "./mcp/ControllerMcpHttpServer.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -114,7 +124,7 @@ import { disableTailscaleServe, ensureTailscaleServe } from "@shuv2code/tailscal
 import { forkParked, ServerActivation } from "./serverActivation.ts";
 
 // Effect's default preemptive shutdown waits 20s before finalizing request scopes.
-// T3's primary transport is long-lived WebSocket RPC, whose Effect scope finalizer
+// shuv2code's primary transport is long-lived WebSocket RPC, whose Effect scope finalizer
 // already closes the websocket gracefully. Do not add an artificial drain before
 // those finalizers get a chance to run.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
@@ -239,6 +249,45 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
 
 const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
 
+const VoiceControlPersistenceLive = VoiceControlPersistenceLayerLive.pipe(
+  Layer.provide(PersistenceLayerLive),
+);
+
+const McpSessionRegistryLayerLive = McpSessionRegistry.layer;
+
+const ThreadControlLayerLive = ThreadControlServiceLive;
+
+const ControllerActionContextResolverLayerLive = ControllerActionContextResolverLive;
+
+const VoiceRuntimeGatewayLayerLive = VoiceRuntimeGatewayLive.pipe(
+  Layer.provideMerge(ProviderLayerLive),
+  Layer.provideMerge(ProviderRegistryLive),
+  Layer.provideMerge(McpSessionRegistryLayerLive),
+);
+
+const VoiceControllerLayerLive = VoiceControllerServiceLive.pipe(
+  Layer.provideMerge(VoiceRuntimeGatewayLayerLive),
+);
+
+const VoiceControlServicesLayerLive = Layer.mergeAll(
+  ThreadControlLayerLive,
+  ControllerActionContextResolverLayerLive,
+  VoiceControllerLayerLive,
+).pipe(
+  Layer.provideMerge(VoiceControlPersistenceLive),
+  Layer.provideMerge(OrchestrationLayerLive),
+  Layer.provideMerge(ServerSettingsLayerLive),
+  Layer.provideMerge(ServerEnvironment.layer),
+  Layer.provideMerge(McpSessionRegistryLayerLive),
+);
+
+const AutomationStoreLayerLive = AutomationStore.layer.pipe(Layer.provide(PersistenceLayerLive));
+
+const AutomationServiceLayerLive = AutomationService.layer.pipe(
+  Layer.provideMerge(AutomationStoreLayerLive),
+  Layer.provideMerge(OrchestrationLayerLive),
+);
+
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
 );
@@ -320,7 +369,7 @@ const WorkspaceLayerLive = Layer.mergeAll(
 
 const ProjectFaviconResolverLayerLive = ProjectFaviconResolver.layer.pipe(
   Layer.provide(WorkspacePaths.layer),
-  Layer.provide(T3ProjectFileLoader.layer),
+  Layer.provide(Shuv2CodeProjectFileLoader.layer),
 );
 
 const AuthLayerLive = EnvironmentAuth.layer.pipe(
@@ -341,7 +390,7 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(ServerSettingsLayerLive),
   Layer.provideMerge(CheckpointingLayerLive),
@@ -351,7 +400,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
-  Layer.provideMerge(Keybindings.layer),
+  Layer.provideMerge(Layer.mergeAll(AutomationServiceLayerLive, Keybindings.layer)),
   Layer.provideMerge(ProviderRegistryLive),
   // The instance registry is the new routing keystone — text generation,
   // adapter lookup, and runtime ingestion all resolve `ProviderInstanceId`
@@ -364,7 +413,12 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // `ProviderService` (canonical stream, written after event normalization).
   // Provided once at the runtime level so every consumer sees the same
   // logger instances.
-  Layer.provideMerge(ProviderEventLoggers.layer),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      ProviderEventLoggers.layer,
+      CodexAppServerSupervisorLive.pipe(Layer.provide(ServerSettingsLayerLive)),
+    ),
+  ),
   // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
   // `ProviderRegistryLive` pulled `OpenCodeRuntimeLive` in for itself, but
   // the rewritten registry reads snapshots off the instance registry and
@@ -386,6 +440,10 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       CloudManagedEndpointRuntimeLive,
     ),
   ),
+);
+
+const RuntimeCoreDependenciesLive = VoiceControlServicesLayerLive.pipe(
+  Layer.provideMerge(RuntimeCoreDependenciesBaseLive),
 );
 
 const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
@@ -417,11 +475,14 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(environmentAuthenticatedAuthLayer),
     ),
     otlpTracesProxyRouteLayer,
+    textToSpeechRouteLayer,
     assetRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
-  McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer)),
+  Layer.mergeAll(McpHttpServer.layer, ControllerMcpHttpServer.layer).pipe(
+    Layer.provide(McpSessionRegistryLayerLive),
+  ),
 ).pipe(
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer),
