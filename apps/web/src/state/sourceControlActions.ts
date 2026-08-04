@@ -155,7 +155,7 @@ export function useVcsInitAction(scope: SourceControlActionScope) {
     }
     return init({
       environmentId: target.environmentId,
-      input: { cwd: target.cwd },
+      input: { cwd: target.cwd, kind: "jj" },
     });
   }, [init, scope]);
   return useAction({ kind: "init", label: "Initializing repository", scope, action });

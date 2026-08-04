@@ -85,6 +85,7 @@ describe("VcsDriverRegistry", () => {
       assert.deepStrictEqual(
         calls.map((call) => normalizeGitArgs(call.args).join(" ")),
         [
+          "--no-pager --color never --ignore-working-copy -R /repo root",
           "rev-parse --is-inside-work-tree",
           "rev-parse --show-toplevel",
           "rev-parse --git-common-dir",

@@ -24,14 +24,19 @@ import {
   ChevronDownIcon,
   CloudUploadIcon,
   ExternalLinkIcon,
-  GitBranchPlusIcon,
   GitCommitIcon,
   InfoIcon,
   LockIcon,
   GlobeIcon,
 } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
-import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "~/components/Icons";
+import {
+  AzureDevOpsIcon,
+  BitbucketIcon,
+  GitHubIcon,
+  GitLabIcon,
+  JujutsuIcon,
+} from "~/components/Icons";
 import { RadioGroup } from "~/components/ui/radio-group";
 import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
@@ -1671,7 +1676,7 @@ export default function GitActionsControl({
               toastManager.add(
                 stackedThreadToast({
                   type: "error",
-                  title: "Git initialization failed",
+                  title: "Jujutsu initialization failed",
                   description: error instanceof Error ? error.message : "An error occurred.",
                   ...(threadToastData !== undefined ? { data: threadToastData } : {}),
                 }),
@@ -1679,9 +1684,9 @@ export default function GitActionsControl({
             })();
           }}
         >
-          <GitBranchPlusIcon className="size-3.5" aria-hidden />
+          <JujutsuIcon className="size-3.5" aria-hidden />
           <span className="ml-0.5">
-            {initAction.isPending ? "Initializing..." : "Initialize Git"}
+            {initAction.isPending ? "Initializing..." : "Initialize jj + Git"}
           </span>
         </Button>
       ) : (
