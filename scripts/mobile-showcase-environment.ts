@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off - This host-side fixture creates an isolated local shuv2code environment.
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off - This host-side fixture creates an isolated local shuv2code environment.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -268,7 +268,7 @@ async function initializeRepository(input: {
   await runGit(input.workspaceRoot, ["commit", "-m", input.commitMessage]);
 }
 
-async function seedShuv2CodeWorkspace(workspaceRoot: string): Promise<void> {
+async function seedT3CodeWorkspace(workspaceRoot: string): Promise<void> {
   await NodeFSP.mkdir(NodePath.join(workspaceRoot, "apps/mobile/src/features/home"), {
     recursive: true,
   });
@@ -387,6 +387,48 @@ function insertThread(
     .run(input.id, isWorking ? "running" : "ready", isWorking ? turnId : null, updatedAt);
 }
 
+const SEEDED_PROJECTION_TABLES = [
+  "projection_pending_approvals",
+  "projection_thread_proposed_plans",
+  "projection_thread_activities",
+  "projection_thread_messages",
+  "projection_thread_sessions",
+  "projection_turns",
+  "projection_threads",
+  "projection_projects",
+  "projection_state",
+] as const;
+
+function hasSeedableSchema(dbPath: string): boolean {
+  let database: NodeSqlite.DatabaseSync;
+  try {
+    database = new NodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+  } catch {
+    return false;
+  }
+  try {
+    const row = database
+      .prepare(
+        `SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN (${SEEDED_PROJECTION_TABLES.map(() => "?").join(", ")})`,
+      )
+      .get(...SEEDED_PROJECTION_TABLES) as { count: number };
+    return row.count === SEEDED_PROJECTION_TABLES.length;
+  } catch {
+    return false;
+  } finally {
+    database.close();
+  }
+}
+
+async function waitForSeedableSchema(dbPath: string, timeoutMs = 60_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (hasSeedableSchema(dbPath)) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`The environment server did not migrate ${dbPath} within ${timeoutMs}ms.`);
+}
+
 function seedDatabase(
   dbPath: string,
   workspaceRoots: ReadonlyMap<string, string>,
@@ -401,17 +443,7 @@ function seedDatabase(
   const database = new NodeSqlite.DatabaseSync(dbPath, { timeout: 30_000 });
   try {
     database.exec("BEGIN IMMEDIATE");
-    for (const table of [
-      "projection_pending_approvals",
-      "projection_thread_proposed_plans",
-      "projection_thread_activities",
-      "projection_thread_messages",
-      "projection_thread_sessions",
-      "projection_turns",
-      "projection_threads",
-      "projection_projects",
-      "projection_state",
-    ]) {
+    for (const table of SEEDED_PROJECTION_TABLES) {
       database.exec(`DELETE FROM ${table}`);
     }
     const insertProject = database.prepare(
@@ -578,7 +610,7 @@ export async function seedShowcaseEnvironment(input: {
   if (!workspaceRoot) throw new Error("The primary showcase workspace is not configured.");
   const dbPath = NodePath.join(input.baseDir, "userdata", "state.sqlite");
   if (primaryProject.id === SHOWCASE_PROJECT_ID) {
-    await seedShuv2CodeWorkspace(workspaceRoot);
+    await seedT3CodeWorkspace(workspaceRoot);
   }
   await Promise.all(
     projects
@@ -594,6 +626,9 @@ export async function seedShowcaseEnvironment(input: {
         });
       }),
   );
+  // The environment server begins listening before it finishes migrating the
+  // database, so wait for the schema before deleting from and reseeding it.
+  await waitForSeedableSchema(dbPath);
   seedDatabase(dbPath, workspaceRoots, projects, threads, now);
 
   const terminalDirectory = NodePath.join(input.baseDir, "userdata", "logs", "terminals");

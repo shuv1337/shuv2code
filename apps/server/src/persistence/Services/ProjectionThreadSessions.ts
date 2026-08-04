@@ -75,4 +75,4 @@ export interface ProjectionThreadSessionRepositoryShape {
 export class ProjectionThreadSessionRepository extends Context.Service<
   ProjectionThreadSessionRepository,
   ProjectionThreadSessionRepositoryShape
->()("shuv2code/persistence/Services/ProjectionThreadSessions/ProjectionThreadSessionRepository") {}
+>()("@shuv2code/persistence/Services/ProjectionThreadSessions/ProjectionThreadSessionRepository") {}

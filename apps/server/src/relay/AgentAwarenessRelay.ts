@@ -44,6 +44,7 @@ import { getOrCreateEnvironmentKeyPairFromSecretStore } from "../cloud/environme
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { forkParked } from "../serverActivation.ts";
 
 export class AgentAwarenessRelay extends Context.Service<
   AgentAwarenessRelay,
@@ -51,7 +52,7 @@ export class AgentAwarenessRelay extends Context.Service<
     readonly publishThread: (threadId: ThreadId) => Effect.Effect<void>;
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   }
->()("shuv2code/relay/AgentAwarenessRelay") {}
+>()("@shuv2code/relay/AgentAwarenessRelay") {}
 
 export function eventThreadId(event: OrchestrationEvent): ThreadId | null {
   const payload = event.payload as { readonly threadId?: unknown };
@@ -601,12 +602,12 @@ export const make = Effect.gen(function* () {
           });
           break;
       }
-      yield* Effect.forkScoped(
+      yield* forkParked(
         Effect.sleep("1 second").pipe(
           Effect.andThen(publishActiveThreadsOnceWhenConfigured(startupState !== "enabled")),
         ),
       );
-      yield* Effect.forkScoped(
+      yield* forkParked(
         Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
           const threadId = eventThreadId(event);
           if (threadId === null) {

@@ -1,6 +1,23 @@
 ---
 import Layout from "../layouts/Layout.astro";
-import { GITHUB_REPOSITORY_URL } from "../lib/site";
+import {
+  ANDROID_PLAY_STORE_URL,
+  GITHUB_REPOSITORY_URL,
+  IOS_APP_STORE_URL,
+  MARKETING_STATS,
+} from "../lib/site";
+import { tweets } from "../lib/tweets";
+
+const desktopEndorsementRows = [
+  tweets.filter((_, index) => index % 2 === 0),
+  tweets.filter((_, index) => index % 2 === 1),
+];
+
+const mobileEndorsementRows = [
+  tweets.filter((_, index) => index % 3 === 0),
+  tweets.filter((_, index) => index % 3 === 1),
+  tweets.filter((_, index) => index % 3 === 2),
+];
 ---
 
 <Layout>
@@ -28,7 +45,7 @@ import { GITHUB_REPOSITORY_URL } from "../lib/site";
 
     <div class="container hero-inner">
       <h1 class="hero-title display">
-        The local-first<br />control plane<br />for coding agents.
+        The open-source<br />control plane<br />for coding agents.
       </h1>
 
       <p class="hero-sub">
@@ -54,20 +71,112 @@ import { GITHUB_REPOSITORY_URL } from "../lib/site";
           <span>Steal our code (legally)</span>
           <svg class="hero-source-arrow" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg>
         </a>
+        <p class="hero-mobile-line">
+          Also on your phone:
+          <a href={IOS_APP_STORE_URL} target="_blank" rel="noopener noreferrer">iOS</a>
+          <span aria-hidden="true">·</span>
+          <a href={ANDROID_PLAY_STORE_URL} target="_blank" rel="noopener noreferrer">Android</a>
+        </p>
       </div>
 
       <div class="hero-preview">
         <figure class="hero-screenshot-frame">
           <img
             src="/updated-screenshot.webp"
-            alt="shuv2code settings with the dark navy, amber, and red visual system"
-            width="1440"
-            height="900"
+            alt="shuv2code app showing multiple coding agent threads in one workspace"
+            width="2508"
+            height="1682"
             loading="eager"
             decoding="async"
           />
         </figure>
       </div>
+    </div>
+  </section>
+
+  <!-- ── Endorsements ─────────────────────────────────────────── -->
+  <section id="endorsements" class="sec-endorsements" aria-labelledby="endorsements-title">
+    <div class="container">
+      <div class="endorsements-head">
+        <h2 id="endorsements-title">Tolerated by over <span class="endorsements-count">{MARKETING_STATS.users}</span> devs</h2>
+        <p>Some of them even tweeted about it.</p>
+      </div>
+    </div>
+
+    <div class="endorsement-carousel endorsement-carousel--desktop" aria-label="Developer endorsements">
+        {
+          desktopEndorsementRows.map((row, rowIndex) => (
+            <div class:list={["endorsement-row", rowIndex === 1 && "is-reverse"]}>
+              <div class="endorsement-track">
+                {[0, 1].map((groupIndex) => (
+                  <div class="endorsement-track-group" aria-hidden={groupIndex === 1 ? "true" : undefined}>
+                    {row.map((tweet) => (
+                      <a
+                        class="endorsement-card"
+                        href={tweet.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label={`Read ${tweet.handle}'s post on X`}
+                        tabindex={groupIndex === 1 ? "-1" : undefined}
+                      >
+                        <div class="endorsement-author">
+                          <img
+                            src={`/pfps/${tweet.handle}.webp`}
+                            alt=""
+                            width="28"
+                            height="28"
+                            loading="lazy"
+                            decoding="async"
+                          />
+                          <div class="endorsement-handle">@{tweet.handle}</div>
+                        </div>
+                        <p>{tweet.excerpt ?? tweet.content}</p>
+                      </a>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        }
+    </div>
+
+    <div class="endorsement-carousel endorsement-carousel--mobile" aria-label="Developer endorsements">
+        {
+          mobileEndorsementRows.map((row, rowIndex) => (
+            <div class:list={["endorsement-row", rowIndex === 1 && "is-reverse"]}>
+              <div class="endorsement-track">
+                {[0, 1].map((groupIndex) => (
+                  <div class="endorsement-track-group" aria-hidden={groupIndex === 1 ? "true" : undefined}>
+                    {row.map((tweet) => (
+                      <a
+                        class="endorsement-card"
+                        href={tweet.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label={`Read ${tweet.handle}'s post on X`}
+                        tabindex={groupIndex === 1 ? "-1" : undefined}
+                      >
+                        <div class="endorsement-author">
+                          <img
+                            src={`/pfps/${tweet.handle}.webp`}
+                            alt=""
+                            width="28"
+                            height="28"
+                            loading="lazy"
+                            decoding="async"
+                          />
+                          <div class="endorsement-handle">@{tweet.handle}</div>
+                        </div>
+                        <p>{tweet.excerpt ?? tweet.content}</p>
+                      </a>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        }
     </div>
   </section>
 
@@ -237,7 +346,7 @@ import { GITHUB_REPOSITORY_URL } from "../lib/site";
             <div class="open-pitch-meta">
               <span>MIT licensed</span>
               <span aria-hidden="true">·</span>
-              <span>v0.1.0-alpha.1</span>
+              <span>{MARKETING_STATS.githubStars} stars</span>
             </div>
 
             <div class="open-pitch-actions">
@@ -478,6 +587,28 @@ import { GITHUB_REPOSITORY_URL } from "../lib/site";
   .hero-source-link:hover .hero-source-arrow {
     transform: translate(2px, -2px);
     opacity: 1;
+  }
+
+  .hero-mobile-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--fg-dim);
+    font-size: 13px;
+    letter-spacing: -0.005em;
+  }
+
+  .hero-mobile-line a {
+    color: var(--fg-muted);
+    text-decoration: underline;
+    text-decoration-color: rgba(161, 161, 170, 0.4);
+    text-underline-offset: 3px;
+    transition: color 0.18s ease, text-decoration-color 0.18s ease;
+  }
+
+  .hero-mobile-line a:hover {
+    color: var(--fg);
+    text-decoration-color: var(--fg);
   }
 
   /* Download button icons (platform-aware) */

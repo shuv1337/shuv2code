@@ -247,7 +247,7 @@ export class AzureDevOpsCli extends Context.Service<
       readonly remoteName?: string;
     }) => Effect.Effect<void, AzureDevOpsCliError>;
   }
->()("shuv2code/sourceControl/AzureDevOpsCli") {}
+>()("@shuv2code/sourceControl/AzureDevOpsCli") {}
 
 function normalizeChangeRequestId(reference: string): string {
   const trimmed = reference.trim().replace(/^#/, "");

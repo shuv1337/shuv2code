@@ -67,4 +67,4 @@ export interface ProviderSessionDirectoryShape {
 export class ProviderSessionDirectory extends Context.Service<
   ProviderSessionDirectory,
   ProviderSessionDirectoryShape
->()("shuv2code/provider/Services/ProviderSessionDirectory") {}
+>()("@shuv2code/provider/Services/ProviderSessionDirectory") {}

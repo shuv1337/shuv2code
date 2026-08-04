@@ -2,6 +2,7 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@shuv2code/client-runtime/state/shell";
+import { threadSearchMatchKey } from "@shuv2code/client-runtime/state/thread-search";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -526,14 +527,14 @@ describe("buildHomeThreadGroups", () => {
   it("matches web repository, repository-path, and separate grouping modes", () => {
     const environmentId = EnvironmentId.make("environment-1");
     const repositoryIdentity = {
-      canonicalKey: "github.com/shuv1337/shuv2code",
+      canonicalKey: "github.com/shuv2code/shuv2code",
       locator: {
         source: "git-remote" as const,
         remoteName: "origin",
-        remoteUrl: "git@github.com:shuv1337/shuv2code.git",
+        remoteUrl: "git@github.com:shuv2code/shuv2code.git",
       },
       provider: "github",
-      owner: "shuv1337",
+      owner: "shuv2code",
       name: "shuv2code",
       displayName: "shuv2code",
       rootPath: "/workspaces/shuv2code",
@@ -659,6 +660,33 @@ describe("buildHomeThreadGroups", () => {
     expect(group?.recentThreads.map((thread) => thread.id)).toEqual(
       group?.threads.map((thread) => thread.id),
     );
+  });
+
+  it("includes a thread matched by message content", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const project = makeProject({
+      environmentId,
+      id: ProjectId.make("project-1"),
+      title: "shuv2code",
+    });
+    const thread = makeThread({
+      environmentId,
+      id: ThreadId.make("thread-content"),
+      projectId: project.id,
+      title: "Unrelated title",
+    });
+
+    const groups = buildGroups([project], [thread], {
+      searchQuery: "relay reconnect",
+      matchedThreadKeys: new Set([
+        threadSearchMatchKey({
+          environmentId,
+          threadId: thread.id,
+        }),
+      ]),
+    });
+
+    expect(groups[0]?.threads.map((candidate) => candidate.id)).toEqual(["thread-content"]);
   });
 
   it("targets quick new threads at the group member with the newest thread", () => {

@@ -62,7 +62,7 @@ export class SourceControlDiscovery extends Context.Service<
   {
     readonly discover: Effect.Effect<SourceControlDiscoveryResult>;
   }
->()("shuv2code/sourceControl/SourceControlDiscovery") {}
+>()("@shuv2code/sourceControl/SourceControlDiscovery") {}
 
 export const make = Effect.gen(function* () {
   const config = yield* ServerConfig;

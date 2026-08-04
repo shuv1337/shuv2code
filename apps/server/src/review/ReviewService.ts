@@ -24,7 +24,7 @@ export class ReviewService extends Context.Service<
       input: ReviewDiffPreviewInput,
     ) => Effect.Effect<ReviewDiffPreviewResult, ReviewDiffPreviewError>;
   }
->()("shuv2code/review/ReviewService") {}
+>()("@shuv2code/review/ReviewService") {}
 
 export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;

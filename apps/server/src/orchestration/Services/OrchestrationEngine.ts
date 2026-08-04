@@ -82,4 +82,4 @@ export interface OrchestrationEngineShape {
 export class OrchestrationEngineService extends Context.Service<
   OrchestrationEngineService,
   OrchestrationEngineShape
->()("shuv2code/orchestration/Services/OrchestrationEngine/OrchestrationEngineService") {}
+>()("@shuv2code/orchestration/Services/OrchestrationEngine/OrchestrationEngineService") {}

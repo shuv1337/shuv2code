@@ -92,4 +92,4 @@ export interface ProjectionCheckpointRepositoryShape {
 export class ProjectionCheckpointRepository extends Context.Service<
   ProjectionCheckpointRepository,
   ProjectionCheckpointRepositoryShape
->()("shuv2code/persistence/Services/ProjectionCheckpoints/ProjectionCheckpointRepository") {}
+>()("@shuv2code/persistence/Services/ProjectionCheckpoints/ProjectionCheckpointRepository") {}

@@ -68,4 +68,4 @@ export interface ProjectionStateRepositoryShape {
 export class ProjectionStateRepository extends Context.Service<
   ProjectionStateRepository,
   ProjectionStateRepositoryShape
->()("shuv2code/persistence/Services/ProjectionState/ProjectionStateRepository") {}
+>()("@shuv2code/persistence/Services/ProjectionState/ProjectionStateRepository") {}

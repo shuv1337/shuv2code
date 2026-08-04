@@ -49,4 +49,4 @@ export interface ProviderInstanceRegistryMutatorShape {
 export class ProviderInstanceRegistryMutator extends Context.Service<
   ProviderInstanceRegistryMutator,
   ProviderInstanceRegistryMutatorShape
->()("shuv2code/provider/Services/ProviderInstanceRegistryMutator") {}
+>()("@shuv2code/provider/Services/ProviderInstanceRegistryMutator") {}

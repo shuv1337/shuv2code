@@ -76,7 +76,7 @@ export interface McpSessionRegistryShape {
 export class McpSessionRegistry extends Context.Service<
   McpSessionRegistry,
   McpSessionRegistryShape
->()("shuv2code/mcp/McpSessionRegistry") {}
+>()("@shuv2code/mcp/McpSessionRegistry") {}
 
 interface CredentialRecord {
   readonly tokenHash: string;

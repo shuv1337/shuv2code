@@ -222,7 +222,7 @@ export class PairingGrantStore extends Context.Service<
       },
     ) => Effect.Effect<BootstrapGrant, BootstrapCredentialError>;
   }
->()("shuv2code/auth/PairingGrantStore") {}
+>()("@shuv2code/auth/PairingGrantStore") {}
 
 interface StoredBootstrapGrant extends BootstrapGrant {
   readonly remainingUses: number | "unbounded";

@@ -15,7 +15,7 @@ export class VcsProvisioningService extends Context.Service<
   {
     readonly initRepository: (input: VcsInitInput) => Effect.Effect<void, VcsError>;
   }
->()("shuv2code/vcs/VcsProvisioningService") {}
+>()("@shuv2code/vcs/VcsProvisioningService") {}
 
 function resolveRequestedKind(
   kind: VcsDriverKind | undefined,

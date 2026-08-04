@@ -314,7 +314,7 @@ export class ExternalLauncher extends Context.Service<
      */
     readonly launchEditor: (input: LaunchEditorInput) => Effect.Effect<void, ExternalLauncherError>;
   }
->()("shuv2code/process/externalLauncher") {}
+>()("@shuv2code/process/externalLauncher") {}
 
 // ==============================
 // Implementations

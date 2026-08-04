@@ -57,4 +57,4 @@ export interface CodexAppServerSupervisorShape {
 export class CodexAppServerSupervisor extends Context.Service<
   CodexAppServerSupervisor,
   CodexAppServerSupervisorShape
->()("shuv2code/provider/Services/CodexAppServerSupervisor") {}
+>()("@shuv2code/provider/Services/CodexAppServerSupervisor") {}

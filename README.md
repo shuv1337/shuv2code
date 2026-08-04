@@ -60,7 +60,7 @@ choose to remove that state manually.
 
 shuv2code is maintained by
 [shuv1337](https://github.com/shuv1337) as a fork of
-[T3 Code](https://github.com/pingdotgg/t3code). The fork preserves upstream
+[T3 Code](https://github.com/shuv1337/shuv2code). The fork preserves upstream
 license and attribution while using an independent product identity. Upstream
 changes are integrated through merge commits so the relationship stays easy to
 audit and future syncs remain conflict-conscious.

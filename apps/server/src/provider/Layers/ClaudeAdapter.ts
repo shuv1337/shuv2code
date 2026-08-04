@@ -3199,7 +3199,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // `id` MUST equal the full question text — Claude SDK >= 2.1.121 looks
         // up answers by question text in `mapToolResultToToolResultBlockParam`,
         // so the key the UI uses to keep its draft answer must match the SDK's
-        // expected lookup key. See https://github.com/pingdotgg/t3code/issues/2388
+        // expected lookup key. See https://github.com/shuv1337/shuv2code/issues/2388
         const rawQuestions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
         const questions: Array<UserInputQuestion> = rawQuestions.map(
           (q: Record<string, unknown>, idx: number) => ({
