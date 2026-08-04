@@ -116,6 +116,16 @@ function withContentSecurityPolicy(response: Response, policy: string): Response
   });
 }
 
+const registerDesktopSchemePrivileges = Effect.sync(registerDesktopSchemesAsPrivileged).pipe(
+  Effect.withSpan("desktop.electron.protocol.registerSchemePrivileges"),
+);
+
+/**
+ * Must be acquired synchronously during process bootstrap, before Electron
+ * emits `ready` and before any renderer session is created.
+ */
+export const layerSchemePrivileges = Layer.effectDiscard(registerDesktopSchemePrivileges);
+
 async function proxyRequest(
   request: Request,
   targetOrigin: URL,
