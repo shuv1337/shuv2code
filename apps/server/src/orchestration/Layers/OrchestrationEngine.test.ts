@@ -3,6 +3,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EnvironmentId,
+  EventId,
   MessageId,
   ProjectId,
   ThreadId,
@@ -59,7 +60,9 @@ async function createOrchestrationSystem() {
     OrchestrationProjectionSnapshotQueryLive,
     VoiceControllerBindingRepositoryLive,
   ).pipe(
-    Layer.provide(OrchestrationEventStoreLive),
+    // provideMerge exposes the same memoized event store instance the engine
+    // uses, so tests can simulate an out-of-band writer appending directly.
+    Layer.provideMerge(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(RepositoryIdentityResolver.layer),
     Layer.provide(SqlitePersistenceMemory),
@@ -72,8 +75,10 @@ async function createOrchestrationSystem() {
   const voiceControllerBindings = await runtime.runPromise(
     Effect.service(VoiceControllerBindingRepository),
   );
+  const eventStore = await runtime.runPromise(Effect.service(OrchestrationEventStore));
   return {
     engine,
+    eventStore,
     voiceControllerBindings,
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
@@ -367,6 +372,105 @@ describe("OrchestrationEngine", () => {
     expect(fullSnapshotReadCount).toBe(0);
 
     await runtime.dispose();
+  });
+
+  it("folds events appended by an out-of-band writer before deciding commands", async () => {
+    const createdAt = now();
+    const system = await createOrchestrationSystem();
+    const { engine, eventStore } = system;
+    const foreignProjectId = asProjectId("project-foreign-writer");
+    const foreignThreadId = ThreadId.make("thread-foreign-writer");
+
+    // Simulate an offline CLI runtime sharing the event store: it appends
+    // project.created and thread.created directly, without going through
+    // this engine's dispatch loop, so the engine's in-memory read model has
+    // never observed either event.
+    await system.run(
+      eventStore.append({
+        eventId: EventId.make("evt-foreign-project-created"),
+        type: "project.created",
+        aggregateKind: "project",
+        aggregateId: foreignProjectId,
+        occurredAt: createdAt,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: {
+          projectId: foreignProjectId,
+          title: "Foreign Project",
+          workspaceRoot: "/tmp/project-foreign-writer",
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          scripts: [],
+          createdAt,
+          updatedAt: createdAt,
+        },
+      }),
+    );
+    await system.run(
+      eventStore.append({
+        eventId: EventId.make("evt-foreign-thread-created"),
+        type: "thread.created",
+        aggregateKind: "thread",
+        aggregateId: foreignThreadId,
+        occurredAt: createdAt,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: {
+          threadId: foreignThreadId,
+          projectId: foreignProjectId,
+          title: "Foreign Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      }),
+    );
+
+    // A local command for an unrelated aggregate must not leapfrog the
+    // foreign events: its pre-decide fold advances the read model through
+    // them, so they stay observable for later commands.
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-local-after-foreign"),
+        projectId: asProjectId("project-local-after-foreign"),
+        title: "Local Project",
+        workspaceRoot: "/tmp/project-local-after-foreign",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+
+    // Commands against the foreign aggregates must succeed: before this
+    // fold existed, the engine rejected them with "Thread ... does not
+    // exist" forever, even though the events were durably committed.
+    const settled = await system.run(
+      engine.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("cmd-settle-foreign-thread"),
+        threadId: foreignThreadId,
+      }),
+    );
+    expect(settled.sequence).toBeGreaterThan(0);
+    expect(await system.run(engine.latestSequence)).toBe(settled.sequence);
+
+    await system.dispose();
   });
 
   it("persists deterministic read models for repeated snapshot reads", async () => {

@@ -169,28 +169,38 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       return nextReadModel;
     });
 
+  // Folds committed events this engine has not yet observed into the
+  // in-memory command read model and publishes them to domain-event
+  // subscribers. Reads from the model's own snapshotSequence — which
+  // projectEvent advances per folded event — so it never applies an event
+  // twice. Covers both this engine's dispatch-failure recovery and events
+  // appended out-of-band by another writer sharing the event store (for
+  // example an offline CLI runtime): without this fold a foreign append
+  // stays invisible until restart, because the engine's next local append
+  // moves snapshotSequence past the foreign sequence range and the gap can
+  // never be read again.
+  const foldUnseenPersistedEvents = Effect.gen(function* () {
+    const persistedEvents = yield* Stream.runCollect(
+      eventStore.readFromSequence(commandReadModel.snapshotSequence),
+    ).pipe(Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)));
+    if (persistedEvents.length === 0) {
+      return;
+    }
+
+    commandReadModel = yield* projectEventsOntoReadModel(commandReadModel, persistedEvents);
+
+    for (const persistedEvent of persistedEvents) {
+      yield* PubSub.publish(eventPubSub, persistedEvent);
+    }
+  });
+
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
-    const dispatchStartSequence = commandReadModel.snapshotSequence;
     let processingStartedAtMs = 0;
     const aggregateRef = commandToAggregateRef(envelope.command);
     const baseMetricAttributes = {
       commandType: envelope.command.type,
       aggregateKind: aggregateRef.aggregateKind,
     } as const;
-    const reconcileReadModelAfterDispatchFailure = Effect.gen(function* () {
-      const persistedEvents = yield* Stream.runCollect(
-        eventStore.readFromSequence(dispatchStartSequence),
-      ).pipe(Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)));
-      if (persistedEvents.length === 0) {
-        return;
-      }
-
-      commandReadModel = yield* projectEventsOntoReadModel(commandReadModel, persistedEvents);
-
-      for (const persistedEvent of persistedEvents) {
-        yield* PubSub.publish(eventPubSub, persistedEvent);
-      }
-    });
 
     return Effect.exit(
       Effect.gen(function* () {
@@ -232,6 +242,24 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         }
 
         yield* assertVoiceControllerLifecycleCommandAllowed(sql, envelope.command);
+
+        // Fold events other writers appended since this engine's last
+        // observation so the decider sees every committed aggregate.
+        // Fail-open: a fold failure must not reject an otherwise valid
+        // command against state this engine already knows.
+        yield* foldUnseenPersistedEvents.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              "failed to fold out-of-band orchestration events before dispatch",
+            ).pipe(
+              Effect.annotateLogs({
+                commandId: envelope.command.commandId,
+                snapshotSequence: commandReadModel.snapshotSequence,
+                error: String(error),
+              }),
+            ),
+          ),
+        );
 
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
@@ -349,7 +377,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
           const error = Cause.squash(exit.cause) as OrchestrationDispatchError;
           if (!isOrchestrationCommandPreviouslyRejectedError(error)) {
-            yield* reconcileReadModelAfterDispatchFailure.pipe(
+            yield* foldUnseenPersistedEvents.pipe(
               Effect.catch(() =>
                 Effect.logWarning(
                   "failed to reconcile orchestration read model after dispatch failure",
