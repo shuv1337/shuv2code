@@ -25,9 +25,9 @@ export type AllowlistEntry = {
 };
 
 export const BRAND_PATTERNS: ReadonlyArray<BrandPattern> = [
-  { id: "legacy-display", expression: /T3 Code/gu },
-  { id: "legacy-slug", expression: /t3code|t3-code/gu },
-  { id: "legacy-package-scope", expression: /@t3tools/gu },
+  { id: "legacy-display", expression: /shuv2code/gu },
+  { id: "legacy-slug", expression: /shuv2code|t3-code/gu },
+  { id: "legacy-package-scope", expression: /@shuv2code/gu },
   { id: "legacy-environment", expression: /T3CODE_/gu },
   { id: "legacy-app-id", expression: /com\.t3tools/gu },
   { id: "legacy-host", expression: /(?:^|[./])(?:app\.)?t3\.codes/gu },

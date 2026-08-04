@@ -67,6 +67,8 @@ export class DesktopEnvironment extends Context.Service<
     readonly appUserModelId: string;
     readonly linuxDesktopEntryName: string;
     readonly linuxWmClass: string;
+    readonly linuxApplicationsDir: string;
+    readonly appImagePath: Option.Option<string>;
     readonly userDataDirName: string;
     readonly legacyUserDataDirName: string;
     readonly defaultDesktopSettings: DesktopAppSettings.DesktopSettings;
@@ -168,6 +170,10 @@ const make = Effect.fn("desktop.environment.make")(function* (
   });
   const userDataDirName = isDevelopment ? "shuv2code-dev" : "shuv2code";
   const legacyUserDataDirName = isDevelopment ? "shuv2code (Dev)" : "shuv2code (Alpha)";
+  const linuxApplicationsDir = path.join(
+    Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
+    "applications",
+  );
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({
@@ -211,6 +217,8 @@ const make = Effect.fn("desktop.environment.make")(function* (
     ),
     linuxDesktopEntryName: isDevelopment ? "shuv2code-dev.desktop" : "shuv2code.desktop",
     linuxWmClass: isDevelopment ? "shuv2code-dev" : "shuv2code",
+    linuxApplicationsDir,
+    appImagePath: config.appImagePath,
     userDataDirName,
     legacyUserDataDirName,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),

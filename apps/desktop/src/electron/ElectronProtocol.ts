@@ -12,18 +12,6 @@ export const DESKTOP_HOST = "app";
 export const DESKTOP_PRODUCTION_SCHEME = "shuv2code";
 export const DESKTOP_DEVELOPMENT_SCHEME = "shuv2code-dev";
 
-export function registerDesktopSchemesAsPrivileged(): void {
-  Electron.protocol.registerSchemesAsPrivileged(
-    [DESKTOP_PRODUCTION_SCHEME, DESKTOP_DEVELOPMENT_SCHEME].map((scheme) => ({
-      scheme,
-      privileges: {
-        secure: true,
-        standard: true,
-      },
-    })),
-  );
-}
-
 export function getDesktopScheme(isDevelopment: boolean): string {
   return isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME;
 }
@@ -83,6 +71,7 @@ export function makeDesktopContentSecurityPolicy(input: DesktopProtocolRegistrat
   const scriptSources = [
     "'self'",
     "'unsafe-inline'",
+    "'wasm-unsafe-eval'",
     ...(clerkOrigin ? [clerkOrigin] : []),
     "https://challenges.cloudflare.com",
   ];
@@ -116,14 +105,36 @@ function withContentSecurityPolicy(response: Response, policy: string): Response
   });
 }
 
-const registerDesktopSchemePrivileges = Effect.sync(registerDesktopSchemesAsPrivileged).pipe(
+/**
+ * Must run synchronously during process bootstrap, before Electron emits `ready`.
+ */
+export function registerDesktopSchemePrivilegesSync(): void {
+  Electron.protocol.registerSchemesAsPrivileged([
+    {
+      scheme: DESKTOP_PRODUCTION_SCHEME,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+      },
+    },
+    {
+      scheme: DESKTOP_DEVELOPMENT_SCHEME,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+      },
+    },
+  ]);
+}
+
+const registerDesktopSchemePrivileges = Effect.sync(registerDesktopSchemePrivilegesSync).pipe(
   Effect.withSpan("desktop.electron.protocol.registerSchemePrivileges"),
 );
 
-/**
- * Must be acquired synchronously during process bootstrap, before Electron
- * emits `ready` and before any renderer session is created.
- */
 export const layerSchemePrivileges = Layer.effectDiscard(registerDesktopSchemePrivileges);
 
 async function proxyRequest(

@@ -18,6 +18,7 @@ import {
   ProviderItemId,
   ThreadId,
   TrimmedNonEmptyString,
+  TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
@@ -26,6 +27,7 @@ export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
+  searchThreads: "orchestration.searchThreads",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
@@ -128,8 +130,6 @@ export const ProviderRequestKind = Schema.Literals(["command", "file-read", "fil
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
 export const AssistantDeliveryMode = Schema.Literals(["buffered", "streaming"]);
 export type AssistantDeliveryMode = typeof AssistantDeliveryMode.Type;
-export const ThreadPurpose = Schema.Literals(["standard", "voice-controller", "voice-transport"]);
-export type ThreadPurpose = typeof ThreadPurpose.Type;
 export const ProviderApprovalDecision = Schema.Literals([
   "accept",
   "acceptForSession",
@@ -343,12 +343,15 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+export const ThreadTitleRegeneration = Schema.Struct({
+  requestId: CommandId,
+  startedAt: IsoDateTime,
+});
+export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
-  // Optional at the public read-model boundary so historical fixtures and
-  // older peers remain source-compatible. Projectors always materialize it.
-  purpose: Schema.optional(ThreadPurpose),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -371,6 +374,8 @@ export const OrchestrationThread = Schema.Struct({
   // Optional so payloads from pre-snooze servers still decode.
   snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  // Pending-only state. Optional so older servers remain compatible.
+  titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -405,7 +410,6 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
-  purpose: Schema.optional(ThreadPurpose),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -424,6 +428,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   settledAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
@@ -546,29 +551,11 @@ const ProjectDeleteCommand = Schema.Struct({
   force: Schema.optional(Schema.Boolean),
 });
 
-export const ThreadCreateCommand = Schema.Struct({
+const ThreadCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
-  purpose: Schema.optional(ThreadPurpose),
-  title: TrimmedNonEmptyString,
-  modelSelection: ModelSelection,
-  runtimeMode: RuntimeMode,
-  interactionMode: ProviderInteractionMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
-  ),
-  branch: Schema.NullOr(TrimmedNonEmptyString),
-  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
-  createdAt: IsoDateTime,
-});
-
-const ClientThreadCreateCommand = Schema.Struct({
-  type: Schema.Literal("thread.create"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  projectId: ProjectId,
-  purpose: Schema.optional(Schema.Literal("standard")),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -640,11 +627,18 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  regenerateTitle: Schema.optional(Schema.Literal(true)),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   expectedBranch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-});
+}).check(
+  Schema.makeFilter(
+    (input) =>
+      !(input.title !== undefined && input.regenerateTitle === true) ||
+      "title and regenerateTitle cannot be specified together",
+  ),
+);
 
 const ThreadRuntimeModeSetCommand = Schema.Struct({
   type: Schema.Literal("thread.runtime-mode.set"),
@@ -706,9 +700,6 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
-  expectedTurnId: Schema.optional(Schema.Null),
-  providerRecoveryPolicy: Schema.optional(Schema.Literal("forbid")),
-  providerThreadSource: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -728,35 +719,6 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
-  expectedTurnId: Schema.optional(Schema.Null),
-  createdAt: IsoDateTime,
-});
-
-export const ThreadTurnSteerCommand = Schema.Struct({
-  type: Schema.Literal("thread.turn.steer"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  expectedTurnId: TurnId,
-  message: Schema.Struct({
-    messageId: MessageId,
-    role: Schema.Literal("user"),
-    text: Schema.String,
-    attachments: Schema.Array(ChatAttachment),
-  }),
-  createdAt: IsoDateTime,
-});
-
-const ClientThreadTurnSteerCommand = Schema.Struct({
-  type: Schema.Literal("thread.turn.steer"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  expectedTurnId: TurnId,
-  message: Schema.Struct({
-    messageId: MessageId,
-    role: Schema.Literal("user"),
-    text: Schema.String,
-    attachments: Schema.Array(UploadChatAttachment),
-  }),
   createdAt: IsoDateTime,
 });
 
@@ -764,8 +726,6 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
   threadId: ThreadId,
-  // Legacy UI callers may omit this; the decider resolves the exact active
-  // turn atomically and persists that id in the requested event.
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
@@ -819,7 +779,6 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
-  ThreadTurnSteerCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -833,7 +792,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
-  ClientThreadCreateCommand,
+  ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
@@ -845,7 +804,6 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
-  ClientThreadTurnSteerCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -919,34 +877,12 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-export const ProviderEffectOperation = Schema.Literals(["start", "steer", "interrupt"]);
-export type ProviderEffectOperation = typeof ProviderEffectOperation.Type;
-export const ProviderEffectOutcomeState = Schema.Literals([
-  "pending",
-  "confirmed",
-  "failed",
-  "indeterminate",
-  "stale",
-]);
-export type ProviderEffectOutcomeState = typeof ProviderEffectOutcomeState.Type;
-export const ProviderEffectOutcome = Schema.Struct({
-  operationId: TrimmedNonEmptyString,
-  operation: ProviderEffectOperation,
-  state: ProviderEffectOutcomeState,
-  threadId: ThreadId,
-  expectedTurnId: Schema.NullOr(TurnId),
-  actualTurnId: Schema.NullOr(TurnId),
-  sanitizedCode: TrimmedNonEmptyString,
-  updatedAt: IsoDateTime,
-});
-export type ProviderEffectOutcome = typeof ProviderEffectOutcome.Type;
-
-const ThreadProviderEffectOutcomeSetCommand = Schema.Struct({
-  type: Schema.Literal("thread.provider-effect.outcome.set"),
+const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.title.regeneration.complete"),
   commandId: CommandId,
   threadId: ThreadId,
-  outcome: ProviderEffectOutcome,
-  createdAt: IsoDateTime,
+  requestId: CommandId,
+  title: Schema.optional(TrimmedNonEmptyString),
 });
 
 const InternalOrchestrationCommand = Schema.Union([
@@ -956,8 +892,8 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
-  ThreadProviderEffectOutcomeSetCommand,
   ThreadRevertCompleteCommand,
+  ThreadTitleRegenerationCompleteCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
@@ -984,7 +920,6 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
-  "thread.turn-steer-requested",
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
@@ -995,7 +930,6 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
-  "thread.provider-effect-outcome-set",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1032,7 +966,6 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
-  purpose: Schema.optional(ThreadPurpose),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -1093,6 +1026,13 @@ export const ThreadUnsnoozedPayload = Schema.Struct({
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  /** Intent marker consumed by the title-generation reactor. Keeping this on
+      the existing event lets older clients safely ignore the new field. */
+  regenerateTitle: Schema.optional(Schema.Literal(true)),
+  /** Title at request time, used to avoid overwriting a later manual rename. */
+  previousTitle: Schema.optional(TrimmedNonEmptyString),
+  /** Pending state shared with clients. Null clears a matching request. */
+  titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -1135,29 +1075,12 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
-  expectedTurnId: Schema.optional(Schema.Null),
-  providerRecoveryPolicy: Schema.optional(Schema.Literal("forbid")),
-  providerThreadSource: Schema.optional(TrimmedNonEmptyString),
-  createdAt: IsoDateTime,
-});
-
-export const ThreadTurnSteerRequestedPayload = Schema.Struct({
-  threadId: ThreadId,
-  messageId: MessageId,
-  expectedTurnId: TurnId,
-  clientUserMessageId: MessageId,
   createdAt: IsoDateTime,
 });
 
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
-  turnId: TurnId,
-  createdAt: IsoDateTime,
-});
-
-export const ThreadProviderEffectOutcomeSetPayload = Schema.Struct({
-  threadId: ThreadId,
-  outcome: ProviderEffectOutcome,
+  turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 
@@ -1321,11 +1244,6 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
-    type: Schema.Literal("thread.turn-steer-requested"),
-    payload: ThreadTurnSteerRequestedPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
   }),
@@ -1373,11 +1291,6 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
-    type: Schema.Literal("thread.provider-effect-outcome-set"),
-    payload: ThreadProviderEffectOutcomeSetPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;
@@ -1483,6 +1396,31 @@ export type OrchestrationGetFullThreadDiffInput = typeof OrchestrationGetFullThr
 export const OrchestrationGetFullThreadDiffResult = ThreadTurnDiff;
 export type OrchestrationGetFullThreadDiffResult = typeof OrchestrationGetFullThreadDiffResult.Type;
 
+export const OrchestrationThreadSearchSource = Schema.Literals(["user", "assistant"]);
+export type OrchestrationThreadSearchSource = typeof OrchestrationThreadSearchSource.Type;
+
+// The server's SQLite client is synchronous and single-connection. Bound both
+// scan input and response size so a search cannot monopolize that connection.
+export const OrchestrationSearchThreadsInput = Schema.Struct({
+  query: TrimmedString.check(Schema.isMinLength(2), Schema.isMaxLength(200)),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+});
+export type OrchestrationSearchThreadsInput = typeof OrchestrationSearchThreadsInput.Type;
+
+export const OrchestrationThreadSearchMatch = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  source: OrchestrationThreadSearchSource,
+  snippet: Schema.String.check(Schema.isMaxLength(240)),
+  messageCreatedAt: Schema.NullOr(IsoDateTime),
+});
+export type OrchestrationThreadSearchMatch = typeof OrchestrationThreadSearchMatch.Type;
+
+export const OrchestrationSearchThreadsResult = Schema.Struct({
+  matches: Schema.Array(OrchestrationThreadSearchMatch),
+});
+export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
+
 export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
@@ -1495,6 +1433,10 @@ export const OrchestrationRpcSchemas = {
   getFullThreadDiff: {
     input: OrchestrationGetFullThreadDiffInput,
     output: OrchestrationGetFullThreadDiffResult,
+  },
+  searchThreads: {
+    input: OrchestrationSearchThreadsInput,
+    output: OrchestrationSearchThreadsResult,
   },
   getArchivedShellSnapshot: {
     input: Schema.Struct({}),
@@ -1536,6 +1478,14 @@ export class OrchestrationGetTurnDiffError extends Schema.TaggedErrorClass<Orche
 
 export class OrchestrationGetFullThreadDiffError extends Schema.TaggedErrorClass<OrchestrationGetFullThreadDiffError>()(
   "OrchestrationGetFullThreadDiffError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationSearchThreadsError extends Schema.TaggedErrorClass<OrchestrationSearchThreadsError>()(
+  "OrchestrationSearchThreadsError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

@@ -53,7 +53,7 @@ import {
 import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import { buildModelMenuActions, buildModelOptions, groupByProvider } from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
@@ -255,7 +255,7 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
           <View className="h-2 w-2 rounded-full bg-red-500" />
         )}
         <Text
-          className="max-w-[260px] text-sm font-shuv2code-bold leading-snug text-foreground"
+          className="max-w-[260px] text-sm font-t3-bold leading-snug text-foreground"
           numberOfLines={1}
         >
           {props.status.label}
@@ -518,14 +518,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
-    // Sending a prompt starts agent work: arm the lock-screen card now, while
-    // the app is foregrounded and the activity token can be registered.
-    armAgentAwarenessLiveActivityForLocalWork({
-      threadTitle: props.selectedThread.title,
-      projectTitle: props.environmentLabel ?? "shuv2code",
-    });
     try {
       await onSendMessage();
+      // Sending a prompt starts agent work: arm the lock-screen card while the
+      // app is foregrounded and the activity token can be registered. Armed
+      // after the send so its preference read and native Activity start don't
+      // contend with the queued-message feedback on the tap frame.
+      armAgentAwarenessLiveActivityForLocalWork({
+        threadTitle: props.selectedThread.title,
+        projectTitle: props.environmentLabel ?? "shuv2code",
+      });
     } finally {
       inFlightThreadIdsRef.current.delete(threadKey);
     }
@@ -604,25 +606,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     [providerOptionDescriptors],
   );
   const modelMenuActions = useMemo(
-    () =>
-      providerGroups.map((group) => ({
-        id: `provider:${group.providerKey}`,
-        title: group.providerLabel,
-        subtitle: group.models.find(
-          (model) =>
-            model.selection.instanceId === currentModelSelection.instanceId &&
-            model.selection.model === currentModelSelection.model,
-        )?.label,
-        subactions: group.models.map((option) => ({
-          id: `model:${option.key}`,
-          title: option.label,
-          state:
-            option.selection.instanceId === currentModelSelection.instanceId &&
-            option.selection.model === currentModelSelection.model
-              ? ("on" as const)
-              : undefined,
-        })),
-      })),
+    () => buildModelMenuActions(providerGroups, currentModelSelection),
     [providerGroups, currentModelSelection],
   );
 
@@ -828,7 +812,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               ))}
               {props.draftAttachments.length > 3 ? (
                 <View className="size-[30px] items-center justify-center rounded-lg bg-subtle-strong">
-                  <Text className="text-foreground-muted text-2xs font-shuv2code-bold">
+                  <Text className="text-foreground-muted text-2xs font-t3-bold">
                     +{props.draftAttachments.length - 3}
                   </Text>
                 </View>

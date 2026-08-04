@@ -1,21 +1,41 @@
-# Documentation
+# shuv2code docs
 
-- [Getting started](./getting-started/quick-start.md)
-- Architecture
-  - [Overview](./architecture/overview.md)
-  - [Connection runtime](./architecture/connection-runtime.md)
-  - [Automation lifecycle follow-ups (discussion draft)](./architecture/automation-followups.md)
-  - [Remote environments](./architecture/remote.md)
-  - [Server updates](./architecture/server-updates.md)
-- User guides
-  - [Project automations](./user/automations.md)
-  - [Background service](./user/background-service.md)
-  - [Remote access](./user/remote-access.md)
-  - [Keeping shuv2code in sync](./user/server-updates.md)
-  - [Keybindings](./user/keybindings.md)
-- [shuv2code connect](./cloud/shuv2code-connect-clerk.md)
-- [Integrations](./integrations/source-control-providers.md)
-- [Mobile](./mobile/app.md)
-- [Operations](./operations/ci.md)
-- [Providers](./providers/codex.md)
-- [Reference](./reference/encyclopedia.md)
+## Using shuv2code
+
+- [Install and first run](./user/install.md)
+- [Permission modes](./user/permission-modes.md)
+- [Keyboard shortcuts](./user/keybindings.md)
+- [Remote access](./user/remote-access.md)
+- [Keeping app and server in sync](./user/updating.md)
+- [Source control integrations](./user/source-control.md)
+- [Background service (Linux)](./user/background-service.md)
+- Providers: [Codex](./user/providers-codex.md) · [Claude](./user/providers-claude.md)
+
+Mobile app: [apps/mobile/README.md](../apps/mobile/README.md)
+
+---
+
+## Working on shuv2code
+
+Everything below is for maintainers. Setup lives in the [root README](../README.md);
+policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../AGENTS.md).
+
+- [Architecture overview](./internals/overview.md)
+- [Workspace layout](./internals/workspace-layout.md)
+- [Glossary](./internals/glossary.md)
+- [Scripts](./internals/scripts.md)
+- [Connection runtime](./internals/connection-runtime.md)
+- [Providers](./internals/providers.md)
+- [Remote environments](./internals/remote.md)
+- [Server updates](./internals/server-updates.md)
+- [Resource telemetry](./internals/resource-telemetry.md)
+- [Environment auth](./internals/environment-auth.md)
+- [shuv2code connect](./internals/t3-connect.md)
+- [CI gates](./internals/ci.md)
+
+### Runbooks
+
+- [Release](./operations/release.md)
+- [Observability](./operations/observability.md)
+- [Relay observability](./operations/relay-observability.md)
+- [Mobile app store screenshots](./operations/mobile-app-store-screenshots.md)

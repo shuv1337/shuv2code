@@ -46,6 +46,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ExternalLauncher from "../process/externalLauncher.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
+import { resolveCliCommand } from "./invocation.ts";
 import {
   bootServiceLayer,
   offerServiceDuringOnboarding,
@@ -194,7 +195,7 @@ function formatCloudStatus(status: CloudCliStatus, options?: { readonly json?: b
     : !status.desired
       ? "Run `shuv2code connect link` to enable shuv2code connect."
       : !status.linked
-        ? "Start shuv2code to provision the environment link and launch its managed tunnel."
+        ? "Start T3 to provision the environment link and launch its managed tunnel."
         : undefined;
 
   return [
@@ -214,7 +215,7 @@ const CLOUD_CLI_LIVE_SERVER_TIMEOUT = Duration.seconds(5);
 const confirmRelayClientInstall = (version: string) =>
   Prompt.run(
     Prompt.confirm({
-      message: `The shuv2code relay client is required for shuv2code connect. Download and install version ${version}?`,
+      message: `The T3 relay client is required for shuv2code connect. Download and install version ${version}?`,
       initial: false,
     }),
   );
@@ -271,7 +272,7 @@ const withCloudCliSessionToken = <A, E, R>(
     environmentAuth.issueSession({
       scopes: [AuthRelayWriteScope],
       subject: "cloud-cli",
-      label: "shuv2code connect cli",
+      label: "t3 connect cli",
     }),
     (issued) => run(issued.token),
     (issued) => environmentAuth.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),
@@ -526,10 +527,11 @@ const connectLinkCommand = Command.make("link", {
         yield* Console.log("shuv2code connect\n");
         const linked = yield* linkEnvironmentForConnect(flags);
         if (linked) {
+          const serveCommand = yield* resolveCliCommand("serve");
           yield* Console.log(
             flags.publishOnly
-              ? `✓ Authorized${connectedAs(linked.identity)}\n\nNext\n  Start shuv2code to publish agent activity (no managed tunnel).`
-              : `✓ Authorized${connectedAs(linked.identity)}\n\nNext\n  Start the server with \`shuv2code serve\` to make this machine reachable.`,
+              ? `✓ Authorized${connectedAs(linked.identity)}\n\nNext\n  Start T3 to publish agent activity (no managed tunnel).`
+              : `✓ Authorized${connectedAs(linked.identity)}\n\nNext\n  Start the server with \`${serveCommand}\` to make this machine reachable.`,
           );
         }
       }),
@@ -638,13 +640,13 @@ const connectPublishCommand = Command.make("publish", {
         // link is pending at all.
         if (yield* CliState.readCliDesiredCloudLink) {
           yield* Console.log(
-            "A shuv2code connect link is already pending. Start shuv2code to finish provisioning it; publishing starts once it links.",
+            "A shuv2code connect link is already pending. Start T3 to finish provisioning it; publishing starts once it links.",
           );
           return;
         }
         yield* CliState.setCliDesiredCloudLink(true, "publish_only");
         yield* Console.log(
-          "Restart shuv2code to finish authorizing this environment to publish (no managed tunnel is created).",
+          "Restart T3 to finish authorizing this environment to publish (no managed tunnel is created).",
         );
       }),
     ),
@@ -691,10 +693,15 @@ export const connectCommand = Command.make("connect", {
         // Connect itself already succeeded; a boot-service failure must not
         // fail the command, just tell the user what happened and move on.
         const background = yield* recoverServiceOnboardingOffer(offerServiceDuringOnboarding);
+        if (background) {
+          yield* Console.log(
+            "\n✓ Background service ready\n\nshuv2code will stay reachable after you log out.",
+          );
+          return;
+        }
+        const serveCommand = yield* resolveCliCommand("serve");
         yield* Console.log(
-          background
-            ? "\n✓ Background service ready\n\nshuv2code will stay reachable after you log out."
-            : "\nNext\n  Start the server with `shuv2code serve` to make this machine reachable.",
+          `\nNext\n  Start the server with \`${serveCommand}\` to make this machine reachable.`,
         );
       }),
     ),

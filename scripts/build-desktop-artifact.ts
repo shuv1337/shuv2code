@@ -1605,6 +1605,15 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       executableName: "shuv2code",
       icon: "icons",
       category: "Development",
+      // electron-builder turns these into MimeType=x-scheme-handler/<scheme>;
+      // in the .desktop entry (Exec already gets %U), so browsers can hand
+      // shuv2code:// OAuth callbacks to the app.
+      protocols: [
+        {
+          name: "shuv2code",
+          schemes: ["shuv2code", "shuv2code-dev"],
+        },
+      ],
       desktop: {
         entry: {
           StartupWMClass: "shuv2code",

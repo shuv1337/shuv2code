@@ -2,6 +2,26 @@
 
 Use this when you want to connect to a shuv2code server from another device such as a phone, tablet, or separate desktop app.
 
+## Quick Pairing for a Running Server
+
+If a server is already running on this machine, mint a fresh pairing token and QR code without restarting anything:
+
+```bash
+npx t3 pair
+```
+
+`t3 pair` finds the running server (the shared `~/.shuv2code` install, or the current worktree's dev server when run inside one), issues a one-time pairing token, and prints the pairing URL as a QR code you can scan from your phone.
+
+If the server is only bound to loopback, the printed URL is not reachable from another device. Pair over your tailnet instead:
+
+```bash
+npx t3 pair --tailscale
+```
+
+This publishes the server over Tailscale Serve HTTPS (configuring the mapping if needed — it persists until you run `tailscale serve --https=443 off`) and pairs through the `https://machine.tailnet.ts.net/` URL. Use `--tailscale-serve-port` for a different HTTPS port, `--ttl` to change the token lifetime, and `--base-dir` to target a specific data directory.
+
+If no server is running, `t3 pair` says so and points you at `npx t3 serve` or `npx t3 connect`.
+
 ## Recommended Setup
 
 Use a trusted private network that meshes your devices together, such as a tailnet.
@@ -14,14 +34,15 @@ That gives you:
 
 ## Enabling Network Access
 
-There are two ways to expose your server for remote connections: from the desktop app or from the CLI.
+There are three ways to reach your server from another device: expose the desktop app's backend,
+run a headless server from the CLI, or have the desktop app launch shuv2code over SSH.
 
 ### Option 1: Desktop App
 
 If you are already running the desktop app and want to make it reachable from other devices:
 
 1. Open **Settings** → **Connections**.
-2. Under **Manage Local Backend**, toggle **Network access** on. This will restart the app and run the backend on all network interfaces.
+2. Under **This environment**, toggle **Network access** on. This will restart the app and run the backend on all network interfaces.
 3. The settings panel will show the default reachable endpoint, with a `+N` control when more endpoints are available. Expand it to inspect alternatives such as loopback, LAN, private-network, or HTTPS endpoints.
 4. Use **Create Link** to generate a pairing link you can share with another device.
 
@@ -30,12 +51,14 @@ The default endpoint controls the QR code and primary copy action for pairing li
 When no user default is saved, the app uses the built-in LAN endpoint for pairing links when
 available. You can set another endpoint as the default from the expanded endpoint list.
 
-- HTTPS/WSS-compatible endpoints work from `https://app.shuv2code.example`, but are not made the default
+- HTTPS/WSS-compatible endpoints work from `https://app.shuv.me`, but are not made the default
   automatically.
 - Non-loopback HTTP endpoints are useful for direct LAN pairing.
 - Loopback-only endpoints are not useful for another device unless that device is the same machine.
 
-If the copied link points directly at `http://192.168.x.y:3773`, open it from a client that can reach that LAN address. If it points at `https://app.shuv2code.example/pair?...`, the hosted web app will save the environment and connect directly to the backend URL in the link.
+If the copied link points directly at `http://192.168.x.y:3773`, open it from a client that can reach that LAN address. If it points at `https://app.shuv.me/pair?...`, the hosted web app will save the environment and connect directly to the backend URL in the link.
+
+In the mobile app's **Add Environment** form, a numeric IP address without a scheme uses HTTP. Include `https://` explicitly when the backend is served over HTTPS.
 
 ### Tailscale Endpoints
 
@@ -48,26 +71,26 @@ Depending on your Tailscale setup, this may include:
 - an HTTPS MagicDNS endpoint when Tailscale Serve is configured for this backend
 
 The Tailscale HTTPS endpoint uses the clean MagicDNS URL, such as
-`https://machine.tailnet.ts.net/`, and is disabled until the app verifies that the URL reaches this
-backend. Use **Setup** on the Tailscale HTTPS row to opt in. The desktop app restarts the backend
-with the same server-side behavior as `shuv2code serve --tailscale-serve`, then the server asks Tailscale
-Serve to proxy HTTPS traffic to the local backend.
+`https://machine.tailnet.ts.net/`, and is off until you opt in. Turn on **Enable Tailscale HTTPS**
+on the **Tailscale HTTPS** row in **Settings** → **Connections**. The desktop app restarts the
+backend with the same server-side behavior as `t3 serve --tailscale-serve`, then the server asks
+Tailscale Serve to proxy HTTPS traffic to the local backend. Turn the same switch off to stop it.
 
 The Tailscale support is an endpoint provider add-on. The core remote model still works without Tailscale: LAN HTTP endpoints, custom HTTPS endpoints, future tunnels, and SSH-launched environments all use the same saved environment and pairing flow.
 
-For `https://app.shuv2code.example`, prefer an HTTPS Tailnet or other HTTPS endpoint. A plain `http://100.x.y.z:3773` endpoint can still work from a desktop client or another browser page served over HTTP, but it will not work from the hosted HTTPS app because of browser mixed-content rules.
+For `https://app.shuv.me`, prefer an HTTPS Tailnet or other HTTPS endpoint. A plain `http://100.x.y.z:3773` endpoint can still work from a desktop client or another browser page served over HTTP, but it will not work from the hosted HTTPS app because of browser mixed-content rules.
 
 ### Option 2: Headless Server (CLI)
 
 Use this when you want to run the server without a GUI, for example on a remote machine over SSH.
 
-Run the server with `shuv2code serve`.
+Run the server with `t3 serve`.
 
 ```bash
-npx shuv2code serve --host "$(tailscale ip -4)"
+npx t3 serve --host "$(tailscale ip -4)"
 ```
 
-`shuv2code serve` starts the server without opening a browser and prints:
+`t3 serve` starts the server without opening a browser and prints:
 
 - a connection string
 - a pairing token
@@ -81,25 +104,23 @@ From there, connect from another device in either of these ways:
 - in the desktop app, enter the host and token separately
 - in the hosted web app, open a hosted pairing URL when the backend is reachable over HTTPS
 
-Use `shuv2code serve --help` for the full flag reference. It supports the same general startup options as the normal server command, including an optional `cwd` argument.
+Use `t3 serve --help` for the full flag reference. It supports the same general startup options as the normal server command, including an optional `cwd` argument.
 
 For hosted web pairing over Tailscale HTTPS, opt in to Tailscale Serve:
 
 ```bash
-npx shuv2code serve --tailscale-serve
+npx t3 serve --tailscale-serve
 ```
 
 By default this configures Tailscale Serve on HTTPS port 443 and advertises
 `https://machine.tailnet.ts.net/`. Advanced users can choose a different HTTPS port:
 
 ```bash
-npx shuv2code serve --tailscale-serve --tailscale-serve-port 8443
+npx t3 serve --tailscale-serve --tailscale-serve-port 8443
 ```
 
-> Note
-> The GUIs do not currently support adding projects on remote environments.
-> For now, use `shuv2code project ...` on the server machine instead.
-> Full GUI support for remote project management is coming soon.
+Once paired, add projects normally: open the Command Palette and choose **Add Project**, then pick
+the environment the project lives on. Every saved environment is offered, not only the local one.
 
 ### Option 3: Desktop-Managed SSH Launch
 
@@ -125,16 +146,10 @@ The remote host must have a compatible Node.js runtime. shuv2code uses the serve
 ^22.16 || ^23.11 || >=24.10
 ```
 
-During SSH launch, shuv2code first checks whether `node` is already available on `PATH`. If it is missing, the launcher tries common non-interactive shell locations and version-manager shims/activation hooks:
-
-- `~/.local/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`
-- Volta via `~/.volta/bin`
-- asdf via `~/.asdf/shims`, `~/.asdf/bin`, or `~/.asdf/asdf.sh`
-- mise via `~/.local/share/mise/shims`, `~/.mise/shims`, or `mise activate sh`
-- fnm via `fnm env --use-on-cd --shell sh` or `fnm env --shell sh`
-- nodenv via `~/.nodenv/bin`, `~/.nodenv/shims`, or `nodenv init -`
-- nvm via `$NVM_DIR/nvm.sh`, then `nvm use default`, `nvm use node`, or `nvm use --lts`
-- installed nvm versions under `$NVM_DIR/versions/node/*/bin`
+During SSH launch, shuv2code first checks whether `node` is on `PATH`. If it is missing, the launcher
+looks in the usual install directories and tries to activate a version manager if it finds one
+(Volta, asdf, mise, fnm, nodenv, nvm). That covers most setups, but a version manager that only
+initializes from an interactive shell profile will not be picked up.
 
 If launch fails with `node: command not found`, a port-scan failure, or a message that the remote Node version does not satisfy the required range, SSH into the host and check the same non-interactive shell path shuv2code uses:
 
@@ -148,9 +163,9 @@ If that does not print a compatible Node version, configure your version manager
 nvm alias default 24
 ```
 
-With mise/asdf/fnm/nodenv, make sure the tool's shim directory is installed and points at a Node version satisfying the range above.
+With mise, asdf, fnm, or nodenv, make sure the tool's shim directory is installed and resolves to a Node version satisfying the range above without an interactive shell.
 
-If reconnecting after an app update fails, retry the SSH launch once. The launcher now compares its generated runner script, stops stale launcher-managed remote servers, clears the SSH launch PID/port state, and starts a fresh remote server. You should not normally need to delete `~/.shuv2code/ssh-launch` or kill `shuv2code` processes manually.
+If reconnecting after an app update fails, retry the SSH launch once. The launcher now compares its generated runner script, stops stale launcher-managed remote servers, clears the SSH launch PID/port state, and starts a fresh remote server. You should not normally need to delete `~/.shuv2code/ssh-launch` or kill `t3` processes manually.
 
 ## Updating a Remote Server
 
@@ -160,7 +175,7 @@ be able to update and reconnect the server for you, or it may ask you to update 
 run a copied command on the server machine.
 
 Finish active work before updating because the server restarts briefly. For step-by-step guidance,
-see [Keeping shuv2code in Sync](./server-updates.md).
+see [Keeping shuv2code in Sync](./updating.md).
 
 On a Linux host, you can keep the server running after logout and manage it independently of the
 connection method. See [Running shuv2code in the Background](./background-service.md).
@@ -171,7 +186,7 @@ The remote device does not need a long-lived secret up front.
 
 Instead:
 
-1. `shuv2code serve` issues a one-time owner pairing token.
+1. `t3 serve` issues a one-time owner pairing token.
 2. The remote device exchanges that token with the server.
 3. The server creates an authenticated session for that device.
 
@@ -179,10 +194,10 @@ After pairing, future access is session-based. You do not need to keep reusing t
 
 ## Hosted Web App Pairing
 
-The hosted web app at `https://app.shuv2code.example` can save a remote backend in browser local storage from a URL like:
+The hosted web app at `https://app.shuv.me` can save a remote backend in browser local storage from a URL like:
 
 ```text
-https://app.shuv2code.example/pair?host=https://backend.example.com:3773#token=PAIRCODE
+https://app.shuv.me/pair?host=https://backend.example.com:3773#token=PAIRCODE
 ```
 
 Use hosted pairing when the backend is reachable from the browser over HTTPS/WSS. This includes a backend behind a trusted HTTPS tunnel or another HTTPS endpoint you operate.
@@ -193,7 +208,7 @@ Hosted pairing does not proxy traffic through shuv2code. The browser still conne
 
 ## Managing Access Later
 
-Use `shuv2code auth` to manage access after the initial pairing flow.
+Use `t3 auth` to manage access after the initial pairing flow.
 
 Typical uses:
 
@@ -201,7 +216,7 @@ Typical uses:
 - inspect active sessions
 - revoke old pairing links or sessions
 
-Use `shuv2code auth --help` and the nested subcommand help pages for the full reference.
+Use `t3 auth --help` and the nested subcommand help pages for the full reference.
 
 ## Security Notes
 
@@ -209,4 +224,4 @@ Use `shuv2code auth --help` and the nested subcommand help pages for the full re
 - Prefer binding `--host` to a trusted private address, such as a Tailnet IP, instead of exposing the server broadly.
 - Anyone with a valid pairing credential can create a session until that credential expires or is revoked.
 - Hosted pairing links keep the credential in the URL hash so it is not sent to the hosted app server, but it can still be exposed through browser history, screenshots, logs, or copy/paste.
-- Use `shuv2code auth` to revoke credentials or sessions you no longer trust.
+- Use `t3 auth` to revoke credentials or sessions you no longer trust.

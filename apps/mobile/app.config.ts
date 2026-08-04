@@ -9,18 +9,9 @@ const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
-const isIosPersonalTeamBuild = repoEnv.SHUV2CODE_IOS_PERSONAL_TEAM === "1";
-const expoUpdatesUrl = repoEnv.SHUV2CODE_EXPO_UPDATES_URL?.trim();
-const expoProjectId = repoEnv.SHUV2CODE_EXPO_PROJECT_ID?.trim();
-const expoOwner = repoEnv.SHUV2CODE_EXPO_OWNER?.trim();
-const appleTeamId = repoEnv.SHUV2CODE_APPLE_TEAM_ID?.trim();
-const associatedDomains = (repoEnv.SHUV2CODE_APPLE_ASSOCIATED_DOMAINS ?? "")
-  .split(",")
-  .map((value) => value.trim())
-  .filter(Boolean);
-const hasClerkConfig = Boolean(repoEnv.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim());
+const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
 
-const personalTeamBundleIdentifier = repoEnv.SHUV2CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
+const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
 
 const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
@@ -31,7 +22,7 @@ if (
     !IOS_BUNDLE_IDENTIFIER_PATTERN.test(personalTeamBundleIdentifier))
 ) {
   throw new Error(
-    "SHUV2CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.shuv2code when SHUV2CODE_IOS_PERSONAL_TEAM=1.",
+    "T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.shuv2code when T3CODE_IOS_PERSONAL_TEAM=1.",
   );
 }
 
@@ -62,32 +53,35 @@ const RELEASE_ASSETS = {
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
   androidAdaptiveForeground: "./assets/android-icon-mark.png",
-  androidAdaptiveBackgroundColor: "#0C1119",
+  androidAdaptiveBackgroundColor: "#000000",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
-  androidNotificationColor: "#D35C46",
+  androidNotificationColor: "#FFFFFF",
 } as const;
 
 const VARIANT_CONFIG = {
   development: {
-    appName: "shuv2code dev",
+    appName: "shuv2code Dev",
     scheme: "shuv2code-dev",
-    iosBundleIdentifier: "dev.shuv.shuv2code.dev",
-    androidPackage: "dev.shuv.shuv2code.dev",
+    iosBundleIdentifier: "com.t3tools.shuv2code.dev",
+    androidPackage: "com.t3tools.shuv2code.dev",
+    relyingParty: "clerk.t3.codes",
     assets: DEVELOPMENT_ASSETS,
   },
   preview: {
-    appName: "shuv2code nightly",
-    scheme: "shuv2code-nightly",
-    iosBundleIdentifier: "dev.shuv.shuv2code.nightly",
-    androidPackage: "dev.shuv.shuv2code.nightly",
+    appName: "shuv2code Preview",
+    scheme: "shuv2code-preview",
+    iosBundleIdentifier: "com.t3tools.shuv2code.preview",
+    androidPackage: "com.t3tools.shuv2code.preview",
+    relyingParty: "clerk.t3.codes",
     assets: PREVIEW_ASSETS,
   },
   production: {
     appName: "shuv2code",
     scheme: "shuv2code",
-    iosBundleIdentifier: "dev.shuv.shuv2code",
-    androidPackage: "dev.shuv.shuv2code",
+    iosBundleIdentifier: "com.t3tools.shuv2code",
+    androidPackage: "com.t3tools.shuv2code",
+    relyingParty: "clerk.t3.codes",
     assets: RELEASE_ASSETS,
   },
 } as const;
@@ -158,29 +152,16 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
   },
 ];
 
-const sharingPlugins: NonNullable<ExpoConfig["plugins"]> = isIosPersonalTeamBuild
-  ? [sharingPlugin]
-  : ["./plugins/withShareExtensionDisplayName.cjs", sharingPlugin];
-const clerkPlugins: NonNullable<ExpoConfig["plugins"]> = hasClerkConfig
-  ? [["@clerk/expo", { theme: "./clerk-theme.json", appleSignIn: !isIosPersonalTeamBuild }]]
-  : [];
-const widgetPlugins: NonNullable<ExpoConfig["plugins"]> = isIosPersonalTeamBuild
-  ? []
-  : ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin];
-const personalTeamPlugins: NonNullable<ExpoConfig["plugins"]> = isIosPersonalTeamBuild
-  ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"]
-  : [];
-
 // These aliases match the fonts' PostScript names on iOS. Register the same
 // names on Android so React Native and the native composer use one set of
 // family names without waiting for runtime font loading.
 
 const config: ExpoConfig = {
   name: variant.appName,
-  slug: "shuv2code",
+  slug: "t3-code",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
-  version: "0.1.0-alpha.1",
+  version: "1.0.1",
   runtimeVersion: {
     // Fingerprint (not appVersion) so an OTA only reaches binaries whose native
     // project — native deps, config plugins, AND patches/ — matches the update.
@@ -190,21 +171,28 @@ const config: ExpoConfig = {
   },
   orientation: "portrait",
   icon: variant.assets.appIcon,
-  userInterfaceStyle: "dark",
-  updates: expoUpdatesUrl
-    ? {
-        enabled: true,
-        url: expoUpdatesUrl,
-        checkAutomatically: "ON_LOAD",
-        fallbackToCacheTimeout: 0,
-      }
-    : { enabled: false },
+  userInterfaceStyle: "automatic",
+  updates: {
+    enabled: true,
+    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    checkAutomatically: "ON_LOAD",
+    fallbackToCacheTimeout: 0,
+  },
   ios: {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
+    // Multitasking-capable iPad apps cannot rotate programmatically, so the
+    // showcase capture build requires full screen (see infoPlist below).
+    requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
-    ...(appleTeamId ? { appleTeamId } : {}),
-    ...(associatedDomains.length > 0 ? { associatedDomains } : {}),
+    // Pin code signing to the shuv2code Tools team so non-interactive `expo run:ios`
+    // does not fall back to a personal team (which cannot sign app groups,
+    // Sign in with Apple, or push notification entitlements).
+    appleTeamId: "ARK85ZXQ4Z",
+    associatedDomains: [
+      `applinks:${variant.relyingParty}`,
+      `webcredentials:${variant.relyingParty}`,
+    ],
     infoPlist: {
       NSAppTransportSecurity: {
         NSAllowsArbitraryLoads: true,
@@ -212,6 +200,21 @@ const config: ExpoConfig = {
       NSLocalNetworkUsageDescription:
         "Allow shuv2code to connect to shuv2code servers on your local network or tailnet.",
       ITSAppUsesNonExemptEncryption: false,
+      // The App Store screenshot harness rotates the iPad interface from
+      // inside the app (CI denies osascript the Accessibility access that
+      // Simulator menu scripting needs), and iPadOS ignores programmatic
+      // orientation requests for multitasking-capable apps — so the capture
+      // build opts out of multitasking and declares landscape support.
+      ...(process.env.T3_SHOWCASE_CAPTURE_BUILD === "1"
+        ? {
+            "UISupportedInterfaceOrientations~ipad": [
+              "UIInterfaceOrientationPortrait",
+              "UIInterfaceOrientationPortraitUpsideDown",
+              "UIInterfaceOrientationLandscapeLeft",
+              "UIInterfaceOrientationLandscapeRight",
+            ],
+          }
+        : {}),
     },
   },
   android: {
@@ -258,7 +261,9 @@ const config: ExpoConfig = {
     ],
     "expo-secure-store",
     "expo-sqlite",
-    ...sharingPlugins,
+    ...(isIosPersonalTeamBuild
+      ? [sharingPlugin]
+      : ["./plugins/withShareExtensionDisplayName.cjs", sharingPlugin]),
     [
       "expo-notifications",
       {
@@ -269,7 +274,7 @@ const config: ExpoConfig = {
     ],
     // appleSignIn must be gated here: withoutIosPersonalTeamCapabilities.cjs runs before
     // plugins earlier in this array, so it cannot strip the entitlement Clerk would add.
-    ...clerkPlugins,
+    ["@clerk/expo", { theme: "./clerk-theme.json", appleSignIn: !isIosPersonalTeamBuild }],
     "expo-web-browser",
     [
       "expo-quick-actions",
@@ -288,20 +293,22 @@ const config: ExpoConfig = {
       "expo-camera",
       {
         cameraPermission: "Allow shuv2code to access your camera so you can scan pairing QR codes.",
+        microphonePermission: false,
         barcodeScannerEnabled: true,
         recordAudioAndroid: false,
       },
     ],
+    ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
     [
       "expo-splash-screen",
       {
         image: variant.assets.splashIcon,
         resizeMode: "contain",
-        backgroundColor: "#FAF8F5",
+        backgroundColor: "#ffffff",
         imageWidth: 220,
         dark: {
           image: variant.assets.splashIcon,
-          backgroundColor: "#0C1119",
+          backgroundColor: "#0a0a0a",
         },
       },
     ],
@@ -324,20 +331,20 @@ const config: ExpoConfig = {
     // expo-widgets' — its dangerous mod wipes ios/ExpoWidgetsTarget/ (which
     // would delete the asset catalog) and its xcodeproj mod creates the widget
     // target (which must exist before the compile phase can be attached).
-    ...widgetPlugins,
+    ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
     "./plugins/withIosSceneLifecycle.cjs",
     "./plugins/withAndroidCleartextTraffic.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
     "./plugins/withAndroidModernPopupMenu.cjs",
     "./plugins/withAndroidModernAlertDialog.cjs",
     "./plugins/withAndroidPredictiveBackCompat.cjs",
-    ...personalTeamPlugins,
+    ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
   ],
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
     relay: {
-      url: repoEnv.SHUV2CODE_RELAY_URL ?? null,
+      url: repoEnv.T3CODE_RELAY_URL ?? null,
     },
     clerk: {
       publishableKey: repoEnv.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? null,
@@ -353,13 +360,15 @@ const config: ExpoConfig = {
     EXPO_PUBLIC_CLERK_GOOGLE_ANDROID_CLIENT_ID: repoEnv.EXPO_PUBLIC_CLERK_GOOGLE_ANDROID_CLIENT_ID,
     EXPO_PUBLIC_CLERK_GOOGLE_IOS_URL_SCHEME: repoEnv.EXPO_PUBLIC_CLERK_GOOGLE_IOS_URL_SCHEME,
     observability: {
-      tracesUrl: repoEnv.EXPO_PUBLIC_OTLP_TRACES_URL ?? null,
+      tracesUrl: repoEnv.EXPO_PUBLIC_OTLP_TRACES_URL ?? "https://api.axiom.co/v1/traces",
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    ...(expoProjectId ? { eas: { projectId: expoProjectId } } : {}),
+    eas: {
+      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    },
   },
-  ...(expoOwner ? { owner: expoOwner } : {}),
+  owner: "pingdotgg",
 };
 
 export default config;
