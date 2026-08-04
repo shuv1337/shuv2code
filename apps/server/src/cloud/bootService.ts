@@ -24,9 +24,9 @@ import {
   type ServiceState,
 } from "./serviceProtocol.ts";
 
-const BOOT_SERVICE_NAME = "shuv2code";
+const BOOT_SERVICE_NAME = "t3code";
 export const BOOT_SERVICE_UNIT_FILE = `${BOOT_SERVICE_NAME}.service`;
-export const BOOT_SERVICE_UNIT_ENV = "T3_BOOT_SERVICE_UNIT";
+export const BOOT_SERVICE_UNIT_ENV = "SHUV2CODE_BOOT_SERVICE_UNIT";
 
 /** systemd expands `%` specifiers, including in unquoted append-log paths. */
 export function escapeSystemdSpecifiers(value: string): string {
@@ -130,7 +130,7 @@ export class BootService extends Context.Service<
     readonly uninstall: Effect.Effect<boolean, BootServiceError>;
     readonly status: Effect.Effect<BootServiceStatus, BootServiceError>;
   }
->()("@shuv2code/cloud/bootService") {}
+>()("shuv2code/cloud/bootService") {}
 
 export interface BootServiceHost {
   readonly execPath: string;

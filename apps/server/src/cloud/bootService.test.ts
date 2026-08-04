@@ -20,15 +20,13 @@ import { parseServiceState } from "./serviceProtocol.ts";
 it("keeps systemd pinned to the stable launcher rather than a versioned server", () => {
   const unit = BootService.renderBootServiceUnit({
     nodePath: "/usr/bin/node",
-    launcherPath: "/home/theo/.shuv2code/runtime/service-launcher.mjs",
+    launcherPath: "/home/theo/.t3/runtime/service-launcher.mjs",
     baseDir: "/home/theo/.t3",
-    logPath: "/home/theo/.shuv2code/userdata/logs/boot-service.log",
-    unitPath: "/home/theo/.config/systemd/user/shuv2code.service",
+    logPath: "/home/theo/.t3/userdata/logs/boot-service.log",
+    unitPath: "/home/theo/.config/systemd/user/t3code.service",
   });
 
-  expect(unit).toContain(
-    "ExecStart=/usr/bin/node /home/theo/.shuv2code/runtime/service-launcher.mjs",
-  );
+  expect(unit).toContain("ExecStart=/usr/bin/node /home/theo/.t3/runtime/service-launcher.mjs");
   expect(unit).toContain("KillMode=control-group");
   expect(unit).not.toContain("versions/1.2.3");
 });
@@ -39,8 +37,8 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-boot-service-test-" });
-  const baseDir = path.join(home, ".shuv2code");
+  const home = yield* fs.makeTempDirectoryScoped({ prefix: "shuv2code-boot-service-test-" });
+  const baseDir = path.join(home, ".t3");
   const sourceLauncher = path.join(home, "service-launcher.mjs");
   const statePath = path.join(baseDir, "runtime", "service-state.json");
   yield* fs.writeFileString(sourceLauncher, "export {};\n");
@@ -136,9 +134,9 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const error = yield* service.install.pipe(Effect.flip);
       expect(error._tag).toBe("BootServiceCommandError");
       expect(commands.filter((command) => command.startsWith("systemctl "))).toEqual([
-        "systemctl --user stop shuv2code.service",
+        "systemctl --user stop t3code.service",
         "systemctl --user daemon-reload",
-        "systemctl --user restart shuv2code.service",
+        "systemctl --user restart t3code.service",
       ]);
     }),
   );
