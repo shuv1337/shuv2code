@@ -13,6 +13,10 @@
   - Subagents must not independently launch dev servers or repeat integrated client verification unless their delegated task explicitly requires it.
   - Stop dev servers, watchers, and other long-running verification processes when the focused verification is complete.
 
+## Boot Service
+
+- On hosts where the systemd user unit `shuv2code.service` runs `apps/server/dist/bin.mjs` from this checkout, a rebuilt dist changes nothing until the unit restarts — the long-running process keeps the old bundle in memory and drifts from the repo. After rebuilding the server dist on such a host, run `pnpm redeploy:boot-service` (build + restart + crash-loop check) instead of a bare `vp pack`. The script refuses to touch release-managed units; those update via `shuv2code service update`.
+
 ## Dev Servers
 
 - In a linked git worktree, dev state defaults to that worktree's gitignored `.shuv2code`. This deliberately outranks an ambient `SHUV2CODE_HOME`, which could otherwise select the installed app's live `~/.shuv2code/userdata` database. An explicit `--home-dir` still wins.
