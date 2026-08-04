@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import type { VcsDriverKind, VcsError, VcsRepositoryIdentity } from "@shuv2code/contracts";
 import { VcsUnsupportedOperationError } from "@shuv2code/contracts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import * as JjVcsDriver from "./JjVcsDriver.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 
@@ -63,8 +64,10 @@ function parseDetectionCacheKey(key: string): {
 export const make = Effect.gen(function* () {
   const projectConfig = yield* VcsProjectConfig.VcsProjectConfig;
   const git = yield* GitVcsDriver.makeVcsDriver;
+  const jj = yield* JjVcsDriver.makeVcsDriver;
   const drivers: Partial<Record<VcsDriverKind, VcsDriver.VcsDriver["Service"]>> = {
     git,
+    jj,
   };
 
   const get: VcsDriverRegistry["Service"]["get"] = (kind) => {
@@ -108,6 +111,10 @@ export const make = Effect.gen(function* () {
       return yield* detectWithDriver(requestedKind, driver, input.cwd);
     }
 
+    const jjRepository = yield* detectWithDriver("jj", jj, input.cwd);
+    if (jjRepository) {
+      return jjRepository;
+    }
     return yield* detectWithDriver("git", git, input.cwd);
   });
 

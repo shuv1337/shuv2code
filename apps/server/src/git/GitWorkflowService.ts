@@ -199,16 +199,16 @@ export const make = Effect.gen(function* () {
         ),
       );
       if (!handle) {
-        return false;
+        return null;
       }
-      if (handle.kind !== "git") {
+      if (handle.kind !== "git" && handle.kind !== "jj") {
         return yield* new GitManagerError({
           operation,
           cwd,
-          detail: `The ${operation} workflow currently supports Git repositories only; detected ${handle.kind}. (${cwd})`,
+          detail: `The ${operation} status workflow requires a Git-compatible repository; detected ${handle.kind}. (${cwd})`,
         });
       }
-      return true;
+      return handle.kind;
     },
   );
 
@@ -230,12 +230,12 @@ export const make = Effect.gen(function* () {
     if (!handle) {
       return false;
     }
-    if (handle.kind !== "git") {
+    if (handle.kind !== "git" && handle.kind !== "jj") {
       return yield* new GitCommandError({
         operation,
         command: "vcs-route",
         cwd,
-        detail: `The ${operation} command currently supports Git repositories only; detected ${handle.kind}.`,
+        detail: `The ${operation} read workflow requires a Git-compatible repository; detected ${handle.kind}.`,
       });
     }
     return true;
@@ -252,22 +252,35 @@ export const make = Effect.gen(function* () {
   return GitWorkflowService.of({
     status: (input) =>
       detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? gitManager.status(input) : Effect.succeed(nonRepositoryStatus()),
+        Effect.flatMap((kind) =>
+          kind === "git"
+            ? gitManager.status(input)
+            : kind === "jj"
+              ? gitManager.localStatus(input).pipe(
+                  Effect.map((local) => ({
+                    ...local,
+                    hasUpstream: false,
+                    aheadCount: 0,
+                    behindCount: 0,
+                    aheadOfDefaultCount: 0,
+                    pr: null,
+                  })),
+                )
+              : Effect.succeed(nonRepositoryStatus()),
         ),
       ),
     localStatus: (input) =>
       detectGitRepositoryForStatus("GitWorkflowService.localStatus", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository
+        Effect.flatMap((kind) =>
+          kind !== null
             ? gitManager.localStatus(input)
             : Effect.succeed(nonRepositoryLocalStatus()),
         ),
       ),
     remoteStatus: (input, options) =>
       detectGitRepositoryForStatus("GitWorkflowService.remoteStatus", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? gitManager.remoteStatus(input, options) : Effect.succeed(null),
+        Effect.flatMap((kind) =>
+          kind === "git" ? gitManager.remoteStatus(input, options) : Effect.succeed(null),
         ),
       ),
     invalidateLocalStatus: gitManager.invalidateLocalStatus,
