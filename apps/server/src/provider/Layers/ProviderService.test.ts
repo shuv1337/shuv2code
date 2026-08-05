@@ -255,6 +255,13 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     capabilities: {
       sessionModelSwitch: "in-session",
       turnSteering: "same-turn",
+      hasDurableSessionRecovery: (resumeCursor) =>
+        Effect.succeed(
+          typeof resumeCursor === "object" &&
+            resumeCursor !== null &&
+            "durable" in resumeCursor &&
+            resumeCursor.durable === true,
+        ),
     },
     startSession,
     recoverSessionByThreadSource,
@@ -1312,6 +1319,44 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, session.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("resolves durable recovery from the persisted instance binding", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const durableThreadId = asThreadId("thread-durable-recovery");
+
+      yield* directory.upsert({
+        threadId: durableThreadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        resumeCursor: { durable: true },
+      });
+
+      assert.equal(
+        yield* provider.hasDurableSessionRecovery(durableThreadId, codexInstanceId),
+        true,
+      );
+      assert.equal(
+        yield* provider.hasDurableSessionRecovery(
+          asThreadId("thread-missing-binding"),
+          codexInstanceId,
+        ),
+        false,
+      );
+      assert.equal(
+        yield* provider.hasDurableSessionRecovery(durableThreadId, claudeAgentInstanceId),
+        false,
+      );
+      assert.equal(
+        yield* provider.hasDurableSessionRecovery(
+          durableThreadId,
+          ProviderInstanceId.make("removed-instance"),
+        ),
+        false,
+      );
     }),
   );
 

@@ -1531,12 +1531,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     instanceId,
   ) =>
     Effect.gen(function* () {
-      const adapter = yield* registry.getByInstance(instanceId);
+      const adapter = yield* registry.getByInstance(instanceId).pipe(Effect.option);
+      if (Option.isNone(adapter)) {
+        return false;
+      }
       const binding = yield* directory.getBinding(threadId);
       if (Option.isNone(binding) || binding.value.providerInstanceId !== instanceId) {
         return false;
       }
-      const check = adapter.capabilities.hasDurableSessionRecovery;
+      const check = adapter.value.capabilities.hasDurableSessionRecovery;
       return check === undefined ? false : yield* check(binding.value.resumeCursor);
     });
 
