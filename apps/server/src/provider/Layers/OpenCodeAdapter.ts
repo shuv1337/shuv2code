@@ -40,6 +40,7 @@ import {
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
   buildOpenCodePermissionRules,
+  detectOpenCodeProtocolFromVersionOutput,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   openCodeQuestionId,
