@@ -93,7 +93,9 @@ function isLegacyTurnCompletedEvent(
   );
 }
 
-function createProviderServiceHarness() {
+function createProviderServiceHarness(options?: {
+  readonly durableRecoveryInstances?: ReadonlySet<ProviderInstanceId>;
+}) {
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const runtimeSessions: ProviderSession[] = [];
   let listSessionsFailure: Error | null = null;
@@ -116,6 +118,8 @@ function createProviderServiceHarness() {
     listSessions: () =>
       listSessionsFailure ? Effect.die(listSessionsFailure) : Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+    hasDurableSessionRecovery: (_threadId, instanceId) =>
+      Effect.succeed(options?.durableRecoveryInstances?.has(instanceId) === true),
     getInstanceInfo: (instanceId) => {
       const driverKind = ProviderDriverKind.make(String(instanceId));
       return Effect.succeed({
@@ -234,10 +238,15 @@ describe("ProviderRuntimeIngestion", () => {
     serverSettings?: Partial<ServerSettings>;
     startIngestion?: boolean;
     seedProviderSession?: boolean;
+    durableRecoveryInstances?: ReadonlySet<ProviderInstanceId>;
   }) {
     const workspaceRoot = makeTempDir("shuv2code-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
-    const provider = createProviderServiceHarness();
+    const provider = createProviderServiceHarness(
+      options?.durableRecoveryInstances
+        ? { durableRecoveryInstances: options.durableRecoveryInstances }
+        : undefined,
+    );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
@@ -441,10 +450,45 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.activeTurnId).toBe(turnId);
   });
 
-  it("preserves an OpenCode session while durable startup recovery is still attaching", async () => {
+  it("stops a local OpenCode session that cannot recover after restart", async () => {
     const harness = await createHarness({
       startIngestion: false,
       seedProviderSession: false,
+    });
+    const threadId = asThreadId("thread-1");
+
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-opencode-local-stale"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "opencode",
+        providerInstanceId: ProviderInstanceId.make("opencode_local"),
+        runtimeMode: "approval-required",
+        activeTurnId: asTurnId("turn-opencode-local"),
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        lastError: null,
+      },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    await harness.start();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "stopped",
+    );
+    expect(thread.session?.activeTurnId).toBeNull();
+  });
+
+  it("preserves an OpenCode session while durable startup recovery is still attaching", async () => {
+    const remoteInstanceId = ProviderInstanceId.make("opencode_remote");
+    const harness = await createHarness({
+      startIngestion: false,
+      seedProviderSession: false,
+      durableRecoveryInstances: new Set([remoteInstanceId]),
     });
     const threadId = asThreadId("thread-1");
     const turnId = asTurnId("turn-opencode-recovering");
@@ -457,6 +501,7 @@ describe("ProviderRuntimeIngestion", () => {
         threadId,
         status: "running",
         providerName: "opencode",
+        providerInstanceId: remoteInstanceId,
         runtimeMode: "approval-required",
         activeTurnId: turnId,
         updatedAt: "2026-01-01T00:00:01.000Z",
@@ -472,6 +517,70 @@ describe("ProviderRuntimeIngestion", () => {
       (entry) => entry.session?.status === "running",
     );
     expect(thread.session?.activeTurnId).toBe(turnId);
+  });
+
+  it("reconciles local sessions while preserving durable sessions in a mixed inventory", async () => {
+    const localThreadId = asThreadId("thread-1");
+    const remoteThreadId = asThreadId("thread-opencode-remote");
+    const localInstanceId = ProviderInstanceId.make("opencode_local");
+    const remoteInstanceId = ProviderInstanceId.make("opencode_remote");
+    const harness = await createHarness({
+      startIngestion: false,
+      seedProviderSession: false,
+      durableRecoveryInstances: new Set([remoteInstanceId]),
+    });
+
+    await harness.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("cmd-thread-opencode-remote-create"),
+      threadId: remoteThreadId,
+      projectId: asProjectId("project-1"),
+      title: "Remote OpenCode thread",
+      modelSelection: { instanceId: remoteInstanceId, model: "remote-model" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    for (const [threadId, instanceId] of [
+      [localThreadId, localInstanceId],
+      [remoteThreadId, remoteInstanceId],
+    ] as const) {
+      await harness.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-mixed-session-${threadId}`),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "opencode",
+          providerInstanceId: instanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId(`turn-${threadId}`),
+          updatedAt: "2026-01-01T00:00:02.000Z",
+          lastError: null,
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+    }
+
+    await harness.start();
+
+    const localThread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "stopped",
+      2000,
+      localThreadId,
+    );
+    const remoteThread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running",
+      2000,
+      remoteThreadId,
+    );
+    expect(localThread.session?.activeTurnId).toBeNull();
+    expect(remoteThread.session?.activeTurnId).toBe(asTurnId(`turn-${remoteThreadId}`));
   });
 
   it("fails open when provider session discovery fails during startup", async () => {

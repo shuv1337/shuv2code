@@ -15,7 +15,6 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
-  ProviderDriverKind,
   type ProviderRuntimeEvent,
 } from "@shuv2code/contracts";
 import * as Cache from "effect/Cache";
@@ -44,7 +43,6 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
-const DURABLY_RECOVERED_PROVIDER = ProviderDriverKind.make("opencode");
 
 // Fallback when the in-memory description cache no longer has the task name
 // (server restart, session-exit sweep, TTL/capacity eviction): earlier
@@ -1815,19 +1813,26 @@ const make = Effect.gen(function* () {
   const worker = yield* makeDrainableWorker(processInputSafely);
 
   const reconcileProjectedSessions = Effect.fn("reconcileProjectedSessions")(function* () {
-    const [snapshot, liveSessions] = yield* Effect.all([
-      projectionSnapshotQuery.getShellSnapshot(),
-      providerService.listSessions(),
-    ]);
+    // Keep this ordering: durable adapters may populate their runtime inventory
+    // by reattaching projected sessions during startup.
+    const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+    const liveSessions = yield* providerService.listSessions();
     const liveThreadIds = new Set(liveSessions.map((session) => session.threadId));
-    const staleThreads = snapshot.threads.filter(
+    const missingThreads = snapshot.threads.filter(
       (thread) =>
         (thread.session?.status === "starting" || thread.session?.status === "running") &&
-        // OpenCode/shuvcode can keep in-flight work alive across backend restarts and reattaches
-        // those sessions asynchronously in ProviderService. Absence from this first runtime
-        // snapshot is therefore not authoritative for that provider.
-        thread.session.providerName !== DURABLY_RECOVERED_PROVIDER &&
         !liveThreadIds.has(thread.id),
+    );
+    const staleThreads = yield* Effect.filter(missingThreads, (thread) =>
+      providerService
+        .hasDurableSessionRecovery(
+          thread.id,
+          thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
+        )
+        .pipe(
+          Effect.map((durable) => !durable),
+          Effect.orElseSucceed(() => false),
+        ),
     );
 
     yield* Effect.forEach(
@@ -1835,6 +1840,14 @@ const make = Effect.gen(function* () {
       (thread) =>
         Effect.gen(function* () {
           const session = thread.session!;
+          const currentThread = yield* resolveThreadShell(thread.id);
+          if (
+            (currentThread?.session?.status !== "starting" &&
+              currentThread?.session?.status !== "running") ||
+            currentThread.session.updatedAt !== session.updatedAt
+          ) {
+            return;
+          }
           const now = DateTime.formatIso(yield* DateTime.now);
           const commandUuid = yield* crypto.randomUUIDv4;
           yield* orchestrationEngine.dispatch({

@@ -275,6 +275,7 @@ function makeHarness(
           turnSteering: "same-turn" as const,
         }),
       ),
+      hasDurableSessionRecovery: vi.fn(() => Effect.succeed(false)),
       getInstanceInfo: vi.fn(() =>
         Effect.succeed({
           instanceId,
