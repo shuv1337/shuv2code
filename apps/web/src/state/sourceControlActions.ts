@@ -16,6 +16,7 @@ import type {
   SourceControlCloneProtocol,
   SourceControlRepositoryVisibility,
   ThreadId,
+  VcsSelectableKind,
 } from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
@@ -138,7 +139,7 @@ export function useSourceControlActionRunning(
   );
 }
 
-export function useVcsInitAction(scope: SourceControlActionScope) {
+export function useVcsInitAction(scope: SourceControlActionScope, kind: VcsSelectableKind) {
   const init = useAtomCommand(vcsEnvironment.init, { reportFailure: false });
   const action = useCallback(async () => {
     const target = resolveScope(scope);
@@ -155,9 +156,9 @@ export function useVcsInitAction(scope: SourceControlActionScope) {
     }
     return init({
       environmentId: target.environmentId,
-      input: { cwd: target.cwd, kind: "jj" },
+      input: { cwd: target.cwd, kind },
     });
-  }, [init, scope]);
+  }, [init, kind, scope]);
   return useAction({ kind: "init", label: "Initializing repository", scope, action });
 }
 

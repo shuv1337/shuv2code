@@ -6,8 +6,13 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { VcsDriverKind, type VcsDriverKind as VcsDriverKindType } from "@shuv2code/contracts";
-import { fromLenientJson } from "@shuv2code/shared/schemaJson";
+import {
+  VcsDriverKind,
+  type VcsDriverKind as VcsDriverKindType,
+  type VcsSelectableKind,
+} from "@shuv2code/contracts";
+import { fromJsonStringPretty, fromLenientJson } from "@shuv2code/shared/schemaJson";
+import { writeFileStringAtomically } from "../atomicWrite.ts";
 
 const ProjectVcsConfig = Schema.Struct({
   vcs: Schema.optional(
@@ -18,7 +23,9 @@ const ProjectVcsConfig = Schema.Struct({
   vcsKind: Schema.optional(VcsDriverKind),
 });
 const ProjectVcsConfigJson = fromLenientJson(ProjectVcsConfig);
+const ProjectVcsConfigPrettyJson = fromJsonStringPretty(ProjectVcsConfig);
 const decodeProjectVcsConfigJson = Schema.decodeUnknownEffect(ProjectVcsConfigJson);
+const encodeProjectVcsConfigJson = Schema.encodeEffect(ProjectVcsConfigPrettyJson);
 
 type ProjectVcsConfigFile = typeof ProjectVcsConfig.Type;
 
@@ -27,10 +34,15 @@ export interface VcsProjectConfigResolveInput {
   readonly requestedKind?: VcsDriverKindType | "auto";
 }
 
+export interface VcsProjectConfigSetInput {
+  readonly cwd: string;
+  readonly kind: VcsSelectableKind | null;
+}
+
 export class VcsProjectConfigError extends Schema.TaggedErrorClass<VcsProjectConfigError>()(
   "VcsProjectConfigError",
   {
-    operation: Schema.Literals(["inspect", "read", "decode"]),
+    operation: Schema.Literals(["inspect", "read", "decode", "encode", "prepare", "write"]),
     cwd: Schema.String,
     configPath: Schema.String,
     cause: Schema.Defect(),
@@ -47,6 +59,9 @@ export class VcsProjectConfig extends Context.Service<
     readonly resolveKind: (
       input: VcsProjectConfigResolveInput,
     ) => Effect.Effect<VcsDriverKindType | "auto">;
+    readonly setKind: (
+      input: VcsProjectConfigSetInput,
+    ) => Effect.Effect<void, VcsProjectConfigError>;
   }
 >()("@shuv2code/vcs/VcsProjectConfig") {}
 
@@ -148,8 +163,53 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const setKind: VcsProjectConfig["Service"]["setKind"] = Effect.fn("VcsProjectConfig.setKind")(
+    function* (input) {
+      const configDir = path.join(input.cwd, ".shuv2code");
+      const configPath = path.join(configDir, "vcs.json");
+      const contents = yield* encodeProjectVcsConfigJson(
+        input.kind === null ? {} : { vcs: { kind: input.kind } },
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new VcsProjectConfigError({
+              operation: "encode",
+              cwd: input.cwd,
+              configPath,
+              cause,
+            }),
+        ),
+      );
+      yield* fileSystem.makeDirectory(configDir, { recursive: true }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new VcsProjectConfigError({
+              operation: "prepare",
+              cwd: input.cwd,
+              configPath,
+              cause,
+            }),
+        ),
+      );
+      yield* writeFileStringAtomically({ filePath: configPath, contents }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError(
+          (cause) =>
+            new VcsProjectConfigError({
+              operation: "write",
+              cwd: input.cwd,
+              configPath,
+              cause,
+            }),
+        ),
+      );
+    },
+  );
+
   return VcsProjectConfig.of({
     resolveKind,
+    setKind,
   });
 });
 

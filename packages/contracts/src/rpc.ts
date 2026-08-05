@@ -187,7 +187,7 @@ import {
   SourceControlRepositoryInfo,
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
-import { VcsError } from "./vcs.ts";
+import { VcsError, VcsSetProjectPreferenceInput, VcsSetProjectPreferenceResult } from "./vcs.ts";
 import {
   VoiceControllerError,
   VoiceEnsureControllerInput,
@@ -252,6 +252,7 @@ export const WS_METHODS = {
   vcsCreateRef: "vcs.createRef",
   vcsSwitchRef: "vcs.switchRef",
   vcsInit: "vcs.init",
+  vcsSetProjectPreference: "vcs.setProjectPreference",
 
   // Git workflow methods
   gitRunStackedAction: "git.runStackedAction",
@@ -762,6 +763,12 @@ export const WsVcsInitRpc = Rpc.make(WS_METHODS.vcsInit, {
   error: Schema.Union([VcsError, EnvironmentAuthorizationError]),
 });
 
+export const WsVcsSetProjectPreferenceRpc = Rpc.make(WS_METHODS.vcsSetProjectPreference, {
+  payload: VcsSetProjectPreferenceInput,
+  success: VcsSetProjectPreferenceResult,
+  error: Schema.Union([VcsError, EnvironmentAuthorizationError]),
+});
+
 /**
  * Ephemeral live diff preview for compact/mobile surfaces.
  * Not the persisted shuv2code Review model. Future review sessions should use
@@ -1057,6 +1064,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsCreateRefRpc,
   WsVcsSwitchRefRpc,
   WsVcsInitRpc,
+  WsVcsSetProjectPreferenceRpc,
   WsReviewGetDiffPreviewRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,

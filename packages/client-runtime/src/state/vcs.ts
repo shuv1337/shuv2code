@@ -367,6 +367,13 @@ export function createVcsEnvironmentAtoms<R, E>(
       concurrency: vcsCommandConcurrency,
       onSettled: invalidateRefs,
     }),
+    setProjectPreference: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:set-project-preference",
+      tag: WS_METHODS.vcsSetProjectPreference,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCommandConcurrency,
+      onSettled: invalidateRefs,
+    }),
   };
 }
 

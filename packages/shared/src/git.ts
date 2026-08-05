@@ -247,6 +247,7 @@ function toLocalStatusPart(status: VcsStatusResult): VcsStatusLocalResult {
   return {
     kind: status.kind,
     capabilities: status.capabilities,
+    ...(status.selection ? { selection: status.selection } : {}),
     isRepo: status.isRepo,
     ...(status.sourceControlProvider
       ? { sourceControlProvider: status.sourceControlProvider }

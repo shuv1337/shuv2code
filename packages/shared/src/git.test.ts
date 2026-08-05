@@ -163,6 +163,12 @@ describe("applyGitStatusStreamEvent", () => {
         supportsJuzu: false,
         ignoreClassifier: "native",
       },
+      selection: {
+        availableKinds: ["git", "jj"],
+        projectKind: "git",
+        defaultKind: "jj",
+        source: "project",
+      },
       isRepo: true,
       sourceControlProvider: {
         kind: "github",

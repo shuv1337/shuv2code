@@ -35,6 +35,7 @@ import {
   type VcsStatusRemoteResult,
   type VcsStatusResult,
   type VcsError,
+  type VcsRepositorySelection,
 } from "@shuv2code/contracts";
 
 import * as GitManager from "./GitManager.ts";
@@ -113,7 +114,7 @@ export class GitWorkflowService extends Context.Service<
   }
 >()("shuv2code/git/GitWorkflowService") {}
 
-function nonRepositoryLocalStatus(): VcsStatusLocalResult {
+function nonRepositoryLocalStatus(selection?: VcsRepositorySelection): VcsStatusLocalResult {
   return {
     kind: "unknown",
     capabilities: {
@@ -133,6 +134,7 @@ function nonRepositoryLocalStatus(): VcsStatusLocalResult {
       supportsJuzu: false,
       ignoreClassifier: "native",
     },
+    ...(selection ? { selection } : {}),
     isRepo: false,
     hasPrimaryRemote: false,
     isDefaultRef: false,
@@ -147,9 +149,9 @@ function nonRepositoryLocalStatus(): VcsStatusLocalResult {
   };
 }
 
-function nonRepositoryStatus(): VcsStatusResult {
+function nonRepositoryStatus(selection?: VcsRepositorySelection): VcsStatusResult {
   return {
-    ...nonRepositoryLocalStatus(),
+    ...nonRepositoryLocalStatus(selection),
     hasUpstream: false,
     aheadCount: 0,
     behindCount: 0,
@@ -225,7 +227,7 @@ export const make = Effect.gen(function* () {
 
   const detectGitRepositoryForStatus = Effect.fn("GitWorkflowService.detectGitRepositoryForStatus")(
     function* (operation: string, cwd: string) {
-      const handle = yield* registry.detect({ cwd }).pipe(
+      const inspection = yield* registry.inspect({ cwd }).pipe(
         Effect.mapError(
           (cause) =>
             new GitManagerError({
@@ -236,17 +238,17 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
-      if (!handle) {
-        return null;
+      if (!inspection.handle) {
+        return inspection;
       }
-      if (handle.kind !== "git" && handle.kind !== "jj") {
+      if (inspection.handle.kind !== "git" && inspection.handle.kind !== "jj") {
         return yield* new GitManagerError({
           operation,
           cwd,
-          detail: `The ${operation} status workflow requires a Git-compatible repository; detected ${handle.kind}. (${cwd})`,
+          detail: `The ${operation} status workflow requires a Git-compatible repository; detected ${inspection.handle.kind}. (${cwd})`,
         });
       }
-      return handle;
+      return inspection;
     },
   );
 
@@ -343,6 +345,7 @@ export const make = Effect.gen(function* () {
   const toLocalStatus = (status: VcsStatusResult): VcsStatusLocalResult => ({
     kind: status.kind,
     capabilities: status.capabilities,
+    ...(status.selection ? { selection: status.selection } : {}),
     isRepo: status.isRepo,
     ...(status.sourceControlProvider
       ? { sourceControlProvider: status.sourceControlProvider }
@@ -355,36 +358,53 @@ export const make = Effect.gen(function* () {
     workingCopy: status.workingCopy,
   });
 
+  const attachSelection = <T extends VcsStatusLocalResult | VcsStatusResult>(
+    status: T,
+    handle: VcsDriverRegistry.VcsDriverHandle,
+  ): T => (handle.selection ? { ...status, selection: handle.selection } : status);
+
   return GitWorkflowService.of({
     status: (input) =>
       detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
-        Effect.flatMap((handle) =>
-          handle?.kind === "git"
-            ? gitManager.status(input)
+        Effect.flatMap((inspection) => {
+          const handle = inspection.handle;
+          return handle?.kind === "git"
+            ? gitManager.status(input).pipe(Effect.map((status) => attachSelection(status, handle)))
             : handle?.kind === "jj"
-              ? requireDriverOperation("status", input.cwd, handle.driver.status?.(input))
-              : Effect.succeed(nonRepositoryStatus()),
-        ),
+              ? requireDriverOperation("status", input.cwd, handle.driver.status?.(input)).pipe(
+                  Effect.map((status) => attachSelection(status, handle)),
+                )
+              : Effect.succeed(nonRepositoryStatus(inspection.selection));
+        }),
       ),
     localStatus: (input) =>
       detectGitRepositoryForStatus("GitWorkflowService.localStatus", input.cwd).pipe(
-        Effect.flatMap((handle) =>
-          handle?.kind === "git"
-            ? gitManager.localStatus(input)
+        Effect.flatMap((inspection) => {
+          const handle = inspection.handle;
+          return handle?.kind === "git"
+            ? gitManager
+                .localStatus(input)
+                .pipe(Effect.map((status) => attachSelection(status, handle)))
             : handle?.kind === "jj"
               ? requireDriverOperation(
                   "localStatus",
                   input.cwd,
                   handle.driver.status?.(input),
-                ).pipe(Effect.map(toLocalStatus))
-              : Effect.succeed(nonRepositoryLocalStatus()),
-        ),
+                ).pipe(
+                  Effect.map((status) => attachSelection(status, handle)),
+                  Effect.map(toLocalStatus),
+                )
+              : Effect.succeed(nonRepositoryLocalStatus(inspection.selection));
+        }),
       ),
     remoteStatus: (input, options) =>
       detectGitRepositoryForStatus("GitWorkflowService.remoteStatus", input.cwd).pipe(
-        Effect.flatMap((handle) =>
-          handle?.kind === "git" ? gitManager.remoteStatus(input, options) : Effect.succeed(null),
-        ),
+        Effect.flatMap((inspection) => {
+          const handle = inspection.handle;
+          return handle?.kind === "git"
+            ? gitManager.remoteStatus(input, options)
+            : Effect.succeed(null);
+        }),
       ),
     invalidateLocalStatus: gitManager.invalidateLocalStatus,
     invalidateRemoteStatus: gitManager.invalidateRemoteStatus,

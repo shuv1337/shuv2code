@@ -1,7 +1,12 @@
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { SourceControlProviderError, SourceControlProviderInfo } from "./sourceControl.ts";
-import { VcsDriverCapabilities, VcsDriverKind, VcsWorkingCopyState } from "./vcs.ts";
+import {
+  VcsDriverCapabilities,
+  VcsDriverKind,
+  VcsRepositorySelection,
+  VcsWorkingCopyState,
+} from "./vcs.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const GIT_LIST_BRANCHES_MAX_LIMIT = 200;
@@ -250,6 +255,7 @@ const VcsStatusLocalShape = {
   // Current servers always populate these fields.
   kind: Schema.optional(VcsDriverKind),
   capabilities: Schema.optional(VcsDriverCapabilities),
+  selection: Schema.optional(VcsRepositorySelection),
   isRepo: Schema.Boolean,
   sourceControlProvider: Schema.optional(SourceControlProviderInfo),
   hasPrimaryRemote: Schema.Boolean,

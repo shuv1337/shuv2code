@@ -30,6 +30,7 @@ import {
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
+import { BranchToolbarVcsSelector } from "./BranchToolbarVcsSelector";
 import { Button } from "./ui/button";
 import {
   Menu,
@@ -258,6 +259,7 @@ export const BranchToolbar = memo(function BranchToolbar({
       : null,
   );
   const vcsKind = vcsStatus.data?.kind ?? "unknown";
+  const canSelectVcs = (vcsStatus.data?.selection?.availableKinds.length ?? 0) > 1;
   const effectiveEnvMode =
     effectiveEnvModeOverride ??
     resolveEffectiveEnvMode({
@@ -316,6 +318,17 @@ export const BranchToolbar = memo(function BranchToolbar({
 
   return (
     <div className="chat-composer-context-strip -mt-4 mx-auto flex w-[calc(100%-2.75rem)] max-w-[calc(48rem-2.75rem)] items-center gap-2 ps-1 pe-2 pt-5 pb-1">
+      {canSelectVcs && activeProjectCwd && vcsStatus.data ? (
+        <>
+          <BranchToolbarVcsSelector
+            environmentId={environmentId}
+            cwd={activeProjectCwd}
+            status={vcsStatus.data}
+          />
+          <Separator orientation="vertical" className="mx-0.5 h-3.5!" />
+        </>
+      ) : null}
+
       {isMobile ? (
         <MobileRunContextSelector
           envLocked={envLocked}
