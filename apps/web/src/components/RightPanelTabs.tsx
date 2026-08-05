@@ -664,44 +664,53 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             viewportRef={tabViewportRef}
             hideScrollbars
             scrollFade
+            chainVerticalScroll
             className={cn("min-w-0 flex-1 rounded-none", ownsDesktopTitleBar && "drag-region")}
             data-right-panel-tab-list
           >
-            <div
-              className="flex h-full w-max min-w-full items-center gap-1"
-              role="tablist"
-              aria-label="Panel tabs"
-              aria-orientation="horizontal"
-            >
-              <SortableContext
-                items={props.surfaces.map((surface) => surface.id)}
-                strategy={horizontalListSortingStrategy}
+            <div className="flex h-full w-max min-w-full items-center gap-1">
+              <div
+                className="flex h-full items-center gap-1"
+                role="tablist"
+                aria-label="Panel tabs"
+                aria-orientation="horizontal"
               >
-                {props.surfaces.map((surface, index) => {
-                  const active = surface.id === props.activeSurfaceId;
-                  return (
-                    <SortableSurfaceTab
-                      key={surface.id}
-                      surface={surface}
-                      active={active}
-                      pending={props.pendingSurfaceIds.has(surface.id)}
-                      title={surfaceTitle(surface, props.previewSessions, props.terminalLabelsById)}
-                      tabIndex={active || (props.activeSurfaceId === null && index === 0) ? 0 : -1}
-                      sessions={props.previewSessions}
-                      theme={resolvedTheme}
-                      onActivate={props.onActivate}
-                      onClose={props.onCloseSurface}
-                      onMouseDown={handleTabMouseDown}
-                      onAuxClick={handleTabAuxClick}
-                      onContextMenu={(event, targetSurface) =>
-                        void handleTabContextMenu(event, targetSurface)
-                      }
-                      onKeyDown={handleTabKeyDown}
-                      setButtonRef={setTabButtonRef}
-                    />
-                  );
-                })}
-              </SortableContext>
+                <SortableContext
+                  items={props.surfaces.map((surface) => surface.id)}
+                  strategy={horizontalListSortingStrategy}
+                >
+                  {props.surfaces.map((surface, index) => {
+                    const active = surface.id === props.activeSurfaceId;
+                    return (
+                      <SortableSurfaceTab
+                        key={surface.id}
+                        surface={surface}
+                        active={active}
+                        pending={props.pendingSurfaceIds.has(surface.id)}
+                        title={surfaceTitle(
+                          surface,
+                          props.previewSessions,
+                          props.terminalLabelsById,
+                        )}
+                        tabIndex={
+                          active || (props.activeSurfaceId === null && index === 0) ? 0 : -1
+                        }
+                        sessions={props.previewSessions}
+                        theme={resolvedTheme}
+                        onActivate={props.onActivate}
+                        onClose={props.onCloseSurface}
+                        onMouseDown={handleTabMouseDown}
+                        onAuxClick={handleTabAuxClick}
+                        onContextMenu={(event, targetSurface) =>
+                          void handleTabContextMenu(event, targetSurface)
+                        }
+                        onKeyDown={handleTabKeyDown}
+                        setButtonRef={setTabButtonRef}
+                      />
+                    );
+                  })}
+                </SortableContext>
+              </div>
               {props.surfaces.length > 0 ? (
                 <Menu>
                   <MenuTrigger
