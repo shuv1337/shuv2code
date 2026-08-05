@@ -14,6 +14,7 @@ import type {
   SourceControlPublishRepositoryResult,
   SourceControlRepositoryVisibility,
   VcsStatusResult,
+  VcsSelectableKind,
 } from "@shuv2code/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -31,7 +32,6 @@ import {
   BookmarkIcon,
   PlusIcon,
   RefreshCwIcon,
-  SquareTerminalIcon,
 } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import {
@@ -40,6 +40,7 @@ import {
   GitHubIcon,
   GitLabIcon,
   JujutsuIcon,
+  GitIcon,
 } from "~/components/Icons";
 import { RadioGroup } from "~/components/ui/radio-group";
 import { Spinner } from "~/components/ui/spinner";
@@ -95,8 +96,6 @@ import { sourceControlEnvironment } from "~/state/sourceControl";
 import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { vcsEnvironment } from "~/state/vcs";
-import { terminalEnvironment } from "~/state/terminal";
-import { useTerminalUiStateStore } from "~/terminalUiStateStore";
 import { randomUUID } from "~/lib/utils";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
@@ -151,9 +150,12 @@ interface RunGitActionWithToastInput {
 
 const GIT_STATUS_WINDOW_REFRESH_DEBOUNCE_MS = 250;
 
+function vcsKindLabel(kind: VcsSelectableKind): string {
+  return kind === "jj" ? "Jujutsu" : "Git";
+}
+
 function JjActionsGroup(props: {
   readonly environmentId: ScopedThreadRef["environmentId"] | null;
-  readonly threadRef: ScopedThreadRef | null;
   readonly cwd: string;
   readonly status: VcsStatusResult;
   readonly refreshStatus: RefreshVcsStatus;
@@ -167,7 +169,6 @@ function JjActionsGroup(props: {
     reportFailure: false,
   });
   const createBookmark = useAtomCommand(vcsEnvironment.createRef, { reportFailure: false });
-  const openTerminal = useAtomCommand(terminalEnvironment.open, "open Juzu terminal");
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [description, setDescription] = useState(props.status.workingCopy?.description ?? "");
   const [bookmarkOpen, setBookmarkOpen] = useState(false);
@@ -270,22 +271,6 @@ function JjActionsGroup(props: {
     );
   };
 
-  const openJuzu = () => {
-    if (props.environmentId === null || props.threadRef === null) return;
-    const terminalId = `juzu-${randomUUID().slice(0, 8)}`;
-    useTerminalUiStateStore.getState().newTerminal(props.threadRef, terminalId);
-    void openTerminal({
-      environmentId: props.environmentId,
-      input: {
-        threadId: props.threadRef.threadId,
-        terminalId,
-        cwd: props.cwd,
-        worktreePath: props.cwd,
-        tool: "juzu",
-      },
-    });
-  };
-
   return (
     <>
       <Group aria-label="Jujutsu actions" className="shrink-0">
@@ -380,20 +365,6 @@ function JjActionsGroup(props: {
             {availability.pushUnavailableReason ? (
               <p className="px-2 py-1.5 text-xs text-warning">
                 {availability.pushUnavailableReason}
-              </p>
-            ) : null}
-            <MenuItem
-              disabled={
-                props.status.capabilities?.supportsJuzu !== true || props.threadRef === null
-              }
-              onClick={openJuzu}
-            >
-              <SquareTerminalIcon />
-              Open in Juzu
-            </MenuItem>
-            {props.status.capabilities?.supportsJuzu !== true ? (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                Install the juzu binary to open this workspace in its terminal UI.
               </p>
             ) : null}
           </MenuPopup>
@@ -1469,7 +1440,8 @@ export default function GitActionsControl({
   const allSelected = excludedFiles.size === 0;
   const noneSelected = selectedFiles.length === 0;
 
-  const initAction = useVcsInitAction(sourceControlScope);
+  const initGitAction = useVcsInitAction(sourceControlScope, "git");
+  const initJjAction = useVcsInitAction(sourceControlScope, "jj");
   const runImmediateGitAction = useGitStackedAction(sourceControlScope);
   const pullAction = useVcsPullAction(sourceControlScope);
   const isGitActionRunning = useSourceControlActionRunning(
@@ -2024,42 +1996,86 @@ export default function GitActionsControl({
     gitStatusForActions.kind === "git" &&
     !hasPrimaryRemote;
 
+  const defaultInitKind = gitStatusForActions?.selection?.defaultKind ?? "git";
+  const isInitPending = initGitAction.isPending || initJjAction.isPending;
+  const runInit = (kind: VcsSelectableKind) => {
+    if (isInitPending) return;
+    const action = kind === "jj" ? initJjAction : initGitAction;
+    void (async () => {
+      const result = await action.run();
+      if (result._tag === "Success") {
+        gitStatusQuery.refresh();
+        return;
+      }
+      if (isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: `${vcsKindLabel(kind)} initialization failed`,
+          description: error instanceof Error ? error.message : "An error occurred.",
+          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+        }),
+      );
+    })();
+  };
+
   if (!gitCwd) return null;
 
   return (
     <>
       {!isRepo ? (
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={initAction.isPending}
-          onClick={() => {
-            void (async () => {
-              const result = await initAction.run();
-              if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
-                return;
+        <Group aria-label="Initialize version control" className="shrink-0">
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={isInitPending}
+            onClick={() => runInit(defaultInitKind)}
+          >
+            {defaultInitKind === "jj" ? (
+              <JujutsuIcon className="size-3.5" aria-hidden />
+            ) : (
+              <GitIcon className="size-3.5" aria-hidden />
+            )}
+            <span className="ml-0.5">
+              {isInitPending
+                ? "Initializing..."
+                : defaultInitKind === "jj"
+                  ? "Initialize Jujutsu + Git"
+                  : "Initialize Git"}
+            </span>
+          </Button>
+          <GroupSeparator />
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  aria-label="Version control initialization options"
+                  size="icon-xs"
+                  variant="outline"
+                />
               }
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Jujutsu initialization failed",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                  ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-                }),
-              );
-            })();
-          }}
-        >
-          <JujutsuIcon className="size-3.5" aria-hidden />
-          <span className="ml-0.5">
-            {initAction.isPending ? "Initializing..." : "Initialize jj + Git"}
-          </span>
-        </Button>
+              disabled={isInitPending}
+            >
+              <ChevronDownIcon aria-hidden className="size-4" />
+            </MenuTrigger>
+            <MenuPopup align="end" className="min-w-56">
+              <MenuItem onClick={() => runInit("git")}>
+                <GitIcon />
+                Initialize Git
+                {defaultInitKind === "git" ? <CheckIcon className="ml-auto" /> : null}
+              </MenuItem>
+              <MenuItem onClick={() => runInit("jj")}>
+                <JujutsuIcon />
+                Initialize Jujutsu + Git
+                {defaultInitKind === "jj" ? <CheckIcon className="ml-auto" /> : null}
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+        </Group>
       ) : gitStatusForActions?.kind === "jj" ? (
         <JjActionsGroup
           environmentId={activeEnvironmentId}
-          threadRef={activeThreadRef}
           cwd={gitCwd}
           status={gitStatusForActions}
           refreshStatus={refreshVcsStatus}

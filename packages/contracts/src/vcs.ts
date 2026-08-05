@@ -4,6 +4,37 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 export const VcsDriverKind = Schema.Literals(["git", "jj", "unknown"]);
 export type VcsDriverKind = typeof VcsDriverKind.Type;
 
+export const VcsSelectableKind = Schema.Literals(["git", "jj"]);
+export type VcsSelectableKind = typeof VcsSelectableKind.Type;
+
+export const VcsSelectionSource = Schema.Literals([
+  "request",
+  "project",
+  "user-default",
+  "fallback",
+]);
+export type VcsSelectionSource = typeof VcsSelectionSource.Type;
+
+export const VcsRepositorySelection = Schema.Struct({
+  availableKinds: Schema.Array(VcsSelectableKind),
+  projectKind: Schema.NullOr(VcsSelectableKind),
+  defaultKind: VcsSelectableKind,
+  source: VcsSelectionSource,
+});
+export type VcsRepositorySelection = typeof VcsRepositorySelection.Type;
+
+export const VcsSetProjectPreferenceInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  kind: Schema.NullOr(VcsSelectableKind),
+});
+export type VcsSetProjectPreferenceInput = typeof VcsSetProjectPreferenceInput.Type;
+
+export const VcsSetProjectPreferenceResult = Schema.Struct({
+  kind: VcsDriverKind,
+  selection: VcsRepositorySelection,
+});
+export type VcsSetProjectPreferenceResult = typeof VcsSetProjectPreferenceResult.Type;
+
 export const VcsFreshnessSource = Schema.Literals([
   "live-local",
   "cached-local",

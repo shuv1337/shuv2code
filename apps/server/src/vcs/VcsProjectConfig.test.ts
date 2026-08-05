@@ -128,6 +128,26 @@ describe("VcsProjectConfig", () => {
     );
   });
 
+  it.layer(TestLayer)("persists project-level VCS choices", (it) => {
+    it.effect("switches between an explicit choice and the user default", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "shuv2code-vcs-config-test-",
+        });
+        const config = yield* VcsProjectConfig.VcsProjectConfig;
+
+        yield* config.setKind({ cwd: root, kind: "jj" });
+        assert.equal(yield* config.resolveKind({ cwd: root }), "jj");
+        assert.isTrue(yield* fileSystem.exists(path.join(root, ".shuv2code", "vcs.json")));
+
+        yield* config.setKind({ cwd: root, kind: null });
+        assert.equal(yield* config.resolveKind({ cwd: root }), "auto");
+      }),
+    );
+  });
+
   it.layer(TestLayer)("falls back to auto when config JSON is malformed", (it) => {
     it.effect("returns auto and logs the failed operation and path", () => {
       const messages: unknown[] = [];

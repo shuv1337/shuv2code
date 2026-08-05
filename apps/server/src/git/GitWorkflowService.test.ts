@@ -27,6 +27,13 @@ const UNKNOWN_CAPABILITIES = {
   ignoreClassifier: "native" as const,
 };
 
+const DEFAULT_SELECTION = {
+  availableKinds: [] as const,
+  projectKind: null,
+  defaultKind: "git" as const,
+  source: "fallback" as const,
+};
+
 function makeLayer(input: {
   readonly detect: VcsDriverRegistry.VcsDriverRegistry["Service"]["detect"];
 }) {
@@ -34,6 +41,13 @@ function makeLayer(input: {
     Layer.provide(
       Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
         detect: input.detect,
+        inspect: (request) =>
+          input.detect(request).pipe(
+            Effect.map((handle) => ({
+              handle,
+              selection: handle?.selection ?? DEFAULT_SELECTION,
+            })),
+          ),
       }),
     ),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
@@ -50,6 +64,7 @@ describe("GitWorkflowService", () => {
       assert.deepStrictEqual(status, {
         kind: "unknown",
         capabilities: UNKNOWN_CAPABILITIES,
+        selection: DEFAULT_SELECTION,
         isRepo: false,
         hasPrimaryRemote: false,
         isDefaultRef: false,
@@ -79,6 +94,7 @@ describe("GitWorkflowService", () => {
       assert.deepStrictEqual(status, {
         kind: "unknown",
         capabilities: UNKNOWN_CAPABILITIES,
+        selection: DEFAULT_SELECTION,
         isRepo: false,
         hasPrimaryRemote: false,
         isDefaultRef: false,
@@ -114,6 +130,7 @@ describe("GitWorkflowService", () => {
       Layer.provide(
         Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
           detect: () => Effect.succeed(null),
+          inspect: () => Effect.succeed({ handle: null, selection: DEFAULT_SELECTION }),
         }),
       ),
       Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),

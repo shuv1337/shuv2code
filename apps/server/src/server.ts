@@ -291,6 +291,7 @@ const AutomationServiceLayerLive = AutomationService.layer.pipe(
 
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
+  Layer.provide(ServerSettingsLayerLive),
 );
 
 const SourceControlProviderRegistryLayerLive = SourceControlProviderRegistry.layer.pipe(

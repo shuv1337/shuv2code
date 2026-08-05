@@ -518,6 +518,7 @@ export const makeWsRpcLayer = (
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
       const review = yield* ReviewService.ReviewService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
+      const vcsDriverRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
       const vcsChangeRequests = yield* VcsChangeRequestService.VcsChangeRequestService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
@@ -1934,6 +1935,18 @@ export const makeWsRpcLayer = (
               "rpc.aggregate": "vcs",
             },
           ),
+        [WS_METHODS.vcsSetProjectPreference]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsSetProjectPreference,
+            vcsDriverRegistry
+              .setProjectPreference(input)
+              .pipe(
+                Effect.tap(() =>
+                  vcsStatusBroadcaster.refreshStatus(input.cwd).pipe(Effect.ignore({ log: true })),
+                ),
+              ),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,
@@ -2310,6 +2323,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2347,7 +2361,12 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                       ),
                       Layer.provideMerge(GitVcsDriver.layer),
                       Layer.provide(
-                        VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer)),
+                        VcsDriverRegistry.layer.pipe(
+                          Layer.provide(VcsProjectConfig.layer),
+                          Layer.provide(
+                            Layer.succeed(ServerSettings.ServerSettingsService, serverSettings),
+                          ),
+                        ),
                       ),
                     ),
                   ),
