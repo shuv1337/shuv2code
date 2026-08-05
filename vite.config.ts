@@ -16,6 +16,14 @@ export default defineConfig({
       "**/dist/**",
       "**/dist-electron/**",
       "**/.{idea,git,cache,output,temp}/**",
+      // Nested git worktrees live inside the checkout (agent harnesses create
+      // them under .claude/.codex/.herdr, and `worktrees/` is the manual
+      // parent dir). They are hidden from git via .git/info/exclude, but
+      // Vitest's globbing does not read gitignore, so without these patterns
+      // every focused run also collects the worktree's stale copy of each
+      // test file and fails with "Vitest failed to find the runner".
+      "**/worktrees/**",
+      "**/.{claude,codex,herdr}/**",
     ],
     hookTimeout: 60_000,
     testTimeout: 60_000,
