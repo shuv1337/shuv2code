@@ -59,6 +59,7 @@ import { searchableSetting } from "./settingsSearch";
 
 const EMPTY_DISCOVERY_RESULT: SourceControlDiscoveryResult = {
   versionControlSystems: [],
+  companionTools: [],
   sourceControlProviders: [],
 };
 
@@ -519,7 +520,10 @@ export function SourceControlSettingsPanel() {
   );
   const result = discovery.data ?? EMPTY_DISCOVERY_RESULT;
   const hasVersionControlSystems = result.versionControlSystems.length > 0;
-  const hasDiscoveryItems = hasVersionControlSystems || result.sourceControlProviders.length > 0;
+  const hasDiscoveryItems =
+    hasVersionControlSystems ||
+    result.companionTools.length > 0 ||
+    result.sourceControlProviders.length > 0;
   const isInitialScanPending = discovery.isPending && discovery.data === null;
   const handleScan = () => {
     discovery.refresh();
@@ -540,7 +544,7 @@ export function SourceControlSettingsPanel() {
           </Button>
         }
       />
-      <TooltipPopup side="top">Rescan Git and hosting integrations</TooltipPopup>
+      <TooltipPopup side="top">Rescan version control and hosting integrations</TooltipPopup>
     </Tooltip>
   );
 
@@ -561,7 +565,16 @@ export function SourceControlSettingsPanel() {
             >
               {result.versionControlSystems.map((item) => (
                 <DiscoveryItemRow key={`vcs:${item.kind}`} item={item}>
-                  {item.kind === "git" ? <GitFetchIntervalSettings /> : undefined}
+                  {item.kind === "git" ? (
+                    <GitFetchIntervalSettings />
+                  ) : item.kind === "jj" ? (
+                    <div className="text-xs text-muted-foreground">
+                      {result.companionTools.find((tool) => tool.kind === "juzu")?.status ===
+                      "available"
+                        ? "Juzu terminal integration is available."
+                        : "Juzu is not installed; normal terminals remain available."}
+                    </div>
+                  ) : undefined}
                 </DiscoveryItemRow>
               ))}
             </SettingsSection>

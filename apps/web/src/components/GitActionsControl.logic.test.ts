@@ -14,6 +14,24 @@ import {
 
 function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
   return {
+    kind: "git",
+    capabilities: {
+      kind: "git",
+      supportsWorktrees: true,
+      supportsBookmarks: false,
+      supportsAtomicSnapshot: false,
+      supportsPushDefaultRemote: true,
+      supportsStatus: true,
+      supportsRefMutation: true,
+      supportsWorkspaceMutation: true,
+      supportsDescribeChange: false,
+      supportsStartChange: false,
+      supportsFetch: true,
+      supportsPush: true,
+      supportsChangeRequests: true,
+      supportsJuzu: false,
+      ignoreClassifier: "native",
+    },
     isRepo: true,
     hasPrimaryRemote: true,
     isDefaultRef: false,
@@ -24,6 +42,7 @@ function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
       insertions: 0,
       deletions: 0,
     },
+    workingCopy: null,
     hasUpstream: true,
     aheadCount: 0,
     behindCount: 0,
