@@ -17,6 +17,7 @@ import {
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@shuv2code/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -107,6 +108,7 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
+const DEFAULT_PROVIDER_EFFECT_TIMEOUT = Duration.minutes(2);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
 
@@ -178,6 +180,20 @@ export function providerErrorLabelFromInstanceHint(input: {
   return providerErrorLabel(
     input.instanceId ?? input.modelSelectionInstanceId ?? input.sessionProvider,
   );
+}
+
+export function providerEffectRecoveryLogFields(input: {
+  readonly sensitiveProviderEffect: boolean;
+  readonly recoveryCause: string;
+  readonly originalCause: string;
+  readonly sanitizedCode: string;
+}): { readonly cause: string; readonly originalCause: string } {
+  return input.sensitiveProviderEffect
+    ? {
+        cause: "provider_failure_recovery_failed",
+        originalCause: input.sanitizedCode,
+      }
+    : { cause: input.recoveryCause, originalCause: input.originalCause };
 }
 
 function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolean {
@@ -263,7 +279,13 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
   return `${WORKTREE_BRANCH_PREFIX}/${safeFragment}`;
 }
 
+export const ProviderEffectTimeout = Context.Reference<Duration.Input>(
+  "shuv2code/orchestration/ProviderEffectTimeout",
+  { defaultValue: () => DEFAULT_PROVIDER_EFFECT_TIMEOUT },
+);
+
 const make = Effect.gen(function* () {
+  const providerEffectTimeout = yield* ProviderEffectTimeout;
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
@@ -346,6 +368,9 @@ const make = Effect.gen(function* () {
         ? String((error as { readonly _tag: unknown })._tag)
         : "";
     const detail = isProviderAdapterRequestError(error) ? error.detail.toLowerCase() : "";
+    if (Cause.isTimeoutError(error)) {
+      return { state: "indeterminate", sanitizedCode: "provider_timeout" };
+    }
     if (detail.includes("stale_target") || detail.includes("already_terminal")) {
       return { state: "stale", sanitizedCode: "stale_target" };
     }
@@ -432,6 +457,32 @@ const make = Effect.gen(function* () {
 
   const providerOperationIdForEvent = (event: ProviderIntentEvent): string =>
     String(event.commandId ?? event.eventId);
+
+  const recoverProviderEffectFailure = <A, E, R>(input: {
+    readonly operation: "start" | "steer" | "interrupt";
+    readonly event: ProviderIntentEvent;
+    readonly cause: Cause.Cause<unknown>;
+    readonly sensitiveProviderEffect: boolean;
+    readonly recovery: Effect.Effect<A, E, R>;
+  }): Effect.Effect<void, never, R> =>
+    input.recovery.pipe(
+      Effect.asVoid,
+      Effect.catchCause((recoveryCause) =>
+        Effect.logWarning(
+          `provider command reactor failed to recover turn ${input.operation} failure`,
+          {
+            eventType: input.event.type,
+            threadId: input.event.payload.threadId,
+            ...providerEffectRecoveryLogFields({
+              sensitiveProviderEffect: input.sensitiveProviderEffect,
+              recoveryCause: Cause.pretty(recoveryCause),
+              originalCause: formatFailureDetail(input.cause),
+              sanitizedCode: classifyProviderEffectFailure(input.cause).sanitizedCode,
+            }),
+          },
+        ),
+      ),
+    );
 
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
@@ -1258,6 +1309,7 @@ const make = Effect.gen(function* () {
       createdAt: event.payload.createdAt,
     });
     yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.timeout(providerEffectTimeout),
       Effect.tap((turn) =>
         appendProviderEffectOutcome({
           operationId,
@@ -1272,7 +1324,7 @@ const make = Effect.gen(function* () {
       ),
       Effect.catchCause((cause) => {
         const outcome = classifyProviderEffectFailure(cause);
-        return appendProviderEffectOutcome({
+        const recovery = appendProviderEffectOutcome({
           operationId,
           operation: "start",
           ...outcome,
@@ -1281,6 +1333,13 @@ const make = Effect.gen(function* () {
           actualTurnId: null,
           createdAt: event.payload.createdAt,
         }).pipe(Effect.andThen(recoverTurnStartFailure(cause)));
+        return recoverProviderEffectFailure({
+          operation: "start",
+          event,
+          cause,
+          sensitiveProviderEffect,
+          recovery,
+        });
       }),
       Effect.forkScoped,
     );
@@ -1331,6 +1390,7 @@ const make = Effect.gen(function* () {
         clientUserMessageId: event.payload.clientUserMessageId,
       })
       .pipe(
+        Effect.timeout(providerEffectTimeout),
         Effect.tap((turn) =>
           appendProviderEffectOutcome({
             operationId,
@@ -1345,7 +1405,7 @@ const make = Effect.gen(function* () {
         ),
         Effect.catchCause((cause) => {
           const outcome = classifyProviderEffectFailure(cause);
-          return appendProviderEffectOutcome({
+          const recovery = appendProviderEffectOutcome({
             operationId,
             operation: "steer",
             ...outcome,
@@ -1365,6 +1425,13 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
+          return recoverProviderEffectFailure({
+            operation: "steer",
+            event,
+            cause,
+            sensitiveProviderEffect,
+            recovery,
+          });
         }),
         Effect.forkScoped,
       );
@@ -1407,6 +1474,7 @@ const make = Effect.gen(function* () {
         turnId: event.payload.turnId,
       })
       .pipe(
+        Effect.timeout(providerEffectTimeout),
         Effect.tap(() =>
           appendProviderEffectOutcome({
             operationId,
@@ -1421,7 +1489,7 @@ const make = Effect.gen(function* () {
         ),
         Effect.catchCause((cause) => {
           const outcome = classifyProviderEffectFailure(cause);
-          return appendProviderEffectOutcome({
+          const recovery = appendProviderEffectOutcome({
             operationId,
             operation: "interrupt",
             ...outcome,
@@ -1441,6 +1509,13 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
+          return recoverProviderEffectFailure({
+            operation: "interrupt",
+            event,
+            cause,
+            sensitiveProviderEffect,
+            recovery,
+          });
         }),
         Effect.forkScoped,
       );
