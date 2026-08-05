@@ -24,8 +24,10 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
@@ -52,6 +54,8 @@ import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQu
 import {
   providerErrorLabel,
   providerErrorLabelFromInstanceHint,
+  providerEffectRecoveryLogFields,
+  ProviderEffectTimeout,
   ProviderCommandReactorLive,
 } from "./ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -142,6 +146,20 @@ describe("ProviderCommandReactor", () => {
     it("uses the unknown driver kind when the resolved driver is not registered locally", () => {
       expect(providerErrorLabel("third_party_driver")).toBe("third_party_driver");
     });
+
+    it("redacts sensitive provider recovery failures", () => {
+      expect(
+        providerEffectRecoveryLogFields({
+          sensitiveProviderEffect: true,
+          recoveryCause: "persistence stack",
+          originalCause: "secret provider transcript",
+          sanitizedCode: "provider_outcome_unknown",
+        }),
+      ).toEqual({
+        cause: "provider_failure_recovery_failed",
+        originalCause: "provider_outcome_unknown",
+      });
+    });
   });
 
   async function createHarness(input?: {
@@ -151,6 +169,9 @@ describe("ProviderCommandReactor", () => {
     readonly requiresNewThreadForModelChange?: boolean;
     readonly titleRegenerationCompletionDispatchFailures?: number;
     readonly titleRegenerationBeforeStart?: "one" | "two";
+    readonly providerEffectTimeout?: Duration.Input;
+    readonly providerEffectRecoveryDispatchFailures?: number;
+    readonly captureLogs?: boolean;
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
@@ -366,6 +387,11 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     let titleRegenerationCompletionDispatchAttempts = 0;
+    let providerEffectRecoveryDispatchAttempts = 0;
+    const logs: Array<{ readonly message: unknown }> = [];
+    const logger = Logger.make(({ message }) => {
+      logs.push({ message });
+    });
     const reactorOrchestrationLayer = Layer.effect(
       OrchestrationEngineService,
       Effect.gen(function* () {
@@ -380,6 +406,18 @@ describe("ProviderCommandReactor", () => {
                 (input?.titleRegenerationCompletionDispatchFailures ?? 0)
               ) {
                 return Effect.die(new Error("Injected title regeneration completion failure"));
+              }
+            }
+            if (
+              command.type === "thread.provider-effect.outcome.set" &&
+              command.outcome.state !== "pending"
+            ) {
+              providerEffectRecoveryDispatchAttempts += 1;
+              if (
+                providerEffectRecoveryDispatchAttempts <=
+                (input?.providerEffectRecoveryDispatchFailures ?? 0)
+              ) {
+                return Effect.die(new Error("Injected provider effect recovery failure"));
               }
             }
             return engine.dispatch(command);
@@ -418,7 +456,16 @@ describe("ProviderCommandReactor", () => {
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
-      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(
+        input?.captureLogs === true
+          ? Layer.merge(NodeServices.layer, Logger.layer([logger], { mergeWithExisting: false }))
+          : NodeServices.layer,
+      ),
+      Layer.provideMerge(
+        input?.providerEffectTimeout === undefined
+          ? Layer.empty
+          : Layer.succeed(ProviderEffectTimeout, input.providerEffectTimeout),
+      ),
     );
     runtime = ManagedRuntime.make(layer);
 
@@ -496,6 +543,11 @@ describe("ProviderCommandReactor", () => {
     return {
       engine,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      readEvents: () =>
+        runtime!.runPromise(
+          Stream.runCollect(engine.readEvents(0)).pipe(Effect.map((events) => Array.from(events))),
+        ),
+      logs,
       startSession,
       sendTurn,
       interruptTurn,
@@ -513,6 +565,9 @@ describe("ProviderCommandReactor", () => {
       runEffect,
       get titleRegenerationCompletionDispatchAttempts() {
         return titleRegenerationCompletionDispatchAttempts;
+      },
+      get providerEffectRecoveryDispatchAttempts() {
+        return providerEffectRecoveryDispatchAttempts;
       },
     };
   }
@@ -3056,6 +3111,287 @@ describe("ProviderCommandReactor", () => {
     expect(serialized).not.toContain(secret);
     expect(serialized).not.toContain("raw cause");
   });
+
+  it.each(["steer", "interrupt"] as const)(
+    "times out a never-resolving provider %s with a terminal outcome",
+    async (operation) => {
+      const harness = await createHarness({ providerEffectTimeout: "250 millis" });
+      const now = "2026-01-01T00:00:00.000Z";
+      let providerEffectInterrupted = false;
+      const neverResolvingEffect = Effect.never.pipe(
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            providerEffectInterrupted = true;
+          }),
+        ),
+      );
+      if (operation === "steer") {
+        harness.steerTurn.mockImplementation(() => neverResolvingEffect as never);
+      } else {
+        harness.interruptTurn.mockImplementation(() => neverResolvingEffect as never);
+      }
+
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-session-set-timeout-${operation}`),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: asTurnId("turn-1"),
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await harness.runEffect(
+        operation === "steer"
+          ? harness.engine.dispatch({
+              type: "thread.turn.steer",
+              commandId: CommandId.make("cmd-timeout-steer"),
+              threadId: ThreadId.make("thread-1"),
+              expectedTurnId: asTurnId("turn-1"),
+              message: {
+                messageId: asMessageId("message-timeout-steer"),
+                role: "user",
+                text: "Steer forever.",
+                attachments: [],
+              },
+              createdAt: now,
+            })
+          : harness.engine.dispatch({
+              type: "thread.turn.interrupt",
+              commandId: CommandId.make("cmd-timeout-interrupt"),
+              threadId: ThreadId.make("thread-1"),
+              turnId: asTurnId("turn-1"),
+              createdAt: now,
+            }),
+      );
+
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make(`cmd-after-timeout-${operation}`),
+          threadId: ThreadId.make("thread-1"),
+          title: `Processed after ${operation}`,
+        }),
+      );
+      await waitFor(async () => {
+        const model = await harness.readModel();
+        return (
+          model.threads.find((thread) => thread.id === ThreadId.make("thread-1"))?.title ===
+          `Processed after ${operation}`
+        );
+      });
+      await waitFor(() =>
+        operation === "steer"
+          ? harness.steerTurn.mock.calls.length === 1
+          : harness.interruptTurn.mock.calls.length === 1,
+      );
+      await waitFor(() => providerEffectInterrupted);
+      await waitFor(async () => {
+        const outcomes = (await harness.readEvents()).flatMap((event) =>
+          event.type === "thread.provider-effect-outcome-set" &&
+          event.payload.outcome.operation === operation
+            ? [event.payload.outcome]
+            : [],
+        );
+        return outcomes.some((outcome) => outcome.state !== "pending");
+      });
+
+      const outcomes = (await harness.readEvents()).flatMap((event) =>
+        event.type === "thread.provider-effect-outcome-set" &&
+        event.payload.outcome.operation === operation
+          ? [event.payload.outcome]
+          : [],
+      );
+      const pending = outcomes.find((outcome) => outcome.state === "pending");
+      const terminal = outcomes.find((outcome) => outcome.sanitizedCode === "provider_timeout");
+      expect(terminal).toMatchObject({
+        operation,
+        state: "indeterminate",
+        sanitizedCode: "provider_timeout",
+      });
+      expect(terminal?.operationId).toBe(pending?.operationId);
+      await waitFor(async () => {
+        const thread = (await harness.readModel()).threads.find(
+          (entry) => entry.id === ThreadId.make("thread-1"),
+        );
+        return (
+          thread?.activities.some(
+            (activity) => activity.kind === `provider.turn.${operation}.failed`,
+          ) ?? false
+        );
+      });
+    },
+  );
+
+  it("times out a never-resolving provider turn start", async () => {
+    const harness = await createHarness({ providerEffectTimeout: "250 millis" });
+    const now = "2026-01-01T00:00:00.000Z";
+    let providerEffectInterrupted = false;
+    harness.sendTurn.mockImplementation(
+      () =>
+        Effect.never.pipe(
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              providerEffectInterrupted = true;
+            }),
+          ),
+        ) as never,
+    );
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-timeout-start"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("message-timeout-start"),
+          role: "user",
+          text: "Start forever.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-after-timeout-start"),
+        threadId: ThreadId.make("thread-1"),
+        title: "Processed after start",
+      }),
+    );
+    await waitFor(async () => {
+      const model = await harness.readModel();
+      return (
+        model.threads.find((thread) => thread.id === ThreadId.make("thread-1"))?.title ===
+        "Processed after start"
+      );
+    });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(() => providerEffectInterrupted);
+    await waitFor(async () =>
+      (await harness.readEvents()).some(
+        (event) =>
+          event.type === "thread.provider-effect-outcome-set" &&
+          event.payload.outcome.operation === "start" &&
+          event.payload.outcome.state === "indeterminate" &&
+          event.payload.outcome.sanitizedCode === "provider_timeout",
+      ),
+    );
+  });
+
+  it.each(["steer", "interrupt"] as const)(
+    "logs provider %s recovery failures from the detached fiber",
+    async (operation) => {
+      const harness = await createHarness({
+        providerEffectRecoveryDispatchFailures: 1,
+        captureLogs: true,
+      });
+      const now = "2026-01-01T00:00:00.000Z";
+      const providerFailure = new ProviderAdapterRequestError({
+        provider: ProviderDriverKind.make("codex"),
+        method: operation === "steer" ? "thread/steer" : "thread/interrupt",
+        detail: `${operation} failed`,
+        cause: new Error(`${operation} failed`),
+      });
+      if (operation === "steer") {
+        harness.steerTurn.mockImplementation(() => Effect.fail(providerFailure) as never);
+      } else {
+        harness.interruptTurn.mockImplementation(() => Effect.fail(providerFailure) as never);
+      }
+
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-session-set-recovery-${operation}`),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: asTurnId("turn-1"),
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await harness.runEffect(
+        operation === "steer"
+          ? harness.engine.dispatch({
+              type: "thread.turn.steer",
+              commandId: CommandId.make("cmd-recovery-steer"),
+              threadId: ThreadId.make("thread-1"),
+              expectedTurnId: asTurnId("turn-1"),
+              message: {
+                messageId: asMessageId("message-recovery-steer"),
+                role: "user",
+                text: "Recover this steer.",
+                attachments: [],
+              },
+              createdAt: now,
+            })
+          : harness.engine.dispatch({
+              type: "thread.turn.interrupt",
+              commandId: CommandId.make("cmd-recovery-interrupt"),
+              threadId: ThreadId.make("thread-1"),
+              turnId: asTurnId("turn-1"),
+              createdAt: now,
+            }),
+      );
+
+      const message = `provider command reactor failed to recover turn ${operation} failure`;
+      await waitFor(() =>
+        operation === "steer"
+          ? harness.steerTurn.mock.calls.length === 1
+          : harness.interruptTurn.mock.calls.length === 1,
+      );
+      await waitFor(() => harness.providerEffectRecoveryDispatchAttempts === 1);
+      await waitFor(() =>
+        harness.logs.some((log) => Array.isArray(log.message) && log.message[0] === message),
+      );
+      const recoveryLog = harness.logs.find(
+        (log) => Array.isArray(log.message) && log.message[0] === message,
+      );
+      const recoveryDetail = Array.isArray(recoveryLog?.message)
+        ? recoveryLog.message[1]
+        : undefined;
+      expect(recoveryDetail).toMatchObject({
+        eventType: `thread.turn-${operation}-requested`,
+        threadId: ThreadId.make("thread-1"),
+        originalCause: `${operation} failed`,
+      });
+      expect(String((recoveryDetail as { readonly cause?: unknown } | undefined)?.cause)).toContain(
+        "Injected provider effect recovery failure",
+      );
+
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make(`cmd-after-recovery-${operation}`),
+          threadId: ThreadId.make("thread-1"),
+          title: `Processed after recovery ${operation}`,
+        }),
+      );
+      await waitFor(async () => {
+        const model = await harness.readModel();
+        return (
+          model.threads.find((thread) => thread.id === ThreadId.make("thread-1"))?.title ===
+          `Processed after recovery ${operation}`
+        );
+      });
+    },
+  );
 
   it("keeps processing commands when a provider interrupt never resolves", async () => {
     const harness = await createHarness();
