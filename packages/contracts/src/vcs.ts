@@ -25,6 +25,15 @@ export const VcsDriverCapabilities = Schema.Struct({
   supportsBookmarks: Schema.Boolean,
   supportsAtomicSnapshot: Schema.Boolean,
   supportsPushDefaultRemote: Schema.Boolean,
+  supportsStatus: Schema.Boolean,
+  supportsRefMutation: Schema.Boolean,
+  supportsWorkspaceMutation: Schema.Boolean,
+  supportsDescribeChange: Schema.Boolean,
+  supportsStartChange: Schema.Boolean,
+  supportsFetch: Schema.Boolean,
+  supportsPush: Schema.Boolean,
+  supportsChangeRequests: Schema.Boolean,
+  supportsJuzu: Schema.Boolean,
   ignoreClassifier: Schema.Literals(["native", "git-compatible-fallback"]),
 });
 export type VcsDriverCapabilities = typeof VcsDriverCapabilities.Type;
@@ -57,6 +66,18 @@ export const VcsListRemotesResult = Schema.Struct({
   freshness: VcsFreshness,
 });
 export type VcsListRemotesResult = typeof VcsListRemotesResult.Type;
+
+export const VcsWorkingCopyState = Schema.Struct({
+  changeId: Schema.NullOr(TrimmedNonEmptyString),
+  commitId: Schema.NullOr(TrimmedNonEmptyString),
+  description: Schema.String,
+  workspaceName: Schema.NullOr(TrimmedNonEmptyString),
+  isEmpty: Schema.Boolean,
+  hasConflicts: Schema.Boolean,
+  conflictPaths: Schema.Array(TrimmedNonEmptyString),
+  bookmarks: Schema.Array(TrimmedNonEmptyString),
+});
+export type VcsWorkingCopyState = typeof VcsWorkingCopyState.Type;
 
 export interface VcsProcessErrorContext {
   readonly operation: string;

@@ -12,10 +12,15 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@shuv2code/client-runtime/environment";
-import type { ScopedThreadRef, SidebarProjectGroupingMode } from "@shuv2code/contracts";
+import type {
+  ScopedThreadRef,
+  SidebarProjectGroupingMode,
+  VcsDriverKind,
+} from "@shuv2code/contracts";
 import {
   AlarmClockIcon,
   AlarmClockOffIcon,
+  BookmarkIcon,
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
@@ -240,6 +245,7 @@ function SidebarV2ThreadTooltip({
   branchMismatch,
   terminalStatus,
   terminalProcessCount,
+  vcsKind,
 }: {
   thread: SidebarThreadSummary;
   projectTitle: string | null;
@@ -254,6 +260,7 @@ function SidebarV2ThreadTooltip({
   } | null;
   terminalStatus: TerminalStatusIndicator | null;
   terminalProcessCount: number;
+  vcsKind: VcsDriverKind;
 }) {
   return (
     <TooltipPopup
@@ -286,7 +293,11 @@ function SidebarV2ThreadTooltip({
           ) : null}
           {thread.branch ? (
             <div className="flex min-w-0 items-center gap-2">
-              <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
+              {vcsKind === "jj" ? (
+                <BookmarkIcon className="size-3 shrink-0 stroke-muted-foreground" />
+              ) : (
+                <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
+              )}
               <div className="min-w-0 truncate text-foreground/75">{thread.branch}</div>
             </div>
           ) : null}
@@ -531,12 +542,16 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
         })
       : null,
   );
-  const branchMismatch = resolveLocalCheckoutBranchMismatch({
-    effectiveEnvMode: thread.worktreePath === null ? "local" : "worktree",
-    activeWorktreePath: thread.worktreePath,
-    activeThreadBranch: thread.branch,
-    currentGitBranch: gitStatus.data?.refName ?? null,
-  });
+  const vcsKind = gitStatus.data?.kind ?? "unknown";
+  const branchMismatch =
+    vcsKind === "jj"
+      ? null
+      : resolveLocalCheckoutBranchMismatch({
+          effectiveEnvMode: thread.worktreePath === null ? "local" : "worktree",
+          activeWorktreePath: thread.worktreePath,
+          activeThreadBranch: thread.branch,
+          currentGitBranch: gitStatus.data?.refName ?? null,
+        });
   const pr = resolveThreadPr({
     threadBranch: thread.branch,
     gitStatus: gitStatus.data,
@@ -575,6 +590,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       branchMismatch={branchMismatch}
       terminalStatus={terminalStatus}
       terminalProcessCount={terminalProcessCount}
+      vcsKind={vcsKind}
     />
   );
 
@@ -1097,12 +1113,16 @@ const SidebarV2SearchResultRow = memo(function SidebarV2SearchResultRow(props: {
         })
       : null,
   );
-  const branchMismatch = resolveLocalCheckoutBranchMismatch({
-    effectiveEnvMode: thread.worktreePath === null ? "local" : "worktree",
-    activeWorktreePath: thread.worktreePath,
-    activeThreadBranch: thread.branch,
-    currentGitBranch: gitStatus.data?.refName ?? null,
-  });
+  const vcsKind = gitStatus.data?.kind ?? "unknown";
+  const branchMismatch =
+    vcsKind === "jj"
+      ? null
+      : resolveLocalCheckoutBranchMismatch({
+          effectiveEnvMode: thread.worktreePath === null ? "local" : "worktree",
+          activeWorktreePath: thread.worktreePath,
+          activeThreadBranch: thread.branch,
+          currentGitBranch: gitStatus.data?.refName ?? null,
+        });
   const modelInstanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
   const providerEntry = props.providerEntryByInstanceId.get(modelInstanceId) ?? null;
   const driverKind = providerEntry?.driverKind ?? null;
@@ -1167,6 +1187,7 @@ const SidebarV2SearchResultRow = memo(function SidebarV2SearchResultRow(props: {
           branchMismatch={branchMismatch}
           terminalStatus={terminalStatus}
           terminalProcessCount={runningTerminalIds.length}
+          vcsKind={vcsKind}
         />
       </Tooltip>
     </li>

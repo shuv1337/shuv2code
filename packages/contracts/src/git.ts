@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { SourceControlProviderError, SourceControlProviderInfo } from "./sourceControl.ts";
-import { VcsDriverKind } from "./vcs.ts";
+import { VcsDriverCapabilities, VcsDriverKind, VcsWorkingCopyState } from "./vcs.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const GIT_LIST_BRANCHES_MAX_LIMIT = 200;
@@ -75,11 +75,22 @@ export type GitRunStackedActionToast = typeof GitRunStackedActionToast.Type;
 
 export const VcsRef = Schema.Struct({
   name: TrimmedNonEmptyStringSchema,
+  kind: Schema.optional(Schema.Literals(["branch", "bookmark"])),
   isRemote: Schema.optional(Schema.Boolean),
   remoteName: Schema.optional(TrimmedNonEmptyStringSchema),
   current: Schema.Boolean,
   isDefault: Schema.Boolean,
   worktreePath: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
+  targetChangeId: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  targetCommitId: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  tracking: Schema.optional(
+    Schema.Struct({
+      state: Schema.Literals(["untracked", "synced", "ahead", "behind", "divergent", "conflicted"]),
+      remoteName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+      aheadCount: NonNegativeInt,
+      behindCount: NonNegativeInt,
+    }),
+  ),
 });
 export type VcsRef = typeof VcsRef.Type;
 
@@ -108,6 +119,41 @@ export const VcsPullInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
 });
 export type VcsPullInput = typeof VcsPullInput.Type;
+
+export const VcsFetchInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  remoteName: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type VcsFetchInput = typeof VcsFetchInput.Type;
+
+export const VcsDescribeChangeInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  description: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000)),
+});
+export type VcsDescribeChangeInput = typeof VcsDescribeChangeInput.Type;
+
+export const VcsStartChangeInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  parentRevision: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type VcsStartChangeInput = typeof VcsStartChangeInput.Type;
+
+export const VcsPushBookmarkInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  bookmarkName: TrimmedNonEmptyStringSchema,
+  remoteName: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type VcsPushBookmarkInput = typeof VcsPushBookmarkInput.Type;
+
+export const VcsCreateChangeRequestInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  bookmarkName: TrimmedNonEmptyStringSchema,
+  remoteName: Schema.optional(TrimmedNonEmptyStringSchema),
+  baseRefName: Schema.optional(TrimmedNonEmptyStringSchema),
+  title: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(512)),
+  body: Schema.String.check(Schema.isMaxLength(100_000)),
+});
+export type VcsCreateChangeRequestInput = typeof VcsCreateChangeRequestInput.Type;
 
 export const GitRunStackedActionInput = Schema.Struct({
   actionId: TrimmedNonEmptyStringSchema,
@@ -200,6 +246,10 @@ const VcsStatusChangeRequest = Schema.Struct({
 });
 
 const VcsStatusLocalShape = {
+  // Optional on the wire for rolling compatibility with pre-driver-aware peers.
+  // Current servers always populate these fields.
+  kind: Schema.optional(VcsDriverKind),
+  capabilities: Schema.optional(VcsDriverCapabilities),
   isRepo: Schema.Boolean,
   sourceControlProvider: Schema.optional(SourceControlProviderInfo),
   hasPrimaryRemote: Schema.Boolean,
@@ -217,6 +267,7 @@ const VcsStatusLocalShape = {
     insertions: NonNegativeInt,
     deletions: NonNegativeInt,
   }),
+  workingCopy: Schema.optional(Schema.NullOr(VcsWorkingCopyState)),
 };
 
 const VcsStatusRemoteShape = {
@@ -319,6 +370,41 @@ export const VcsPullResult = Schema.Struct({
   upstreamRef: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
 });
 export type VcsPullResult = typeof VcsPullResult.Type;
+
+export const VcsFetchResult = Schema.Struct({
+  status: Schema.Literal("fetched"),
+  remoteName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+});
+export type VcsFetchResult = typeof VcsFetchResult.Type;
+
+export const VcsDescribeChangeResult = Schema.Struct({
+  changeId: TrimmedNonEmptyStringSchema,
+  commitId: TrimmedNonEmptyStringSchema,
+  description: TrimmedNonEmptyStringSchema,
+});
+export type VcsDescribeChangeResult = typeof VcsDescribeChangeResult.Type;
+
+export const VcsStartChangeResult = Schema.Struct({
+  changeId: TrimmedNonEmptyStringSchema,
+  commitId: TrimmedNonEmptyStringSchema,
+});
+export type VcsStartChangeResult = typeof VcsStartChangeResult.Type;
+
+export const VcsPushBookmarkResult = Schema.Struct({
+  status: Schema.Literal("pushed"),
+  bookmarkName: TrimmedNonEmptyStringSchema,
+  remoteName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+});
+export type VcsPushBookmarkResult = typeof VcsPushBookmarkResult.Type;
+
+export const VcsCreateChangeRequestResult = Schema.Struct({
+  status: Schema.Literals(["created", "opened_existing"]),
+  bookmarkName: TrimmedNonEmptyStringSchema,
+  baseRefName: TrimmedNonEmptyStringSchema,
+  url: Schema.NullOr(Schema.String),
+  number: Schema.NullOr(PositiveInt),
+});
+export type VcsCreateChangeRequestResult = typeof VcsCreateChangeRequestResult.Type;
 
 // RPC / domain errors
 export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()("GitCommandError", {

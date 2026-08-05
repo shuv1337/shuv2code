@@ -6,7 +6,11 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 
-import { resolveGitWorktreePath, resolveWorktreeShuv2CodeHome } from "./devHome.ts";
+import {
+  resolveGitWorktreePath,
+  resolveJjWorkspacePath,
+  resolveWorktreeShuv2CodeHome,
+} from "./devHome.ts";
 
 const makeRepo = (
   kind:
@@ -16,7 +20,9 @@ const makeRepo = (
     | "submodule"
     | "unreadable-git-file"
     | "bare-repo-worktree"
-    | "custom-common-dir-worktree",
+    | "custom-common-dir-worktree"
+    | "jj-workspace"
+    | "jj-default",
 ) =>
   Effect.acquireRelease(
     Effect.sync(() => {
@@ -35,6 +41,11 @@ const makeRepo = (
         NodeFS.writeFileSync(NodePath.join(root, ".git"), "not a gitdir pointer\n");
       } else if (kind === "checkout") {
         NodeFS.mkdirSync(NodePath.join(root, ".git"));
+      } else if (kind === "jj-workspace") {
+        NodeFS.mkdirSync(NodePath.join(root, ".jj"));
+        NodeFS.writeFileSync(NodePath.join(root, ".jj", "repo"), "../../source/.jj/repo\n");
+      } else if (kind === "jj-default") {
+        NodeFS.mkdirSync(NodePath.join(root, ".jj", "repo"), { recursive: true });
       }
       const nested = NodePath.join(root, "apps", "web", "src");
       NodeFS.mkdirSync(nested, { recursive: true });
@@ -94,6 +105,22 @@ describe("resolveGitWorktreePath", () => {
   );
 });
 
+describe("resolveJjWorkspacePath", () => {
+  it.effect("finds a linked JJ workspace from a nested directory", () =>
+    Effect.gen(function* () {
+      const { root, nested } = yield* makeRepo("jj-workspace");
+      assert.equal(yield* resolveJjWorkspacePath(nested), NodePath.resolve(root));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not classify the default JJ workspace as linked", () =>
+    Effect.gen(function* () {
+      const { nested } = yield* makeRepo("jj-default");
+      assert.equal(yield* resolveJjWorkspacePath(nested), undefined);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
+
 describe("resolveWorktreeShuv2CodeHome", () => {
   it.effect("answers with .shuv2code before the dev runner creates it", () =>
     Effect.gen(function* () {
@@ -101,6 +128,16 @@ describe("resolveWorktreeShuv2CodeHome", () => {
       const home = yield* resolveWorktreeShuv2CodeHome(nested);
       assert.equal(home, NodePath.join(NodePath.resolve(root), ".shuv2code"));
       assert.isFalse(NodeFS.existsSync(home ?? ""));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("uses isolated state for a linked JJ workspace", () =>
+    Effect.gen(function* () {
+      const { root, nested } = yield* makeRepo("jj-workspace");
+      assert.equal(
+        yield* resolveWorktreeShuv2CodeHome(nested),
+        NodePath.join(NodePath.resolve(root), ".shuv2code"),
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

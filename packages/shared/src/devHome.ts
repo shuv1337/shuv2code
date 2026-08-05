@@ -86,6 +86,43 @@ export const resolveGitWorktreePath = (
   });
 
 /**
+ * The root of a linked Jujutsu workspace. A linked workspace stores `.jj/repo`
+ * as a pointer file, while the repository's default workspace stores it as a
+ * directory. This mirrors Git's linked-worktree marker without consulting Git.
+ */
+export const resolveJjWorkspacePath = (
+  cwd: string,
+): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+
+    let directory = path.resolve(cwd);
+    for (;;) {
+      const jjPath = path.join(directory, ".jj");
+      const jjInfo = yield* fileSystem.stat(jjPath).pipe(Effect.option);
+      if (Option.isSome(jjInfo)) {
+        if (jjInfo.value.type !== "Directory") return undefined;
+        const repoInfo = yield* fileSystem.stat(path.join(jjPath, "repo")).pipe(Effect.option);
+        return Option.isSome(repoInfo) && repoInfo.value.type === "File" ? directory : undefined;
+      }
+      const parent = path.dirname(directory);
+      if (parent === directory) return undefined;
+      directory = parent;
+    }
+  });
+
+/** Resolves either a native JJ workspace or a linked Git worktree. */
+export const resolveVcsWorkspacePath = (
+  cwd: string,
+): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  resolveJjWorkspacePath(cwd).pipe(
+    Effect.flatMap((workspace) =>
+      workspace === undefined ? resolveGitWorktreePath(cwd) : Effect.succeed(workspace),
+    ),
+  );
+
+/**
  * The worktree-local data directory for `cwd`, or undefined outside a linked
  * worktree. Deliberately does not require the directory to exist yet: falling
  * back because it is missing would send callers at the shared home.
@@ -94,7 +131,7 @@ export const resolveWorktreeShuv2CodeHome = (
   cwd: string,
 ): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
-    const worktreePath = yield* resolveGitWorktreePath(cwd);
+    const worktreePath = yield* resolveVcsWorkspacePath(cwd);
     if (worktreePath === undefined) {
       return undefined;
     }

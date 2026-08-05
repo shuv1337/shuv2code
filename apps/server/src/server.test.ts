@@ -113,6 +113,7 @@ import * as VcsDriver from "./vcs/VcsDriver.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
+import * as VcsChangeRequestService from "./vcs/VcsChangeRequestService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
@@ -417,6 +418,15 @@ const buildAppUnderTest = (options?: {
         supportsBookmarks: false,
         supportsAtomicSnapshot: false,
         supportsPushDefaultRemote: true,
+        supportsStatus: true,
+        supportsRefMutation: true,
+        supportsWorkspaceMutation: true,
+        supportsDescribeChange: false,
+        supportsStartChange: false,
+        supportsFetch: true,
+        supportsPush: true,
+        supportsChangeRequests: true,
+        supportsJuzu: false,
         ignoreClassifier: "native",
       },
       execute: () =>
@@ -682,9 +692,12 @@ const buildAppUnderTest = (options?: {
       Layer.provide(reviewLayer),
       Layer.provide(vcsProvisioningLayer),
       Layer.provide(
-        Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
-          ...options?.layers?.sourceControlRepositoryService,
-        }),
+        Layer.merge(
+          Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+            ...options?.layers?.sourceControlRepositoryService,
+          }),
+          Layer.mock(VcsChangeRequestService.VcsChangeRequestService)({}),
+        ),
       ),
       Layer.provideMerge(vcsStatusBroadcasterLayer),
       Layer.provide(
