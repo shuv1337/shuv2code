@@ -71,16 +71,19 @@ interface OpenCodeResumeCursor {
    * without minting a conflicting turn id that orchestration would reject.
    */
   readonly activeTurnId?: string;
+  readonly durableSessionRecovery?: boolean;
 }
 
 function makeOpenCodeResumeCursor(input: {
   readonly sessionId: string;
   readonly activeTurnId?: string;
+  readonly durableSessionRecovery: boolean;
 }): OpenCodeResumeCursor {
   return {
     schemaVersion: OPENCODE_RESUME_VERSION,
     sessionId: input.sessionId,
     ...(input.activeTurnId !== undefined ? { activeTurnId: input.activeTurnId } : {}),
+    durableSessionRecovery: input.durableSessionRecovery,
   };
 }
 
@@ -106,10 +109,13 @@ function parseOpenCodeResume(raw: unknown): OpenCodeResumeCursor | undefined {
     typeof record.activeTurnId === "string" && record.activeTurnId.trim().length > 0
       ? record.activeTurnId.trim()
       : undefined;
+  const durableSessionRecovery =
+    typeof record.durableSessionRecovery === "boolean" ? record.durableSessionRecovery : undefined;
   return {
     schemaVersion: OPENCODE_RESUME_VERSION,
     sessionId: record.sessionId.trim(),
     ...(activeTurnId !== undefined ? { activeTurnId } : {}),
+    ...(durableSessionRecovery !== undefined ? { durableSessionRecovery } : {}),
   };
 }
 
@@ -625,6 +631,7 @@ function writeOpenCodeResumeCursor(
     ...context.session,
     resumeCursor: makeOpenCodeResumeCursor({
       sessionId: context.openCodeSessionId,
+      durableSessionRecovery: isSharedOpenCodeServer(context.server),
       ...(activeTurnId !== undefined ? { activeTurnId: String(activeTurnId) } : {}),
     }),
   };
@@ -675,6 +682,24 @@ export function makeOpenCodeAdapter(
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const legacyLocalRecoveryIsDurable = yield* Effect.cached(
+      openCodeRuntime
+        .runOpenCodeCommand({
+          binaryPath: openCodeSettings.binaryPath,
+          args: ["--version"],
+          ...(options?.environment !== undefined ? { environment: options.environment } : {}),
+        })
+        .pipe(
+          Effect.timeoutOption("5 seconds"),
+          Effect.map(
+            Option.match({
+              onNone: () => false,
+              onSome: (result) => detectOpenCodeProtocolFromVersionOutput(result.stdout) === "v2",
+            }),
+          ),
+          Effect.orElseSucceed(() => false),
+        ),
+    );
     const sameDirectory = (left: string, right: string) =>
       isSameOpenCodeDirectory(fileSystem, path, left, right);
     const nativeEventLogger =
@@ -1615,6 +1640,7 @@ export function makeOpenCodeAdapter(
           // re-adopts the same orchestration-visible turn id.
           resumeCursor: makeOpenCodeResumeCursor({
             sessionId: started.openCodeSession.id,
+            durableSessionRecovery: isSharedOpenCodeServer(started.server),
             ...(adoptedTurnId !== undefined ? { activeTurnId: String(adoptedTurnId) } : {}),
           }),
           ...(adoptedTurnId !== undefined ? { activeTurnId: adoptedTurnId } : {}),
@@ -1999,6 +2025,19 @@ export function makeOpenCodeAdapter(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
+        hasDurableSessionRecovery: (resumeCursor) => {
+          const parsed = parseOpenCodeResume(resumeCursor);
+          if (parsed?.durableSessionRecovery !== undefined) {
+            return Effect.succeed(parsed.durableSessionRecovery);
+          }
+          if (parsed === undefined) {
+            return Effect.succeed(false);
+          }
+          if (openCodeSettings.serverUrl.trim().length > 0) {
+            return Effect.succeed(true);
+          }
+          return legacyLocalRecoveryIsDurable;
+        },
       },
       startSession,
       sendTurn,

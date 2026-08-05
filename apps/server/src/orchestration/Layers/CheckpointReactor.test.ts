@@ -118,6 +118,7 @@ function createProviderServiceHarness(
     stopSession: () => unsupported(),
     listSessions,
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+    hasDurableSessionRecovery: () => Effect.succeed(false),
     getInstanceInfo: (instanceId) =>
       Effect.succeed({
         instanceId,

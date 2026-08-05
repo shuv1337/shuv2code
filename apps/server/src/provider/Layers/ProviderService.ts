@@ -1526,6 +1526,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const getCapabilities: ProviderServiceMethod<"getCapabilities"> = (instanceId) =>
     registry.getByInstance(instanceId).pipe(Effect.map((adapter) => adapter.capabilities));
 
+  const hasDurableSessionRecovery: ProviderServiceMethod<"hasDurableSessionRecovery"> = (
+    threadId,
+    instanceId,
+  ) =>
+    Effect.gen(function* () {
+      const adapter = yield* registry.getByInstance(instanceId);
+      const binding = yield* directory.getBinding(threadId);
+      if (Option.isNone(binding) || binding.value.providerInstanceId !== instanceId) {
+        return false;
+      }
+      const check = adapter.capabilities.hasDurableSessionRecovery;
+      return check === undefined ? false : yield* check(binding.value.resumeCursor);
+    });
+
   const getInstanceInfo: ProviderServiceMethod<"getInstanceInfo"> = (instanceId) =>
     registry.getInstanceInfo(instanceId);
 
@@ -1737,6 +1751,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     stopSession,
     listSessions,
     getCapabilities,
+    hasDurableSessionRecovery,
     getInstanceInfo,
     readThread,
     rollbackConversation,

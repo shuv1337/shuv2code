@@ -346,7 +346,27 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.deepEqual(session.resumeCursor, {
         schemaVersion: 1,
         sessionId: "http://127.0.0.1:9999/session",
+        durableSessionRecovery: true,
       });
+      NodeAssert.equal(
+        yield* adapter.capabilities.hasDurableSessionRecovery!(session.resumeCursor),
+        true,
+      );
+      NodeAssert.equal(
+        yield* adapter.capabilities.hasDurableSessionRecovery!({
+          schemaVersion: 1,
+          sessionId: "private-session",
+          durableSessionRecovery: false,
+        }),
+        false,
+      );
+      NodeAssert.equal(
+        yield* adapter.capabilities.hasDurableSessionRecovery!({
+          schemaVersion: 1,
+          sessionId: "legacy-shared-session",
+        }),
+        true,
+      );
 
       yield* adapter.stopSession(threadId);
     }),
@@ -408,6 +428,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.deepEqual(session.resumeCursor, {
         schemaVersion: 1,
         sessionId: "ses_persisted",
+        durableSessionRecovery: true,
       });
       // Resume re-asserts the permission ruleset for the current runtimeMode.
       NodeAssert.equal(runtimeMock.state.sessionUpdateCalls.length, 1);
@@ -449,6 +470,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         schemaVersion: 1,
         sessionId: "ses_persisted",
         activeTurnId: String(result.turnId),
+        durableSessionRecovery: true,
       });
 
       yield* adapter.stopSession(threadId);
@@ -480,6 +502,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           schemaVersion: 1,
           sessionId: "ses_inflight",
           activeTurnId: "opencode-turn-inflight",
+          durableSessionRecovery: true,
         });
         NodeAssert.equal(runtimeMock.state.statusCalls >= 1, true);
 
@@ -563,6 +586,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.deepEqual(session.resumeCursor, {
         schemaVersion: 1,
         sessionId: "http://127.0.0.1:9999/session",
+        durableSessionRecovery: true,
       });
 
       yield* adapter.stopSession(threadId);
@@ -588,6 +612,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.deepEqual(session.resumeCursor, {
         schemaVersion: 1,
         sessionId: "http://127.0.0.1:9999/session",
+        durableSessionRecovery: true,
       });
 
       yield* adapter.stopSession(threadId);
@@ -673,6 +698,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         NodeAssert.deepEqual(session.resumeCursor, {
           schemaVersion: 1,
           sessionId: "ses_otherdir_fork",
+          durableSessionRecovery: true,
         });
 
         yield* adapter.stopSession(threadId);
@@ -700,6 +726,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.deepEqual(session.resumeCursor, {
         schemaVersion: 1,
         sessionId: "ses_samedir",
+        durableSessionRecovery: true,
       });
 
       yield* adapter.stopSession(threadId);

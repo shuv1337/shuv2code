@@ -37,6 +37,8 @@ export interface ProviderAdapterCapabilities {
    * without starting or superseding it.
    */
   readonly turnSteering?: "same-turn" | "unsupported";
+  /** Decide whether a persisted session cursor represents durable recovery. */
+  readonly hasDurableSessionRecovery?: (resumeCursor: unknown) => Effect.Effect<boolean>;
 }
 
 export interface ProviderThreadTurnSnapshot {
