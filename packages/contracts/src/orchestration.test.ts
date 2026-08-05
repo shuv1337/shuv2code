@@ -8,6 +8,7 @@ import {
   ModelSelection,
   OrchestrationCommand,
   OrchestrationEvent,
+  OrchestrationEventType,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
@@ -54,6 +55,7 @@ function getOptionValue(
 const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPayload);
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
+const decodeOrchestrationEventType = Schema.decodeUnknownEffect(OrchestrationEventType);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
@@ -445,6 +447,13 @@ it.effect("defaults settled fields when decoding historical thread data", () =>
     assert.strictEqual(thread.settledAt, null);
     assert.strictEqual(shell.settledOverride, null);
     assert.strictEqual(shell.settledAt, null);
+  }),
+);
+
+it.effect("accepts provider effect outcomes as persisted orchestration event types", () =>
+  Effect.gen(function* () {
+    const eventType = yield* decodeOrchestrationEventType("thread.provider-effect-outcome-set");
+    assert.strictEqual(eventType, "thread.provider-effect-outcome-set");
   }),
 );
 

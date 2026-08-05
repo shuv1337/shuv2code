@@ -1005,6 +1005,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-start-requested",
   "thread.turn-steer-requested",
   "thread.turn-interrupt-requested",
+  "thread.provider-effect-outcome-set",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
