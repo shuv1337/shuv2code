@@ -931,6 +931,21 @@ function buildClaudeImageContentBlock(input: {
   };
 }
 
+function buildClaudePdfContentBlock(input: {
+  readonly name: string;
+  readonly bytes: Uint8Array;
+}): Record<string, unknown> {
+  return {
+    type: "document",
+    title: input.name,
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: Buffer.from(input.bytes).toString("base64"),
+    },
+  };
+}
+
 const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   input: ProviderSendTurnInput,
   dependencies: {
@@ -947,11 +962,10 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   }
 
   for (const attachment of input.attachments ?? []) {
-    if (attachment.type !== "image") {
-      continue;
-    }
-
-    if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
+    if (
+      attachment.type === "image" &&
+      !SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)
+    ) {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
         method: "turn/start",
@@ -984,10 +998,12 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     );
 
     sdkContent.push(
-      buildClaudeImageContentBlock({
-        mimeType: attachment.mimeType,
-        bytes,
-      }),
+      attachment.type === "image"
+        ? buildClaudeImageContentBlock({
+            mimeType: attachment.mimeType,
+            bytes,
+          })
+        : buildClaudePdfContentBlock({ name: attachment.name, bytes }),
     );
   }
 

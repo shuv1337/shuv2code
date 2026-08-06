@@ -169,12 +169,13 @@ export interface CodexSessionRuntimeOptions {
   readonly runtimeInstanceId?: string;
 }
 
+type CodexAttachmentInput =
+  | { readonly type: "image"; readonly url: string }
+  | { readonly type: "mention"; readonly name: string; readonly path: string };
+
 export interface CodexSessionRuntimeSendTurnInput {
   readonly input?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexAttachmentInput>;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
@@ -186,10 +187,7 @@ export interface CodexSessionRuntimeSendTurnInput {
 export interface CodexSessionRuntimeSteerTurnInput {
   readonly expectedTurnId: TurnId;
   readonly input?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexAttachmentInput>;
   readonly clientUserMessageId: string;
 }
 
@@ -592,10 +590,7 @@ export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
   readonly prompt?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexAttachmentInput>;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;

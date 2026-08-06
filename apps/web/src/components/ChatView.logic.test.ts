@@ -12,10 +12,12 @@ import type { Thread, ThreadShell } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  applyAttachmentPreviewHandoffs,
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
   buildLoadingThreadFromShell,
   buildThreadTurnInterruptInput,
+  collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   dismissBranchMismatchForSession,
@@ -30,6 +32,7 @@ import {
   shouldShowBranchMismatchBanner,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
+import type { ChatMessage } from "../types";
 
 const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
@@ -85,6 +88,80 @@ const readySession = {
   lastError: null,
   updatedAt: "2026-03-29T00:00:10.000Z",
 };
+
+describe("collectUserMessageBlobPreviewUrls", () => {
+  it("retains image and PDF blob previews until persisted URLs are ready", () => {
+    const message: ChatMessage = {
+      id: MessageId.make("preview-handoff-message"),
+      role: "user",
+      text: "Review these attachments",
+      turnId: null,
+      streaming: false,
+      createdAt: now,
+      updatedAt: now,
+      attachments: [
+        {
+          type: "image",
+          id: "image-1",
+          name: "diagram.png",
+          mimeType: "image/png" as const,
+          sizeBytes: 4,
+          previewUrl: "blob:image-preview",
+        },
+        {
+          type: "file",
+          id: "file-1",
+          name: "guide.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 9,
+          previewUrl: "blob:pdf-preview",
+        },
+        {
+          type: "file",
+          id: "file-2",
+          name: "persisted.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 9,
+          previewUrl: "https://example.test/persisted.pdf",
+        },
+      ],
+    };
+
+    expect(collectUserMessageBlobPreviewUrls(message)).toEqual([
+      { attachmentIndex: 0, attachmentType: "image", previewUrl: "blob:image-preview" },
+      { attachmentIndex: 1, attachmentType: "file", previewUrl: "blob:pdf-preview" },
+    ]);
+  });
+
+  it("reapplies mixed PDF and image previews by attachment order and type", () => {
+    const attachments = [
+      {
+        type: "file" as const,
+        id: "server-file-1",
+        name: "guide.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: 9,
+      },
+      {
+        type: "image" as const,
+        id: "server-image-1",
+        name: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 4,
+      },
+    ];
+
+    expect(
+      applyAttachmentPreviewHandoffs(attachments, [
+        { attachmentIndex: 1, attachmentType: "image", previewUrl: "blob:image-preview" },
+        { attachmentIndex: 0, attachmentType: "file", previewUrl: "blob:pdf-preview" },
+      ]),
+    ).toEqual([
+      { ...attachments[0], previewUrl: "blob:pdf-preview" },
+      { ...attachments[1], previewUrl: "blob:image-preview" },
+    ]);
+  });
+});
 
 describe("buildLoadingThreadFromShell", () => {
   it("preserves shell metadata and supplies empty detail collections", () => {

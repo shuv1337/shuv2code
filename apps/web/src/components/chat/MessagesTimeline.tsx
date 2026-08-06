@@ -46,6 +46,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   EyeIcon,
+  FileTextIcon,
   GlobeIcon,
   HammerIcon,
   LoaderCircleIcon,
@@ -897,7 +898,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const userImages = row.message.attachments ?? [];
+  const userAttachments = row.message.attachments ?? [];
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const previewAnnotations: ParsedPreviewAnnotation[] = [];
@@ -913,8 +914,15 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     ...displayedUserMessage.elementContexts,
     ...elementContextState.contexts,
   ];
-  const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
-  const regularImages = userImages.filter((image) => !image.name.startsWith("preview-annotation-"));
+  const previewImages = userAttachments.filter(
+    (attachment) =>
+      attachment.type === "image" && attachment.name.startsWith("preview-annotation-"),
+  );
+  const regularImages = userAttachments.filter(
+    (attachment) =>
+      attachment.type === "image" && !attachment.name.startsWith("preview-annotation-"),
+  );
+  const regularFiles = userAttachments.filter((attachment) => attachment.type === "file");
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
 
   return (
@@ -953,6 +961,42 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             ))}
           </div>
         )}
+        {regularFiles.length > 0 ? (
+          <div className="mb-2 flex max-w-[420px] flex-col gap-1.5">
+            {regularFiles.map((file) => {
+              const content = (
+                <>
+                  <FileTextIcon className="size-5 shrink-0 text-red-500/80" aria-hidden="true" />
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-medium">{file.name}</span>
+                    <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">
+                      PDF
+                    </span>
+                  </span>
+                </>
+              );
+              return file.previewUrl ? (
+                <a
+                  key={file.id}
+                  href={file.previewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-2 rounded-lg border border-border/80 bg-background/70 px-2.5 py-2 hover:bg-background"
+                  aria-label={`Open ${file.name}`}
+                >
+                  {content}
+                </a>
+              ) : (
+                <div
+                  key={file.id}
+                  className="flex items-center gap-2 rounded-lg border border-border/80 bg-background/70 px-2.5 py-2"
+                >
+                  {content}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         {previewAnnotations.map((annotation, index) => (
           <UserMessagePreviewAnnotationCard
             key={annotation.id}

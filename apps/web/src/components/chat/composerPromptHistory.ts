@@ -5,6 +5,8 @@ import { parseReviewCommentMessageSegments } from "../../reviewCommentContext";
 
 export const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
+export const FILE_ONLY_BOOTSTRAP_PROMPT =
+  "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
 
 export type PromptHistoryDirection = "older" | "newer";
 
@@ -43,10 +45,13 @@ export function projectComposerPromptHistory(
     }
 
     prompt = deriveDisplayedUserMessageState(prompt).visibleText.trim();
-    const isAttachedImageFallback =
+    const isAttachmentFallback =
+      prompt === IMAGE_ONLY_BOOTSTRAP_PROMPT || prompt === FILE_ONLY_BOOTSTRAP_PROMPT;
+    const isPrefixedAttachmentFallback =
       (message.attachments?.length ?? 0) > 0 &&
-      prompt === `Ultrathink:\n${IMAGE_ONLY_BOOTSTRAP_PROMPT}`;
-    if (!prompt || prompt === IMAGE_ONLY_BOOTSTRAP_PROMPT || isAttachedImageFallback) continue;
+      (prompt === `Ultrathink:\n${IMAGE_ONLY_BOOTSTRAP_PROMPT}` ||
+        prompt === `Ultrathink:\n${FILE_ONLY_BOOTSTRAP_PROMPT}`);
+    if (!prompt || isAttachmentFallback || isPrefixedAttachmentFallback) continue;
     if (entries.at(-1) !== prompt) entries.push(prompt);
   }
 

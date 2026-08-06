@@ -26,6 +26,7 @@ import {
 } from "@shuv2code/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { grokPromptSettlementBelongsToContext, makeGrokAdapter } from "./GrokAdapter.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
@@ -123,6 +124,62 @@ it("requires a settlement to match the live Grok turn", () => {
 });
 
 it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
+  it.effect("sends PDF attachments as ACP resource links", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-pdf-attachment");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-pdf-attachment-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({ SHUV2CODE_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      const { attachmentsDir } = yield* ServerConfig;
+      const pdfBytes = Buffer.from("%PDF-1.7\n");
+      const attachment = {
+        type: "file" as const,
+        id: "grok-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "guide.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: pdfBytes.byteLength,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      yield* Effect.promise(() =>
+        NodeFSP.mkdir(NodePath.dirname(attachmentPath), { recursive: true }).then(() =>
+          NodeFSP.writeFile(attachmentPath, pdfBytes),
+        ),
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Summarize this PDF",
+        attachments: [attachment],
+      });
+
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptRequest = requests.find((entry) => entry.method === "session/prompt");
+      assert.deepEqual((promptRequest?.params as Record<string, unknown> | undefined)?.prompt, [
+        { type: "text", text: "Summarize this PDF" },
+        {
+          type: "resource_link",
+          name: "guide.pdf",
+          mimeType: "application/pdf",
+          size: pdfBytes.byteLength,
+          uri: NodeURL.pathToFileURL(attachmentPath).href,
+        },
+      ]);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-mock-thread");

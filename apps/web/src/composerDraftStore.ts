@@ -33,7 +33,7 @@ import { createModelSelection, normalizeModelSlug } from "@shuv2code/shared/mode
 import { useMemo } from "react";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
-import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type ChatImageAttachment } from "./types";
+import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type ChatAttachment } from "./types";
 import {
   type TerminalContextDraft,
   ensureInlineTerminalContextPlaceholders,
@@ -79,6 +79,7 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
 }
 
 export const PersistedComposerImageAttachment = Schema.Struct({
+  type: Schema.optional(Schema.Literals(["image", "file"])),
   id: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,
@@ -87,10 +88,10 @@ export const PersistedComposerImageAttachment = Schema.Struct({
 });
 export type PersistedComposerImageAttachment = typeof PersistedComposerImageAttachment.Type;
 
-export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl"> {
+export type ComposerImageAttachment = ChatAttachment & {
   previewUrl: string;
   file: File;
-}
+};
 
 const PersistedTerminalContextDraft = Schema.Struct({
   id: Schema.String,
@@ -1076,6 +1077,7 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
     return null;
   }
   return {
+    type: candidate.type === "file" ? "file" : "image",
     id,
     name,
     mimeType,
@@ -2098,22 +2100,34 @@ function hydratePersistedComposerImageAttachment(
 export function hydrateImagesFromPersisted(
   attachments: ReadonlyArray<PersistedComposerImageAttachment>,
 ): ComposerImageAttachment[] {
-  return attachments.flatMap((attachment) => {
+  const hydrated: ComposerImageAttachment[] = [];
+  for (const attachment of attachments) {
     const file = hydratePersistedComposerImageAttachment(attachment);
-    if (!file) return [];
+    if (!file) continue;
 
-    return [
-      {
-        type: "image" as const,
-        id: attachment.id,
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        sizeBytes: attachment.sizeBytes,
-        previewUrl: attachment.dataUrl,
-        file,
-      } satisfies ComposerImageAttachment,
-    ];
-  });
+    hydrated.push(
+      attachment.type === "file"
+        ? {
+            type: "file" as const,
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: "application/pdf" as const,
+            sizeBytes: attachment.sizeBytes,
+            previewUrl: attachment.dataUrl,
+            file,
+          }
+        : {
+            type: "image" as const,
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            previewUrl: attachment.dataUrl,
+            file,
+          },
+    );
+  }
+  return hydrated;
 }
 
 function toHydratedThreadDraft(

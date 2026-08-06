@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  ClientOrchestrationCommand,
   ModelSelection,
   OrchestrationCommand,
   OrchestrationEvent,
@@ -54,6 +55,38 @@ function getOptionValue(
 }
 const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPayload);
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
+
+it.effect("accepts PDF uploads in client turn commands", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeClientOrchestrationCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-pdf-1",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-pdf-1",
+        role: "user",
+        text: "Summarize this",
+        attachments: [
+          {
+            type: "file",
+            name: "guide.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 9,
+            dataUrl: "data:application/pdf;base64,JVBERi0xLjcK",
+          },
+        ],
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.turn.start");
+    if (parsed.type !== "thread.turn.start") return;
+    assert.strictEqual(parsed.message.attachments[0]?.type, "file");
+  }),
+);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeOrchestrationEventType = Schema.decodeUnknownEffect(OrchestrationEventType);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);

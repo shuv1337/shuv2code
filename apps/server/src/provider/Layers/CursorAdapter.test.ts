@@ -26,6 +26,7 @@ import {
 } from "@shuv2code/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
@@ -168,6 +169,67 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("sends PDF attachments as ACP resource links", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const { attachmentsDir } = yield* ServerConfig;
+      const threadId = ThreadId.make("cursor-pdf-attachment");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-pdf-attachment-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const argvLogPath = NodePath.join(tempDir, "argv.txt");
+      yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, argvLogPath),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const pdfBytes = Buffer.from("%PDF-1.7\n");
+      const attachment = {
+        type: "file" as const,
+        id: "cursor-pdf-12345678-1234-1234-1234-123456789abc",
+        name: "guide.pdf",
+        mimeType: "application/pdf" as const,
+        sizeBytes: pdfBytes.byteLength,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      yield* Effect.promise(() =>
+        NodeFSP.mkdir(NodePath.dirname(attachmentPath), { recursive: true }).then(() =>
+          NodeFSP.writeFile(attachmentPath, pdfBytes),
+        ),
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Summarize this PDF",
+        attachments: [attachment],
+      });
+
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptRequest = requests.find((entry) => entry.method === "session/prompt");
+      assert.deepEqual((promptRequest?.params as Record<string, unknown> | undefined)?.prompt, [
+        { type: "text", text: "Summarize this PDF" },
+        {
+          type: "resource_link",
+          name: "guide.pdf",
+          mimeType: "application/pdf",
+          size: pdfBytes.byteLength,
+          uri: NodeURL.pathToFileURL(attachmentPath).href,
+        },
+      ]);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

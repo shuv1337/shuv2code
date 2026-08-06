@@ -16,6 +16,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@shuv2code/contracts";
 import type { EnvironmentConnectionPresentation } from "@shuv2code/client-runtime/connection";
@@ -172,6 +173,7 @@ import { toastManager } from "../ui/toast";
 import {
   BotIcon,
   CircleAlertIcon,
+  FileTextIcon,
   ListTodoIcon,
   PencilRulerIcon,
   type LucideIcon,
@@ -205,6 +207,8 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
+
+const FILE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_FILE_BYTES / (1024 * 1024))}MB`;
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -1005,12 +1009,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
    */
   const stashInFlightRef = useRef<Set<string>>(new Set());
   /**
-   * Count of pasted images still being compressed, per thread. Reserved
+   * Count of pasted attachments still being prepared, per thread. Reserved
    * against the attachment limit so concurrent pastes can't overshoot it,
-   * and checked by `submitComposer` so a send can't race an image into the
-   * next draft.
+   * and checked by `submitComposer` so a send can't race an attachment into
+   * the next draft.
    */
-  const pendingImageCompressionsRef = useRef<Map<ThreadId, number>>(new Map());
+  const pendingAttachmentPreparationsRef = useRef<Map<ThreadId, number>>(new Map());
 
   // ------------------------------------------------------------------
   // Derived: composer send state
@@ -1487,6 +1491,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             try {
               const dataUrl = await readFileAsDataUrl(image.file);
               stagedAttachmentById.set(image.id, {
+                type: image.type,
                 id: image.id,
                 name: image.name,
                 mimeType: image.mimeType,
@@ -1826,16 +1831,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         event?.preventDefault();
         return;
       }
-      // A send while a pasted image is still compressing would strand that
-      // image: the turn snapshot wouldn't include it, and it would surface
-      // in the *next* draft instead. Only oversized images hit this — small
-      // files clear the pending counter within a microtask.
-      if (activeThreadId && (pendingImageCompressionsRef.current.get(activeThreadId) ?? 0) > 0) {
+      // A send while pasted attachments are still being prepared would strand
+      // them: the turn snapshot wouldn't include them, and they would surface
+      // in the *next* draft instead.
+      if (
+        activeThreadId &&
+        (pendingAttachmentPreparationsRef.current.get(activeThreadId) ?? 0) > 0
+      ) {
         event?.preventDefault();
         toastManager.add({
           type: "info",
-          title: "Still compressing a pasted image.",
-          description: "Send again once its thumbnail appears.",
+          title: "Still preparing pasted attachments.",
+          description: "Send again once all attachment cards appear.",
         });
         return;
       }
@@ -2169,6 +2176,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const oversizedImageNames: string[] = [];
       const unreadableImageNames: string[] = [];
       for (const image of images) {
+        if (image.type === "file") {
+          try {
+            candidateAttachments.push({
+              type: "file",
+              id: image.id,
+              name: image.name,
+              mimeType: image.mimeType,
+              sizeBytes: image.sizeBytes,
+              dataUrl: await readFileAsDataUrl(image.file),
+            });
+          } catch {
+            unreadableImageNames.push(image.name);
+          }
+          continue;
+        }
         const result = await compressImageForStash(image.file);
         if (!result.ok) {
           // "too large" and "could not be read" are distinct outcomes; the
@@ -2179,6 +2201,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           continue;
         }
         candidateAttachments.push({
+          type: "image",
           id: image.id,
           name: image.name,
           mimeType: result.image.mimeType,
@@ -2290,57 +2313,95 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   // ------------------------------------------------------------------
-  // Callbacks: images
+  // Callbacks: attachments
   // ------------------------------------------------------------------
   const addComposerImages = async (files: File[]) => {
     if (!activeThreadId || files.length === 0) return;
     if (pendingUserInputs.length > 0) {
       toastManager.add({
         type: "error",
-        title: "Attach images after answering plan questions.",
+        title: "Attach files after answering plan questions.",
       });
       return;
     }
     // Captured before the awaits below: the user may switch threads while a
-    // large image is being compressed, and the attachments and errors belong
-    // to the thread the paste happened in.
+    // large image is being compressed. Attachments and errors still belong to
+    // the thread where the paste or drop happened.
     const threadId = activeThreadId;
 
     // Validation happens synchronously so concurrent pastes see each other:
     // accepted files reserve their attachment slots (via the pending counter)
     // before the first await, keeping the total under the limit.
-    const pendingCount = pendingImageCompressionsRef.current.get(threadId) ?? 0;
+    const pendingCount = pendingAttachmentPreparationsRef.current.get(threadId) ?? 0;
     let reservedCount = composerImagesRef.current.length + pendingCount;
-    const acceptedFiles: File[] = [];
+    const acceptedAttachments: Array<{
+      type: "image" | "file";
+      file: File;
+    }> = [];
     let error: string | null = null;
     for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
+      const isImage = file.type.startsWith("image/");
+      const isPdf = file.type === "application/pdf" || (!file.type && /\.pdf$/i.test(file.name));
+      if (!isImage && !isPdf) {
+        error = `Unsupported file type for '${file.name}'. Please attach images or PDFs.`;
+        continue;
+      }
+      if (isPdf && file.size > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
+        error = `'${file.name}' exceeds the ${FILE_SIZE_LIMIT_LABEL} attachment limit.`;
         continue;
       }
       if (reservedCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
+        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`;
         break;
       }
-      acceptedFiles.push(file);
+      const normalizedFile =
+        isPdf && file.type !== "application/pdf"
+          ? new File([file], file.name, {
+              type: "application/pdf",
+              lastModified: file.lastModified,
+            })
+          : file;
+      acceptedAttachments.push({
+        type: isImage ? "image" : "file",
+        file: normalizedFile,
+      });
       reservedCount += 1;
     }
     setThreadError(threadId, error);
-    if (acceptedFiles.length === 0) return;
+    if (acceptedAttachments.length === 0) return;
 
-    pendingImageCompressionsRef.current.set(threadId, pendingCount + acceptedFiles.length);
+    pendingAttachmentPreparationsRef.current.set(
+      threadId,
+      pendingCount + acceptedAttachments.length,
+    );
     try {
       const nextImages: ComposerImageAttachment[] = [];
       let compressionError: string | null = null;
-      for (const file of acceptedFiles) {
+      for (const attachment of acceptedAttachments) {
+        if (attachment.type === "file") {
+          nextImages.push({
+            type: "file",
+            id: randomUUID(),
+            name: attachment.file.name || "document.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: attachment.file.size,
+            previewUrl: URL.createObjectURL(attachment.file),
+            file: attachment.file,
+          });
+          continue;
+        }
+
         // Images over the wire cap are downscaled to fit rather than
         // refused; files already within it pass through byte-for-byte.
-        const compressed = await compressImageToByteLimit(file, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES);
+        const compressed = await compressImageToByteLimit(
+          attachment.file,
+          PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+        );
         if (!compressed.ok) {
           compressionError =
             compressed.reason === "unreadable"
-              ? `'${file.name}' could not be read as an image.`
-              : `'${file.name}' is too large to attach, even after compression.`;
+              ? `'${attachment.file.name}' could not be read as an image.`
+              : `'${attachment.file.name}' is too large to attach, even after compression.`;
           continue;
         }
         const attachmentFile = compressed.file;
@@ -2369,11 +2430,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
     } finally {
       const remaining =
-        (pendingImageCompressionsRef.current.get(threadId) ?? 0) - acceptedFiles.length;
+        (pendingAttachmentPreparationsRef.current.get(threadId) ?? 0) - acceptedAttachments.length;
       if (remaining > 0) {
-        pendingImageCompressionsRef.current.set(threadId, remaining);
+        pendingAttachmentPreparationsRef.current.set(threadId, remaining);
       } else {
-        pendingImageCompressionsRef.current.delete(threadId);
+        pendingAttachmentPreparationsRef.current.delete(threadId);
       }
     }
   };
@@ -2388,10 +2449,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0) return;
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) return;
+    const attachmentFiles = files.filter(
+      (file) =>
+        file.type.startsWith("image/") ||
+        file.type === "application/pdf" ||
+        (!file.type && /\.pdf$/i.test(file.name)),
+    );
+    if (attachmentFiles.length === 0) return;
     event.preventDefault();
-    void addComposerImages(imageFiles);
+    void addComposerImages(attachmentFiles);
   };
 
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -2916,12 +2982,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               composerPreviewAnnotations.length > 0 && (
                 <ComposerPreviewAnnotationCards
                   annotations={composerPreviewAnnotations}
-                  images={composerImages}
+                  images={composerImages.filter((attachment) => attachment.type === "image")}
                   onRemove={(annotationId) =>
                     removeComposerDraftPreviewAnnotation(composerDraftTarget, annotationId)
                   }
                   onExpandImage={(imageId) => {
-                    const preview = buildExpandedImagePreview(composerImages, imageId);
+                    const preview = buildExpandedImagePreview(
+                      composerImages.filter((attachment) => attachment.type === "image"),
+                      imageId,
+                    );
                     if (preview) onExpandImage(preview);
                   }}
                   className="mb-3"
@@ -2959,12 +3028,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               pendingUserInputs.length === 0 &&
               composerImages.some(
                 (image) =>
+                  image.type === "file" ||
                   !composerPreviewAnnotations.some((annotation) => annotation.id === image.id),
               ) && (
                 <div className="mb-3 flex flex-wrap gap-2">
                   {composerImages
                     .filter(
                       (image) =>
+                        image.type === "file" ||
                         !composerPreviewAnnotations.some(
                           (annotation) => annotation.id === image.id,
                         ),
@@ -2972,15 +3043,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     .map((image) => (
                       <div
                         key={image.id}
-                        className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
+                        className={cn(
+                          "relative h-16 overflow-hidden rounded-lg border border-border/80 bg-background",
+                          image.type === "file" ? "w-56" : "w-16",
+                        )}
                       >
-                        {image.previewUrl ? (
+                        {image.type === "image" && image.previewUrl ? (
                           <button
                             type="button"
                             className="h-full w-full cursor-zoom-in"
                             aria-label={`Preview ${image.name}`}
                             onClick={() => {
-                              const preview = buildExpandedImagePreview(composerImages, image.id);
+                              const preview = buildExpandedImagePreview(
+                                composerImages.filter((attachment) => attachment.type === "image"),
+                                image.id,
+                              );
                               if (!preview) return;
                               onExpandImage(preview);
                             }}
@@ -2992,8 +3069,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                             />
                           </button>
                         ) : (
-                          <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-muted-foreground/70">
-                            {image.name}
+                          <div className="flex h-full w-full items-center gap-2 px-3 pr-9 text-left text-muted-foreground/70">
+                            <FileTextIcon
+                              className="size-6 shrink-0 text-red-500/80"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0">
+                              <span className="block truncate text-xs font-medium text-foreground/90">
+                                {image.name}
+                              </span>
+                              <span className="block text-[10px] uppercase tracking-wide">PDF</span>
+                            </span>
                           </div>
                         )}
                         {nonPersistedComposerImageIdSet.has(image.id) && (
@@ -3066,7 +3152,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           : noProviderAvailable
                             ? "Enable a provider in Settings to send a message"
                             : phase === "disconnected"
-                              ? "Ask for follow-up changes or attach images"
+                              ? "Ask for follow-up changes or attach files"
                               : "Ask anything, @tag files/folders, $use skills, or / for commands"
                 }
                 disabled={isConnecting || isComposerApprovalState || projectSelectionRequired}
