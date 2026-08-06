@@ -1,7 +1,13 @@
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
-import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@shuv2code/contracts";
+import type {
+  ChatAttachment,
+  EnvironmentId,
+  MessageId,
+  ThreadId,
+  TurnId,
+} from "@shuv2code/contracts";
 import {
   CHAT_LIST_ANCHOR_OFFSET,
   resolveChatListAnchoredEndSpace,
@@ -192,6 +198,106 @@ function MessageAttachmentImage(props: {
     <TouchableOpacity activeOpacity={0.7} onPress={() => props.onPressImage(uri)}>
       <Image source={{ uri }} className={props.className} resizeMode="cover" />
     </TouchableOpacity>
+  );
+}
+
+function MessageAttachmentDocument(props: {
+  readonly environmentId: EnvironmentId;
+  readonly attachmentId: string;
+  readonly name: string;
+  readonly isUser: boolean;
+}) {
+  const uri = useAssetUrl(props.environmentId, {
+    _tag: "attachment",
+    attachmentId: props.attachmentId,
+  });
+  const foregroundColor = props.isUser ? "#ffffff" : undefined;
+
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={`Open ${props.name}`}
+      accessibilityState={{ disabled: uri === null }}
+      disabled={uri === null}
+      onPress={() => {
+        if (uri !== null) {
+          void Linking.openURL(uri);
+        }
+      }}
+      className={cn(
+        "min-w-0 flex-row items-center gap-2.5 rounded-[14px] border px-3 py-2.5",
+        props.isUser
+          ? "border-white/15 bg-white/10"
+          : "mt-1.5 border-neutral-200 bg-neutral-100 dark:border-white/10 dark:bg-neutral-800",
+      )}
+    >
+      <View
+        className={cn(
+          "size-8 items-center justify-center rounded-[9px]",
+          props.isUser ? "bg-white/15" : "bg-neutral-200 dark:bg-white/10",
+        )}
+      >
+        {uri === null ? (
+          <ActivityIndicator size="small" color={foregroundColor} />
+        ) : (
+          <SymbolView
+            name="doc.text"
+            size={16}
+            tintColor={foregroundColor ?? "#737373"}
+            type="monochrome"
+          />
+        )}
+      </View>
+      <View className="min-w-0 flex-1">
+        <Text
+          className={cn(
+            "font-shuv2code-medium text-sm",
+            props.isUser ? "text-white" : "text-foreground",
+          )}
+          numberOfLines={1}
+        >
+          {props.name}
+        </Text>
+        <Text
+          className={cn(
+            "font-shuv2code-medium text-xs",
+            props.isUser ? "text-white/70" : "text-foreground-muted",
+          )}
+        >
+          PDF
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function MessageAttachment(props: {
+  readonly attachment: ChatAttachment;
+  readonly environmentId: EnvironmentId;
+  readonly isUser: boolean;
+  readonly onPressImage: (uri: string, headers?: Record<string, string>) => void;
+}) {
+  if (props.attachment.type === "file") {
+    return (
+      <MessageAttachmentDocument
+        environmentId={props.environmentId}
+        attachmentId={props.attachment.id}
+        name={props.attachment.name}
+        isUser={props.isUser}
+      />
+    );
+  }
+
+  return (
+    <MessageAttachmentImage
+      environmentId={props.environmentId}
+      attachmentId={props.attachment.id}
+      className={cn(
+        "aspect-[1.3] w-full bg-white/15",
+        props.isUser ? "rounded-[14px]" : "mt-1.5 rounded-[18px]",
+      )}
+      onPressImage={props.onPressImage}
+    />
   );
 }
 
@@ -925,11 +1031,11 @@ function renderFeedEntry(
             ) : null}
             {attachments.map((attachment) => {
               return (
-                <MessageAttachmentImage
+                <MessageAttachment
                   key={attachment.id}
+                  attachment={attachment}
                   environmentId={props.environmentId}
-                  attachmentId={attachment.id}
-                  className="aspect-[1.3] w-full rounded-[14px] bg-white/15"
+                  isUser
                   onPressImage={props.onPressImage}
                 />
               );
@@ -986,11 +1092,11 @@ function renderFeedEntry(
         ) : null}
         {attachments.map((attachment) => {
           return (
-            <MessageAttachmentImage
+            <MessageAttachment
               key={attachment.id}
+              attachment={attachment}
               environmentId={props.environmentId}
-              attachmentId={attachment.id}
-              className="mt-1.5 aspect-[1.3] w-full rounded-[18px] bg-neutral-200 dark:bg-neutral-800"
+              isUser={false}
               onPressImage={props.onPressImage}
             />
           );

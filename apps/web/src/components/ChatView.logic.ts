@@ -199,17 +199,44 @@ export function revokeUserMessagePreviewUrls(message: ChatMessage): void {
   }
 }
 
-export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[] {
+export interface AttachmentPreviewHandoff {
+  readonly attachmentIndex: number;
+  readonly attachmentType: NonNullable<ChatMessage["attachments"]>[number]["type"];
+  readonly previewUrl: string;
+}
+
+export function collectUserMessageBlobPreviewUrls(
+  message: ChatMessage,
+): AttachmentPreviewHandoff[] {
   if (message.role !== "user" || !message.attachments) {
     return [];
   }
-  const previewUrls: string[] = [];
-  for (const attachment of message.attachments) {
-    if (attachment.type !== "image") continue;
+  const previewUrls: AttachmentPreviewHandoff[] = [];
+  for (const [attachmentIndex, attachment] of message.attachments.entries()) {
     if (!attachment.previewUrl || !attachment.previewUrl.startsWith("blob:")) continue;
-    previewUrls.push(attachment.previewUrl);
+    previewUrls.push({
+      attachmentIndex,
+      attachmentType: attachment.type,
+      previewUrl: attachment.previewUrl,
+    });
   }
   return previewUrls;
+}
+
+export function applyAttachmentPreviewHandoffs(
+  attachments: NonNullable<ChatMessage["attachments"]>,
+  handoffs: ReadonlyArray<AttachmentPreviewHandoff>,
+): NonNullable<ChatMessage["attachments"]> {
+  const handoffByAttachmentIndex = new Map(
+    handoffs.map((handoff) => [handoff.attachmentIndex, handoff] as const),
+  );
+  return attachments.map((attachment, attachmentIndex) => {
+    const handoff = handoffByAttachmentIndex.get(attachmentIndex);
+    return handoff?.attachmentType === attachment.type &&
+      attachment.previewUrl !== handoff.previewUrl
+      ? { ...attachment, previewUrl: handoff.previewUrl }
+      : attachment;
+  });
 }
 
 export interface PullRequestDialogState {
