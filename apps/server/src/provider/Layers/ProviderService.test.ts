@@ -1185,6 +1185,49 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("rejects a legacy start that omits the idle-turn precondition", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-legacy-concurrent-start");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const first = yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "first",
+        attachments: [],
+        expectedTurnId: null,
+      });
+      routing.codex.readThread.mockImplementationOnce(() =>
+        Effect.succeed({
+          threadId,
+          turns: [{ id: first.turnId, items: [], status: "inProgress" }],
+        }),
+      );
+
+      const failure = yield* Effect.flip(
+        provider.sendTurn({
+          threadId: session.threadId,
+          input: "legacy duplicate",
+          attachments: [],
+        }),
+      );
+
+      assert.instanceOf(failure, ProviderValidationError);
+      assert.include(failure.issue, "already has active turn");
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      yield* provider.stopSession({ threadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.readThread.mockClear();
+      routing.codex.stopSession.mockClear();
+    }),
+  );
+
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
