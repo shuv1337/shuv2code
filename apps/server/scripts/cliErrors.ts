@@ -35,3 +35,36 @@ export class ServerCliDevelopmentIconTargetMissingError extends Schema.TaggedErr
     return `Missing development icon target: ${this.targetPath}. Build web first.`;
   }
 }
+
+export class ServerCliBuildAssetMissingError extends Schema.TaggedErrorClass<ServerCliBuildAssetMissingError>()(
+  "ServerCliBuildAssetMissingError",
+  {
+    assetPath: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Missing server build asset: ${this.assetPath}`;
+  }
+}
+
+export class ServerCliPublishIconSourceMissingError extends Schema.TaggedErrorClass<ServerCliPublishIconSourceMissingError>()(
+  "ServerCliPublishIconSourceMissingError",
+  {
+    sourcePath: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Missing publish icon source: ${this.sourcePath}`;
+  }
+}
+
+export class ServerCliPublishIconTargetMissingError extends Schema.TaggedErrorClass<ServerCliPublishIconTargetMissingError>()(
+  "ServerCliPublishIconTargetMissingError",
+  {
+    targetPath: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Missing publish icon target: ${this.targetPath}. Build web first.`;
+  }
+}
