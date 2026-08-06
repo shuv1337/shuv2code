@@ -7,6 +7,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as VcsProcess from "./VcsProcess.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
@@ -19,7 +20,105 @@ const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
 const normalizeGitArgs = (args: ReadonlyArray<string>): ReadonlyArray<string> =>
   args[0] === "-C" && args.length >= 2 ? args.slice(2) : args;
 
+function selectionTestLayer(input: {
+  readonly defaultKind: "git" | "jj";
+  readonly projectKind?: "git" | "jj" | "auto";
+  readonly gitAvailable?: boolean;
+  readonly jjAvailable?: boolean;
+}) {
+  return Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
+    Layer.provide(NodeServices.layer),
+    Layer.provide(ServerSettings.layerTest({ defaultVcsKind: input.defaultKind })),
+    Layer.provide(
+      Layer.mock(VcsProjectConfig.VcsProjectConfig)({
+        resolveKind: (request) =>
+          Effect.succeed(request.requestedKind ?? input.projectKind ?? "auto"),
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(VcsProcess.VcsProcess)({
+        run: (request) => {
+          if (request.command === "jj") {
+            return Effect.succeed(
+              input.jjAvailable === false
+                ? {
+                    ...processOutput(""),
+                    exitCode: ChildProcessSpawner.ExitCode(1),
+                  }
+                : processOutput("/repo\n"),
+            );
+          }
+          const command = normalizeGitArgs(request.args).join(" ");
+          if (command === "rev-parse --is-inside-work-tree") {
+            return Effect.succeed(
+              input.gitAvailable === false
+                ? {
+                    ...processOutput(""),
+                    exitCode: ChildProcessSpawner.ExitCode(128),
+                  }
+                : processOutput("true\n"),
+            );
+          }
+          if (command === "rev-parse --show-toplevel")
+            return Effect.succeed(processOutput("/repo\n"));
+          if (command === "rev-parse --git-common-dir")
+            return Effect.succeed(processOutput("/repo/.git\n"));
+          return Effect.succeed(processOutput(""));
+        },
+      }),
+    ),
+  );
+}
+
 describe("VcsDriverRegistry", () => {
+  it.effect("uses Git by default in a colocated repository", () =>
+    Effect.gen(function* () {
+      const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+      const detected = yield* registry.resolve({ cwd: "/repo" });
+
+      assert.equal(detected.kind, "git");
+      assert.deepStrictEqual(detected.selection, {
+        availableKinds: ["git", "jj"],
+        projectKind: null,
+        defaultKind: "git",
+        source: "user-default",
+      });
+    }).pipe(Effect.provide(selectionTestLayer({ defaultKind: "git" }))),
+  );
+
+  it.effect("uses the user's Jujutsu default in a colocated repository", () =>
+    Effect.gen(function* () {
+      const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+      const detected = yield* registry.resolve({ cwd: "/repo" });
+
+      assert.equal(detected.kind, "jj");
+      assert.equal(detected.selection?.defaultKind, "jj");
+      assert.equal(detected.selection?.source, "user-default");
+    }).pipe(Effect.provide(selectionTestLayer({ defaultKind: "jj" }))),
+  );
+
+  it.effect("lets a project override the user's default", () =>
+    Effect.gen(function* () {
+      const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+      const detected = yield* registry.resolve({ cwd: "/repo" });
+
+      assert.equal(detected.kind, "jj");
+      assert.equal(detected.selection?.projectKind, "jj");
+      assert.equal(detected.selection?.source, "project");
+    }).pipe(Effect.provide(selectionTestLayer({ defaultKind: "git", projectKind: "jj" }))),
+  );
+
+  it.effect("falls back to Jujutsu when Git is not available", () =>
+    Effect.gen(function* () {
+      const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+      const detected = yield* registry.resolve({ cwd: "/repo" });
+
+      assert.equal(detected.kind, "jj");
+      assert.deepStrictEqual(detected.selection?.availableKinds, ["jj"]);
+      assert.equal(detected.selection?.source, "fallback");
+    }).pipe(Effect.provide(selectionTestLayer({ defaultKind: "git", gitAvailable: false }))),
+  );
+
   it.effect("routes directly by VCS driver kind for non-repository workflows", () => {
     const layer = Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
       Layer.provide(NodeServices.layer),

@@ -295,7 +295,7 @@ export class GitLabCli extends Context.Service<
       readonly force?: boolean;
     }) => Effect.Effect<void, GitLabCliError>;
   }
->()("@shuv2code/sourceControl/GitLabCli") {}
+>()("shuv2code/sourceControl/GitLabCli") {}
 
 const RawGitLabRepositoryCloneUrlsSchema = Schema.Struct({
   path_with_namespace: TrimmedNonEmptyString,
@@ -584,13 +584,16 @@ export const make = Effect.gen(function* () {
     },
     createMergeRequest: (input) => {
       const sourceProject = sourceProjectIdentifier(input.source);
+      const targetProject = input.target?.repository;
       return execute({
         cwd: input.cwd,
         args: [
           "api",
           "--method",
           "POST",
-          "projects/:fullpath/merge_requests",
+          targetProject
+            ? `projects/${encodeURIComponent(targetProject)}/merge_requests`
+            : "projects/:fullpath/merge_requests",
           "--raw-field",
           `source_branch=${sourceRefName(input)}`,
           "--raw-field",

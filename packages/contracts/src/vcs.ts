@@ -4,6 +4,37 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 export const VcsDriverKind = Schema.Literals(["git", "jj", "unknown"]);
 export type VcsDriverKind = typeof VcsDriverKind.Type;
 
+export const VcsSelectableKind = Schema.Literals(["git", "jj"]);
+export type VcsSelectableKind = typeof VcsSelectableKind.Type;
+
+export const VcsSelectionSource = Schema.Literals([
+  "request",
+  "project",
+  "user-default",
+  "fallback",
+]);
+export type VcsSelectionSource = typeof VcsSelectionSource.Type;
+
+export const VcsRepositorySelection = Schema.Struct({
+  availableKinds: Schema.Array(VcsSelectableKind),
+  projectKind: Schema.NullOr(VcsSelectableKind),
+  defaultKind: VcsSelectableKind,
+  source: VcsSelectionSource,
+});
+export type VcsRepositorySelection = typeof VcsRepositorySelection.Type;
+
+export const VcsSetProjectPreferenceInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  kind: Schema.NullOr(VcsSelectableKind),
+});
+export type VcsSetProjectPreferenceInput = typeof VcsSetProjectPreferenceInput.Type;
+
+export const VcsSetProjectPreferenceResult = Schema.Struct({
+  kind: VcsDriverKind,
+  selection: VcsRepositorySelection,
+});
+export type VcsSetProjectPreferenceResult = typeof VcsSetProjectPreferenceResult.Type;
+
 export const VcsFreshnessSource = Schema.Literals([
   "live-local",
   "cached-local",
@@ -25,6 +56,15 @@ export const VcsDriverCapabilities = Schema.Struct({
   supportsBookmarks: Schema.Boolean,
   supportsAtomicSnapshot: Schema.Boolean,
   supportsPushDefaultRemote: Schema.Boolean,
+  supportsStatus: Schema.Boolean,
+  supportsRefMutation: Schema.Boolean,
+  supportsWorkspaceMutation: Schema.Boolean,
+  supportsDescribeChange: Schema.Boolean,
+  supportsStartChange: Schema.Boolean,
+  supportsFetch: Schema.Boolean,
+  supportsPush: Schema.Boolean,
+  supportsChangeRequests: Schema.Boolean,
+  supportsJuzu: Schema.Boolean,
   ignoreClassifier: Schema.Literals(["native", "git-compatible-fallback"]),
 });
 export type VcsDriverCapabilities = typeof VcsDriverCapabilities.Type;
@@ -57,6 +97,18 @@ export const VcsListRemotesResult = Schema.Struct({
   freshness: VcsFreshness,
 });
 export type VcsListRemotesResult = typeof VcsListRemotesResult.Type;
+
+export const VcsWorkingCopyState = Schema.Struct({
+  changeId: Schema.NullOr(TrimmedNonEmptyString),
+  commitId: Schema.NullOr(TrimmedNonEmptyString),
+  description: Schema.String,
+  workspaceName: Schema.NullOr(TrimmedNonEmptyString),
+  isEmpty: Schema.Boolean,
+  hasConflicts: Schema.Boolean,
+  conflictPaths: Schema.Array(TrimmedNonEmptyString),
+  bookmarks: Schema.Array(TrimmedNonEmptyString),
+});
+export type VcsWorkingCopyState = typeof VcsWorkingCopyState.Type;
 
 export interface VcsProcessErrorContext {
   readonly operation: string;

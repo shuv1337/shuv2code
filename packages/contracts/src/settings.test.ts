@@ -179,6 +179,18 @@ describe("ServerSettings worktree defaults", () => {
   });
 });
 
+describe("ServerSettings version control default", () => {
+  it("keeps Git as the default for existing users", () => {
+    expect(decodeServerSettings({}).defaultVcsKind).toBe("git");
+  });
+
+  it("accepts Git and Jujutsu updates and rejects unsupported kinds", () => {
+    expect(decodeServerSettingsPatch({ defaultVcsKind: "git" }).defaultVcsKind).toBe("git");
+    expect(decodeServerSettingsPatch({ defaultVcsKind: "jj" }).defaultVcsKind).toBe("jj");
+    expect(() => decodeServerSettingsPatch({ defaultVcsKind: "unknown" })).toThrow();
+  });
+});
+
 describe("ServerSettings.sourceControlWritingStyle", () => {
   it("defaults all style settings for legacy configs", () => {
     const settings = decodeServerSettings({});

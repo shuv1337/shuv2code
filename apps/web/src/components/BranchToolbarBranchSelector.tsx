@@ -5,7 +5,13 @@ import {
 } from "@shuv2code/client-runtime/state/runtime";
 import type { ContextMenuItem, EnvironmentId, VcsRef, ThreadId } from "@shuv2code/contracts";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { ChevronDownIcon, GitBranchIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
+import {
+  BookmarkIcon,
+  ChevronDownIcon,
+  GitBranchIcon,
+  RefreshCwIcon,
+  SearchIcon,
+} from "lucide-react";
 import {
   useCallback,
   useDeferredValue,
@@ -233,6 +239,7 @@ export function BranchToolbarBranchSelector({
     branchRefState.data?.nextCursor !== null && branchRefState.data?.nextCursor !== undefined;
   const isFetchingNextPage = branchRefState.isFetchingNextPage;
   const isInitialBranchesLoadPending = branchRefState.isPending && branchRefState.data === null;
+  const isJj = branchStatusQuery.data?.kind === "jj";
   const currentGitBranch =
     branchStatusQuery.data?.refName ?? refs.find((refName) => refName.current)?.name ?? null;
   const sourceControlPresentation = useMemo(
@@ -252,7 +259,7 @@ export function BranchToolbarBranchSelector({
     [refs],
   );
   const normalizedDeferredBranchQuery = deferredTrimmedBranchQuery.toLowerCase();
-  const prReference = parsePullRequestReference(trimmedBranchQuery);
+  const prReference = isJj ? null : parsePullRequestReference(trimmedBranchQuery);
   const isSelectingWorktreeBase =
     effectiveEnvMode === "worktree" && !envLocked && !activeWorktreePath;
   const checkoutPullRequestItemValue =
@@ -321,37 +328,41 @@ export function BranchToolbarBranchSelector({
   const [isBranchActionPending, startBranchActionTransition] = useTransition();
   const totalBranchCount = branchRefState.data?.totalCount ?? 0;
   const branchStatusText = isInitialBranchesLoadPending
-    ? "Loading refs..."
+    ? `Loading ${isJj ? "bookmarks" : "refs"}...`
     : isFetchingNextPage
-      ? "Loading more refs..."
+      ? `Loading more ${isJj ? "bookmarks" : "refs"}...`
       : hasNextPage
-        ? `Showing ${refs.length} of ${totalBranchCount} refs`
+        ? `Showing ${refs.length} of ${totalBranchCount} ${isJj ? "bookmarks" : "refs"}`
         : null;
 
   // ---------------------------------------------------------------------------
   // Branch actions
   // ---------------------------------------------------------------------------
-  const copyBranchName = useCallback((branchName: string) => {
-    void writeTextToClipboard(branchName, "branch name").then(
-      (didCopy) => {
-        if (!didCopy) return;
-        toastManager.add({
-          type: "success",
-          title: "Branch name copied",
-          description: branchName,
-        });
-      },
-      (error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to copy branch name",
-            description: toBranchActionErrorMessage(error),
-          }),
-        );
-      },
-    );
-  }, []);
+  const copyBranchName = useCallback(
+    (branchName: string) => {
+      const refLabel = isJj ? "bookmark name" : "branch name";
+      void writeTextToClipboard(branchName, refLabel).then(
+        (didCopy) => {
+          if (!didCopy) return;
+          toastManager.add({
+            type: "success",
+            title: `${isJj ? "Bookmark" : "Branch"} name copied`,
+            description: branchName,
+          });
+        },
+        (error: unknown) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: `Failed to copy ${refLabel}`,
+              description: toBranchActionErrorMessage(error),
+            }),
+          );
+        },
+      );
+    },
+    [isJj],
+  );
 
   const handleBranchContextMenu = useCallback(
     (event: ReactMouseEvent, branchName: string | null) => {
@@ -361,13 +372,17 @@ export function BranchToolbarBranchSelector({
       event.preventDefault();
       event.stopPropagation();
       const items: ContextMenuItem<"copy-branch-name">[] = [
-        { id: "copy-branch-name", label: "Copy branch name", icon: "copy" },
+        {
+          id: "copy-branch-name",
+          label: `Copy ${isJj ? "bookmark" : "branch"} name`,
+          icon: "copy",
+        },
       ];
       void api.contextMenu.show(items, { x: event.clientX, y: event.clientY }).then((action) => {
         if (action === "copy-branch-name") copyBranchName(branchName);
       });
     },
-    [copyBranchName],
+    [copyBranchName, isJj],
   );
 
   const runBranchAction = (action: () => Promise<void>) => {
@@ -431,7 +446,7 @@ export function BranchToolbarBranchSelector({
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Failed to switch ref.",
+            title: isJj ? "Failed to edit bookmark target." : "Failed to switch ref.",
             description: toBranchActionErrorMessage(squashAtomCommandFailure(checkoutResult)),
           }),
         );
@@ -454,7 +469,7 @@ export function BranchToolbarBranchSelector({
         input: {
           cwd: branchCwd,
           refName: name,
-          switchRef: true,
+          switchRef: !isJj,
         },
       });
       if (createBranchResult._tag === "Success") {
@@ -467,7 +482,7 @@ export function BranchToolbarBranchSelector({
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Failed to create and switch ref.",
+            title: isJj ? "Failed to set bookmark." : "Failed to create and switch ref.",
             description: toBranchActionErrorMessage(squashAtomCommandFailure(createBranchResult)),
           }),
         );
@@ -593,22 +608,33 @@ export function BranchToolbarBranchSelector({
     void branchListRef.current?.scrollToOffset?.({ offset: 0, animated: false });
   }, [deferredTrimmedBranchQuery, isBranchMenuOpen]);
 
-  const triggerLabel = resolveBranchTriggerLabel({
-    activeWorktreePath,
-    effectiveEnvMode,
-    resolvedActiveBranch,
-    resolvedActiveBranchIsRemote,
-    startFromOrigin,
-  });
+  const triggerLabel = isJj
+    ? (() => {
+        const workingCopy = branchStatusQuery.data?.workingCopy;
+        const bookmarks = workingCopy?.bookmarks ?? [];
+        const changeId = workingCopy?.changeId?.slice(0, 12) ?? "working copy";
+        return bookmarks.length > 0
+          ? `${bookmarks.join(", ")} · ${changeId}`
+          : `change ${changeId}`;
+      })()
+    : resolveBranchTriggerLabel({
+        activeWorktreePath,
+        effectiveEnvMode,
+        resolvedActiveBranch,
+        resolvedActiveBranchIsRemote,
+        startFromOrigin,
+      });
 
   // PR pill shown next to the branch selector when the active branch has one.
-  const branchPr = resolveThreadPr({
-    threadBranch: resolveBranchToolbarPrBranch({
-      activeThreadBranch,
-      resolvedActiveBranch,
-    }),
-    gitStatus: branchStatusQuery.data ?? null,
-  });
+  const branchPr = isJj
+    ? null
+    : resolveThreadPr({
+        threadBranch: resolveBranchToolbarPrBranch({
+          activeThreadBranch,
+          resolvedActiveBranch,
+        }),
+        gitStatus: branchStatusQuery.data ?? null,
+      });
   const branchPrStatus = prStatusIndicator(branchPr, branchStatusQuery.data?.sourceControlProvider);
   // Action-oriented tooltip (the pill opens the PR), distinct from the sidebar's
   // state-description tooltip.
@@ -658,7 +684,9 @@ export function BranchToolbarBranchSelector({
           className="pe-1.5"
           onClick={() => createRef(trimmedBranchQuery)}
         >
-          <span className="truncate">Create new ref &quot;{trimmedBranchQuery}&quot;</span>
+          <span className="truncate">
+            {isJj ? "Set bookmark" : "Create new ref"} &quot;{trimmedBranchQuery}&quot;
+          </span>
         </ComboboxItem>
       );
     }
@@ -669,9 +697,13 @@ export function BranchToolbarBranchSelector({
     const hasSecondaryWorktree =
       refName.worktreePath && activeProjectCwd && refName.worktreePath !== activeProjectCwd;
     const badge = refName.current
-      ? "current"
+      ? isJj
+        ? "at change"
+        : "current"
       : hasSecondaryWorktree
-        ? "worktree"
+        ? isJj
+          ? "workspace"
+          : "worktree"
         : refName.isRemote
           ? "remote"
           : refName.isDefault
@@ -748,7 +780,11 @@ export function BranchToolbarBranchSelector({
             className="min-w-0 max-w-full text-muted-foreground/70 hover:text-foreground/80"
             disabled={isInitialBranchesLoadPending || isBranchActionPending}
           >
-            <GitBranchIcon className="size-3 shrink-0 opacity-70" />
+            {isJj ? (
+              <BookmarkIcon className="size-3 shrink-0 opacity-70" />
+            ) : (
+              <GitBranchIcon className="size-3 shrink-0 opacity-70" />
+            )}
             <span className="min-w-0 max-w-[240px] truncate">{triggerLabel}</span>
             <ChevronDownIcon className="size-3 shrink-0 opacity-50" />
           </ComboboxTrigger>
@@ -764,7 +800,7 @@ export function BranchToolbarBranchSelector({
             <ComboboxInput
               className="[&_input]:h-6.5 [&_input]:ps-5 [&_input]:font-sans [&_input]:leading-6.5"
               inputClassName="rounded-none bg-transparent text-sm"
-              placeholder="Search refs..."
+              placeholder={isJj ? "Search bookmarks..." : "Search refs..."}
               showTrigger={false}
               size="sm"
               unstyled
@@ -774,7 +810,7 @@ export function BranchToolbarBranchSelector({
           </div>
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <ComboboxEmpty>No refs found.</ComboboxEmpty>
+          <ComboboxEmpty>{isJj ? "No bookmarks found." : "No refs found."}</ComboboxEmpty>
           <div className="relative min-h-0 w-full max-h-56 flex-1 overflow-hidden">
             <ComboboxListVirtualized className="size-full min-w-0 p-0">
               <LegendList<string>
@@ -785,8 +821,12 @@ export function BranchToolbarBranchSelector({
                   item === checkoutPullRequestItemValue
                     ? "checkout-pull-request"
                     : item === createBranchItemValue
-                      ? "create-branch"
-                      : "branch"
+                      ? isJj
+                        ? "create-bookmark"
+                        : "create-branch"
+                      : isJj
+                        ? "bookmark"
+                        : "branch"
                 }
                 renderItem={({ item, index }) => renderPickerItem(item, index)}
                 estimatedItemSize={28}
@@ -825,15 +865,16 @@ export function BranchToolbarBranchSelector({
                       id={startFromOriginSwitchId}
                       checked={startFromOrigin}
                       className="[--thumb-size:--spacing(3.5)]"
-                      aria-label="Start worktree from origin"
+                      aria-label={`Start ${isJj ? "workspace" : "worktree"} from origin`}
                       onCheckedChange={(checked) => onStartFromOriginChange(Boolean(checked))}
                     />
                   </label>
                 }
               />
               <TooltipPopup side="top" className="max-w-72 whitespace-normal leading-tight">
-                Creates the worktree from the latest matching branch on origin instead of your local
-                branch.
+                Creates the {isJj ? "workspace" : "worktree"} from the latest matching{" "}
+                {isJj ? "bookmark" : "branch"} on origin instead of your local{" "}
+                {isJj ? "bookmark" : "branch"}.
               </TooltipPopup>
             </Tooltip>
           ) : null}

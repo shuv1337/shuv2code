@@ -52,6 +52,16 @@ import {
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   VcsPullInput,
+  VcsFetchInput,
+  VcsFetchResult,
+  VcsDescribeChangeInput,
+  VcsDescribeChangeResult,
+  VcsStartChangeInput,
+  VcsStartChangeResult,
+  VcsPushBookmarkInput,
+  VcsPushBookmarkResult,
+  VcsCreateChangeRequestInput,
+  VcsCreateChangeRequestResult,
   GitPullRequestRefInput,
   VcsPullResult,
   VcsRemoveWorktreeInput,
@@ -177,7 +187,7 @@ import {
   SourceControlRepositoryInfo,
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
-import { VcsError } from "./vcs.ts";
+import { VcsError, VcsSetProjectPreferenceInput, VcsSetProjectPreferenceResult } from "./vcs.ts";
 import {
   VoiceControllerError,
   VoiceEnsureControllerInput,
@@ -228,6 +238,11 @@ export const WS_METHODS = {
 
   // VCS methods
   vcsPull: "vcs.pull",
+  vcsFetch: "vcs.fetch",
+  vcsDescribeChange: "vcs.describeChange",
+  vcsStartChange: "vcs.startChange",
+  vcsPushBookmark: "vcs.pushBookmark",
+  vcsCreateChangeRequest: "vcs.createChangeRequest",
   vcsRefreshStatus: "vcs.refreshStatus",
   vcsListRefs: "vcs.listRefs",
   vcsCreateWorktree: "vcs.createWorktree",
@@ -235,6 +250,7 @@ export const WS_METHODS = {
   vcsCreateRef: "vcs.createRef",
   vcsSwitchRef: "vcs.switchRef",
   vcsInit: "vcs.init",
+  vcsSetProjectPreference: "vcs.setProjectPreference",
 
   // Git workflow methods
   gitRunStackedAction: "git.runStackedAction",
@@ -649,6 +665,36 @@ export const WsVcsPullRpc = Rpc.make(WS_METHODS.vcsPull, {
   error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
 });
 
+export const WsVcsFetchRpc = Rpc.make(WS_METHODS.vcsFetch, {
+  payload: VcsFetchInput,
+  success: VcsFetchResult,
+  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVcsDescribeChangeRpc = Rpc.make(WS_METHODS.vcsDescribeChange, {
+  payload: VcsDescribeChangeInput,
+  success: VcsDescribeChangeResult,
+  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVcsStartChangeRpc = Rpc.make(WS_METHODS.vcsStartChange, {
+  payload: VcsStartChangeInput,
+  success: VcsStartChangeResult,
+  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVcsPushBookmarkRpc = Rpc.make(WS_METHODS.vcsPushBookmark, {
+  payload: VcsPushBookmarkInput,
+  success: VcsPushBookmarkResult,
+  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVcsCreateChangeRequestRpc = Rpc.make(WS_METHODS.vcsCreateChangeRequest, {
+  payload: VcsCreateChangeRequestInput,
+  success: VcsCreateChangeRequestResult,
+  error: Schema.Union([SourceControlRepositoryError, EnvironmentAuthorizationError]),
+});
+
 export const WsVcsRefreshStatusRpc = Rpc.make(WS_METHODS.vcsRefreshStatus, {
   payload: VcsStatusInput,
   success: VcsStatusResult,
@@ -677,34 +723,40 @@ export const WsGitPreparePullRequestThreadRpc = Rpc.make(WS_METHODS.gitPreparePu
 export const WsVcsListRefsRpc = Rpc.make(WS_METHODS.vcsListRefs, {
   payload: VcsListRefsInput,
   success: VcsListRefsResult,
-  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
 });
 
 export const WsVcsCreateWorktreeRpc = Rpc.make(WS_METHODS.vcsCreateWorktree, {
   payload: VcsCreateWorktreeInput,
   success: VcsCreateWorktreeResult,
-  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
 });
 
 export const WsVcsRemoveWorktreeRpc = Rpc.make(WS_METHODS.vcsRemoveWorktree, {
   payload: VcsRemoveWorktreeInput,
-  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
 });
 
 export const WsVcsCreateRefRpc = Rpc.make(WS_METHODS.vcsCreateRef, {
   payload: VcsCreateRefInput,
   success: VcsCreateRefResult,
-  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
 });
 
 export const WsVcsSwitchRefRpc = Rpc.make(WS_METHODS.vcsSwitchRef, {
   payload: VcsSwitchRefInput,
   success: VcsSwitchRefResult,
-  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
 });
 
 export const WsVcsInitRpc = Rpc.make(WS_METHODS.vcsInit, {
   payload: VcsInitInput,
+  error: Schema.Union([VcsError, EnvironmentAuthorizationError]),
+});
+
+export const WsVcsSetProjectPreferenceRpc = Rpc.make(WS_METHODS.vcsSetProjectPreference, {
+  payload: VcsSetProjectPreferenceInput,
+  success: VcsSetProjectPreferenceResult,
   error: Schema.Union([VcsError, EnvironmentAuthorizationError]),
 });
 
@@ -987,6 +1039,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsAssetsCreateUrlRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
+  WsVcsFetchRpc,
+  WsVcsDescribeChangeRpc,
+  WsVcsStartChangeRpc,
+  WsVcsPushBookmarkRpc,
+  WsVcsCreateChangeRequestRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,
   WsGitResolvePullRequestRpc,
@@ -997,6 +1054,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsCreateRefRpc,
   WsVcsSwitchRefRpc,
   WsVcsInitRpc,
+  WsVcsSetProjectPreferenceRpc,
   WsReviewGetDiffPreviewRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,

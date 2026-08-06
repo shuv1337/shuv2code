@@ -9,6 +9,31 @@ import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
+const UNKNOWN_CAPABILITIES = {
+  kind: "unknown" as const,
+  supportsWorktrees: false,
+  supportsBookmarks: false,
+  supportsAtomicSnapshot: false,
+  supportsPushDefaultRemote: false,
+  supportsStatus: false,
+  supportsRefMutation: false,
+  supportsWorkspaceMutation: false,
+  supportsDescribeChange: false,
+  supportsStartChange: false,
+  supportsFetch: false,
+  supportsPush: false,
+  supportsChangeRequests: false,
+  supportsJuzu: false,
+  ignoreClassifier: "native" as const,
+};
+
+const DEFAULT_SELECTION = {
+  availableKinds: [] as const,
+  projectKind: null,
+  defaultKind: "git" as const,
+  source: "fallback" as const,
+};
+
 function makeLayer(input: {
   readonly detect: VcsDriverRegistry.VcsDriverRegistry["Service"]["detect"];
 }) {
@@ -16,6 +41,13 @@ function makeLayer(input: {
     Layer.provide(
       Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
         detect: input.detect,
+        inspect: (request) =>
+          input.detect(request).pipe(
+            Effect.map((handle) => ({
+              handle,
+              selection: handle?.selection ?? DEFAULT_SELECTION,
+            })),
+          ),
       }),
     ),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
@@ -30,6 +62,9 @@ describe("GitWorkflowService", () => {
       const status = yield* workflow.localStatus({ cwd: "/not-a-repo" });
 
       assert.deepStrictEqual(status, {
+        kind: "unknown",
+        capabilities: UNKNOWN_CAPABILITIES,
+        selection: DEFAULT_SELECTION,
         isRepo: false,
         hasPrimaryRemote: false,
         isDefaultRef: false,
@@ -40,6 +75,7 @@ describe("GitWorkflowService", () => {
           insertions: 0,
           deletions: 0,
         },
+        workingCopy: null,
       });
     }).pipe(
       Effect.provide(
@@ -56,6 +92,9 @@ describe("GitWorkflowService", () => {
       const status = yield* workflow.status({ cwd: "/not-a-repo" });
 
       assert.deepStrictEqual(status, {
+        kind: "unknown",
+        capabilities: UNKNOWN_CAPABILITIES,
+        selection: DEFAULT_SELECTION,
         isRepo: false,
         hasPrimaryRemote: false,
         isDefaultRef: false,
@@ -66,6 +105,7 @@ describe("GitWorkflowService", () => {
           insertions: 0,
           deletions: 0,
         },
+        workingCopy: null,
         hasUpstream: false,
         aheadCount: 0,
         behindCount: 0,
@@ -90,6 +130,7 @@ describe("GitWorkflowService", () => {
       Layer.provide(
         Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
           detect: () => Effect.succeed(null),
+          inspect: () => Effect.succeed({ handle: null, selection: DEFAULT_SELECTION }),
         }),
       ),
       Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),

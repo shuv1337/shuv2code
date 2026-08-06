@@ -5,7 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@shuv2code/shared/Net";
-import { resolveGitWorktreePath, resolveWorktreeShuv2CodeHome } from "@shuv2code/shared/devHome";
+import { resolveVcsWorkspacePath, resolveWorktreeShuv2CodeHome } from "@shuv2code/shared/devHome";
 import { HostProcessEnvironment, HostProcessWorkingDirectory } from "@shuv2code/shared/hostProcess";
 import { resolveSpawnCommand } from "@shuv2code/shared/shell";
 import * as Config from "effect/Config";
@@ -647,7 +647,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       return yield* new DevRunnerHostNotProxiableError({ mode: input.mode, host: input.host });
     }
 
-    const worktreePath = yield* resolveGitWorktreePath(yield* HostProcessWorkingDirectory);
+    const worktreePath = yield* resolveVcsWorkspacePath(yield* HostProcessWorkingDirectory);
 
     const { offset, source } = yield* resolveOffset({
       portOffset,
@@ -666,7 +666,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
     });
 
     const hostEnvironment = yield* HostProcessEnvironment;
-    // A dev server started inside a worktree defaults to that worktree's own
+    // A dev server started inside a linked VCS workspace defaults to that workspace's own
     // (gitignored) `.shuv2code` — see @shuv2code/shared/devHome for why this must
     // outrank an ambient SHUV2CODE_HOME. `--home-dir` still wins.
     const worktreeHome = yield* resolveWorktreeShuv2CodeHome(yield* HostProcessWorkingDirectory);

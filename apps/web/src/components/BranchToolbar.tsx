@@ -1,5 +1,5 @@
 import { scopeProjectRef, scopeThreadRef } from "@shuv2code/client-runtime/environment";
-import type { EnvironmentId, ThreadId } from "@shuv2code/contracts";
+import type { EnvironmentId, ThreadId, VcsDriverKind } from "@shuv2code/contracts";
 import {
   ChevronDownIcon,
   CloudIcon,
@@ -13,6 +13,8 @@ import { memo, useCallback, useMemo } from "react";
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useProject, useThread, useThreadShellsForProjectRefs } from "../state/entities";
+import { useEnvironmentQuery } from "../state/query";
+import { vcsEnvironment } from "../state/vcs";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import {
   type EnvMode,
@@ -28,6 +30,7 @@ import {
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
+import { BranchToolbarVcsSelector } from "./BranchToolbarVcsSelector";
 import { Button } from "./ui/button";
 import {
   Menu,
@@ -71,6 +74,7 @@ interface MobileRunContextSelectorProps {
   onEnvModeChange: (mode: EnvMode) => void;
   previousWorktreeLabel: string | null;
   onUsePreviousWorktree: () => void;
+  vcsKind: VcsDriverKind;
 }
 
 const MobileRunContextSelector = memo(function MobileRunContextSelector({
@@ -86,6 +90,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   onEnvModeChange,
   previousWorktreeLabel,
   onUsePreviousWorktree,
+  vcsKind,
 }: MobileRunContextSelectorProps) {
   const activeEnvironment = useMemo(
     () => availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null,
@@ -98,10 +103,10 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
         ? FolderGitIcon
         : FolderIcon;
   const workspaceLabel = envModeLocked
-    ? resolveLockedWorkspaceLabel(activeWorktreePath)
+    ? resolveLockedWorkspaceLabel(activeWorktreePath, vcsKind)
     : effectiveEnvMode === "worktree"
-      ? resolveEnvModeLabel("worktree")
-      : resolveCurrentWorkspaceLabel(activeWorktreePath);
+      ? resolveEnvModeLabel("worktree", vcsKind)
+      : resolveCurrentWorkspaceLabel(activeWorktreePath, vcsKind);
   const isLocked = envLocked || envModeLocked;
   const EnvironmentIcon = activeEnvironment?.isPrimary ? MonitorIcon : CloudIcon;
   const icon = showEnvironmentIndicator ? (
@@ -189,14 +194,14 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
                   <FolderIcon className="size-3" />
                 )}
                 <span className="min-w-0 truncate">
-                  {resolveCurrentWorkspaceLabel(activeWorktreePath)}
+                  {resolveCurrentWorkspaceLabel(activeWorktreePath, vcsKind)}
                 </span>
               </span>
             </MenuRadioItem>
             <MenuRadioItem disabled={envModeLocked} value="worktree">
               <span className="flex min-w-0 items-center gap-1.5">
                 <FolderGit2Icon className="size-3" />
-                <span className="min-w-0 truncate">{resolveEnvModeLabel("worktree")}</span>
+                <span className="min-w-0 truncate">{resolveEnvModeLabel("worktree", vcsKind)}</span>
               </span>
             </MenuRadioItem>
             {previousWorktreeLabel ? (
@@ -247,6 +252,14 @@ export const BranchToolbar = memo(function BranchToolbar({
   const activeProject = useProject(activeProjectRef);
   const hasActiveThread = serverThread !== null || draftThread !== null;
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const activeProjectCwd = activeWorktreePath ?? activeProject?.workspaceRoot ?? null;
+  const vcsStatus = useEnvironmentQuery(
+    activeProjectCwd
+      ? vcsEnvironment.status({ environmentId, input: { cwd: activeProjectCwd } })
+      : null,
+  );
+  const vcsKind = vcsStatus.data?.kind ?? "unknown";
+  const canSelectVcs = (vcsStatus.data?.selection?.availableKinds.length ?? 0) > 1;
   const effectiveEnvMode =
     effectiveEnvModeOverride ??
     resolveEffectiveEnvMode({
@@ -276,7 +289,7 @@ export const BranchToolbar = memo(function BranchToolbar({
     [activeWorktreePath, canUsePreviousWorktree, projectThreads],
   );
   const previousWorktreeLabel = previousWorktreeSeed
-    ? resolvePreviousWorktreeLabel(previousWorktreeSeed)
+    ? resolvePreviousWorktreeLabel(previousWorktreeSeed, vcsKind)
     : null;
   const onUsePreviousWorktree = useCallback(() => {
     if (!previousWorktreeSeed || !activeProjectRef) return;
@@ -305,6 +318,17 @@ export const BranchToolbar = memo(function BranchToolbar({
 
   return (
     <div className="chat-composer-context-strip -mt-4 mx-auto flex w-[calc(100%-2.75rem)] max-w-[calc(48rem-2.75rem)] items-center gap-2 ps-1 pe-2 pt-5 pb-1">
+      {canSelectVcs && activeProjectCwd && vcsStatus.data ? (
+        <>
+          <BranchToolbarVcsSelector
+            environmentId={environmentId}
+            cwd={activeProjectCwd}
+            status={vcsStatus.data}
+          />
+          <Separator orientation="vertical" className="mx-0.5 h-3.5!" />
+        </>
+      ) : null}
+
       {isMobile ? (
         <MobileRunContextSelector
           envLocked={envLocked}
@@ -319,6 +343,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           onEnvModeChange={onEnvModeChange}
           previousWorktreeLabel={previousWorktreeLabel}
           onUsePreviousWorktree={onUsePreviousWorktree}
+          vcsKind={vcsKind}
         />
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-1">
@@ -340,6 +365,7 @@ export const BranchToolbar = memo(function BranchToolbar({
             onEnvModeChange={onEnvModeChange}
             previousWorktreeLabel={previousWorktreeLabel}
             onUsePreviousWorktree={onUsePreviousWorktree}
+            vcsKind={vcsKind}
           />
         </div>
       )}

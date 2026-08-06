@@ -102,6 +102,7 @@ import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
+import * as VcsChangeRequestService from "./vcs/VcsChangeRequestService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
@@ -517,6 +518,8 @@ export const makeWsRpcLayer = (
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
       const review = yield* ReviewService.ReviewService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
+      const vcsDriverRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
+      const vcsChangeRequests = yield* VcsChangeRequestService.VcsChangeRequestService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
       const previewManager = yield* PreviewManager.PreviewManager;
@@ -1932,6 +1935,18 @@ export const makeWsRpcLayer = (
               "rpc.aggregate": "vcs",
             },
           ),
+        [WS_METHODS.vcsSetProjectPreference]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsSetProjectPreference,
+            vcsDriverRegistry
+              .setProjectPreference(input)
+              .pipe(
+                Effect.tap(() =>
+                  vcsStatusBroadcaster.refreshStatus(input.cwd).pipe(Effect.ignore({ log: true })),
+                ),
+              ),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,
@@ -1943,6 +1958,36 @@ export const makeWsRpcLayer = (
               }),
             ),
             { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.vcsFetch]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsFetch,
+            gitWorkflow.fetch(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsDescribeChange]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsDescribeChange,
+            gitWorkflow.describeChange(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsStartChange]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsStartChange,
+            gitWorkflow.startChange(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsPushBookmark]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsPushBookmark,
+            gitWorkflow.pushBookmark(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsCreateChangeRequest]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsCreateChangeRequest,
+            vcsChangeRequests.create(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.gitRunStackedAction]: (input) =>
           observeRpcStream(
@@ -2278,6 +2323,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2315,7 +2361,12 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                       ),
                       Layer.provideMerge(GitVcsDriver.layer),
                       Layer.provide(
-                        VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer)),
+                        VcsDriverRegistry.layer.pipe(
+                          Layer.provide(VcsProjectConfig.layer),
+                          Layer.provide(
+                            Layer.succeed(ServerSettings.ServerSettingsService, serverSettings),
+                          ),
+                        ),
                       ),
                     ),
                   ),

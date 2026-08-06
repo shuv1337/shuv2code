@@ -137,6 +137,13 @@ export const VcsDiscoveryItem = Schema.Struct({
 });
 export type VcsDiscoveryItem = typeof VcsDiscoveryItem.Type;
 
+export const VcsCompanionDiscoveryItem = Schema.Struct({
+  kind: Schema.Literal("juzu"),
+  implemented: Schema.Boolean,
+  ...SourceControlDiscoverySharedFields,
+});
+export type VcsCompanionDiscoveryItem = typeof VcsCompanionDiscoveryItem.Type;
+
 export const SourceControlProviderDiscoveryItem = Schema.Struct({
   kind: SourceControlProviderKind,
   ...SourceControlDiscoverySharedFields,
@@ -146,6 +153,7 @@ export type SourceControlProviderDiscoveryItem = typeof SourceControlProviderDis
 
 export const SourceControlDiscoveryResult = Schema.Struct({
   versionControlSystems: Schema.Array(VcsDiscoveryItem),
+  companionTools: Schema.Array(VcsCompanionDiscoveryItem),
   sourceControlProviders: Schema.Array(SourceControlProviderDiscoveryItem),
 });
 export type SourceControlDiscoveryResult = typeof SourceControlDiscoveryResult.Type;

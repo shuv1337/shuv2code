@@ -1779,12 +1779,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const status: GitVcsDriver.GitVcsDriver["Service"]["status"] = (input) =>
     statusDetails(input.cwd).pipe(
       Effect.map((details) => ({
+        kind: "git" as const,
+        capabilities: GitVcsDriver.GIT_VCS_CAPABILITIES,
         isRepo: details.isRepo,
         hasPrimaryRemote: details.hasOriginRemote,
         isDefaultRef: details.isDefaultBranch,
         refName: details.branch,
         hasWorkingTreeChanges: details.hasWorkingTreeChanges,
         workingTree: details.workingTree,
+        workingCopy: null,
         hasUpstream: details.hasUpstream,
         aheadCount: details.aheadCount,
         behindCount: details.behindCount,
@@ -2368,6 +2371,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         localBranches.push({
           ref: {
             name,
+            kind: "branch",
             current: false,
             isRemote: false,
             isDefault: name === defaultBranch,
@@ -2383,6 +2387,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const parsedRemoteRef = parseRemoteRefWithRemoteNames(name, remoteNames);
       const remoteBranch: VcsRef = {
         name,
+        kind: "branch",
         current: false,
         isRemote: true,
         isDefault:

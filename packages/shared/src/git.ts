@@ -245,6 +245,9 @@ function toRemoteStatusPart(status: VcsStatusResult): VcsStatusRemoteResult {
 
 function toLocalStatusPart(status: VcsStatusResult): VcsStatusLocalResult {
   return {
+    kind: status.kind,
+    capabilities: status.capabilities,
+    ...(status.selection ? { selection: status.selection } : {}),
     isRepo: status.isRepo,
     ...(status.sourceControlProvider
       ? { sourceControlProvider: status.sourceControlProvider }
@@ -254,6 +257,7 @@ function toLocalStatusPart(status: VcsStatusResult): VcsStatusLocalResult {
     refName: status.refName,
     hasWorkingTreeChanges: status.hasWorkingTreeChanges,
     workingTree: status.workingTree,
+    workingCopy: status.workingCopy,
   };
 }
 
@@ -270,12 +274,31 @@ export function applyGitStatusStreamEvent(
       if (current === null) {
         return mergeGitStatusParts(
           {
+            kind: "unknown",
+            capabilities: {
+              kind: "unknown",
+              supportsWorktrees: false,
+              supportsBookmarks: false,
+              supportsAtomicSnapshot: false,
+              supportsPushDefaultRemote: false,
+              supportsStatus: false,
+              supportsRefMutation: false,
+              supportsWorkspaceMutation: false,
+              supportsDescribeChange: false,
+              supportsStartChange: false,
+              supportsFetch: false,
+              supportsPush: false,
+              supportsChangeRequests: false,
+              supportsJuzu: false,
+              ignoreClassifier: "native",
+            },
             isRepo: true,
             hasPrimaryRemote: false,
             isDefaultRef: false,
             refName: null,
             hasWorkingTreeChanges: false,
             workingTree: { files: [], insertions: 0, deletions: 0 },
+            workingCopy: null,
           },
           event.remote,
         );

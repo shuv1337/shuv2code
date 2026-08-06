@@ -1,4 +1,4 @@
-import type { EnvironmentId, VcsRef, ProjectId } from "@shuv2code/contracts";
+import type { EnvironmentId, VcsDriverKind, VcsRef, ProjectId } from "@shuv2code/contracts";
 import * as Schema from "effect/Schema";
 import { toSortableTimestamp } from "../lib/threadSort";
 export {
@@ -54,15 +54,24 @@ export function shouldShowEnvironmentIndicator(input: {
   return input.activeEnvironment !== null && !input.activeEnvironment.isPrimary;
 }
 
-export function resolveEnvModeLabel(mode: EnvMode): string {
+export function resolveEnvModeLabel(mode: EnvMode, kind: VcsDriverKind = "git"): string {
+  if (kind === "jj") return mode === "worktree" ? "New workspace" : "Current workspace";
   return mode === "worktree" ? "New worktree" : "Current checkout";
 }
 
-export function resolveCurrentWorkspaceLabel(activeWorktreePath: string | null): string {
-  return activeWorktreePath ? "Current worktree" : resolveEnvModeLabel("local");
+export function resolveCurrentWorkspaceLabel(
+  activeWorktreePath: string | null,
+  kind: VcsDriverKind = "git",
+): string {
+  if (kind === "jj") return "Current workspace";
+  return activeWorktreePath ? "Current worktree" : resolveEnvModeLabel("local", kind);
 }
 
-export function resolveLockedWorkspaceLabel(activeWorktreePath: string | null): string {
+export function resolveLockedWorkspaceLabel(
+  activeWorktreePath: string | null,
+  kind: VcsDriverKind = "git",
+): string {
+  if (kind === "jj") return "Workspace";
   return activeWorktreePath ? "Worktree" : "Local checkout";
 }
 
@@ -109,8 +118,12 @@ export function resolvePreviousWorktreeSeed(input: {
   return latest === null ? null : { branch: latest.branch, worktreePath: latest.worktreePath };
 }
 
-export function resolvePreviousWorktreeLabel(seed: PreviousWorktreeSeed): string {
-  return seed.branch ? `Previous worktree (${seed.branch})` : "Previous worktree";
+export function resolvePreviousWorktreeLabel(
+  seed: PreviousWorktreeSeed,
+  kind: VcsDriverKind = "git",
+): string {
+  const label = kind === "jj" ? "Previous workspace" : "Previous worktree";
+  return seed.branch ? `${label} (${seed.branch})` : label;
 }
 
 export function resolveEffectiveEnvMode(input: {
