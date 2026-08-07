@@ -16,6 +16,7 @@ import {
 } from "@shuv2code/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -117,13 +118,35 @@ describe("authenticated voice RPC vertical integration", () => {
         > = [];
         const stoppedTransports: Array<Parameters<VoiceRuntimeGatewayShape["stopTransport"]>[0]> =
           [];
+        let controllerRuntimeGate:
+          | {
+              readonly entered: Deferred.Deferred<void>;
+              readonly release: Deferred.Deferred<void>;
+            }
+          | undefined;
+        let transportStartGate:
+          | {
+              readonly entered: Deferred.Deferred<void>;
+              readonly release: Deferred.Deferred<void>;
+            }
+          | undefined;
 
         const runtime = VoiceRuntimeGateway.of({
           resolveModelSelection: () => Effect.succeed(modelSelection),
           ensureControllerRuntime: (input) =>
             Effect.gen(function* () {
               controllerRuntimeEnsures.push(input);
-              const runtimeInstanceId = VoiceRuntimeInstanceId.make("controller-runtime-1");
+              const runtimeOrdinal = controllerRuntimeEnsures.length;
+              const gate = controllerRuntimeGate;
+              controllerRuntimeGate = undefined;
+              if (gate !== undefined) {
+                yield* Deferred.succeed(gate.entered, undefined);
+                yield* Deferred.await(gate.release);
+              }
+              const runtimeSequence = runtimeOrdinal <= 2 ? 1 : runtimeOrdinal - 1;
+              const runtimeInstanceId = VoiceRuntimeInstanceId.make(
+                `controller-runtime-${runtimeSequence}`,
+              );
               const issued = yield* registry.issue({
                 threadId: input.controllerThreadId,
                 providerInstanceId: input.providerInstanceId,
@@ -138,18 +161,26 @@ describe("authenticated voice RPC vertical integration", () => {
                 },
               });
               return {
-                codexProviderThreadId: "codex-controller-session-1",
+                codexProviderThreadId: `codex-controller-session-${runtimeSequence}`,
                 runtimeInstanceId,
                 controllerMcpCredentialId: issued.config.credentialId,
               };
             }),
           stopControllerRuntime: () => Effect.void,
           startTransport: (input) =>
-            Effect.succeed({
-              codexProviderThreadId: "codex-transport-session-1",
-              runtimeInstanceId: input.runtimeInstanceId,
-              answerSdp: input.transportType === "websocket" ? null : "answer-sdp",
-              transportType: input.transportType,
+            Effect.gen(function* () {
+              const gate = transportStartGate;
+              transportStartGate = undefined;
+              if (gate !== undefined) {
+                yield* Deferred.succeed(gate.entered, undefined);
+                yield* Deferred.await(gate.release);
+              }
+              return {
+                codexProviderThreadId: "codex-transport-session-1",
+                runtimeInstanceId: input.runtimeInstanceId,
+                answerSdp: input.transportType === "websocket" ? null : "answer-sdp",
+                transportType: input.transportType,
+              };
             }),
           stopTransport: (input) =>
             Effect.sync(() => {
@@ -290,6 +321,10 @@ describe("authenticated voice RPC vertical integration", () => {
           ),
         );
 
+        assert.deepStrictEqual(yield* readClient[WS_METHODS.voiceGetController]({}), {
+          controller: null,
+        });
+
         const deniedEnsure = yield* Effect.flip(
           readClient[WS_METHODS.voiceEnsureController]({
             hostProjectId,
@@ -310,6 +345,16 @@ describe("authenticated voice RPC vertical integration", () => {
         assert.strictEqual(ensured.controller.state, "active");
         const controllerThreadId = ensured.controller.controllerThreadId;
         assert.strictEqual(controllerRuntimeEnsures[0]?.creationDisposition, "fresh");
+        assert.deepStrictEqual(
+          (yield* readClient[WS_METHODS.voiceGetController]({})).controller,
+          ensured.controller,
+        );
+        const deniedReset = yield* Effect.flip(
+          readClient[WS_METHODS.voiceResetController]({ controllerThreadId }),
+        );
+        assert.strictEqual(deniedReset._tag, "EnvironmentAuthorizationError");
+        if (deniedReset._tag !== "EnvironmentAuthorizationError") return assert.fail();
+        assert.strictEqual(deniedReset.requiredScope, AuthOrchestrationOperateScope);
 
         const recoveredEnsure = yield* fullClient[WS_METHODS.voiceEnsureController]({
           hostProjectId,
@@ -514,6 +559,100 @@ describe("authenticated voice RPC vertical integration", () => {
           generation: runtimeFence.generation,
           realtimeSessionId: runtimeFence.realtimeSessionId,
         });
+
+        const lostRuntime = yield* transportCoordinator.getControllerRuntime(controllerThreadId);
+        assert.isDefined(lostRuntime);
+        if (lostRuntime === undefined) return assert.fail();
+        const recoveryEntered = yield* Deferred.make<void>();
+        const releaseRecovery = yield* Deferred.make<void>();
+        controllerRuntimeGate = { entered: recoveryEntered, release: releaseRecovery };
+        yield* PubSub.publish(runtimeEvents, {
+          type: "controller.runtime-lost",
+          controllerThreadId,
+          runtimeInstanceId: lostRuntime.runtimeInstanceId,
+        });
+        yield* Deferred.await(recoveryEntered).pipe(Effect.timeout("2 seconds"));
+        const concurrentEnsureFiber = yield* fullClient[WS_METHODS.voiceEnsureController]({
+          hostProjectId,
+          providerInstanceId,
+          modelSelection,
+          authorizedRuntimeCeiling: "approval-required",
+        }).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        assert.lengthOf(controllerRuntimeEnsures, 3);
+        yield* Deferred.succeed(releaseRecovery, undefined);
+        const concurrentEnsure = yield* Fiber.join(concurrentEnsureFiber).pipe(
+          Effect.timeout("2 seconds"),
+        );
+        assert.strictEqual(concurrentEnsure.controller.state, "active");
+        assert.lengthOf(controllerRuntimeEnsures, 4);
+        assert.strictEqual(
+          Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId)).state,
+          "active",
+        );
+        assert.strictEqual(
+          (yield* transportCoordinator.getControllerRuntime(controllerThreadId))?.runtimeInstanceId,
+          VoiceRuntimeInstanceId.make("controller-runtime-3"),
+        );
+
+        const ensureEntered = yield* Deferred.make<void>();
+        const releaseEnsure = yield* Deferred.make<void>();
+        controllerRuntimeGate = { entered: ensureEntered, release: releaseEnsure };
+        const ensureFiber = yield* fullClient[WS_METHODS.voiceEnsureController]({
+          hostProjectId,
+          providerInstanceId,
+          modelSelection,
+          authorizedRuntimeCeiling: "approval-required",
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(ensureEntered).pipe(Effect.timeout("2 seconds"));
+        const resetFiber = yield* fullClient[WS_METHODS.voiceResetController]({
+          controllerThreadId,
+        }).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        assert.strictEqual(
+          Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId)).state,
+          "active",
+        );
+        yield* Deferred.succeed(releaseEnsure, undefined);
+        assert.strictEqual((yield* Fiber.join(ensureFiber)).controller.state, "active");
+        assert.isTrue((yield* Fiber.join(resetFiber).pipe(Effect.timeout("2 seconds"))).reset);
+        assert.isTrue(Option.isNone(yield* bindings.getByEnvironmentId(environmentId)));
+        assert.isUndefined(yield* transportCoordinator.getControllerRuntime(controllerThreadId));
+
+        const reEnsured = yield* fullClient[WS_METHODS.voiceEnsureController]({
+          hostProjectId,
+          providerInstanceId,
+          modelSelection,
+          authorizedRuntimeCeiling: "approval-required",
+        });
+        const restartedControllerThreadId = reEnsured.controller.controllerThreadId;
+        const transportEntered = yield* Deferred.make<void>();
+        const releaseTransport = yield* Deferred.make<void>();
+        transportStartGate = { entered: transportEntered, release: releaseTransport };
+        const startFiber = yield* fullClient[WS_METHODS.voiceStart]({
+          controllerThreadId: restartedControllerThreadId,
+          clientSessionId: VoiceClientSessionId.make("concurrent-start-session"),
+          generation: VoiceGeneration.make(1),
+          offerSdp: "concurrent-offer-sdp",
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(transportEntered).pipe(Effect.timeout("2 seconds"));
+        const concurrentResetFiber = yield* fullClient[WS_METHODS.voiceResetController]({
+          controllerThreadId: restartedControllerThreadId,
+        }).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        assert.strictEqual(
+          Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId)).state,
+          "active",
+        );
+        yield* Deferred.succeed(releaseTransport, undefined);
+        assert.strictEqual((yield* Fiber.join(startFiber)).answerSdp, "answer-sdp");
+        assert.isTrue(
+          (yield* Fiber.join(concurrentResetFiber).pipe(Effect.timeout("2 seconds"))).reset,
+        );
+        assert.isTrue(Option.isNone(yield* bindings.getByEnvironmentId(environmentId)));
+        assert.isUndefined(
+          yield* transportCoordinator.getControllerRuntime(restartedControllerThreadId),
+        );
       }),
     ),
   );

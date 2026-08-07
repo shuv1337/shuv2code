@@ -35,17 +35,19 @@ export class PcmVoiceTransport implements RealtimeVoiceTransport {
     this.#options = options;
   }
 
-  async start(): Promise<{ kind: "websocket"; answerSdp: null }> {
+  async start(microphoneStream?: MediaStream): Promise<{ kind: "websocket"; answerSdp: null }> {
     if (this.#stopped) throw new Error("PCM transport already stopped.");
-    this.#stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: this.#options.channels,
-        sampleRate: this.#options.sampleRateHz,
-        echoCancellation: true,
-        noiseSuppression: true,
-      },
-      video: false,
-    });
+    this.#stream =
+      microphoneStream ??
+      (await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: this.#options.channels,
+          sampleRate: this.#options.sampleRateHz,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+        video: false,
+      }));
     this.#context = new AudioContext({ sampleRate: this.#options.sampleRateHz });
     // Inline worklet avoids a separate asset fetch in the Vite app shell.
     const workletSource = `

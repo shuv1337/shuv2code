@@ -200,6 +200,8 @@ describe("OrchestrationEngine", () => {
       await system.run(
         voiceControllerBindings.compareAndSetState({
           environmentId: reservation.binding.environmentId,
+          expectedControllerThreadId: reservation.binding.controllerThreadId,
+          expectedBindingGeneration: reservation.binding.bindingGeneration,
           expectedState: reservation.binding.state,
           nextState: "resetting",
           expectedControlEpoch: reservation.binding.controlEpoch,
@@ -208,7 +210,13 @@ describe("OrchestrationEngine", () => {
       ),
     ).toBe(true);
     expect(
-      await system.run(voiceControllerBindings.deleteResetting(reservation.binding.environmentId)),
+      await system.run(
+        voiceControllerBindings.deleteResetting({
+          environmentId: reservation.binding.environmentId,
+          expectedControllerThreadId: reservation.binding.controllerThreadId,
+          expectedBindingGeneration: reservation.binding.bindingGeneration,
+        }),
+      ),
     ).toBe(true);
 
     await system.run(

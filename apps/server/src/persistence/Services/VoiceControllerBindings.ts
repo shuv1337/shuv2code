@@ -34,6 +34,8 @@ export type ReserveVoiceControllerBindingResult =
 
 export const CompareAndSetVoiceControllerBindingStateInput = Schema.Struct({
   environmentId: EnvironmentId,
+  expectedControllerThreadId: ThreadId,
+  expectedBindingGeneration: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
   expectedState: VoiceControllerBindingState,
   nextState: VoiceControllerBindingState,
   expectedControlEpoch: NonNegativeInt,
@@ -41,6 +43,14 @@ export const CompareAndSetVoiceControllerBindingStateInput = Schema.Struct({
 });
 export type CompareAndSetVoiceControllerBindingStateInput =
   typeof CompareAndSetVoiceControllerBindingStateInput.Type;
+
+export const DeleteResettingVoiceControllerBindingInput = Schema.Struct({
+  environmentId: EnvironmentId,
+  expectedControllerThreadId: ThreadId,
+  expectedBindingGeneration: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+});
+export type DeleteResettingVoiceControllerBindingInput =
+  typeof DeleteResettingVoiceControllerBindingInput.Type;
 
 export const RotateVoiceControllerControlEpochInput = Schema.Struct({
   environmentId: EnvironmentId,
@@ -108,7 +118,7 @@ export interface VoiceControllerBindingRepositoryShape {
     input: ClearVoiceControllerActiveTargetInput,
   ) => Effect.Effect<boolean, ProjectionRepositoryError>;
   readonly deleteResetting: (
-    environmentId: EnvironmentId,
+    input: DeleteResettingVoiceControllerBindingInput,
   ) => Effect.Effect<boolean, ProjectionRepositoryError>;
 }
 

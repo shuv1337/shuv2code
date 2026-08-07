@@ -46,6 +46,7 @@ import { PcmVoiceTransport } from "./PcmVoiceTransport";
 import { WebRtcVoiceTransport } from "./WebRtcVoiceTransport";
 import { detectVoiceBrowserSupport, type VoiceBrowserSupport } from "./voiceBrowserSupport";
 import { normalizeVoiceSessionError, VoiceSessionError } from "./voiceErrors";
+import { releaseVoiceMicrophoneStream } from "./voiceMicrophoneAccess";
 import { randomUUID } from "../lib/utils";
 
 export interface VoiceSessionControllerApi {
@@ -88,6 +89,7 @@ export interface StartVoiceSessionInput {
   readonly modelSelection?: ModelSelection;
   readonly authorizedRuntimeCeiling: RuntimeMode;
   readonly voiceId?: string;
+  readonly microphoneStream?: MediaStream;
 }
 
 export interface VoiceSessionControllerDependencies {
@@ -325,6 +327,7 @@ export class VoiceSessionController {
 
   async start(input: StartVoiceSessionInput): Promise<void> {
     if (this.#startInFlight) {
+      releaseVoiceMicrophoneStream(input.microphoneStream);
       return this.#startInFlight;
     }
     const start = this.#start(input);
@@ -340,8 +343,10 @@ export class VoiceSessionController {
 
   async #start(input: StartVoiceSessionInput): Promise<void> {
     if (this.#state.phase.type !== "idle" && this.#state.phase.type !== "unsupported") {
+      releaseVoiceMicrophoneStream(input.microphoneStream);
       return;
     }
+    let microphoneStream = input.microphoneStream;
     const support = this.#detectSupport();
     const generationIdentity = nextRealtimeVoiceGeneration(
       this.#sessionIdentity,
@@ -355,6 +360,8 @@ export class VoiceSessionController {
       environmentId: input.environmentId,
     });
     if (!support.supported) {
+      releaseVoiceMicrophoneStream(microphoneStream);
+      microphoneStream = undefined;
       this.#dispatch({
         type: "unsupported",
         generation: generationIdentity.generation,
@@ -365,7 +372,8 @@ export class VoiceSessionController {
     }
 
     this.#environmentId = input.environmentId;
-    this.#startInput = input;
+    const { microphoneStream: _microphoneStream, ...reconnectInput } = input;
+    this.#startInput = reconnectInput;
     this.#release = new RealtimeVoiceLeaseRelease();
     try {
       const ensured = await this.#api.ensureController(input.environmentId, {
@@ -406,58 +414,63 @@ export class VoiceSessionController {
       if (support.webrtc) {
         const transport = this.#createTransport();
         this.#transport = transport;
-        await transport.connect({
-          exchangeOffer: async (offerSdp) => {
-            this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
-            const started = await this.#api.start(input.environmentId, {
-              controllerThreadId: ensured.controller.controllerThreadId,
-              clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
-              generation: VoiceGeneration.make(generationIdentity.generation),
-              transport: { type: "webrtc", offerSdp },
-              voiceId,
-            });
-            if (
-              started.clientSessionId !== generationIdentity.clientSessionId ||
-              started.generation !== generationIdentity.generation
-            ) {
-              throw new VoiceSessionError(
-                "stale-generation",
-                "The voice server returned a stale session.",
-              );
-            }
-            if (
-              !this.#isCurrentAttempt(
-                generationIdentity.clientSessionId,
-                generationIdentity.generation,
-              )
-            ) {
-              await this.#releaseLateStartedSession(
-                input.environmentId,
-                started,
-                generationIdentity.generation,
-              );
+        const preparedMicrophone = microphoneStream;
+        microphoneStream = undefined;
+        await transport.connect(
+          {
+            exchangeOffer: async (offerSdp) => {
+              this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
+              const started = await this.#api.start(input.environmentId, {
+                controllerThreadId: ensured.controller.controllerThreadId,
+                clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
+                generation: VoiceGeneration.make(generationIdentity.generation),
+                transport: { type: "webrtc", offerSdp },
+                voiceId,
+              });
+              if (
+                started.clientSessionId !== generationIdentity.clientSessionId ||
+                started.generation !== generationIdentity.generation
+              ) {
+                throw new VoiceSessionError(
+                  "stale-generation",
+                  "The voice server returned a stale session.",
+                );
+              }
+              if (
+                !this.#isCurrentAttempt(
+                  generationIdentity.clientSessionId,
+                  generationIdentity.generation,
+                )
+              ) {
+                await this.#releaseLateStartedSession(
+                  input.environmentId,
+                  started,
+                  generationIdentity.generation,
+                );
+                return started.answerSdp ?? "";
+              }
+              this.#bindStartedSession(input.environmentId, started);
               return started.answerSdp ?? "";
-            }
-            this.#bindStartedSession(input.environmentId, started);
-            return started.answerSdp ?? "";
+            },
+            onData: (data) => this.#handleDataChannelMessage(data, generationIdentity.generation),
+            onMicrophoneEnded: () => {
+              void this.#fail(
+                generationIdentity.generation,
+                new VoiceSessionError(
+                  "microphone-ended",
+                  "The microphone became unavailable. Check the device and try again.",
+                  true,
+                ),
+              );
+            },
+            onConnectionStateChange: (state) => {
+              if (state === "failed" || state === "disconnected") {
+                void this.reconnect();
+              }
+            },
           },
-          onData: (data) => this.#handleDataChannelMessage(data, generationIdentity.generation),
-          onMicrophoneEnded: () => {
-            void this.#fail(
-              generationIdentity.generation,
-              new VoiceSessionError(
-                "microphone-ended",
-                "The microphone became unavailable. Check the device and try again.",
-                true,
-              ),
-            );
-          },
-          onConnectionStateChange: (state) => {
-            if (state === "failed" || state === "disconnected") {
-              void this.reconnect();
-            }
-          },
-        });
+          preparedMicrophone,
+        );
       } else if (support.pcm && this.#api.appendAudio !== undefined) {
         this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
         const started = await this.#api.start(input.environmentId, {
@@ -523,7 +536,9 @@ export class VoiceSessionController {
           },
         });
         this.#transport = transport;
-        await transport.start();
+        const preparedMicrophone = microphoneStream;
+        microphoneStream = undefined;
+        await transport.start(preparedMicrophone);
       } else {
         throw new VoiceSessionError(
           "webrtc-unavailable",
@@ -562,6 +577,8 @@ export class VoiceSessionController {
         return;
       }
       await this.#fail(generationIdentity.generation, normalized);
+    } finally {
+      releaseVoiceMicrophoneStream(microphoneStream);
     }
   }
 

@@ -5,7 +5,7 @@ import {
   reduceRealtimeVoiceState,
 } from "@shuv2code/client-runtime/state/realtime-voice";
 import { EnvironmentId } from "@shuv2code/contracts";
-import { shouldShowVoiceTray } from "./VoiceSessionTray";
+import { shouldShowVoiceTray, voiceTraySubtitle } from "./VoiceSessionTray";
 
 describe("VoiceSessionTray", () => {
   it("stays visible from permission request through actionable errors", () => {
@@ -26,5 +26,6 @@ describe("VoiceSessionTray", () => {
     expect(shouldShowVoiceTray(initialRealtimeVoiceState)).toBe(false);
     expect(shouldShowVoiceTray(requesting)).toBe(true);
     expect(shouldShowVoiceTray(failed)).toBe(true);
+    expect(voiceTraySubtitle(failed)).toBe("Needs attention");
   });
 });

@@ -33,6 +33,7 @@ import {
 
 const CODEX = ProviderDriverKind.make("codex");
 const NEGOTIATION_TIMEOUT = "20 seconds";
+const PROVIDER_TEARDOWN_TIMEOUT = "5 seconds";
 const ACTION_TIMEOUT = "30 minutes";
 const ACTION_HISTORY_POLL_INTERVAL = "1 second";
 const MAX_SPEAKABLE_TEXT = 8_192;
@@ -721,7 +722,9 @@ export const makeVoiceRuntimeGateway = Effect.fn("VoiceRuntimeGateway.make")(fun
         // tears down the transport session. The durable controller layer will
         // independently fence its lease and archive the transport thread.
         Effect.onError(() =>
-          provider.stopSession({ threadId: input.transportThreadId }).pipe(Effect.ignore),
+          provider
+            .stopSession({ threadId: input.transportThreadId })
+            .pipe(Effect.timeout(PROVIDER_TEARDOWN_TIMEOUT), Effect.ignore),
         ),
         Effect.withSpan("VoiceRuntimeGateway.startTransport"),
       ),
@@ -791,12 +794,16 @@ export const makeVoiceRuntimeGateway = Effect.fn("VoiceRuntimeGateway.make")(fun
             generation: input.generation,
           })
           .pipe(
-            Effect.ensuring(
-              provider.stopSession({ threadId: input.transportThreadId }).pipe(Effect.ignore),
-            ),
             mapProviderFailure(
               "transport_stop_failed",
               "The Codex voice transport could not be stopped.",
+            ),
+            Effect.timeoutOption(PROVIDER_TEARDOWN_TIMEOUT),
+            Effect.asVoid,
+            Effect.ensuring(
+              provider
+                .stopSession({ threadId: input.transportThreadId })
+                .pipe(Effect.timeout(PROVIDER_TEARDOWN_TIMEOUT), Effect.ignore),
             ),
           );
       }),

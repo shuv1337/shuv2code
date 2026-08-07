@@ -1,10 +1,5 @@
 import { VoiceSessionError } from "./voiceErrors";
-
-const MICROPHONE_CONSTRAINTS: MediaTrackConstraints = {
-  echoCancellation: true,
-  noiseSuppression: true,
-  autoGainControl: true,
-};
+import { VOICE_MICROPHONE_CONSTRAINTS } from "./voiceMicrophoneAccess";
 
 export interface WebRtcVoiceTransportConnectInput {
   readonly exchangeOffer: (offerSdp: string) => Promise<string>;
@@ -94,7 +89,10 @@ export class WebRtcVoiceTransport {
     return this.#closed;
   }
 
-  async connect(input: WebRtcVoiceTransportConnectInput): Promise<void> {
+  async connect(
+    input: WebRtcVoiceTransportConnectInput,
+    microphoneStream?: MediaStream,
+  ): Promise<void> {
     if (this.#peer !== null) {
       throw new VoiceSessionError("transport-already-started", "Voice transport already started.");
     }
@@ -102,10 +100,8 @@ export class WebRtcVoiceTransport {
     const connectAbort = new AbortController();
     this.#connectAbort = connectAbort;
     try {
-      const microphone = await this.#dependencies.getUserMedia({
-        audio: MICROPHONE_CONSTRAINTS,
-        video: false,
-      });
+      const microphone =
+        microphoneStream ?? (await this.#dependencies.getUserMedia(VOICE_MICROPHONE_CONSTRAINTS));
       if (this.#closed) {
         microphone.getTracks().forEach((track) => track.stop());
         return;

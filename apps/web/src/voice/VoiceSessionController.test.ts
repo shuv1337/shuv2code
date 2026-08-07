@@ -495,6 +495,10 @@ describe("VoiceSessionController", () => {
       resolveEnsure = resolve;
     });
     const createTransport = vi.fn();
+    const stopMicrophone = vi.fn();
+    const microphoneStream = {
+      getTracks: () => [{ stop: stopMicrophone }],
+    } as unknown as MediaStream;
     const api: VoiceSessionControllerApi = {
       ensureController: async () => ensure,
       listVoices: async () => voiceCatalog,
@@ -515,6 +519,7 @@ describe("VoiceSessionController", () => {
       hostProjectId: projectId,
       providerInstanceId,
       authorizedRuntimeCeiling: "approval-required",
+      microphoneStream,
     });
 
     await controller.stop();
@@ -523,6 +528,7 @@ describe("VoiceSessionController", () => {
 
     expect(createTransport).not.toHaveBeenCalled();
     expect(api.start).not.toHaveBeenCalled();
+    expect(stopMicrophone).toHaveBeenCalledTimes(1);
     expect(controller.state.phase).toEqual({ type: "idle" });
   });
 
