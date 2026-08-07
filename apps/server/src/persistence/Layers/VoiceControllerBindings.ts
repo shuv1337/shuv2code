@@ -68,7 +68,8 @@ const makeVoiceControllerBindingRepository = Effect.gen(function* () {
           const existing = yield* findByEnvironmentId(input.environmentId);
           if (Option.isSome(existing)) {
             const binding = existing.value;
-            return binding.controllerThreadId === input.controllerThreadId &&
+            return binding.state !== "resetting" &&
+              binding.controllerThreadId === input.controllerThreadId &&
               binding.hostProjectId === input.hostProjectId &&
               binding.providerInstanceId === input.providerInstanceId &&
               binding.authorizedRuntimeCeiling === input.authorizedRuntimeCeiling

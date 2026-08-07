@@ -204,6 +204,41 @@ layer("VoiceControlRepositories", (it) => {
     }),
   );
 
+  it.effect("does not reuse a controller binding claimed by reset", () =>
+    Effect.gen(function* () {
+      const bindings = yield* VoiceControllerBindingRepository;
+      yield* resetVoiceRows;
+      yield* reserveBinding;
+
+      const resetting = Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId));
+      assert.isTrue(
+        yield* bindings.compareAndSetState({
+          environmentId,
+          expectedControllerThreadId: resetting.controllerThreadId,
+          expectedBindingGeneration: resetting.bindingGeneration,
+          expectedState: "active",
+          nextState: "resetting",
+          expectedControlEpoch: resetting.controlEpoch,
+          updatedAt: now,
+        }),
+      );
+
+      const reservation = yield* bindings.reserve({
+        environmentId,
+        controllerThreadId: resetting.controllerThreadId,
+        hostProjectId,
+        providerInstanceId,
+        authorizedRuntimeCeiling: "approval-required",
+        bindingGeneration: resetting.bindingGeneration,
+        controlEpoch: resetting.controlEpoch,
+        createdAt: now,
+      });
+
+      assert.strictEqual(reservation._tag, "conflict");
+      assert.strictEqual(reservation.binding.state, "resetting");
+    }),
+  );
+
   it.effect("binds one handoff to one exact controller turn and fences stale generations", () =>
     Effect.gen(function* () {
       const actions = yield* VoiceControllerActionRepository;

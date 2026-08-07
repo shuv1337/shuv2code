@@ -61,6 +61,7 @@ function makeHarness(
     | { readonly state: "ambiguous"; readonly candidateCount: number } = { state: "adopted" },
   codexVersion: string | null = "0.146.0",
   realtimeStartNotification: "sdp" | "error" | "closed" = "sdp",
+  providerOverrides: Partial<ProviderService["Service"]> = {},
 ) {
   return Effect.gen(function* () {
     const events = yield* PubSub.unbounded<ProviderRuntimeEvent>();
@@ -287,6 +288,7 @@ function makeHarness(
       ),
       rollbackConversation: vi.fn(() => Effect.void),
       streamEvents: Stream.fromPubSub(events),
+      ...providerOverrides,
     });
 
     const registry = McpSessionRegistry.of({
@@ -659,6 +661,52 @@ describe("VoiceRuntimeGateway", () => {
         );
         assert.strictEqual(error.code, "realtime_start_rejected");
         assert.deepStrictEqual(harness.stops, [transportThreadId]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("bounds a nonterminating provider stop finalizer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(
+          undefined,
+          undefined,
+          undefined,
+          false,
+          undefined,
+          undefined,
+          undefined,
+          {
+            stopRealtime: () => Effect.never,
+            stopSession: () => Effect.never,
+          },
+        );
+        const transportThreadId = ThreadId.make("transport-nonterminating-stop");
+        const runtimeInstanceId = VoiceRuntimeInstanceId.make("runtime-nonterminating-stop");
+        yield* harness.gateway.startTransport({
+          transportThreadId,
+          providerInstanceId: instanceId,
+          cwd: "/tmp/project",
+          modelSelection,
+          runtimeMode: "approval-required",
+          runtimeInstanceId,
+          generation: VoiceGeneration.make(1),
+          realtimeSessionId: VoiceRealtimeSessionId.make("realtime-nonterminating-stop"),
+          transportType: "webrtc",
+          offerSdp: "offer-sdp",
+          clientManagedHandoffs: true,
+        });
+
+        const stopped = yield* harness.gateway
+          .stopTransport({
+            transportThreadId,
+            runtimeInstanceId,
+            generation: VoiceGeneration.make(1),
+          })
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust("11 seconds");
+
+        yield* Fiber.join(stopped);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

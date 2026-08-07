@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
@@ -35,6 +36,9 @@ import { VoiceControllerActionRunnerLive } from "./VoiceControllerActionRunner.t
 import { VoiceTargetMonitorLive } from "./VoiceTargetMonitor.ts";
 import { VoiceTransportCoordinatorLive } from "./VoiceTransportCoordinator.ts";
 
+const CONTROLLER_OPERATION_TIMEOUT = "30 seconds";
+const CONTROLLER_TEARDOWN_TIMEOUT = "5 seconds";
+
 export {
   appendVoiceSessionEvent,
   claimVoiceTargetPhase,
@@ -63,6 +67,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const targets = yield* VoiceTargetMonitor;
   const actionRunner = yield* VoiceControllerActionRunner;
   const randomUuid = crypto.randomUUIDv4.pipe(Effect.orDie);
+  const controllerLifecycle = yield* Semaphore.make(1);
 
   const currentPolicy = settings.getSettings.pipe(
     Effect.map(resolveVoiceControlPolicy),
@@ -86,7 +91,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     };
   });
 
-  const ensureController: VoiceControllerService["Service"]["ensureController"] = Effect.fn(
+  const ensureControllerUnlocked: VoiceControllerService["Service"]["ensureController"] = Effect.fn(
     "VoiceControllerService.ensureController",
   )(function* (input) {
     const policy = yield* currentPolicy;
@@ -195,6 +200,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         controlEnabled: policy.control,
       })
       .pipe(
+        Effect.timeout(CONTROLLER_OPERATION_TIMEOUT),
         Effect.tapError(() =>
           bindings
             .compareAndSetState({
@@ -218,7 +224,9 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     );
     if (!identityBound) {
       yield* McpSessionRegistry.revokeActiveMcpThread(binding.controllerThreadId);
-      yield* runtime.stopControllerRuntime(binding.controllerThreadId).pipe(Effect.ignore);
+      yield* runtime
+        .stopControllerRuntime(binding.controllerThreadId)
+        .pipe(Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT), Effect.exit);
       yield* bindings
         .compareAndSetState({
           environmentId,
@@ -254,7 +262,9 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         );
       if (!activated) {
         yield* McpSessionRegistry.revokeActiveMcpThread(binding.controllerThreadId);
-        yield* runtime.stopControllerRuntime(binding.controllerThreadId).pipe(Effect.ignore);
+        yield* runtime
+          .stopControllerRuntime(binding.controllerThreadId)
+          .pipe(Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT), Effect.exit);
         return yield* voiceError(
           "controller_binding_conflict",
           "The controller binding changed before runtime activation.",
@@ -270,6 +280,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     });
     return { controller: controllerIdentity(activeBinding) };
   });
+  const ensureController: VoiceControllerService["Service"]["ensureController"] = (input) =>
+    controllerLifecycle.withPermits(1)(ensureControllerUnlocked(input));
 
   // A process restart cannot trust an inherited controller credential when
   // reads or writes are currently disabled. Revoke and rotate before exposing
@@ -287,7 +299,9 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         .getThreadDetailById(binding.controllerThreadId)
         .pipe(Effect.orElseSucceed(() => Option.none()));
       yield* McpSessionRegistry.revokeActiveMcpThread(binding.controllerThreadId);
-      yield* runtime.stopControllerRuntime(binding.controllerThreadId).pipe(Effect.ignore);
+      yield* runtime
+        .stopControllerRuntime(binding.controllerThreadId)
+        .pipe(Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT), Effect.exit);
       if (binding.state === "active") {
         yield* bindings
           .compareAndSetState({
@@ -331,7 +345,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     };
   });
 
-  const start: VoiceControllerService["Service"]["start"] = Effect.fn(
+  const startUnlocked: VoiceControllerService["Service"]["start"] = Effect.fn(
     "VoiceControllerService.start",
   )(function* (input) {
     const policy = yield* currentPolicy;
@@ -377,19 +391,31 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       );
     }
     const environmentId = yield* environment.getEnvironmentId;
-    return yield* transport.startTransport({
-      start: input,
-      binding,
-      controllerRuntime,
-      environmentId,
-      workspaceRoot: project.value.workspaceRoot,
-      onActivated: (session) => targets.seedWatchedTargets(session),
-    });
+    const started = yield* transport
+      .startTransport({
+        start: input,
+        binding,
+        controllerRuntime,
+        environmentId,
+        workspaceRoot: project.value.workspaceRoot,
+        onActivated: (session) => targets.seedWatchedTargets(session),
+      })
+      .pipe(Effect.timeoutOption(CONTROLLER_OPERATION_TIMEOUT));
+    if (Option.isNone(started)) {
+      return yield* voiceError(
+        "internal_error",
+        "The voice transport did not start before the lifecycle deadline.",
+        true,
+      );
+    }
+    return started.value;
   });
+  const start: VoiceControllerService["Service"]["start"] = (input) =>
+    controllerLifecycle.withPermits(1)(startUnlocked(input));
 
   const stop: VoiceControllerService["Service"]["stop"] = (input) => transport.stop(input);
 
-  const resetController: VoiceControllerService["Service"]["resetController"] = Effect.fn(
+  const resetControllerUnlocked: VoiceControllerService["Service"]["resetController"] = Effect.fn(
     "VoiceControllerService.resetController",
   )(function* (input) {
     const environmentId = yield* environment.getEnvironmentId;
@@ -403,61 +429,64 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     if (Option.isNone(binding) || binding.value.controllerThreadId !== input.controllerThreadId) {
       return { reset: false };
     }
-    const now = DateTime.formatIso(yield* DateTime.now);
-    const marked = yield* bindings
-      .compareAndSetState({
-        environmentId,
-        expectedControllerThreadId: binding.value.controllerThreadId,
-        expectedBindingGeneration: binding.value.bindingGeneration,
-        expectedState: binding.value.state,
-        nextState: "resetting",
-        expectedControlEpoch: binding.value.controlEpoch,
-        updatedAt: now,
-      })
-      .pipe(
-        Effect.mapError(
-          mapInternalError("internal_error", "The controller could not enter resetting state."),
-        ),
-      );
-    if (!marked) {
-      return yield* voiceError(
-        "controller_binding_conflict",
-        "The controller changed while reset was starting.",
-        true,
-      );
-    }
-    yield* transport.stopForController(input.controllerThreadId);
-    yield* McpSessionRegistry.revokeActiveMcpThread(input.controllerThreadId);
-    yield* runtime
-      .stopControllerRuntime(input.controllerThreadId)
-      .pipe(
-        Effect.mapError(
-          mapInternalError("internal_error", "The controller runtime could not be stopped."),
-        ),
-      );
-    const deleted = yield* bindings
-      .deleteResetting({
-        environmentId,
-        expectedControllerThreadId: binding.value.controllerThreadId,
-        expectedBindingGeneration: binding.value.bindingGeneration,
-      })
-      .pipe(
-        Effect.mapError(
-          mapInternalError("internal_error", "The controller binding could not be cleared."),
-        ),
-      );
-    if (deleted) {
-      yield* engine
-        .dispatch({
-          type: "thread.archive",
-          commandId: CommandId.make(`voice-controller:archive:${input.controllerThreadId}`),
-          threadId: input.controllerThreadId,
-        })
-        .pipe(Effect.ignore);
-    }
-    yield* transport.deleteControllerRuntime(input.controllerThreadId);
-    return { reset: deleted };
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const marked = yield* bindings
+          .compareAndSetState({
+            environmentId,
+            expectedControllerThreadId: binding.value.controllerThreadId,
+            expectedBindingGeneration: binding.value.bindingGeneration,
+            expectedState: binding.value.state,
+            nextState: "resetting",
+            expectedControlEpoch: binding.value.controlEpoch,
+            updatedAt: now,
+          })
+          .pipe(
+            Effect.mapError(
+              mapInternalError("internal_error", "The controller could not enter resetting state."),
+            ),
+          );
+        if (!marked) {
+          return yield* voiceError(
+            "controller_binding_conflict",
+            "The controller changed while reset was starting.",
+            true,
+          );
+        }
+        yield* restore(transport.stopForController(input.controllerThreadId)).pipe(Effect.exit);
+        yield* McpSessionRegistry.revokeActiveMcpThread(input.controllerThreadId);
+        yield* restore(runtime.stopControllerRuntime(input.controllerThreadId)).pipe(
+          Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT),
+          Effect.exit,
+        );
+        const deleted = yield* bindings
+          .deleteResetting({
+            environmentId,
+            expectedControllerThreadId: binding.value.controllerThreadId,
+            expectedBindingGeneration: binding.value.bindingGeneration,
+          })
+          .pipe(
+            Effect.mapError(
+              mapInternalError("internal_error", "The controller binding could not be cleared."),
+            ),
+          );
+        if (deleted) {
+          yield* engine
+            .dispatch({
+              type: "thread.archive",
+              commandId: CommandId.make(`voice-controller:archive:${input.controllerThreadId}`),
+              threadId: input.controllerThreadId,
+            })
+            .pipe(Effect.ignore);
+        }
+        yield* transport.deleteControllerRuntime(input.controllerThreadId);
+        return { reset: deleted };
+      }),
+    );
   });
+  const resetController: VoiceControllerService["Service"]["resetController"] = (input) =>
+    controllerLifecycle.withPermits(1)(resetControllerUnlocked(input));
 
   const subscribe: VoiceControllerService["Service"]["subscribe"] = (input) =>
     transport.subscribe(input);
@@ -479,8 +508,9 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       const binding = yield* bindings
         .getByControllerThreadId(event.controllerThreadId)
         .pipe(Effect.orElseSucceed(() => Option.none()));
+      let recoveryClaimed = false;
       if (Option.isSome(binding) && binding.value.state === "active") {
-        yield* bindings
+        recoveryClaimed = yield* bindings
           .compareAndSetState({
             environmentId: binding.value.environmentId,
             expectedControllerThreadId: binding.value.controllerThreadId,
@@ -490,7 +520,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
             expectedControlEpoch: binding.value.controlEpoch,
             updatedAt: DateTime.formatIso(yield* DateTime.now),
           })
-          .pipe(Effect.ignore);
+          .pipe(Effect.orElseSucceed(() => false));
       }
       const affectedSessions = yield* transport.findSessionsByControllerRuntime({
         controllerThreadId: event.controllerThreadId,
@@ -505,12 +535,16 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
               code: "controller_runtime_lost",
               retryable: true,
             })
-            .pipe(Effect.andThen(transport.stopSession(session))),
+            .pipe(
+              Effect.andThen(transport.stopSession(session)),
+              Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT),
+              Effect.exit,
+            ),
         { discard: true },
       );
       yield* McpSessionRegistry.revokeActiveMcpThread(event.controllerThreadId);
       yield* transport.deleteControllerRuntime(event.controllerThreadId);
-      if (Option.isSome(binding)) {
+      if (Option.isSome(binding) && recoveryClaimed) {
         const project = yield* projection
           .getProjectShellById(binding.value.hostProjectId)
           .pipe(Effect.orElseSucceed(() => Option.none()));
@@ -533,6 +567,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
               controlEnabled: policy.value.control,
             })
             .pipe(
+              Effect.timeout(CONTROLLER_OPERATION_TIMEOUT),
               Effect.retry({
                 times: 2,
                 schedule: Schedule.exponential("250 millis"),
@@ -545,7 +580,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
               { codexProviderThreadId: restarted.value.codexProviderThreadId },
             );
             if (identityBound) {
-              yield* bindings
+              const activated = yield* bindings
                 .compareAndSetState({
                   environmentId: binding.value.environmentId,
                   expectedControllerThreadId: binding.value.controllerThreadId,
@@ -555,12 +590,23 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
                   expectedControlEpoch: binding.value.controlEpoch,
                   updatedAt: DateTime.formatIso(yield* DateTime.now),
                 })
-                .pipe(Effect.ignore);
-              yield* transport.putControllerRuntime(binding.value.controllerThreadId, {
-                ...restarted.value,
-                controllerThreadId: binding.value.controllerThreadId,
-                modelSelection: lostRuntime.modelSelection,
-              });
+                .pipe(Effect.orElseSucceed(() => false));
+              if (activated) {
+                yield* transport.putControllerRuntime(binding.value.controllerThreadId, {
+                  ...restarted.value,
+                  controllerThreadId: binding.value.controllerThreadId,
+                  modelSelection: lostRuntime.modelSelection,
+                });
+              } else {
+                yield* McpSessionRegistry.revokeActiveMcpThread(binding.value.controllerThreadId);
+                yield* runtime
+                  .stopControllerRuntime(binding.value.controllerThreadId)
+                  .pipe(Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT), Effect.exit);
+              }
+            } else {
+              yield* runtime
+                .stopControllerRuntime(binding.value.controllerThreadId)
+                .pipe(Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT), Effect.exit);
             }
           }
         }
@@ -611,93 +657,102 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     }
   });
 
-  yield* runtime.streamEvents.pipe(Stream.runForEach(handleRuntimeEvent), Effect.forkScoped);
+  yield* runtime.streamEvents.pipe(
+    Stream.runForEach((event) =>
+      event.type === "controller.runtime-lost"
+        ? controllerLifecycle.withPermits(1)(handleRuntimeEvent(event))
+        : handleRuntimeEvent(event),
+    ),
+    Effect.forkScoped,
+  );
 
   const settingsChanges = yield* settings.subscribeChanges;
   yield* settingsChanges.pipe(
     Stream.runForEach((nextSettings) =>
-      Effect.gen(function* () {
-        const policy = resolveVoiceControlPolicy(nextSettings);
-        const previous = yield* Ref.getAndSet(previousPolicyRef, policy);
-        const transition = planVoicePolicyTransition(previous, policy);
-        if (transition.incrementControlEpoch) {
-          const environmentId = yield* environment.getEnvironmentId;
-          const binding = yield* bindings
-            .getByEnvironmentId(environmentId)
-            .pipe(Effect.orElseSucceed(() => Option.none()));
-          if (Option.isSome(binding)) {
-            yield* bindings
-              .incrementControlEpoch({
-                environmentId,
-                expectedControlEpoch: binding.value.controlEpoch,
-                updatedAt: DateTime.formatIso(yield* DateTime.now),
-              })
-              .pipe(Effect.ignore);
-          }
-          // The epoch rotation and repository predicates jointly close the
-          // disable race: this sweep cancels visible never-dispatched rows,
-          // stale claims cancel atomically when released, and dispatched work
-          // remains on the outcome-reconciliation path without replay.
-          if (Option.isSome(binding)) {
-            yield* mutations
-              .cancelAllNeverDispatchedByPolicy({
-                environmentId,
-                controllerThreadId: binding.value.controllerThreadId,
-                throughControlEpoch: binding.value.controlEpoch,
-                cancelledAt: DateTime.formatIso(yield* DateTime.now),
-                sanitizedOutcome: "voice_thread_control_disabled",
-              })
-              .pipe(Effect.ignore);
-          }
-        }
-        if (transition.rotateControllerRuntime) {
-          const environmentId = yield* environment.getEnvironmentId;
-          let binding = yield* bindings
-            .getByEnvironmentId(environmentId)
-            .pipe(Effect.orElseSucceed(() => Option.none()));
-          if (Option.isSome(binding)) {
-            const currentBinding = binding.value;
-            const controller = yield* projection
-              .getThreadDetailById(currentBinding.controllerThreadId)
+      controllerLifecycle.withPermits(1)(
+        Effect.gen(function* () {
+          const policy = resolveVoiceControlPolicy(nextSettings);
+          const previous = yield* Ref.getAndSet(previousPolicyRef, policy);
+          const transition = planVoicePolicyTransition(previous, policy);
+          if (transition.incrementControlEpoch) {
+            const environmentId = yield* environment.getEnvironmentId;
+            const binding = yield* bindings
+              .getByEnvironmentId(environmentId)
               .pipe(Effect.orElseSucceed(() => Option.none()));
-            yield* McpSessionRegistry.revokeActiveMcpThread(currentBinding.controllerThreadId);
-            yield* runtime
-              .stopControllerRuntime(currentBinding.controllerThreadId)
-              .pipe(Effect.ignore);
-            yield* transport.deleteControllerRuntime(currentBinding.controllerThreadId);
-            if (currentBinding.state === "active") {
+            if (Option.isSome(binding)) {
               yield* bindings
-                .compareAndSetState({
+                .incrementControlEpoch({
                   environmentId,
-                  expectedControllerThreadId: currentBinding.controllerThreadId,
-                  expectedBindingGeneration: currentBinding.bindingGeneration,
-                  expectedState: "active",
-                  nextState: "dormant",
-                  expectedControlEpoch: currentBinding.controlEpoch,
+                  expectedControlEpoch: binding.value.controlEpoch,
                   updatedAt: DateTime.formatIso(yield* DateTime.now),
                 })
                 .pipe(Effect.ignore);
             }
-            binding = yield* bindings
-              .getByEnvironmentId(environmentId)
-              .pipe(Effect.orElseSucceed(() => Option.none()));
-            if (
-              transition.restartControllerRuntime &&
-              Option.isSome(binding) &&
-              Option.isSome(controller)
-            ) {
-              yield* ensureController({
-                hostProjectId: binding.value.hostProjectId,
-                providerInstanceId: binding.value.providerInstanceId,
-                authorizedRuntimeCeiling: binding.value.authorizedRuntimeCeiling,
-                modelSelection: controller.value.modelSelection,
-              }).pipe(Effect.ignore);
+            // The epoch rotation and repository predicates jointly close the
+            // disable race: this sweep cancels visible never-dispatched rows,
+            // stale claims cancel atomically when released, and dispatched work
+            // remains on the outcome-reconciliation path without replay.
+            if (Option.isSome(binding)) {
+              yield* mutations
+                .cancelAllNeverDispatchedByPolicy({
+                  environmentId,
+                  controllerThreadId: binding.value.controllerThreadId,
+                  throughControlEpoch: binding.value.controlEpoch,
+                  cancelledAt: DateTime.formatIso(yield* DateTime.now),
+                  sanitizedOutcome: "voice_thread_control_disabled",
+                })
+                .pipe(Effect.ignore);
             }
           }
-        }
-        if (policy.realtime && policy.read) return;
-        yield* transport.stopAll();
-      }),
+          if (transition.rotateControllerRuntime) {
+            const environmentId = yield* environment.getEnvironmentId;
+            let binding = yield* bindings
+              .getByEnvironmentId(environmentId)
+              .pipe(Effect.orElseSucceed(() => Option.none()));
+            if (Option.isSome(binding)) {
+              const currentBinding = binding.value;
+              const controller = yield* projection
+                .getThreadDetailById(currentBinding.controllerThreadId)
+                .pipe(Effect.orElseSucceed(() => Option.none()));
+              yield* McpSessionRegistry.revokeActiveMcpThread(currentBinding.controllerThreadId);
+              yield* runtime
+                .stopControllerRuntime(currentBinding.controllerThreadId)
+                .pipe(Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT), Effect.exit);
+              yield* transport.deleteControllerRuntime(currentBinding.controllerThreadId);
+              if (currentBinding.state === "active") {
+                yield* bindings
+                  .compareAndSetState({
+                    environmentId,
+                    expectedControllerThreadId: currentBinding.controllerThreadId,
+                    expectedBindingGeneration: currentBinding.bindingGeneration,
+                    expectedState: "active",
+                    nextState: "dormant",
+                    expectedControlEpoch: currentBinding.controlEpoch,
+                    updatedAt: DateTime.formatIso(yield* DateTime.now),
+                  })
+                  .pipe(Effect.ignore);
+              }
+              binding = yield* bindings
+                .getByEnvironmentId(environmentId)
+                .pipe(Effect.orElseSucceed(() => Option.none()));
+              if (
+                transition.restartControllerRuntime &&
+                Option.isSome(binding) &&
+                Option.isSome(controller)
+              ) {
+                yield* ensureControllerUnlocked({
+                  hostProjectId: binding.value.hostProjectId,
+                  providerInstanceId: binding.value.providerInstanceId,
+                  authorizedRuntimeCeiling: binding.value.authorizedRuntimeCeiling,
+                  modelSelection: controller.value.modelSelection,
+                }).pipe(Effect.ignore);
+              }
+            }
+          }
+          if (policy.realtime && policy.read) return;
+          yield* transport.stopAll().pipe(Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT), Effect.exit);
+        }),
+      ),
     ),
     Effect.forkScoped,
   );
