@@ -63,6 +63,7 @@ import {
   removeAutomationSummary,
   upsertAutomationSummary,
 } from "./AutomationsSettings.logic";
+import { searchableSetting } from "./settingsSearch";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
 type AutomationFormValue = {
@@ -957,7 +958,11 @@ export function AutomationsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <SettingsSection title="Automation scope" icon={<Clock3Icon className="size-5" />}>
+      <SettingsSection
+        id={searchableSetting("automations").id}
+        title="Automation scope"
+        icon={<Clock3Icon className="size-5" />}
+      >
         <div className="rounded-xl px-3 py-3 sm:grid sm:grid-cols-[1fr_auto] sm:items-center sm:gap-8 sm:px-4">
           <div>
             <h3 className="text-sm font-medium">Project</h3>

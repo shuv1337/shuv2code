@@ -108,6 +108,7 @@ import { buildExpandedImagePreview, type ExpandedImagePreview } from "./Expanded
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
 import { Separator } from "../ui/separator";
+import { ComposerVoiceControlMount, resolveVoiceControlHostProjectId } from "./ChatComposer.voice";
 
 function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children: ReactNode }) {
   const [position, setPosition] = useState<{
@@ -918,6 +919,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
   );
+  const voiceControlHostProjectId = resolveVoiceControlHostProjectId({
+    activeProjectId: activeThread?.projectId,
+    providerAvailable: !noProviderAvailable,
+    selectedProvider,
+  });
   const selectedModelForPicker = selectedModel;
   // Instance-keyed option list so the picker can show each configured
   // instance (built-in + custom) as a first-class sidebar entry. The
@@ -3292,6 +3298,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 }
                 className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
               >
+                <ComposerVoiceControlMount
+                  compact={isComposerPrimaryActionsCompact}
+                  environmentId={environmentId}
+                  hostProjectId={voiceControlHostProjectId}
+                  providerInstanceId={selectedInstanceId}
+                  modelSelection={selectedModelSelection}
+                  realtimeEnabled={settings.enableRealtimeVoice}
+                  threadReadEnabled={settings.enableVoiceThreadRead}
+                  threadControlEnabled={settings.enableVoiceThreadControl}
+                />
                 <ComposerFooterPrimaryActions
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}
