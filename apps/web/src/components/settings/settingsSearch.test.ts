@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import automationsSettingsSource from "./AutomationsSettings.tsx?raw";
+import speechSettingsSource from "./SpeechSettingsPanel.tsx?raw";
 import {
   searchableSetting,
   searchSettings,
+  SETTINGS_SECTION_LABELS,
   SETTINGS_SEARCH_ITEMS,
   type SettingsSearchItem,
 } from "./settingsSearch";
@@ -83,5 +86,23 @@ describe("searchSettings", () => {
       to: "/settings/appearance",
       targetId: "appearance",
     });
+  });
+
+  it("keeps shipped Automation and Speech surfaces discoverable", () => {
+    expect(SETTINGS_SECTION_LABELS).toMatchObject({
+      "/settings/automations": "Automations",
+      "/settings/speech": "Speech",
+    });
+    expect(searchSettings("automations")).toContainEqual(
+      expect.objectContaining({ id: "automations", to: "/settings/automations" }),
+    );
+    expect(searchSettings("speech")).toContainEqual(
+      expect.objectContaining({ id: "speech", to: "/settings/speech" }),
+    );
+  });
+
+  it("keeps recovered settings search results anchored in their panels", () => {
+    expect(automationsSettingsSource).toContain('id={searchableSetting("automations").id}');
+    expect(speechSettingsSource).toContain('id={searchableSetting("speech").id}');
   });
 });

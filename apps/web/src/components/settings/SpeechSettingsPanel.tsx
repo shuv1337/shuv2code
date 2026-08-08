@@ -22,6 +22,7 @@ import {
   textToSpeechApiKeyClearPatch,
   textToSpeechApiKeyReplacementPatch,
 } from "./SpeechSettingsPanel.logic";
+import { searchableSetting } from "./settingsSearch";
 import { VoiceControllerSettings } from "./VoiceControllerSettings";
 
 const defaults = DEFAULT_SERVER_SETTINGS.textToSpeech;
@@ -47,7 +48,11 @@ export function SpeechSettingsPanel() {
     <SettingsPageContainer>
       <VoiceControllerSettings />
 
-      <SettingsSection title="Speech" icon={<Volume2Icon className="size-5" />}>
+      <SettingsSection
+        id={searchableSetting("speech").id}
+        title="Speech"
+        icon={<Volume2Icon className="size-5" />}
+      >
         <SettingsRow
           title="Text-to-speech"
           description="Enable manual read-aloud controls for completed agent messages."

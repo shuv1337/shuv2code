@@ -11,6 +11,7 @@ import {
   ArchiveIcon,
   ArrowLeftIcon,
   BotIcon,
+  CalendarClockIcon,
   FlaskConicalIcon,
   GitBranchIcon,
   KeyboardIcon,
@@ -18,6 +19,7 @@ import {
   PaletteIcon,
   SearchIcon,
   Settings2Icon,
+  Volume2Icon,
   XIcon,
 } from "lucide-react";
 import { useCanGoBack, useLocation, useNavigate } from "@tanstack/react-router";
@@ -53,6 +55,8 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/appearance": PaletteIcon,
   "/settings/keybindings": KeyboardIcon,
   "/settings/providers": BotIcon,
+  "/settings/automations": CalendarClockIcon,
+  "/settings/speech": Volume2Icon,
   "/settings/source-control": GitBranchIcon,
   "/settings/connections": Link2Icon,
   "/settings/beta": FlaskConicalIcon,
