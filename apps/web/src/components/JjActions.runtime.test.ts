@@ -7,6 +7,7 @@ import {
   resolveEnvModeLabel,
   resolveLockedWorkspaceLabel,
 } from "./BranchToolbar.logic";
+import gitActionsControlSource from "./GitActionsControl.tsx?raw";
 import { resolveJjActionAvailability, resolveJjWorkingCopyLabel } from "./GitActionsControl.logic";
 
 function jjStatus(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
@@ -65,6 +66,30 @@ it("uses change, bookmark, and workspace terminology for JJ", () => {
       jjStatus({ workingCopy: { ...jjStatus().workingCopy!, bookmarks: [] } }),
     ),
   ).toBe("Anonymous change wxyz1234 · no bookmark");
+});
+
+it("uses one compact JJ trigger and keeps Describe change in the action menu", () => {
+  const componentStart = gitActionsControlSource.indexOf("function JjActionsGroup");
+  const triggerStart = gitActionsControlSource.indexOf("<MenuTrigger", componentStart);
+  const popupStart = gitActionsControlSource.indexOf("<MenuPopup", triggerStart);
+  const popupEnd = gitActionsControlSource.indexOf("</MenuPopup>", popupStart);
+
+  expect(componentStart).toBeGreaterThan(-1);
+  expect(triggerStart).toBeGreaterThan(componentStart);
+  expect(popupStart).toBeGreaterThan(triggerStart);
+  expect(popupEnd).toBeGreaterThan(popupStart);
+
+  const triggerSource = gitActionsControlSource.slice(triggerStart, popupStart);
+  expect(triggerSource).toContain('aria-label="Jujutsu actions"');
+  expect(triggerSource).toContain("<JujutsuIcon");
+  expect(triggerSource).not.toContain("Describe change");
+  expect(triggerSource).not.toContain("<ChevronDownIcon");
+
+  const menuSource = gitActionsControlSource.slice(popupStart, popupEnd);
+  expect(menuSource).toContain("Describe change...");
+  expect(menuSource.indexOf("Describe change...")).toBeLessThan(
+    menuSource.indexOf("Create or move bookmark..."),
+  );
 });
 
 it("capability-gates JJ push and change-request actions with actionable reasons", () => {
