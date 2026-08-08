@@ -108,10 +108,7 @@ import { buildExpandedImagePreview, type ExpandedImagePreview } from "./Expanded
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
 import { Separator } from "../ui/separator";
-import {
-  ComposerVoiceControlMount,
-  resolveVoiceControlHostProjectId,
-} from "./ChatComposer.voice";
+import { ComposerVoiceControlMount, resolveVoiceControlHostProjectId } from "./ChatComposer.voice";
 
 function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children: ReactNode }) {
   const [position, setPosition] = useState<{
