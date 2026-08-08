@@ -274,98 +274,100 @@ function JjActionsGroup(props: {
 
   return (
     <>
-      <Menu>
-        <MenuTrigger
-          render={<Button aria-label="Jujutsu actions" size="icon-xs" variant="outline" />}
-          disabled={pending !== null}
-        >
-          <JujutsuIcon aria-hidden className="size-3.5" />
-        </MenuTrigger>
-        <MenuPopup align="end" className="min-w-72">
-          <div className="border-b px-2 py-2 text-xs text-muted-foreground">
-            <div>{resolveJjWorkingCopyLabel(props.status)}</div>
-            <div>Workspace {workingCopy?.workspaceName ?? "unknown"}</div>
-            <div>
-              {workingCopy?.bookmarks.length
-                ? `Bookmarks ${workingCopy.bookmarks.join(", ")}`
-                : "Anonymous change (no bookmark)"}
-            </div>
-            {workingCopy?.hasConflicts ? (
-              <div className="text-destructive">
-                {workingCopy.conflictPaths.length} conflicted file(s)
+      <div className="shrink-0">
+        <Menu>
+          <MenuTrigger
+            render={<Button aria-label="Jujutsu actions" size="icon-xs" variant="outline" />}
+            disabled={pending !== null}
+          >
+            <JujutsuIcon aria-hidden className="size-3.5" />
+          </MenuTrigger>
+          <MenuPopup align="end" className="min-w-72">
+            <div className="border-b px-2 py-2 text-xs text-muted-foreground">
+              <div>{resolveJjWorkingCopyLabel(props.status)}</div>
+              <div>Workspace {workingCopy?.workspaceName ?? "unknown"}</div>
+              <div>
+                {workingCopy?.bookmarks.length
+                  ? `Bookmarks ${workingCopy.bookmarks.join(", ")}`
+                  : "Anonymous change (no bookmark)"}
               </div>
+              {workingCopy?.hasConflicts ? (
+                <div className="text-destructive">
+                  {workingCopy.conflictPaths.length} conflicted file(s)
+                </div>
+              ) : null}
+            </div>
+            <MenuItem
+              disabled={!availability.canDescribe}
+              onClick={() => {
+                setDescription(workingCopy?.description ?? "");
+                setDescriptionOpen(true);
+              }}
+            >
+              <PencilIcon />
+              Describe change...
+            </MenuItem>
+            <MenuItem onClick={() => setBookmarkOpen(true)}>
+              <BookmarkIcon />
+              Create or move bookmark...
+            </MenuItem>
+            <MenuItem
+              disabled={!availability.canStartChange}
+              onClick={() => {
+                if (props.environmentId === null) return;
+                void run("New change started", () =>
+                  startChange({
+                    environmentId: props.environmentId!,
+                    input: { cwd: props.cwd },
+                  }),
+                );
+              }}
+            >
+              <PlusIcon />
+              Start new change
+            </MenuItem>
+            <MenuItem
+              disabled={!availability.canFetch}
+              onClick={() => {
+                if (props.environmentId === null) return;
+                void run("Fetched bookmarks", () =>
+                  fetch({ environmentId: props.environmentId!, input: { cwd: props.cwd } }),
+                );
+              }}
+            >
+              <RefreshCwIcon />
+              Fetch bookmarks
+            </MenuItem>
+            <MenuItem
+              disabled={!availability.canPush}
+              onClick={() => {
+                if (props.environmentId === null || currentBookmark === null) return;
+                void run(`Pushed ${currentBookmark}`, () =>
+                  pushBookmark({
+                    environmentId: props.environmentId!,
+                    input: { cwd: props.cwd, bookmarkName: currentBookmark },
+                  }),
+                );
+              }}
+            >
+              <CloudUploadIcon />
+              Push {currentBookmark ?? "bookmark"}
+            </MenuItem>
+            <MenuItem
+              disabled={!availability.canCreateChangeRequest}
+              onClick={openChangeRequestDialog}
+            >
+              <ExternalLinkIcon />
+              Create change request...
+            </MenuItem>
+            {availability.pushUnavailableReason ? (
+              <p className="px-2 py-1.5 text-xs text-warning">
+                {availability.pushUnavailableReason}
+              </p>
             ) : null}
-          </div>
-          <MenuItem
-            disabled={!availability.canDescribe}
-            onClick={() => {
-              setDescription(workingCopy?.description ?? "");
-              setDescriptionOpen(true);
-            }}
-          >
-            <PencilIcon />
-            Describe change...
-          </MenuItem>
-          <MenuItem onClick={() => setBookmarkOpen(true)}>
-            <BookmarkIcon />
-            Create or move bookmark...
-          </MenuItem>
-          <MenuItem
-            disabled={!availability.canStartChange}
-            onClick={() => {
-              if (props.environmentId === null) return;
-              void run("New change started", () =>
-                startChange({
-                  environmentId: props.environmentId!,
-                  input: { cwd: props.cwd },
-                }),
-              );
-            }}
-          >
-            <PlusIcon />
-            Start new change
-          </MenuItem>
-          <MenuItem
-            disabled={!availability.canFetch}
-            onClick={() => {
-              if (props.environmentId === null) return;
-              void run("Fetched bookmarks", () =>
-                fetch({ environmentId: props.environmentId!, input: { cwd: props.cwd } }),
-              );
-            }}
-          >
-            <RefreshCwIcon />
-            Fetch bookmarks
-          </MenuItem>
-          <MenuItem
-            disabled={!availability.canPush}
-            onClick={() => {
-              if (props.environmentId === null || currentBookmark === null) return;
-              void run(`Pushed ${currentBookmark}`, () =>
-                pushBookmark({
-                  environmentId: props.environmentId!,
-                  input: { cwd: props.cwd, bookmarkName: currentBookmark },
-                }),
-              );
-            }}
-          >
-            <CloudUploadIcon />
-            Push {currentBookmark ?? "bookmark"}
-          </MenuItem>
-          <MenuItem
-            disabled={!availability.canCreateChangeRequest}
-            onClick={openChangeRequestDialog}
-          >
-            <ExternalLinkIcon />
-            Create change request...
-          </MenuItem>
-          {availability.pushUnavailableReason ? (
-            <p className="px-2 py-1.5 text-xs text-warning">
-              {availability.pushUnavailableReason}
-            </p>
-          ) : null}
-        </MenuPopup>
-      </Menu>
+          </MenuPopup>
+        </Menu>
+      </div>
 
       <Dialog open={descriptionOpen} onOpenChange={setDescriptionOpen}>
         <DialogPopup>
