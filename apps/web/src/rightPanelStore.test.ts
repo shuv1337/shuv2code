@@ -7,6 +7,7 @@ import {
   pullRequestSurfaceId,
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
+  selectResolvedRightPanelState,
   selectSelectedRightPanelSurface,
   selectThreadRightPanelState,
   updatePullRequestTabStatus,
@@ -15,9 +16,10 @@ import {
 
 const refA = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-A"));
 const refB = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-B"));
+const refOtherEnvironment = scopeThreadRef("env-2" as EnvironmentId, ThreadId.make("thread-C"));
 
 beforeEach(() => {
-  useRightPanelStore.setState({ byThreadKey: {} });
+  useRightPanelStore.setState({ byThreadKey: {}, byEnvironmentId: {} });
 });
 
 describe("rightPanelStore", () => {
@@ -35,6 +37,7 @@ describe("rightPanelStore", () => {
         },
       }),
     ).toEqual({
+      byEnvironmentId: {},
       byThreadKey: {
         "env-1:thread-A": {
           isOpen: false,
@@ -57,6 +60,7 @@ describe("rightPanelStore", () => {
         },
       }),
     ).toEqual({
+      byEnvironmentId: {},
       byThreadKey: {
         "env-1:thread-A": {
           isOpen: true,
@@ -87,6 +91,7 @@ describe("rightPanelStore", () => {
         },
       }),
     ).toEqual({
+      byEnvironmentId: {},
       byThreadKey: {
         "env-1:thread-A": {
           isOpen: true,
@@ -130,6 +135,7 @@ describe("rightPanelStore", () => {
         },
       }),
     ).toEqual({
+      byEnvironmentId: {},
       byThreadKey: {
         "env-1:thread-A": {
           isOpen: true,
@@ -174,7 +180,10 @@ describe("rightPanelStore", () => {
           "env-1:thread-A": panelState,
         },
       }),
-    ).toEqual({ byThreadKey: { "env-1:thread-A": panelState } });
+    ).toEqual({
+      byEnvironmentId: {},
+      byThreadKey: { "env-1:thread-A": panelState },
+    });
   });
 
   it("drops persisted plan surfaces and does not reopen an empty panel", () => {
@@ -197,6 +206,7 @@ describe("rightPanelStore", () => {
         },
       }),
     ).toEqual({
+      byEnvironmentId: {},
       byThreadKey: {
         "env-1:thread-A": {
           isOpen: false,
@@ -210,6 +220,74 @@ describe("rightPanelStore", () => {
         },
       },
     });
+  });
+
+  it("keeps Voice pinned across threads in one environment", () => {
+    useRightPanelStore.getState().openVoice(refA.environmentId);
+
+    const store = useRightPanelStore.getState();
+    expect(selectResolvedRightPanelState(store.byThreadKey, store.byEnvironmentId, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "voice",
+      surfaces: [{ id: "voice", kind: "voice" }],
+    });
+    expect(selectResolvedRightPanelState(store.byThreadKey, store.byEnvironmentId, refB)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "voice",
+      surfaces: [{ id: "voice", kind: "voice" }],
+    });
+    expect(
+      selectResolvedRightPanelState(store.byThreadKey, store.byEnvironmentId, refOtherEnvironment),
+    ).toEqual({ isOpen: false, activeSurfaceId: null, surfaces: [] });
+  });
+
+  it("keeps Voice pinned while a thread-local surface takes focus", () => {
+    useRightPanelStore.getState().openVoice(refA.environmentId);
+    useRightPanelStore.getState().open(refA, "diff");
+
+    const store = useRightPanelStore.getState();
+    expect(selectResolvedRightPanelState(store.byThreadKey, store.byEnvironmentId, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "diff",
+      surfaces: [
+        { id: "voice", kind: "voice" },
+        { id: "diff", kind: "diff" },
+      ],
+    });
+    expect(selectResolvedRightPanelState(store.byThreadKey, store.byEnvironmentId, refB)).toEqual({
+      isOpen: false,
+      activeSurfaceId: null,
+      surfaces: [{ id: "voice", kind: "voice" }],
+    });
+
+    useRightPanelStore.getState().activateSurface(refA, "voice");
+    const activated = useRightPanelStore.getState();
+    expect(selectActiveRightPanel(activated.byThreadKey, refB, activated.byEnvironmentId)).toBe(
+      "voice",
+    );
+  });
+
+  it("closes Voice without deleting the underlying environment surface state", () => {
+    useRightPanelStore.getState().open(refA, "agents");
+    useRightPanelStore.getState().openVoice(refA.environmentId);
+    useRightPanelStore.getState().close(refA);
+
+    const closed = useRightPanelStore.getState();
+    expect(
+      selectResolvedRightPanelState(closed.byThreadKey, closed.byEnvironmentId, refA).isOpen,
+    ).toBe(false);
+    expect(closed.byEnvironmentId[refA.environmentId]).toEqual({
+      voicePresent: true,
+      voiceActive: false,
+    });
+
+    useRightPanelStore.getState().activateSurface(refA, "voice");
+    useRightPanelStore.getState().closeSurface(refA, "voice");
+    const removed = useRightPanelStore.getState();
+    expect(removed.byEnvironmentId).toEqual({});
+    expect(selectThreadRightPanelState(removed.byThreadKey, refA).surfaces).toEqual([
+      { id: "agents", kind: "agents" },
+    ]);
   });
 
   it("open sets the active panel for a thread", () => {

@@ -9,6 +9,7 @@ import type {
 import { MicIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 
+import { useRightPanelStore } from "../../rightPanelStore";
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
 import {
   acquireVoiceMicrophoneStream,
@@ -90,6 +91,9 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
   };
   const existing = lookup.type === "ready" ? lookup.controller : null;
   const conflict = hasVoiceControllerBindingConflict(existing, requested);
+  const openVoiceSurface = useCallback(() => {
+    useRightPanelStore.getState().openVoice(props.environmentId);
+  }, [props.environmentId]);
 
   const loadController = useCallback(async () => {
     setLookup({ type: "loading" });
@@ -137,6 +141,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
               microphoneStream: preparedMicrophone,
             },
       );
+      openVoiceSurface();
     } catch (error) {
       setSetupOpen(true);
       setActionError(errorMessage(error));
@@ -168,6 +173,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
             authorizedRuntimeCeiling: ceiling,
             microphoneStream,
           });
+          openVoiceSurface();
         },
         releaseMicrophone: releaseVoiceMicrophoneStream,
       });
@@ -201,8 +207,8 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
                     ? `Voice control unavailable: ${unavailableReason}`
                     : idleLabel
               }
-              disabled={active || pending || unavailableReason !== null}
-              onClick={openSetup}
+              disabled={pending || unavailableReason !== null}
+              onClick={active ? openVoiceSurface : openSetup}
             >
               <MicIcon />
               {props.compact ? null : <span className="hidden sm:inline">Voice</span>}
@@ -210,7 +216,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
           }
         />
         <TooltipPopup side="top">
-          {active ? "Voice control is active in the tray" : (unavailableReason ?? idleLabel)}
+          {active ? "Open voice" : (unavailableReason ?? idleLabel)}
         </TooltipPopup>
       </Tooltip>
 

@@ -127,6 +127,7 @@ import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
+  selectResolvedRightPanelState,
   selectThreadRightPanelState,
   type RightPanelSurface,
   updatePullRequestTabStatus,
@@ -157,6 +158,7 @@ import {
   deriveAgentPanelModel,
   foldSubagentActivities,
 } from "@shuv2code/client-runtime/state/subagentRuntime";
+import { VoiceSurface } from "./voice/VoiceSurface";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -1621,14 +1623,22 @@ function ChatViewContent(props: ChatViewProps) {
   }
   const timelineAnchorMessageId = timelineAnchor.messageId;
   const activeRightPanelKind = useRightPanelStore((state) =>
-    selectActiveRightPanel(state.byThreadKey, activeThreadRef),
+    selectActiveRightPanel(state.byThreadKey, activeThreadRef, state.byEnvironmentId),
   );
   const diffOpen = activeRightPanelKind === "diff";
-  const rightPanelState = useRightPanelStore((state) =>
-    selectThreadRightPanelState(state.byThreadKey, activeThreadRef),
+  const rightPanelStateByThreadKey = useRightPanelStore((state) => state.byThreadKey);
+  const rightPanelStateByEnvironmentId = useRightPanelStore((state) => state.byEnvironmentId);
+  const rightPanelState = useMemo(
+    () =>
+      selectResolvedRightPanelState(
+        rightPanelStateByThreadKey,
+        rightPanelStateByEnvironmentId,
+        activeThreadRef,
+      ),
+    [activeThreadRef, rightPanelStateByEnvironmentId, rightPanelStateByThreadKey],
   );
   const activeRightPanelSurface = useRightPanelStore((state) =>
-    selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef),
+    selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef, state.byEnvironmentId),
   );
   const [pullRequestTabStatuses, setPullRequestTabStatuses] = useState<
     Record<string, PullRequestTabStatus>
@@ -3300,6 +3310,10 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     void addBrowserSurface({ threadRef: activeThreadRef, openPreview });
   }, [activeThreadRef, openPreview]);
+  const addVoiceSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().openVoice(activeThreadRef.environmentId);
+  }, [activeThreadRef]);
   const addDiffSurface = useCallback(() => {
     if (!activeThreadRef || !isServerThread || !isGitRepo) return;
     useRightPanelStore.getState().open(activeThreadRef, "diff");
@@ -3524,6 +3538,7 @@ function ChatViewContent(props: ChatViewProps) {
     const nextActiveSurface = selectActiveRightPanelSurface(
       useRightPanelStore.getState().byThreadKey,
       activeThreadRef,
+      useRightPanelStore.getState().byEnvironmentId,
     );
     if (nextActiveSurface?.kind === "preview" && nextActiveSurface.resourceId) {
       setActivePreviewTab(activeThreadRef, nextActiveSurface.resourceId);
@@ -6203,7 +6218,9 @@ function ChatViewContent(props: ChatViewProps) {
     </div>
   );
   const rightPanelContent = activeThreadRef ? (
-    activeRightPanelSurface?.kind === "preview" ? (
+    activeRightPanelSurface?.kind === "voice" ? (
+      <VoiceSurface environmentId={activeThreadRef.environmentId} />
+    ) : activeRightPanelSurface?.kind === "preview" ? (
       <Suspense fallback={null}>
         <PreviewPanel
           mode="embedded"
@@ -6760,6 +6777,7 @@ function ChatViewContent(props: ChatViewProps) {
           onCloseAllSurfaces={closeAllRightPanelSurfaces}
           onMoveSurface={moveRightPanelSurface}
           onCopyFilePath={copyRightPanelFilePath}
+          onAddVoice={addVoiceSurface}
           onAddBrowser={createBrowserSurface}
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
@@ -6800,6 +6818,7 @@ function ChatViewContent(props: ChatViewProps) {
             onCloseAllSurfaces={closeAllRightPanelSurfaces}
             onMoveSurface={moveRightPanelSurface}
             onCopyFilePath={copyRightPanelFilePath}
+            onAddVoice={addVoiceSurface}
             onAddBrowser={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}

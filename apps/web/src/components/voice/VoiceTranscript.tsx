@@ -2,10 +2,17 @@ import type { RealtimeVoiceTranscriptItem } from "@shuv2code/client-runtime/stat
 
 export function VoiceTranscript(props: {
   readonly items: ReadonlyArray<RealtimeVoiceTranscriptItem>;
+  readonly expanded?: boolean;
 }) {
   const finalItems = props.items.filter((item) => item.final);
   return (
-    <div className="max-h-36 space-y-1 overflow-y-auto px-3 py-2 text-xs">
+    <div
+      className={
+        props.expanded
+          ? "space-y-2 px-4 py-3 text-sm"
+          : "max-h-36 space-y-1 overflow-y-auto px-3 py-2 text-xs"
+      }
+    >
       {props.items.length === 0 ? (
         <p className="text-muted-foreground">Your voice transcript will appear here.</p>
       ) : (

@@ -1,10 +1,10 @@
-import { Link } from "@tanstack/react-router";
 import { MicIcon, MicOffIcon, PhoneOffIcon, RotateCcwIcon } from "lucide-react";
 
 import {
   realtimeVoiceStateLabel,
   type RealtimeVoiceSessionState,
 } from "@shuv2code/client-runtime/state/realtime-voice";
+import { useRightPanelStore } from "../../rightPanelStore";
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
 import { Button } from "../ui/button";
 import { VoiceTargetStrip } from "./VoiceTargetStrip";
@@ -22,7 +22,12 @@ export function voiceTraySubtitle(state: RealtimeVoiceSessionState): string {
 
 export function VoiceSessionTray() {
   const voice = useVoiceSession();
-  if (!shouldShowVoiceTray(voice.state)) {
+  const voiceSurfaceOpen = useRightPanelStore((state) =>
+    voice.state.environmentId
+      ? state.byEnvironmentId[voice.state.environmentId]?.voiceActive === true
+      : false,
+  );
+  if (!shouldShowVoiceTray(voice.state) || voiceSurfaceOpen) {
     return null;
   }
   const label = realtimeVoiceStateLabel(voice.state);
@@ -49,22 +54,14 @@ export function VoiceSessionTray() {
           </p>
           <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
         </div>
-        {voice.state.controller ? (
+        {voice.state.environmentId ? (
           <Button
             size="xs"
             variant="ghost"
-            render={
-              <Link
-                to="/$environmentId/$threadId"
-                params={{
-                  environmentId: voice.state.controller.environmentId,
-                  threadId: voice.state.controller.threadId,
-                }}
-              >
-                Return
-              </Link>
-            }
-          />
+            onClick={() => useRightPanelStore.getState().openVoice(voice.state.environmentId!)}
+          >
+            Open
+          </Button>
         ) : null}
         <Button
           size="icon-sm"
