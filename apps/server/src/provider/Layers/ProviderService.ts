@@ -921,7 +921,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
     const adapter = yield* registry.getByInstance(resolvedInstanceId);
-    if (adapter.recoverSessionByThreadSource === undefined) {
+    const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+    const persistedResumeCursor =
+      persistedBinding?.providerInstanceId === resolvedInstanceId &&
+      persistedBinding.resumeCursor !== null &&
+      persistedBinding.resumeCursor !== undefined
+        ? persistedBinding.resumeCursor
+        : undefined;
+    if (persistedResumeCursor === undefined && adapter.recoverSessionByThreadSource === undefined) {
       return yield* toValidationError(
         "ProviderService.recoverCreatedSession",
         `Provider '${adapter.provider}' does not support exact creation recovery.`,
@@ -945,13 +952,26 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         return next;
       });
     }
-    const result = yield* adapter
-      .recoverSessionByThreadSource({
-        ...input,
-        provider: adapter.provider,
-        providerInstanceId: resolvedInstanceId,
-      })
-      .pipe(Effect.onError(() => clearMcpSession(input.threadId)));
+    // A persisted provider cursor is the strongest exact identity and must win
+    // over source discovery. The latter exists only for the crash window where
+    // provider creation succeeded before shuv2code could persist its cursor.
+    const result = yield* (
+      persistedResumeCursor === undefined
+        ? adapter.recoverSessionByThreadSource!({
+            ...input,
+            provider: adapter.provider,
+            providerInstanceId: resolvedInstanceId,
+          })
+        : adapter
+            .startSession({
+              ...input,
+              provider: adapter.provider,
+              providerInstanceId: resolvedInstanceId,
+              resumeCursor: persistedResumeCursor,
+              threadSource: undefined,
+            })
+            .pipe(Effect.map((session) => ({ state: "adopted" as const, session })))
+    ).pipe(Effect.onError(() => clearMcpSession(input.threadId)));
     if (result.state !== "adopted") {
       yield* clearMcpSession(input.threadId);
       return result;

@@ -116,6 +116,15 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
         resumeCursor: input.resumeCursor ?? {
           opaque: `resume-${String(input.threadId)}`,
         },
+        ...(typeof input.resumeCursor === "object" &&
+        input.resumeCursor !== null &&
+        "threadId" in input.resumeCursor &&
+        typeof input.resumeCursor.threadId === "string"
+          ? { providerThreadId: input.resumeCursor.threadId }
+          : {}),
+        ...(input.runtimeInstanceId !== undefined
+          ? { runtimeInstanceId: input.runtimeInstanceId }
+          : {}),
         cwd: input.cwd ?? process.cwd(),
         createdAt: now,
         updatedAt: now,
@@ -2038,8 +2047,23 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
     return Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
       const threadId = asThreadId("controller-creation-recovery");
       const runtimeInstanceId = VoiceRuntimeInstanceId.make("controller-runtime-recovery");
+      const persistedProviderThreadId = "persisted-controller-provider-thread";
+      yield* runtimeRepository.upsert({
+        threadId,
+        providerName: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        adapterKey: CODEX_DRIVER,
+        runtimeMode: "full-access",
+        status: "stopped",
+        lastSeenAt: "2026-01-01T00:00:00.000Z",
+        resumeCursor: { threadId: persistedProviderThreadId },
+        runtimePayload: null,
+      });
+      routing.codex.startSession.mockClear();
+      routing.codex.recoverSessionByThreadSource.mockClear();
       const recovered = yield* provider.recoverCreatedSession!({
         provider: CODEX_DRIVER,
         providerInstanceId: codexInstanceId,
@@ -2060,6 +2084,12 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
 
       assert.equal(recovered.state, "adopted");
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      assert.equal(routing.codex.recoverSessionByThreadSource.mock.calls.length, 0);
+      assert.deepEqual(routing.codex.startSession.mock.calls[0]?.[0].resumeCursor, {
+        threadId: persistedProviderThreadId,
+      });
+      assert.equal(routing.codex.startSession.mock.calls[0]?.[0].threadSource, undefined);
       assert.deepEqual(
         credentialRequests.map((request) => request.profile?.kind ?? "standard-provider"),
         ["standard-provider", "voice-controller"],
@@ -2067,8 +2097,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.deepEqual(identityBindings, [
         {
           credentialId: "credential-voice-controller",
-          codexProviderThreadId:
-            "recovered-shuv2code/voice-controller/controller-creation-recovery/v2",
+          codexProviderThreadId: persistedProviderThreadId,
         },
       ]);
     }).pipe(
