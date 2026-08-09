@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import {
   VoiceAppendAudioInput,
   VoiceControllerError,
+  VoiceGetControllerHistoryResult,
   VoiceGeneration,
   VoiceRealtimeIngressInput,
   VoiceSessionEvent,
@@ -14,6 +15,10 @@ import {
   VoiceSubscribeEventsInput,
   resolveVoiceSessionStartTransport,
 } from "./realtimeVoice.ts";
+
+const decodeVoiceGetControllerHistoryResult = Schema.decodeUnknownSync(
+  VoiceGetControllerHistoryResult,
+);
 
 describe("realtime voice contracts", () => {
   it("accepts a generation-fenced WebRTC offer", () => {
@@ -191,5 +196,27 @@ describe("realtime voice contracts", () => {
         retryable: false,
       }),
     ).toThrow();
+  });
+
+  it("decodes bounded provider-authoritative controller history", () => {
+    const result = decodeVoiceGetControllerHistoryResult({
+      controllerThreadId: "voice-controller:1",
+      messages: [
+        {
+          id: "turn-1:user-1",
+          turnId: "turn-1",
+          role: "user",
+          text: "What is the active thread doing?",
+        },
+        {
+          id: "turn-1:assistant",
+          turnId: "turn-1",
+          role: "assistant",
+          text: "It is waiting for approval.",
+        },
+      ],
+    });
+
+    expect(result.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   });
 });

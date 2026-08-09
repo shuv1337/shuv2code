@@ -3,7 +3,12 @@ import {
   initialRealtimeVoiceState,
   type RealtimeVoiceSessionState,
 } from "@shuv2code/client-runtime/state/realtime-voice";
-import type { EnvironmentId, ThreadId, VoiceControllerIdentity } from "@shuv2code/contracts";
+import type {
+  EnvironmentId,
+  ThreadId,
+  VoiceControllerHistoryMessage,
+  VoiceControllerIdentity,
+} from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import {
@@ -77,6 +82,10 @@ const browserVoiceApi: VoiceSessionControllerApi = {
 interface VoiceSessionContextValue {
   readonly state: RealtimeVoiceSessionState;
   readonly getController: (environmentId: EnvironmentId) => Promise<VoiceControllerIdentity | null>;
+  readonly getControllerHistory: (
+    environmentId: EnvironmentId,
+    controllerThreadId: ThreadId,
+  ) => Promise<ReadonlyArray<VoiceControllerHistoryMessage>>;
   readonly resetController: (
     environmentId: EnvironmentId,
     controllerThreadId: ThreadId,
@@ -111,6 +120,15 @@ export function VoiceSessionProvider({
       (await runVoiceCommand(realtimeVoiceEnvironment.getController, environmentId, {})).controller,
     [],
   );
+  const getControllerHistory = useCallback(
+    async (environmentId: EnvironmentId, controllerThreadId: ThreadId) =>
+      (
+        await runVoiceCommand(realtimeVoiceEnvironment.getControllerHistory, environmentId, {
+          controllerThreadId,
+        })
+      ).messages,
+    [],
+  );
   const resetController = useCallback(
     async (environmentId: EnvironmentId, controllerThreadId: ThreadId) => {
       if (
@@ -131,13 +149,14 @@ export function VoiceSessionProvider({
     () => ({
       state,
       getController,
+      getControllerHistory,
       resetController,
       start: (input) => controller.start(input),
       stop: () => controller.stop(),
       reconnect: () => controller.reconnect(),
       setMuted: (muted) => controller.setMuted(muted),
     }),
-    [controller, getController, resetController, state],
+    [controller, getController, getControllerHistory, resetController, state],
   );
   useEffect(
     () => () => {

@@ -4,6 +4,7 @@ import {
   type VoiceAppendAudioInput,
   type VoiceEnsureControllerInput,
   type VoiceGetControllerInput,
+  type VoiceGetControllerHistoryInput,
   type VoiceListVoicesInput,
   type VoiceRealtimeIngressInput,
   type VoiceResetControllerInput,
@@ -92,6 +93,9 @@ export const ensureVoiceController = (input: VoiceEnsureControllerInput) =>
 
 export const getVoiceController = (input: VoiceGetControllerInput) =>
   request(WS_METHODS.voiceGetController, input);
+
+export const getVoiceControllerHistory = (input: VoiceGetControllerHistoryInput) =>
+  request(WS_METHODS.voiceGetControllerHistory, input);
 
 export const listRealtimeVoices = (input: VoiceListVoicesInput) =>
   request(WS_METHODS.voiceListVoices, input);

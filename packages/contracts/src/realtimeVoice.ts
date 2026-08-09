@@ -80,8 +80,11 @@ export const VoiceGetControllerResult = Schema.Struct({
 });
 export type VoiceGetControllerResult = typeof VoiceGetControllerResult.Type;
 
+export const VoiceControllerHistoryMessageId = makeVoiceId("VoiceControllerHistoryMessageId");
+export type VoiceControllerHistoryMessageId = typeof VoiceControllerHistoryMessageId.Type;
+
 export const VoiceControllerHistoryMessage = Schema.Struct({
-  id: makeVoiceId("VoiceControllerHistoryMessageId"),
+  id: VoiceControllerHistoryMessageId,
   turnId: TurnId,
   role: Schema.Literals(["user", "assistant"]),
   text: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(120_000)),

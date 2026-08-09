@@ -1,4 +1,10 @@
-import { CommandId, ThreadId, VoiceTranscriptItemId } from "@shuv2code/contracts";
+import {
+  CommandId,
+  ThreadId,
+  VoiceControllerHistoryMessageId,
+  VoiceTranscriptItemId,
+  type VoiceControllerHistoryMessage,
+} from "@shuv2code/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -6,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -35,9 +42,98 @@ import {
 import { VoiceControllerActionRunnerLive } from "./VoiceControllerActionRunner.ts";
 import { VoiceTargetMonitorLive } from "./VoiceTargetMonitor.ts";
 import { VoiceTransportCoordinatorLive } from "./VoiceTransportCoordinator.ts";
+import type { ProviderThreadSnapshot } from "../../provider/Services/ProviderAdapter.ts";
 
 const CONTROLLER_OPERATION_TIMEOUT = "30 seconds";
 const CONTROLLER_TEARDOWN_TIMEOUT = "5 seconds";
+const CONTROLLER_HISTORY_MAX_MESSAGES = 256;
+const CONTROLLER_HISTORY_MAX_MESSAGE_CHARS = 120_000;
+const CONTROLLER_CONTEXT_PREFIX =
+  "Bounded controller state (resolution hint only; server authorization still applies):";
+const CONTROLLER_USER_REQUEST_MARKER = "\n\nUser request:\n";
+
+const ProviderHistoryTextInput = Schema.Struct({
+  type: Schema.Literal("text"),
+  text: Schema.String,
+});
+const ProviderHistoryUserMessage = Schema.Struct({
+  id: Schema.String,
+  type: Schema.Literal("userMessage"),
+  content: Schema.Array(Schema.Unknown),
+});
+const ProviderHistoryAgentMessage = Schema.Struct({
+  id: Schema.String,
+  type: Schema.Literal("agentMessage"),
+  text: Schema.String,
+  phase: Schema.optionalKey(Schema.NullOr(Schema.String)),
+});
+const decodeProviderHistoryTextInput = Schema.decodeUnknownOption(ProviderHistoryTextInput);
+const decodeProviderHistoryUserMessage = Schema.decodeUnknownOption(ProviderHistoryUserMessage);
+const decodeProviderHistoryAgentMessage = Schema.decodeUnknownOption(ProviderHistoryAgentMessage);
+
+export function controllerHistoryDisplayText(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith(CONTROLLER_CONTEXT_PREFIX)) return trimmed;
+  const markerIndex = trimmed.indexOf(CONTROLLER_USER_REQUEST_MARKER);
+  return markerIndex < 0
+    ? trimmed
+    : trimmed.slice(markerIndex + CONTROLLER_USER_REQUEST_MARKER.length).trim();
+}
+
+export function controllerHistoryMessages(
+  snapshot: ProviderThreadSnapshot,
+): ReadonlyArray<VoiceControllerHistoryMessage> {
+  const messages: Array<VoiceControllerHistoryMessage> = [];
+  for (const turn of snapshot.turns) {
+    const assistantItems: Array<{
+      readonly id: string;
+      readonly phase?: string | null;
+      readonly text: string;
+    }> = [];
+    for (const item of turn.items) {
+      const user = decodeProviderHistoryUserMessage(item);
+      if (Option.isSome(user)) {
+        const text = controllerHistoryDisplayText(
+          user.value.content
+            .flatMap((content) => {
+              const decoded = decodeProviderHistoryTextInput(content);
+              return Option.isSome(decoded) ? [decoded.value.text] : [];
+            })
+            .join("\n"),
+        ).slice(0, CONTROLLER_HISTORY_MAX_MESSAGE_CHARS);
+        if (text.length > 0) {
+          messages.push({
+            id: VoiceControllerHistoryMessageId.make(`${turn.id}:${user.value.id}`),
+            turnId: turn.id,
+            role: "user",
+            text,
+          });
+        }
+        continue;
+      }
+      const assistant = decodeProviderHistoryAgentMessage(item);
+      if (Option.isSome(assistant) && assistant.value.text.trim().length > 0) {
+        assistantItems.push(assistant.value);
+      }
+    }
+    const finalItems = assistantItems.filter((item) => item.phase === "final_answer");
+    const visibleAssistantItems = finalItems.length > 0 ? finalItems : assistantItems;
+    const assistantText = visibleAssistantItems
+      .map((item) => item.text.trim())
+      .filter((text) => text.length > 0)
+      .join("\n\n")
+      .slice(0, CONTROLLER_HISTORY_MAX_MESSAGE_CHARS);
+    if (assistantText.length > 0) {
+      messages.push({
+        id: VoiceControllerHistoryMessageId.make(`${turn.id}:assistant`),
+        turnId: turn.id,
+        role: "assistant",
+        text: assistantText,
+      });
+    }
+  }
+  return messages.slice(-CONTROLLER_HISTORY_MAX_MESSAGES);
+}
 
 export {
   appendVoiceSessionEvent,
@@ -282,6 +378,70 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   });
   const ensureController: VoiceControllerService["Service"]["ensureController"] = (input) =>
     controllerLifecycle.withPermits(1)(ensureControllerUnlocked(input));
+
+  const getControllerHistoryUnlocked: VoiceControllerService["Service"]["getControllerHistory"] =
+    Effect.fn("VoiceControllerService.getControllerHistory")(function* (input) {
+      const policy = yield* currentPolicy;
+      if (!policy.read) {
+        return yield* voiceError("permission_denied", "Voice thread reads are disabled.", false);
+      }
+      if (runtime.readThread === undefined) {
+        return yield* voiceError(
+          "method_unavailable",
+          "The controller provider does not expose conversation history.",
+          false,
+        );
+      }
+      const environmentId = yield* environment.getEnvironmentId;
+      const binding = yield* bindings
+        .getByEnvironmentId(environmentId)
+        .pipe(
+          Effect.mapError(
+            mapInternalError("internal_error", "The controller binding could not be read."),
+          ),
+        );
+      if (Option.isNone(binding) || binding.value.controllerThreadId !== input.controllerThreadId) {
+        return yield* voiceError(
+          "controller_not_found",
+          "The persistent voice controller was not found.",
+          false,
+        );
+      }
+      const controller = yield* projection
+        .getThreadDetailById(binding.value.controllerThreadId)
+        .pipe(
+          Effect.mapError(
+            mapInternalError("internal_error", "The controller thread could not be read."),
+          ),
+        );
+      if (Option.isNone(controller)) {
+        return yield* voiceError(
+          "controller_not_found",
+          "The persistent voice controller was not found.",
+          false,
+        );
+      }
+      yield* ensureControllerUnlocked({
+        hostProjectId: binding.value.hostProjectId,
+        providerInstanceId: binding.value.providerInstanceId,
+        authorizedRuntimeCeiling: binding.value.authorizedRuntimeCeiling,
+        modelSelection: controller.value.modelSelection,
+      });
+      const snapshot = yield* runtime
+        .readThread(binding.value.controllerThreadId)
+        .pipe(
+          Effect.timeout(CONTROLLER_OPERATION_TIMEOUT),
+          Effect.mapError(
+            mapInternalError("internal_error", "The controller conversation could not be read."),
+          ),
+        );
+      return {
+        controllerThreadId: binding.value.controllerThreadId,
+        messages: controllerHistoryMessages(snapshot),
+      };
+    });
+  const getControllerHistory: VoiceControllerService["Service"]["getControllerHistory"] = (input) =>
+    controllerLifecycle.withPermits(1)(getControllerHistoryUnlocked(input));
 
   // A process restart cannot trust an inherited controller credential when
   // reads or writes are currently disabled. Revoke and rotate before exposing
@@ -759,6 +919,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
 
   return VoiceControllerService.of({
     getController,
+    getControllerHistory,
     ensureController,
     resetController,
     listVoices,

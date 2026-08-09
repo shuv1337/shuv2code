@@ -207,6 +207,35 @@ describe("authenticated voice RPC vertical integration", () => {
               status: "completed",
               speakableText: "The requested thread was created.",
             }),
+          readThread: (threadId) =>
+            Effect.succeed({
+              threadId,
+              turns: [
+                {
+                  id: TurnId.make("controller-history-turn-1"),
+                  status: "completed",
+                  items: [
+                    {
+                      id: "controller-history-user-1",
+                      type: "userMessage",
+                      content: [{ type: "text", text: "What is the target doing?" }],
+                    },
+                    {
+                      id: "controller-history-commentary-1",
+                      type: "agentMessage",
+                      phase: "commentary",
+                      text: "I am checking it.",
+                    },
+                    {
+                      id: "controller-history-final-1",
+                      type: "agentMessage",
+                      phase: "final_answer",
+                      text: "It is waiting for approval.",
+                    },
+                  ],
+                },
+              ],
+            }),
           appendTransportText: () => Effect.void,
           appendTransportSpeech: () => Effect.void,
           appendTransportAudio: () => Effect.void,
@@ -595,6 +624,19 @@ describe("authenticated voice RPC vertical integration", () => {
           (yield* transportCoordinator.getControllerRuntime(controllerThreadId))?.runtimeInstanceId,
           VoiceRuntimeInstanceId.make("controller-runtime-3"),
         );
+
+        const history = yield* readClient[WS_METHODS.voiceGetControllerHistory]({
+          controllerThreadId,
+        });
+        assert.strictEqual(history.controllerThreadId, controllerThreadId);
+        assert.deepStrictEqual(
+          history.messages.map(({ role, text }) => ({ role, text })),
+          [
+            { role: "user", text: "What is the target doing?" },
+            { role: "assistant", text: "It is waiting for approval." },
+          ],
+        );
+        assert.strictEqual(controllerRuntimeEnsures[4]?.creationDisposition, "recover");
 
         const ensureEntered = yield* Deferred.make<void>();
         const releaseEnsure = yield* Deferred.make<void>();

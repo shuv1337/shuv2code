@@ -5,6 +5,8 @@ import type {
   VoiceEnsureControllerResult,
   VoiceGetControllerInput,
   VoiceGetControllerResult,
+  VoiceGetControllerHistoryInput,
+  VoiceGetControllerHistoryResult,
   VoiceListVoicesInput,
   VoiceListVoicesResult,
   VoiceRealtimeIngressInput,
@@ -28,6 +30,9 @@ export interface VoiceControllerServiceShape {
   readonly getController: (
     input: VoiceGetControllerInput,
   ) => Effect.Effect<VoiceGetControllerResult, VoiceControllerError>;
+  readonly getControllerHistory: (
+    input: VoiceGetControllerHistoryInput,
+  ) => Effect.Effect<VoiceGetControllerHistoryResult, VoiceControllerError>;
   readonly ensureController: (
     input: VoiceEnsureControllerInput,
   ) => Effect.Effect<VoiceEnsureControllerResult, VoiceControllerError>;

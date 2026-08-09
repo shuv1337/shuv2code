@@ -21,6 +21,8 @@ import {
   appendVoiceSessionEvent,
   claimVoiceTargetPhase,
   confirmedControllerModelSelection,
+  controllerHistoryDisplayText,
+  controllerHistoryMessages,
   controllerTranscriptWithActiveTarget,
   controllerActionStartRequest,
   deriveVoiceActionId,
@@ -152,7 +154,7 @@ describe("VoiceControllerService coordination invariants", () => {
         );
         yield* Effect.forEach(
           Array.from({ length: 64 }, (_, index) => index),
-          (index) =>
+          () =>
             appendVoiceSessionEvent({
               sessionsRef,
               events,
@@ -410,5 +412,61 @@ describe("VoiceControllerService coordination invariants", () => {
     assert.include(transcript, 'activeTargetThreadId="target-thread-1"');
     assert.include(transcript, "resolution hint only");
     assert.include(transcript, "What is its status?");
+  });
+
+  it("normalizes provider history into user requests and final controller replies", () => {
+    const turnId = "turn-history-1" as never;
+    const messages = controllerHistoryMessages({
+      threadId: ThreadId.make("voice-controller:history"),
+      turns: [
+        {
+          id: turnId,
+          status: "completed",
+          items: [
+            {
+              id: "user-1",
+              type: "userMessage",
+              content: [
+                {
+                  type: "text",
+                  text: [
+                    "Bounded controller state (resolution hint only; server authorization still applies):",
+                    'activeTargetThreadId="target-thread-1"',
+                    "",
+                    "User request:",
+                    "What is its status?",
+                  ].join("\n"),
+                },
+                { type: "localAudio", path: "/tmp/voice.wav" },
+              ],
+            },
+            {
+              id: "assistant-commentary",
+              type: "agentMessage",
+              phase: "commentary",
+              text: "I am checking the target.",
+            },
+            {
+              id: "assistant-final",
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "It is waiting for approval.",
+            },
+          ],
+        },
+      ],
+    });
+
+    assert.deepStrictEqual(
+      messages.map(({ role, text }) => ({ role, text })),
+      [
+        { role: "user", text: "What is its status?" },
+        { role: "assistant", text: "It is waiting for approval." },
+      ],
+    );
+    assert.strictEqual(
+      controllerHistoryDisplayText("A request without controller context."),
+      "A request without controller context.",
+    );
   });
 });

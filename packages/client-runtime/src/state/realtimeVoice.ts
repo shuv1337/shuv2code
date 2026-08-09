@@ -9,6 +9,7 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
   ensureVoiceController,
   getVoiceController,
+  getVoiceControllerHistory,
   ingestRealtimeVoiceEvent,
   listRealtimeVoices,
   startRealtimeVoice,
@@ -315,6 +316,11 @@ export function createRealtimeVoiceEnvironmentAtoms<R, E>(
     getController: createEnvironmentCommand(runtime, {
       label: "environment-data:voice:get-controller",
       execute: getVoiceController,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
+    getControllerHistory: createEnvironmentCommand(runtime, {
+      label: "environment-data:voice:get-controller-history",
+      execute: getVoiceControllerHistory,
       concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
     }),
     ensureController: createEnvironmentCommand(runtime, {
