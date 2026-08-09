@@ -4,6 +4,7 @@ import type {
   ProjectId,
   ProviderInstanceId,
   RuntimeMode,
+  ThreadId,
   VoiceControllerIdentity,
 } from "@shuv2code/contracts";
 import { MicIcon } from "lucide-react";
@@ -44,12 +45,14 @@ import {
 export interface VoiceControlButtonProps {
   readonly environmentId: EnvironmentId;
   readonly hostProjectId: ProjectId;
+  readonly targetThreadId?: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly modelSelection: ModelSelection;
   readonly realtimeEnabled: boolean;
   readonly threadReadEnabled: boolean;
   readonly threadControlEnabled: boolean;
   readonly compact?: boolean;
+  readonly surface?: boolean;
 }
 
 type ControllerLookup =
@@ -128,6 +131,9 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
           ? {
               environmentId: props.environmentId,
               hostProjectId: existing.hostProjectId,
+              ...(props.targetThreadId === undefined
+                ? {}
+                : { targetThreadId: props.targetThreadId }),
               providerInstanceId: existing.providerInstanceId,
               authorizedRuntimeCeiling: existing.authorizedRuntimeCeiling,
               microphoneStream: preparedMicrophone,
@@ -135,6 +141,9 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
           : {
               environmentId: props.environmentId,
               hostProjectId: props.hostProjectId,
+              ...(props.targetThreadId === undefined
+                ? {}
+                : { targetThreadId: props.targetThreadId }),
               providerInstanceId: props.providerInstanceId,
               modelSelection: props.modelSelection,
               authorizedRuntimeCeiling: ceiling,
@@ -168,6 +177,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
           await voice.start({
             environmentId: props.environmentId,
             hostProjectId: props.hostProjectId,
+            ...(props.targetThreadId === undefined ? {} : { targetThreadId: props.targetThreadId }),
             providerInstanceId: props.providerInstanceId,
             modelSelection: props.modelSelection,
             authorizedRuntimeCeiling: ceiling,
@@ -198,8 +208,12 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
             <Button
               type="button"
               size={props.compact ? "icon-sm" : "sm"}
-              variant={active ? "secondary" : "ghost"}
-              className={active ? undefined : "text-muted-foreground/70 hover:text-foreground/80"}
+              variant={active ? "secondary" : props.surface ? "default" : "ghost"}
+              className={
+                active || props.surface
+                  ? undefined
+                  : "text-muted-foreground/70 hover:text-foreground/80"
+              }
               aria-label={
                 active
                   ? "Voice control active"
@@ -211,12 +225,18 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
               onClick={active ? openVoiceSurface : openSetup}
             >
               <MicIcon />
-              {props.compact ? null : <span className="hidden sm:inline">Voice</span>}
+              {props.compact ? null : (
+                <span className={props.surface ? undefined : "hidden sm:inline"}>
+                  {active ? "Voice" : props.surface ? "Start voice" : "Voice"}
+                </span>
+              )}
             </Button>
           }
         />
         <TooltipPopup side="top">
-          {active ? "Open voice" : (unavailableReason ?? idleLabel)}
+          {active
+            ? "Open voice"
+            : (unavailableReason ?? (props.surface ? "Start voice" : idleLabel))}
         </TooltipPopup>
       </Tooltip>
 
@@ -230,12 +250,12 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
         <DialogPopup>
           <DialogHeader>
             <DialogTitle>
-              {conflict ? "Voice controller already configured" : "Start voice control"}
+              {conflict ? "Use the existing voice controller?" : "Start voice"}
             </DialogTitle>
             <DialogDescription>
               {conflict
-                ? "Choose the existing controller or explicitly reset it before using this configuration."
-                : "Confirm the exact controller host, Codex provider, and maximum authority before microphone access is requested."}
+                ? "This environment already has a persistent controller. Use it, or replace it with the configuration from this thread."
+                : "Choose the maximum control level, then allow microphone access."}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-4">
@@ -292,7 +312,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
             {lookup.type === "ready" ? (
               <>
                 <label className="block space-y-1.5 text-sm font-medium">
-                  Thread-control authority ceiling
+                  Control level
                   <select
                     className="h-9 w-full rounded-lg border border-input bg-background px-3 font-normal"
                     value={ceiling}

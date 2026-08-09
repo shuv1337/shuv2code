@@ -6181,6 +6181,39 @@ function ChatViewContent(props: ChatViewProps) {
     return <NoActiveThreadState />;
   }
 
+  const voiceProvider = providerStatuses.find(
+    (provider) =>
+      provider.driver === "codex" &&
+      provider.enabled &&
+      provider.installed &&
+      provider.availability !== "unavailable",
+  );
+  const voicePreferredModelSelection =
+    voiceProvider && activeThread.modelSelection.instanceId === voiceProvider.instanceId
+      ? activeThread.modelSelection
+      : voiceProvider &&
+          activeProject?.defaultModelSelection?.instanceId === voiceProvider.instanceId
+        ? activeProject.defaultModelSelection
+        : null;
+  const voiceDefaultModel =
+    voiceProvider?.models.find((model) => model.isDefault) ?? voiceProvider?.models[0];
+  const voiceModelSelection =
+    voicePreferredModelSelection ??
+    (voiceProvider && voiceDefaultModel
+      ? createModelSelection(voiceProvider.instanceId, voiceDefaultModel.slug)
+      : null);
+  const voiceSurfaceSetup =
+    activeProject && voiceProvider && voiceModelSelection
+      ? {
+          hostProjectId: activeProject.id,
+          providerInstanceId: voiceProvider.instanceId,
+          modelSelection: voiceModelSelection,
+          realtimeEnabled: settings.enableRealtimeVoice,
+          threadReadEnabled: settings.enableVoiceThreadRead,
+          threadControlEnabled: settings.enableVoiceThreadControl,
+        }
+      : null;
+
   const panelToggleControls = (
     <PanelLayoutControls
       terminalAvailable={activeProject !== null}
@@ -6219,7 +6252,15 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const rightPanelContent = activeThreadRef ? (
     activeRightPanelSurface?.kind === "voice" ? (
-      <VoiceSurface environmentId={activeThreadRef.environmentId} />
+      <VoiceSurface
+        environmentId={activeThreadRef.environmentId}
+        currentContext={{
+          threadId: isServerThread ? activeThread.id : null,
+          threadTitle: activeThread.title,
+          projectTitle: activeProject?.title ?? "Current project",
+        }}
+        setup={voiceSurfaceSetup}
+      />
     ) : activeRightPanelSurface?.kind === "preview" ? (
       <Suspense fallback={null}>
         <PreviewPanel

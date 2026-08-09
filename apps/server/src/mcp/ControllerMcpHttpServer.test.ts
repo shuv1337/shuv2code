@@ -27,6 +27,7 @@ const environmentId = EnvironmentId.make("environment-controller-http-test");
 const controllerThreadId = ThreadId.make("controller-thread-http-test");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const codexProviderThreadId = "codex-provider-thread-http-test";
+let requestedUntrustedContext = false;
 
 const fakeEnvironment = Layer.succeed(
   ServerEnvironment.ServerEnvironment,
@@ -73,7 +74,40 @@ const threadControl = ThreadControlService.of({
       threads: [],
       nextCursor: null,
     }),
-  get: () => Effect.die("unused"),
+  get: (input) => {
+    requestedUntrustedContext = input.includeUntrustedContext === true;
+    return Effect.succeed({
+      snapshotSequence: 42,
+      snapshotTimestamp: "2026-07-30T00:00:00.000Z",
+      thread: {
+        threadId: input.threadId,
+        projectId: ProjectId.make("target-project"),
+        title: "Current work",
+        modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+        runtimeMode: "approval-required",
+        phase: "ready",
+        activeTurnId: null,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        latestTurnUpdatedAt: "2026-07-30T00:00:00.000Z",
+      },
+      latestTurnState: "completed",
+      lastErrorCode: null,
+      resultCount: 1,
+      activityCount: 0,
+      ...(input.includeUntrustedContext === true
+        ? {
+            untrustedTargetContext: {
+              marker: "untrusted-target-context" as const,
+              messages: [
+                { role: "user" as const, text: "What are we fixing?" },
+                { role: "assistant" as const, text: "Voice context retrieval." },
+              ],
+            },
+          }
+        : {}),
+    });
+  },
   create: () => Effect.die("mutation must be rejected before dispatch"),
   send: () => Effect.die("unused"),
   interrupt: () => Effect.die("unused"),
@@ -199,6 +233,35 @@ it.effect("serves only the five controller tools and enforces profile and turn m
         result: {
           isError: false,
           structuredContent: { snapshotSequence: 41 },
+        },
+      });
+
+      const contextRead = yield* postJsonRpc(controller.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: 31,
+        method: "tools/call",
+        params: {
+          name: "thread_get",
+          arguments: {
+            threadId: "target-thread-http-test",
+            includeUntrustedContext: true,
+          },
+        },
+      });
+      expect(contextRead.status).toBe(200);
+      expect(requestedUntrustedContext).toBe(true);
+      expect(contextRead.body).toMatchObject({
+        result: {
+          isError: false,
+          structuredContent: {
+            untrustedTargetContext: {
+              marker: "untrusted-target-context",
+              messages: [
+                { role: "user", text: "What are we fixing?" },
+                { role: "assistant", text: "Voice context retrieval." },
+              ],
+            },
+          },
         },
       });
 

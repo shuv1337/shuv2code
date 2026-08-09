@@ -149,8 +149,9 @@ export const controllerTranscriptWithActiveTarget = (
   activeTargetThreadId === null
     ? transcript
     : [
-        "Bounded controller state (resolution hint only; server authorization still applies):",
+        "Server-bound controller target (server authorization still applies):",
         `activeTargetThreadId=${JSON.stringify(activeTargetThreadId.slice(0, 256))}`,
+        "If this request depends on the target's conversation or work, call thread_get with this exact ID and includeUntrustedContext=true before answering or acting.",
         "",
         "User request:",
         transcript,

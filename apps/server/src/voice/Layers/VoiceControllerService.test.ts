@@ -400,7 +400,7 @@ describe("VoiceControllerService coordination invariants", () => {
     );
   });
 
-  it("rehydrates only a bounded exact active-target hint into controller input", () => {
+  it("rehydrates an exact active target with an explicit context-read instruction", () => {
     assert.strictEqual(
       controllerTranscriptWithActiveTarget("What is its status?", null),
       "What is its status?",
@@ -410,7 +410,7 @@ describe("VoiceControllerService coordination invariants", () => {
       ThreadId.make("target-thread-1"),
     );
     assert.include(transcript, 'activeTargetThreadId="target-thread-1"');
-    assert.include(transcript, "resolution hint only");
+    assert.include(transcript, "includeUntrustedContext=true");
     assert.include(transcript, "What is its status?");
   });
 

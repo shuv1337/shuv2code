@@ -60,6 +60,7 @@ import {
   WsVoiceEnsureControllerRpc,
   WsVoiceGetControllerRpc,
   WsVoiceGetControllerHistoryRpc,
+  WsVoiceSetControllerTargetRpc,
   WsVoiceIngestRealtimeEventRpc,
   WsVoiceListVoicesRpc,
   WsVoiceResetControllerRpc,
@@ -219,6 +220,16 @@ const makeVoiceRpcHandlers = (
           "rpc.aggregate": "voice",
         },
       ),
+    [WS_METHODS.voiceSetControllerTarget]: (
+      input: Parameters<
+        VoiceController.VoiceControllerService["Service"]["setControllerTarget"]
+      >[0],
+    ) =>
+      observeRpcEffect(
+        WS_METHODS.voiceSetControllerTarget,
+        voiceController.setControllerTarget(input),
+        { "rpc.aggregate": "voice" },
+      ),
     [WS_METHODS.voiceEnsureController]: (
       input: Parameters<VoiceController.VoiceControllerService["Service"]["ensureController"]>[0],
     ) =>
@@ -280,6 +291,7 @@ const makeVoiceRpcHandlers = (
 export const VoiceWsRpcGroup = RpcGroup.make(
   WsVoiceGetControllerRpc,
   WsVoiceGetControllerHistoryRpc,
+  WsVoiceSetControllerTargetRpc,
   WsVoiceEnsureControllerRpc,
   WsVoiceListVoicesRpc,
   WsVoiceResetControllerRpc,

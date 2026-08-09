@@ -85,6 +85,7 @@ export interface ThreadControlGetInput {
   readonly authorization: ThreadControlAuthorization;
   readonly threadId: ThreadId;
   readonly includeUntrustedExcerpt?: boolean | undefined;
+  readonly includeUntrustedContext?: boolean | undefined;
 }
 
 export interface ThreadControlGetResult {
@@ -98,6 +99,13 @@ export interface ThreadControlGetResult {
   readonly untrustedTargetContent?: {
     readonly marker: "untrusted-target-content";
     readonly text: string;
+  };
+  readonly untrustedTargetContext?: {
+    readonly marker: "untrusted-target-context";
+    readonly messages: ReadonlyArray<{
+      readonly role: "user" | "assistant";
+      readonly text: string;
+    }>;
   };
 }
 

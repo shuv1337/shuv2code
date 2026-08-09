@@ -34,6 +34,41 @@ import {
   type ThreadControlThreadSummary,
 } from "../Services/ThreadControlService.ts";
 
+const TARGET_CONTEXT_MAX_MESSAGES = 12;
+const TARGET_CONTEXT_MAX_CHARS = 12_000;
+const TARGET_CONTEXT_MAX_MESSAGE_CHARS = 4_000;
+
+export function boundedUntrustedThreadContext(
+  messages: ReadonlyArray<{
+    readonly role: string;
+    readonly text: string;
+    readonly streaming?: boolean;
+  }>,
+): ReadonlyArray<{ readonly role: "user" | "assistant"; readonly text: string }> {
+  const selected: Array<{ readonly role: "user" | "assistant"; readonly text: string }> = [];
+  let remaining = TARGET_CONTEXT_MAX_CHARS;
+  for (
+    let index = messages.length - 1;
+    index >= 0 && selected.length < TARGET_CONTEXT_MAX_MESSAGES;
+    index -= 1
+  ) {
+    const message = messages[index];
+    if (
+      !message ||
+      (message.role !== "user" && message.role !== "assistant") ||
+      message.streaming === true
+    ) {
+      continue;
+    }
+    const text = message.text.trim();
+    if (text.length === 0 || remaining === 0) continue;
+    const bounded = text.slice(0, Math.min(TARGET_CONTEXT_MAX_MESSAGE_CHARS, remaining));
+    selected.unshift({ role: message.role, text: bounded });
+    remaining -= bounded.length;
+  }
+  return selected;
+}
+
 const RUNTIME_MODE_RANK: Readonly<Record<RuntimeMode, number>> = {
   "approval-required": 0,
   "auto-accept-edits": 1,
@@ -708,6 +743,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       const latestAssistant = thread.messages.findLast(
         (candidate) => candidate.role === "assistant" && !candidate.streaming,
       );
+      const recentContext = boundedUntrustedThreadContext(thread.messages);
       return {
         snapshotSequence: snapshot.snapshotSequence,
         snapshotTimestamp: thread.updatedAt,
@@ -721,6 +757,14 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
               untrustedTargetContent: {
                 marker: "untrusted-target-content" as const,
                 text: latestAssistant.text.slice(0, 2_048),
+              },
+            }
+          : {}),
+        ...(input.includeUntrustedContext === true
+          ? {
+              untrustedTargetContext: {
+                marker: "untrusted-target-context" as const,
+                messages: recentContext,
               },
             }
           : {}),

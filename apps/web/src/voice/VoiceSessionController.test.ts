@@ -142,8 +142,10 @@ describe("VoiceSessionController", () => {
 
   it("relays normalized provider events with the complete server-issued fence", async () => {
     const ingress = vi.fn(async () => ({ accepted: true }));
+    const setControllerTarget = vi.fn(async () => ThreadId.make("current-thread"));
     const api: VoiceSessionControllerApi = {
       ensureController: async () => ({ controller: controllerIdentity }),
+      setControllerTarget,
       listVoices: async () => voiceCatalog,
       start: async (_environmentId, input) => ({
         controller: controllerIdentity,
@@ -206,10 +208,16 @@ describe("VoiceSessionController", () => {
     await controller.start({
       environmentId,
       hostProjectId: projectId,
+      targetThreadId: ThreadId.make("current-thread"),
       providerInstanceId,
       authorizedRuntimeCeiling: "approval-required",
     });
     await vi.waitFor(() => expect(ingress).toHaveBeenCalledTimes(2));
+    expect(setControllerTarget).toHaveBeenCalledWith(
+      environmentId,
+      controllerThreadId,
+      ThreadId.make("current-thread"),
+    );
     expect(controller.state.transcript).toContainEqual({
       id: "client:user:1",
       speaker: "user",

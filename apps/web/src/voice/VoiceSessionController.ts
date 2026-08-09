@@ -8,6 +8,7 @@ import {
   type ProjectId,
   type ProviderInstanceId,
   type RuntimeMode,
+  type ThreadId,
   type VoiceControllerIdentity,
   type VoiceEnsureControllerInput,
   type VoiceEnsureControllerResult,
@@ -58,6 +59,11 @@ export interface VoiceSessionControllerApi {
     environmentId: EnvironmentId,
     input: VoiceListVoicesInput,
   ) => Promise<VoiceListVoicesResult>;
+  readonly setControllerTarget?: (
+    environmentId: EnvironmentId,
+    controllerThreadId: ThreadId,
+    targetThreadId: ThreadId,
+  ) => Promise<ThreadId>;
   readonly start: (
     environmentId: EnvironmentId,
     input: VoiceSessionStartInput,
@@ -85,6 +91,7 @@ export interface VoiceSessionControllerApi {
 export interface StartVoiceSessionInput {
   readonly environmentId: EnvironmentId;
   readonly hostProjectId: ProjectId;
+  readonly targetThreadId?: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly modelSelection?: ModelSelection;
   readonly authorizedRuntimeCeiling: RuntimeMode;
@@ -388,6 +395,18 @@ export class VoiceSessionController {
         return;
       }
       this.#controller = ensured.controller;
+      if (input.targetThreadId !== undefined && this.#api.setControllerTarget !== undefined) {
+        await this.#api.setControllerTarget(
+          input.environmentId,
+          ensured.controller.controllerThreadId,
+          input.targetThreadId,
+        );
+      }
+      if (
+        !this.#isCurrentAttempt(generationIdentity.clientSessionId, generationIdentity.generation)
+      ) {
+        return;
+      }
       const catalog = await this.#api.listVoices(input.environmentId, {
         controllerThreadId: ensured.controller.controllerThreadId,
       });

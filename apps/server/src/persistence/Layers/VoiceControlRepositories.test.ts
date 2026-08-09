@@ -201,6 +201,32 @@ layer("VoiceControlRepositories", (it) => {
       assert.isNull(
         Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId)).activeTargetThreadId,
       );
+
+      const activeBinding = Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId));
+      assert.isTrue(
+        yield* bindings.compareAndSetState({
+          environmentId,
+          expectedControllerThreadId: controllerThreadId,
+          expectedBindingGeneration: activeBinding.bindingGeneration,
+          expectedState: "active",
+          nextState: "dormant",
+          expectedControlEpoch: 1,
+          updatedAt: now,
+        }),
+      );
+      assert.isTrue(
+        yield* bindings.setActiveTarget({
+          environmentId,
+          controllerThreadId,
+          expectedControlEpoch: 1,
+          activeTargetThreadId: targetThreadId,
+          updatedAt: now,
+        }),
+      );
+      assert.strictEqual(
+        Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId)).activeTargetThreadId,
+        targetThreadId,
+      );
     }),
   );
 

@@ -852,6 +852,8 @@ describe("openCodexThread", () => {
         "delete or archive",
         "target this controller",
         "mute, end-voice, barge-in",
+        "thread_list may discover authorized existing threads",
+        "includeUntrustedContext=true",
       ]) {
         NodeAssert.match(CODEX_VOICE_CONTROLLER_DEVELOPER_INSTRUCTIONS, new RegExp(requiredRule));
       }

@@ -324,6 +324,11 @@ export function createRealtimeVoiceEnvironmentAtoms<R, E>(
       execute: getVoiceControllerHistory,
       concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
     }),
+    setControllerTarget: createEnvironmentCommand(runtime, {
+      label: "environment-data:voice:set-controller-target",
+      execute: setVoiceControllerTarget,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
     ensureController: createEnvironmentCommand(runtime, {
       label: "environment-data:voice:ensure-controller",
       execute: ensureVoiceController,

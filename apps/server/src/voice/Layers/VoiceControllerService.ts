@@ -443,6 +443,70 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const getControllerHistory: VoiceControllerService["Service"]["getControllerHistory"] = (input) =>
     controllerLifecycle.withPermits(1)(getControllerHistoryUnlocked(input));
 
+  const setControllerTarget: VoiceControllerService["Service"]["setControllerTarget"] = Effect.fn(
+    "VoiceControllerService.setControllerTarget",
+  )(function* (input) {
+    const policy = yield* currentPolicy;
+    if (!policy.read) {
+      return yield* voiceError("permission_denied", "Voice thread reads are disabled.", false);
+    }
+    const environmentId = yield* environment.getEnvironmentId;
+    const binding = yield* bindings
+      .getByEnvironmentId(environmentId)
+      .pipe(
+        Effect.mapError(
+          mapInternalError("internal_error", "The controller binding could not be read."),
+        ),
+      );
+    if (Option.isNone(binding) || binding.value.controllerThreadId !== input.controllerThreadId) {
+      return yield* voiceError(
+        "controller_not_found",
+        "The persistent voice controller was not found.",
+        false,
+      );
+    }
+    const target = yield* projection
+      .getThreadDetailById(input.targetThreadId)
+      .pipe(
+        Effect.mapError(
+          mapInternalError("internal_error", "The current thread could not be read."),
+        ),
+      );
+    if (
+      Option.isNone(target) ||
+      target.value.purpose !== "standard" ||
+      target.value.deletedAt !== null ||
+      target.value.archivedAt !== null
+    ) {
+      return yield* voiceError(
+        "controller_not_found",
+        "The current thread is not available to voice control.",
+        false,
+      );
+    }
+    const updated = yield* bindings
+      .setActiveTarget({
+        environmentId,
+        controllerThreadId: binding.value.controllerThreadId,
+        expectedControlEpoch: binding.value.controlEpoch,
+        activeTargetThreadId: target.value.id,
+        updatedAt: DateTime.formatIso(yield* DateTime.now),
+      })
+      .pipe(
+        Effect.mapError(
+          mapInternalError("internal_error", "The current voice target could not be saved."),
+        ),
+      );
+    if (!updated) {
+      return yield* voiceError(
+        "controller_busy",
+        "The voice controller changed while its target was being updated.",
+        true,
+      );
+    }
+    return { targetThreadId: target.value.id };
+  });
+
   // A process restart cannot trust an inherited controller credential when
   // reads or writes are currently disabled. Revoke and rotate before exposing
   // the service, then reopen only a read-capable controller with the exact
@@ -920,6 +984,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   return VoiceControllerService.of({
     getController,
     getControllerHistory,
+    setControllerTarget,
     ensureController,
     resetController,
     listVoices,

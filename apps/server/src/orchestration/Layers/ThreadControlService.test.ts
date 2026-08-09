@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
 import {
+  boundedUntrustedThreadContext,
   completeClaimedMutationDispatch,
   validateInterruptTargetPrecondition,
   validateSendTargetPrecondition,
@@ -27,6 +28,23 @@ const failureCode = <A>(effect: Effect.Effect<A, { readonly code: string }>) =>
   );
 
 describe("ThreadControlService exact target preconditions", () => {
+  it("bounds recent user and assistant context in chronological order", () => {
+    const context = boundedUntrustedThreadContext([
+      { role: "system", text: "hidden" },
+      { role: "user", text: "first" },
+      { role: "assistant", text: "draft", streaming: true },
+      { role: "assistant", text: "second" },
+      { role: "user", text: "x".repeat(5_000) },
+    ]);
+
+    assert.deepStrictEqual(context.slice(0, 2), [
+      { role: "user", text: "first" },
+      { role: "assistant", text: "second" },
+    ]);
+    assert.strictEqual(context[2]?.role, "user");
+    assert.strictEqual(context[2]?.text.length, 4_000);
+  });
+
   it.effect("distinguishes idle starts from exact-turn steering", () =>
     Effect.gen(function* () {
       const liveTurn = TurnId.make("turn-live");

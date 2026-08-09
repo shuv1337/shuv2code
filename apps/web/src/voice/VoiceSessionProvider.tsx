@@ -57,6 +57,13 @@ const browserVoiceApi: VoiceSessionControllerApi = {
     runVoiceCommand(realtimeVoiceEnvironment.ensureController, environmentId, input),
   listVoices: (environmentId, input) =>
     runVoiceCommand(realtimeVoiceEnvironment.listVoices, environmentId, input),
+  setControllerTarget: async (environmentId, controllerThreadId, targetThreadId) =>
+    (
+      await runVoiceCommand(realtimeVoiceEnvironment.setControllerTarget, environmentId, {
+        controllerThreadId,
+        targetThreadId,
+      })
+    ).targetThreadId,
   start: (environmentId, input) =>
     runVoiceCommand(realtimeVoiceEnvironment.start, environmentId, input),
   ingestRealtimeEvent: (environmentId, input) =>
@@ -86,6 +93,11 @@ interface VoiceSessionContextValue {
     environmentId: EnvironmentId,
     controllerThreadId: ThreadId,
   ) => Promise<ReadonlyArray<VoiceControllerHistoryMessage>>;
+  readonly setControllerTarget: (
+    environmentId: EnvironmentId,
+    controllerThreadId: ThreadId,
+    targetThreadId: ThreadId,
+  ) => Promise<ThreadId>;
   readonly resetController: (
     environmentId: EnvironmentId,
     controllerThreadId: ThreadId,
@@ -145,18 +157,29 @@ export function VoiceSessionProvider({
     },
     [controller],
   );
+  const setControllerTarget = useCallback(
+    async (environmentId: EnvironmentId, controllerThreadId: ThreadId, targetThreadId: ThreadId) =>
+      (
+        await runVoiceCommand(realtimeVoiceEnvironment.setControllerTarget, environmentId, {
+          controllerThreadId,
+          targetThreadId,
+        })
+      ).targetThreadId,
+    [],
+  );
   const value = useMemo<VoiceSessionContextValue>(
     () => ({
       state,
       getController,
       getControllerHistory,
+      setControllerTarget,
       resetController,
       start: (input) => controller.start(input),
       stop: () => controller.stop(),
       reconnect: () => controller.reconnect(),
       setMuted: (muted) => controller.setMuted(muted),
     }),
-    [controller, getController, getControllerHistory, resetController, state],
+    [controller, getController, getControllerHistory, resetController, setControllerTarget, state],
   );
   useEffect(
     () => () => {

@@ -13,6 +13,8 @@ import type {
   VoiceRealtimeIngressResult,
   VoiceResetControllerInput,
   VoiceResetControllerResult,
+  VoiceSetControllerTargetInput,
+  VoiceSetControllerTargetResult,
   VoiceSessionEvent,
   VoiceSessionStartInput,
   VoiceSessionStartResult,
@@ -33,6 +35,9 @@ export interface VoiceControllerServiceShape {
   readonly getControllerHistory: (
     input: VoiceGetControllerHistoryInput,
   ) => Effect.Effect<VoiceGetControllerHistoryResult, VoiceControllerError>;
+  readonly setControllerTarget: (
+    input: VoiceSetControllerTargetInput,
+  ) => Effect.Effect<VoiceSetControllerTargetResult, VoiceControllerError>;
   readonly ensureController: (
     input: VoiceEnsureControllerInput,
   ) => Effect.Effect<VoiceEnsureControllerResult, VoiceControllerError>;

@@ -6,6 +6,7 @@ import {
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
+  ThreadId,
   TurnId,
   VoiceClientSessionId,
   VoiceEventSequence,
@@ -57,6 +58,7 @@ import { makeVoiceWsRpcLayer, VoiceWsRpcGroup } from "./ws.ts";
 
 const environmentId = EnvironmentId.make("voice-rpc-environment");
 const hostProjectId = ProjectId.make("voice-rpc-project");
+const targetThreadId = ThreadId.make("voice-rpc-target");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const modelSelection = {
   instanceId: providerInstanceId,
@@ -261,9 +263,12 @@ describe("authenticated voice RPC vertical integration", () => {
               Option.some({
                 id: threadId,
                 projectId: hostProjectId,
-                title: "Voice controller",
+                title: threadId === targetThreadId ? "Current work" : "Voice controller",
                 modelSelection,
                 runtimeMode: "approval-required",
+                purpose: threadId === targetThreadId ? "standard" : "voice-controller",
+                deletedAt: null,
+                archivedAt: null,
               } as never),
             ),
           getShellSnapshot: () =>
@@ -385,6 +390,28 @@ describe("authenticated voice RPC vertical integration", () => {
         assert.strictEqual(deniedReset._tag, "EnvironmentAuthorizationError");
         if (deniedReset._tag !== "EnvironmentAuthorizationError") return assert.fail();
         assert.strictEqual(deniedReset.requiredScope, AuthOrchestrationOperateScope);
+
+        const deniedTarget = yield* Effect.flip(
+          readClient[WS_METHODS.voiceSetControllerTarget]({
+            controllerThreadId,
+            targetThreadId,
+          }),
+        );
+        assert.strictEqual(deniedTarget._tag, "EnvironmentAuthorizationError");
+        if (deniedTarget._tag !== "EnvironmentAuthorizationError") return assert.fail();
+        assert.strictEqual(deniedTarget.requiredScope, AuthOrchestrationOperateScope);
+
+        assert.deepStrictEqual(
+          yield* fullClient[WS_METHODS.voiceSetControllerTarget]({
+            controllerThreadId,
+            targetThreadId,
+          }),
+          { targetThreadId },
+        );
+        assert.strictEqual(
+          Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId)).activeTargetThreadId,
+          targetThreadId,
+        );
 
         const recoveredEnsure = yield* fullClient[WS_METHODS.voiceEnsureController]({
           hostProjectId,
@@ -527,7 +554,9 @@ describe("authenticated voice RPC vertical integration", () => {
         assert.lengthOf(controllerStarts, 1);
         const controllerStart = controllerStarts[0]!;
         assert.strictEqual(controllerStart.recoveryPolicy, "forbid");
-        assert.strictEqual(
+        assert.include(controllerStart.input, 'activeTargetThreadId="voice-rpc-target"');
+        assert.include(controllerStart.input, "includeUntrustedContext=true");
+        assert.include(
           controllerStart.input,
           "Create a real investigation thread and report its status.",
         );

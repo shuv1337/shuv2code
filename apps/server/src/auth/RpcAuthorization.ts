@@ -52,6 +52,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverGetBackgroundPolicy]: AuthOrchestrationReadScope,
   [WS_METHODS.voiceGetController]: AuthOrchestrationReadScope,
   [WS_METHODS.voiceGetControllerHistory]: AuthOrchestrationReadScope,
+  [WS_METHODS.voiceSetControllerTarget]: AuthOrchestrationOperateScope,
   [WS_METHODS.voiceEnsureController]: AuthOrchestrationOperateScope,
   [WS_METHODS.voiceListVoices]: AuthOrchestrationReadScope,
   [WS_METHODS.voiceResetController]: AuthOrchestrationOperateScope,
