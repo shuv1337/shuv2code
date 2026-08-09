@@ -8,6 +8,7 @@ import {
   type VoiceListVoicesInput,
   type VoiceRealtimeIngressInput,
   type VoiceResetControllerInput,
+  type VoiceSetControllerTargetInput,
   type VoiceSessionStartInput,
   type VoiceSessionStopInput,
   type VoiceSubscribeEventsInput,
@@ -96,6 +97,9 @@ export const getVoiceController = (input: VoiceGetControllerInput) =>
 
 export const getVoiceControllerHistory = (input: VoiceGetControllerHistoryInput) =>
   request(WS_METHODS.voiceGetControllerHistory, input);
+
+export const setVoiceControllerTarget = (input: VoiceSetControllerTargetInput) =>
+  request(WS_METHODS.voiceSetControllerTarget, input);
 
 export const listRealtimeVoices = (input: VoiceListVoicesInput) =>
   request(WS_METHODS.voiceListVoices, input);

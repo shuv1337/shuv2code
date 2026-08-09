@@ -15,6 +15,7 @@ import {
   startRealtimeVoice,
   stopRealtimeVoice,
   resetVoiceController,
+  setVoiceControllerTarget,
   subscribeRealtimeVoiceEvents,
 } from "../operations/realtimeVoice.ts";
 import { createEnvironmentCommand, createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";

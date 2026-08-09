@@ -68,6 +68,7 @@ import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import type { McpCredentialProfile } from "../../mcp/McpInvocationContext.ts";
 
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
 const serverConfigTestLayer = ServerConfig.layerTest(process.cwd(), process.cwd()).pipe(
@@ -2004,7 +2005,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect("preserves the trusted controller credential during exact recovery", () => {
+  it.effect("prefers the persisted cursor and preserves the controller credential", () => {
     const credentialRequests: Array<McpSessionRegistry.McpCredentialRequest> = [];
     const identityBindings: Array<{
       readonly credentialId: string;
@@ -2015,11 +2016,23 @@ routing.layer("ProviderServiceLive routing", (it) => {
       .mockImplementation((request) =>
         Effect.sync(() => {
           credentialRequests.push(request);
-          const profile = request.profile ?? ({ kind: "standard-provider" } as const);
+          const environmentId = "environment-provider-recovery" as never;
+          const requestedProfile = request.profile ?? ({ kind: "standard-provider" } as const);
+          const profile: McpCredentialProfile =
+            requestedProfile.kind === "voice-controller"
+              ? {
+                  ...requestedProfile,
+                  providerIdentity: undefined,
+                  scope: {
+                    kind: "managed-codex-environment",
+                    environmentId,
+                  },
+                }
+              : requestedProfile;
           return {
             config: {
               credentialId: `credential-${profile.kind}`,
-              environmentId: "environment-provider-recovery" as never,
+              environmentId,
               threadId: request.threadId,
               providerSessionId: `pending-${profile.kind}`,
               providerInstanceId: request.providerInstanceId,

@@ -105,8 +105,9 @@ export interface VoiceRuntimeGatewayShape {
     readonly runtimeMode: RuntimeMode;
     /**
      * A newly reserved binding is the only state allowed to create a provider
-     * thread. Every durable binding must recover its exact threadSource so a
-     * stale or missing resume cursor can never create a second controller.
+     * thread. A durable binding resumes its persisted provider cursor when
+     * available, then falls back to exact threadSource discovery only for the
+     * crash window before that cursor could be persisted.
      */
     readonly creationDisposition: "fresh" | "recover";
     readonly bindingGeneration: number;

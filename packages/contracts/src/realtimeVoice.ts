@@ -102,6 +102,17 @@ export const VoiceGetControllerHistoryResult = Schema.Struct({
 });
 export type VoiceGetControllerHistoryResult = typeof VoiceGetControllerHistoryResult.Type;
 
+export const VoiceSetControllerTargetInput = Schema.Struct({
+  controllerThreadId: ThreadId,
+  targetThreadId: ThreadId,
+});
+export type VoiceSetControllerTargetInput = typeof VoiceSetControllerTargetInput.Type;
+
+export const VoiceSetControllerTargetResult = Schema.Struct({
+  targetThreadId: ThreadId,
+});
+export type VoiceSetControllerTargetResult = typeof VoiceSetControllerTargetResult.Type;
+
 export const VoiceResetControllerInput = Schema.Struct({
   controllerThreadId: ThreadId,
 });

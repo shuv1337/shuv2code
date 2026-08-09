@@ -857,7 +857,7 @@ describe("VoiceRuntimeGateway", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("recovers an existing controller only by its exact durable thread source", () =>
+  it.effect("falls back to exact thread source when no provider cursor was persisted", () =>
     Effect.scoped(
       Effect.gen(function* () {
         McpProviderSession.clearAllMcpProviderSessions();
