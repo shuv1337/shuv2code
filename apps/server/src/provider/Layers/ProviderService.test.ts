@@ -19,6 +19,7 @@ import {
   ProviderSessionStartInput,
   ThreadId,
   TurnId,
+  VoiceRuntimeInstanceId,
 } from "@shuv2code/contracts";
 import { createModelSelection } from "@shuv2code/shared/model";
 import { it, assert, vi } from "@effect/vitest";
@@ -65,6 +66,8 @@ import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
 const serverConfigTestLayer = ServerConfig.layerTest(process.cwd(), process.cwd()).pipe(
@@ -135,6 +138,9 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
         runtimeMode: input.runtimeMode,
         threadId: input.threadId,
         providerThreadId,
+        ...(input.runtimeInstanceId !== undefined
+          ? { runtimeInstanceId: input.runtimeInstanceId }
+          : {}),
         resumeCursor: { threadId: providerThreadId },
         cwd: input.cwd ?? process.cwd(),
         createdAt: now,
@@ -1988,6 +1994,93 @@ routing.layer("ProviderServiceLive routing", (it) => {
       }
     }),
   );
+
+  it.effect("preserves the trusted controller credential during exact recovery", () => {
+    const credentialRequests: Array<McpSessionRegistry.McpCredentialRequest> = [];
+    const identityBindings: Array<{
+      readonly credentialId: string;
+      readonly codexProviderThreadId: string;
+    }> = [];
+    const issueCredential = vi
+      .spyOn(McpSessionRegistry, "issueActiveMcpCredential")
+      .mockImplementation((request) =>
+        Effect.sync(() => {
+          credentialRequests.push(request);
+          const profile = request.profile ?? ({ kind: "standard-provider" } as const);
+          return {
+            config: {
+              credentialId: `credential-${profile.kind}`,
+              environmentId: "environment-provider-recovery" as never,
+              threadId: request.threadId,
+              providerSessionId: `pending-${profile.kind}`,
+              providerInstanceId: request.providerInstanceId,
+              profile,
+              endpoint:
+                profile.kind === "voice-controller"
+                  ? "http://127.0.0.1/mcp/controller"
+                  : "http://127.0.0.1/mcp",
+              authorizationHeader: `Bearer token-${profile.kind}`,
+            },
+          };
+        }),
+      );
+    const bindIdentity = vi
+      .spyOn(McpSessionRegistry, "bindActiveControllerMcpProviderIdentity")
+      .mockImplementation((credentialId, identity) =>
+        Effect.sync(() => {
+          identityBindings.push({
+            credentialId,
+            codexProviderThreadId: identity.codexProviderThreadId,
+          });
+          return true;
+        }),
+      );
+
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("controller-creation-recovery");
+      const runtimeInstanceId = VoiceRuntimeInstanceId.make("controller-runtime-recovery");
+      const recovered = yield* provider.recoverCreatedSession!({
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/controller-creation-recovery",
+        runtimeMode: "full-access",
+        threadSource: "shuv2code/voice-controller/controller-creation-recovery/v2",
+        threadPurpose: "voice-controller",
+        runtimeInstanceId,
+        controllerGrant: {
+          controllerThreadId: threadId,
+          runtimeInstanceId,
+          authorizedRuntimeCeiling: "full-access",
+          liveControllerRuntimeMode: "full-access",
+          controlEpoch: 7,
+          controlEnabled: true,
+        },
+      });
+
+      assert.equal(recovered.state, "adopted");
+      assert.deepEqual(
+        credentialRequests.map((request) => request.profile?.kind ?? "standard-provider"),
+        ["standard-provider", "voice-controller"],
+      );
+      assert.deepEqual(identityBindings, [
+        {
+          credentialId: "credential-voice-controller",
+          codexProviderThreadId:
+            "recovered-shuv2code/voice-controller/controller-creation-recovery/v2",
+        },
+      ]);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          issueCredential.mockRestore();
+          bindIdentity.mockRestore();
+          McpProviderSession.clearAllMcpProviderSessions();
+        }),
+      ),
+    );
+  });
 
   it.effect("reuses persisted resume cursor when startSession is called after a restart", () =>
     Effect.gen(function* () {
