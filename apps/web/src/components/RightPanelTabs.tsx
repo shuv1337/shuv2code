@@ -207,14 +207,6 @@ function RightPanelEmptyState(props: {
 
   const actions = [
     {
-      label: "Voice",
-      description: "Open the persistent environment voice thread.",
-      icon: MicIcon,
-      available: true,
-      disabledReason: null,
-      onClick: props.onAddVoice,
-    },
-    {
       label: "Browser",
       description: "Open a local app or URL.",
       icon: Globe2,
@@ -273,6 +265,14 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.agents,
       onClick: props.onAddAgents,
       badgeCount: props.liveAgentCount,
+    },
+    {
+      label: "Voice",
+      description: "Open the persistent environment voice thread.",
+      icon: MicIcon,
+      available: true,
+      disabledReason: null,
+      onClick: props.onAddVoice,
     },
   ] as const;
 
