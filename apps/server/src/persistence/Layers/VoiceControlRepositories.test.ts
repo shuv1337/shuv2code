@@ -333,6 +333,16 @@ layer("VoiceControlRepositories", (it) => {
         }),
         1,
       );
+      const replacementTransport = yield* transports.openOrReplay({
+        transportSessionId: "different-client:1",
+        environmentId,
+        controllerThreadId,
+        transportThreadId: ThreadId.make("transport-thread-2"),
+        runtimeInstanceId: "transport-runtime-2",
+        generation: 1,
+        createdAt: "2026-07-30T00:01:00.000Z",
+      });
+      assert.strictEqual(replacementTransport._tag, "created");
       assert.isTrue(
         Option.isNone(
           yield* actions.resolveOpenByControllerTurn({
