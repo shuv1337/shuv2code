@@ -80,6 +80,25 @@ export const VoiceGetControllerResult = Schema.Struct({
 });
 export type VoiceGetControllerResult = typeof VoiceGetControllerResult.Type;
 
+export const VoiceControllerHistoryMessage = Schema.Struct({
+  id: makeVoiceId("VoiceControllerHistoryMessageId"),
+  turnId: TurnId,
+  role: Schema.Literals(["user", "assistant"]),
+  text: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(120_000)),
+});
+export type VoiceControllerHistoryMessage = typeof VoiceControllerHistoryMessage.Type;
+
+export const VoiceGetControllerHistoryInput = Schema.Struct({
+  controllerThreadId: ThreadId,
+});
+export type VoiceGetControllerHistoryInput = typeof VoiceGetControllerHistoryInput.Type;
+
+export const VoiceGetControllerHistoryResult = Schema.Struct({
+  controllerThreadId: ThreadId,
+  messages: Schema.Array(VoiceControllerHistoryMessage),
+});
+export type VoiceGetControllerHistoryResult = typeof VoiceGetControllerHistoryResult.Type;
+
 export const VoiceResetControllerInput = Schema.Struct({
   controllerThreadId: ThreadId,
 });

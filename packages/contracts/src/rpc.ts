@@ -223,6 +223,8 @@ import {
   VoiceEnsureControllerResult,
   VoiceGetControllerInput,
   VoiceGetControllerResult,
+  VoiceGetControllerHistoryInput,
+  VoiceGetControllerHistoryResult,
   VoiceListVoicesInput,
   VoiceAppendAudioInput,
   VoiceAppendAudioResult,
@@ -338,6 +340,7 @@ export const WS_METHODS = {
 
   // Realtime voice controller
   voiceGetController: "voice.getController",
+  voiceGetControllerHistory: "voice.getControllerHistory",
   voiceEnsureController: "voice.ensureController",
   voiceListVoices: "voice.listVoices",
   voiceResetController: "voice.resetController",
@@ -599,6 +602,12 @@ export const WsVoiceEnsureControllerRpc = Rpc.make(WS_METHODS.voiceEnsureControl
 export const WsVoiceGetControllerRpc = Rpc.make(WS_METHODS.voiceGetController, {
   payload: VoiceGetControllerInput,
   success: VoiceGetControllerResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoiceGetControllerHistoryRpc = Rpc.make(WS_METHODS.voiceGetControllerHistory, {
+  payload: VoiceGetControllerHistoryInput,
+  success: VoiceGetControllerHistoryResult,
   error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
 });
 
@@ -1218,6 +1227,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,
   WsVoiceGetControllerRpc,
+  WsVoiceGetControllerHistoryRpc,
   WsVoiceEnsureControllerRpc,
   WsVoiceListVoicesRpc,
   WsVoiceResetControllerRpc,
