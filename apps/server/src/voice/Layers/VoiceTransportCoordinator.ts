@@ -39,6 +39,7 @@ import {
   rememberProactiveSpeech,
   type ProactiveSpeechMemoryEntry,
 } from "../VoiceProactiveSpeechPolicy.ts";
+import { runVoiceTransportFeedback } from "../VoiceTransportFeedback.ts";
 import {
   appendVoiceSessionEvent,
   confirmedControllerModelSelection,
@@ -599,22 +600,22 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           const trayText =
             decision.text.length > 0 ? decision.text : input.text.trim().slice(0, 512);
           if (trayText.length > 0) {
-            yield* runtime
-              .appendTransportText({
+            yield* runVoiceTransportFeedback(
+              runtime.appendTransportText({
                 transportThreadId: session.fence.transportThreadId,
                 generation: session.fence.generation,
                 text: trayText,
-              })
-              .pipe(Effect.ignore);
+              }),
+            );
           }
           if (decision.speak) {
-            yield* runtime
-              .appendTransportSpeech({
+            yield* runVoiceTransportFeedback(
+              runtime.appendTransportSpeech({
                 transportThreadId: session.fence.transportThreadId,
                 generation: session.fence.generation,
                 text: decision.text,
-              })
-              .pipe(Effect.ignore);
+              }),
+            );
           }
         },
       ),

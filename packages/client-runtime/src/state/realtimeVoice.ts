@@ -3,6 +3,7 @@ import type {
   ProjectId,
   ThreadId,
   TurnId,
+  VoiceActionState,
   VoiceUnsupportedCode,
 } from "@shuv2code/contracts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -93,6 +94,15 @@ export interface RealtimeVoiceTranscriptItem {
   readonly sequence: number;
 }
 
+export interface RealtimeVoiceControllerAction {
+  readonly actionId: string;
+  readonly sequence: number;
+  readonly state: VoiceActionState;
+  readonly statusText: string;
+  readonly detailCode: string | null;
+  readonly occurredAt: string;
+}
+
 export interface RealtimeVoiceSessionState {
   readonly clientSessionId: string | null;
   readonly generation: number;
@@ -100,6 +110,7 @@ export interface RealtimeVoiceSessionState {
   readonly phase: RealtimeVoicePhase;
   readonly controller: RealtimeVoiceControllerIdentity | null;
   readonly activeTarget: RealtimeVoiceTarget | null;
+  readonly controllerAction: RealtimeVoiceControllerAction | null;
   readonly transcript: ReadonlyArray<RealtimeVoiceTranscriptItem>;
   readonly muted: boolean;
   readonly lastEventSequence: number;
@@ -112,6 +123,7 @@ export const initialRealtimeVoiceState: RealtimeVoiceSessionState = {
   phase: { type: "idle" },
   controller: null,
   activeTarget: null,
+  controllerAction: null,
   transcript: [],
   muted: false,
   lastEventSequence: 0,
@@ -152,6 +164,12 @@ export type RealtimeVoiceStateEvent =
       readonly generation: number;
       readonly sequence: number;
       readonly target: RealtimeVoiceTarget;
+    }
+  | {
+      readonly type: "controller-action-updated";
+      readonly generation: number;
+      readonly sequence: number;
+      readonly action: RealtimeVoiceControllerAction;
     }
   | {
       readonly type: "server-event-observed";
@@ -248,6 +266,14 @@ export function reduceRealtimeVoiceState(
         activeTarget: event.target,
         lastEventSequence: event.sequence,
       };
+    case "controller-action-updated":
+      if (state.controllerAction !== null && event.sequence <= state.controllerAction.sequence) {
+        return state;
+      }
+      return {
+        ...state,
+        controllerAction: event.action,
+      };
     case "server-event-observed":
       return event.sequence <= state.lastEventSequence
         ? state
@@ -290,6 +316,15 @@ export function realtimeVoiceStateLabel(state: RealtimeVoiceSessionState): strin
     case "negotiating":
       return "Connecting voice control";
     case "connected":
+      if (state.controllerAction?.state === "queued") {
+        return "Voice request queued";
+      }
+      if (state.controllerAction?.state === "controller-starting") {
+        return "Starting voice controller";
+      }
+      if (state.controllerAction?.state === "controller-working") {
+        return "Voice controller is working";
+      }
       switch (state.phase.activity) {
         case "listening":
           return state.muted ? "Voice control connected, microphone muted" : "Listening";

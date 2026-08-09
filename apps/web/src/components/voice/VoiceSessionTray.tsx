@@ -7,6 +7,7 @@ import {
 import { useRightPanelStore } from "../../rightPanelStore";
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
 import { Button } from "../ui/button";
+import { VoiceActionStatusStrip } from "./VoiceActionStatusStrip";
 import { VoiceTargetStrip } from "./VoiceTargetStrip";
 import { VoiceTranscript } from "./VoiceTranscript";
 
@@ -92,6 +93,9 @@ export function VoiceSessionTray() {
           <PhoneOffIcon />
         </Button>
       </div>
+      {voice.state.controllerAction ? (
+        <VoiceActionStatusStrip action={voice.state.controllerAction} />
+      ) : null}
       {actionableError ? (
         <div className="border-border/60 border-t px-3 py-2">
           <p

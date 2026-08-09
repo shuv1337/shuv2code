@@ -26,6 +26,7 @@ import { useVoiceSession } from "../../voice/VoiceSessionProvider";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { VoiceControlButton } from "./VoiceControlButton";
+import { VoiceActionStatusStrip } from "./VoiceActionStatusStrip";
 import { VoiceTargetStrip } from "./VoiceTargetStrip";
 import { VoiceTranscript } from "./VoiceTranscript";
 
@@ -300,6 +301,10 @@ export function VoiceSurface({ environmentId, currentContext, setup }: VoiceSurf
           )}
         </span>
       </div>
+
+      {sessionHere && voice.state.controllerAction ? (
+        <VoiceActionStatusStrip action={voice.state.controllerAction} />
+      ) : null}
 
       {lookup.type === "loading" && !controllerThreadId ? (
         <div className="flex min-h-0 flex-1 items-center justify-center p-6">

@@ -3,6 +3,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  VoiceActionId,
   VoiceClientSessionId,
   VoiceEventSequence,
   VoiceGeneration,
@@ -333,6 +334,28 @@ describe("VoiceSessionController", () => {
       runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
       sequence: VoiceEventSequence.make(2),
       occurredAt: "2026-07-30T00:00:01.000Z",
+      payload: {
+        type: "action.status",
+        voiceActionId: VoiceActionId.make("action-1"),
+        state: "controller-working",
+        statusText: "The controller is reading context or acting.",
+      },
+    });
+    expect(controller.state.controllerAction).toEqual({
+      actionId: "action-1",
+      sequence: 2,
+      state: "controller-working",
+      statusText: "The controller is reading context or acting.",
+      detailCode: null,
+      occurredAt: "2026-07-30T00:00:01.000Z",
+    });
+
+    emit({
+      clientSessionId: VoiceClientSessionId.make("client"),
+      generation: VoiceGeneration.make(1),
+      runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
+      sequence: VoiceEventSequence.make(3),
+      occurredAt: "2026-07-30T00:00:02.000Z",
       payload: { type: "session.error", code: "controller_runtime_lost", retryable: true },
     });
     await vi.waitFor(() => {

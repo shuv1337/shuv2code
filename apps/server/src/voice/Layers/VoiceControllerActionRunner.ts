@@ -15,6 +15,7 @@ import { VoiceControllerBindingRepository } from "../../persistence/Services/Voi
 import { VoiceControllerMutationRepository } from "../../persistence/Services/VoiceControllerMutations.ts";
 import { resolveVoiceControlPolicy, ServerSettingsService } from "../../serverSettings.ts";
 import { reconcileVoiceMutationOutcomes } from "../VoiceMutationOutcomeReconciler.ts";
+import { runVoiceTransportFeedback } from "../VoiceTransportFeedback.ts";
 import {
   VoiceControllerActionRunner,
   type QueuedControllerAction,
@@ -90,7 +91,7 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
         type: "action.status",
         voiceActionId: actionId,
         state: "queued",
-        statusText: "Queued for the controller.",
+        statusText: "Waiting for the voice controller.",
       });
       yield* Queue.offer(actionQueue, {
         voiceActionId: actionId,
@@ -153,7 +154,7 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
           type: "action.status",
           voiceActionId: queued.voiceActionId,
           state: "controller-starting",
-          statusText: "Starting one controller action.",
+          statusText: "Opening the voice controller.",
         });
         const controllerTurn = yield* runtime
           .startControllerAction(
@@ -219,15 +220,15 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
           voiceActionId: queued.voiceActionId,
           state: "controller-working",
           controllerTurnId: controllerTurn.value.turnId,
-          statusText: "The controller is working.",
+          statusText: "The controller is reading context or acting. Further requests will queue.",
         });
-        yield* runtime
-          .appendTransportText({
+        yield* runVoiceTransportFeedback(
+          runtime.appendTransportText({
             transportThreadId: session.fence.transportThreadId,
             generation: session.fence.generation,
             text: "The controller accepted this voice action and is working on it.",
-          })
-          .pipe(Effect.ignore);
+          }),
+        );
         const outcome = yield* runtime
           .awaitControllerAction({
             controllerThreadId: session.fence.controllerThreadId,
@@ -255,6 +256,16 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
             : terminalState === "completed"
               ? "The controller action completed."
               : "The controller action failed.";
+        // The lifecycle event is authoritative UI state. Emit it before
+        // best-effort realtime text/speech so a stale transport cannot leave
+        // the surface saying "Listening" while the queue is blocked.
+        yield* transport.emit(queued.sessionId, {
+          type: "action.status",
+          voiceActionId: queued.voiceActionId,
+          state: terminalState,
+          controllerTurnId: controllerTurn.value.turnId,
+          statusText: speakable.slice(0, 512),
+        });
         yield* transport.deliverAssistantUpdate({
           session,
           kind:
@@ -263,13 +274,6 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
               : "controller_action_failed",
           text: speakable,
           voiceActionId: queued.voiceActionId,
-        });
-        yield* transport.emit(queued.sessionId, {
-          type: "action.status",
-          voiceActionId: queued.voiceActionId,
-          state: terminalState,
-          controllerTurnId: controllerTurn.value.turnId,
-          statusText: speakable.slice(0, 512),
         });
       },
     );

@@ -895,6 +895,19 @@ export class VoiceSessionController {
           providerConfirmed:
             event.payload.state === "provider-confirmed" || event.payload.state === "completed",
         };
+        this.#dispatch({
+          type: "controller-action-updated",
+          generation,
+          sequence: event.sequence,
+          action: {
+            actionId: event.payload.voiceActionId,
+            sequence: event.sequence,
+            state: event.payload.state,
+            statusText: event.payload.statusText ?? event.payload.state.replaceAll("-", " "),
+            detailCode: event.payload.detailCode ?? null,
+            occurredAt: event.occurredAt,
+          },
+        });
         if (event.payload.targetThreadId) {
           this.#dispatch({
             type: "target-updated",
