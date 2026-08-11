@@ -25,8 +25,26 @@ describe("ServerProvider", () => {
 
     expect(parsed.slashCommands).toEqual([]);
     expect(parsed.skills).toEqual([]);
+    expect(parsed.capabilities).toBeUndefined();
     expect(parsed.versionAdvisory).toBeUndefined();
     expect(parsed.updateState).toBeUndefined();
+  });
+
+  it("decodes optional same-turn steering capability", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "codex",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      capabilities: { turnSteering: "same-turn" },
+      models: [],
+    });
+
+    expect(parsed.capabilities?.turnSteering).toBe("same-turn");
   });
 
   it("defaults one-click update support when decoding older advisory snapshots", () => {

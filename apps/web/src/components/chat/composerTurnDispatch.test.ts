@@ -8,6 +8,7 @@ describe("resolveComposerTurnDispatch", () => {
     expect(
       resolveComposerTurnDispatch({
         isServerThread: true,
+        turnSteering: "same-turn",
         session: { status: "running", activeTurnId: TurnId.make("turn-1") },
       }),
     ).toEqual({ _tag: "steer", expectedTurnId: "turn-1" });
@@ -25,12 +26,41 @@ describe("resolveComposerTurnDispatch", () => {
     });
   });
 
-  it("blocks an inconsistent running session without an active turn id", () => {
+  it("blocks running sessions without exact same-turn steering support", () => {
     expect(
       resolveComposerTurnDispatch({
         isServerThread: true,
+        turnSteering: "same-turn",
         session: { status: "running", activeTurnId: null },
       }),
-    ).toEqual({ _tag: "blocked" });
+    ).toEqual({ _tag: "blocked", reason: "missing-active-turn" });
+
+    for (const turnSteering of [undefined, "unsupported"] as const) {
+      expect(
+        resolveComposerTurnDispatch({
+          isServerThread: true,
+          ...(turnSteering === undefined ? {} : { turnSteering }),
+          session: { status: "running", activeTurnId: TurnId.make("turn-1") },
+        }),
+      ).toEqual({ _tag: "blocked", reason: "turn-steering-unsupported" });
+    }
+  });
+
+  it("blocks while thread state is synchronizing", () => {
+    expect(
+      resolveComposerTurnDispatch({
+        isServerThread: true,
+        isSynchronizing: true,
+        turnSteering: "same-turn",
+        session: { status: "running", activeTurnId: TurnId.make("turn-1") },
+      }),
+    ).toEqual({ _tag: "blocked", reason: "synchronizing" });
+    expect(
+      resolveComposerTurnDispatch({
+        isServerThread: true,
+        turnSteering: "same-turn",
+        session: { status: "starting", activeTurnId: null },
+      }),
+    ).toEqual({ _tag: "blocked", reason: "synchronizing" });
   });
 });

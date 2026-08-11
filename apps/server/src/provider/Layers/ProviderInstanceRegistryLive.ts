@@ -83,6 +83,38 @@ interface RegistryState {
   readonly changes: PubSub.PubSub<void>;
 }
 
+const withAdapterCapabilities = (
+  instance: ProviderInstance,
+  snapshot: ServerProvider,
+): ServerProvider => {
+  const turnSteering = instance.adapter.capabilities.turnSteering;
+  return {
+    ...snapshot,
+    capabilities: {
+      ...snapshot.capabilities,
+      ...(turnSteering === undefined ? {} : { turnSteering }),
+    },
+  };
+};
+
+const withProjectedSnapshotCapabilities = (instance: ProviderInstance): ProviderInstance => ({
+  ...instance,
+  snapshot: {
+    maintenanceCapabilities: instance.snapshot.maintenanceCapabilities,
+    getSnapshot: instance.snapshot.getSnapshot.pipe(
+      Effect.map((snapshot) => withAdapterCapabilities(instance, snapshot)),
+    ),
+    refresh: instance.snapshot.refresh.pipe(
+      Effect.map((snapshot) => withAdapterCapabilities(instance, snapshot)),
+    ),
+    get streamChanges() {
+      return instance.snapshot.streamChanges.pipe(
+        Stream.map((snapshot) => withAdapterCapabilities(instance, snapshot)),
+      );
+    },
+  },
+});
+
 /**
  * Structural equality on `ProviderInstanceConfig` envelopes. Used by
  * `reconcile` to skip rebuilds when settings arrive unchanged. Config
@@ -197,7 +229,7 @@ const buildEntry = <R>(input: {
     return {
       kind: "live" as const,
       live: {
-        instance: createResult.success,
+        instance: withProjectedSnapshotCapabilities(createResult.success),
         scope: childScope,
         entry,
       },

@@ -121,6 +121,14 @@ export const ServerProviderContinuation = Schema.Struct({
 });
 export type ServerProviderContinuation = typeof ServerProviderContinuation.Type;
 
+export const ServerProviderTurnSteering = Schema.Literals(["same-turn", "unsupported"]);
+export type ServerProviderTurnSteering = typeof ServerProviderTurnSteering.Type;
+
+export const ServerProviderCapabilities = Schema.Struct({
+  turnSteering: Schema.optional(ServerProviderTurnSteering),
+});
+export type ServerProviderCapabilities = typeof ServerProviderCapabilities.Type;
+
 export const ServerProviderVersionAdvisoryStatus = Schema.Literals([
   "unknown",
   "current",
@@ -169,6 +177,7 @@ export const ServerProvider = Schema.Struct({
   accentColor: Schema.optional(TrimmedNonEmptyString),
   badgeLabel: Schema.optional(TrimmedNonEmptyString),
   continuation: Schema.optional(ServerProviderContinuation),
+  capabilities: Schema.optional(ServerProviderCapabilities),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
   enabled: Schema.Boolean,

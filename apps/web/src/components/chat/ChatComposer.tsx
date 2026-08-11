@@ -3190,7 +3190,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                               ? "Ask for follow-up changes or attach files"
                               : "Ask anything, @tag files/folders, $use skills, or / for commands"
                 }
-                disabled={isConnecting || isComposerApprovalState || projectSelectionRequired}
+                disabled={
+                  isSendBusy || isConnecting || isComposerApprovalState || projectSelectionRequired
+                }
               />
               {showMobilePendingAnswerActions ? (
                 <div

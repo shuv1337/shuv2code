@@ -36,6 +36,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import {
@@ -242,6 +243,28 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+  const idleTurnLanes = new Map<
+    ThreadId,
+    { readonly semaphore: Semaphore.Semaphore; users: number }
+  >();
+  const withIdleTurnLane = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) => {
+    const existing = idleTurnLanes.get(threadId);
+    const lane = existing ?? { semaphore: Semaphore.makeUnsafe(1), users: 0 };
+    if (!existing) idleTurnLanes.set(threadId, lane);
+    lane.users += 1;
+    return lane.semaphore
+      .withPermits(1)(effect)
+      .pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            lane.users -= 1;
+            if (lane.users === 0 && idleTurnLanes.get(threadId) === lane) {
+              idleTurnLanes.delete(threadId);
+            }
+          }),
+        ),
+      );
+  };
   // Managed voice thread ids are server-generated and never recycled as
   // ordinary provider sessions. Keep this set monotonic so late runtime events
   // emitted after stop/crash remain subject to the voice observability policy.
@@ -917,13 +940,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     });
     let metricProvider = "unknown";
     let metricModel = input.modelSelection?.model;
-    return yield* Effect.gen(function* () {
+    const send = Effect.gen(function* () {
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.sendTurn",
         allowRecovery: input.recoveryPolicy !== "forbid",
       });
-      if (input.expectedTurnId === null || input.expectedTurnId === undefined) {
+      if (input.expectedTurnId === null) {
         const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
         let activeTurnId = binding ? readPersistedActiveTurnId(binding.runtimePayload) : undefined;
         if (binding !== undefined && activeTurnId !== undefined) {
@@ -987,7 +1010,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         hasInput: typeof input.input === "string" && input.input.trim().length > 0,
       });
       return turn;
-    }).pipe(
+    });
+    return yield* (
+      input.expectedTurnId === null ? withIdleTurnLane(input.threadId, send) : send
+    ).pipe(
       withMetrics({
         counter: providerTurnsTotal,
         timer: providerTurnDuration,

@@ -24,6 +24,7 @@ import { createModelSelection } from "@shuv2code/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -1185,7 +1186,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect("rejects a legacy start that omits the idle-turn precondition", () =>
+  it.effect("preserves a legacy start that omits the idle-turn precondition", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
       const threadId = asThreadId("thread-legacy-concurrent-start");
@@ -1209,20 +1210,124 @@ routing.layer("ProviderServiceLive routing", (it) => {
         }),
       );
 
-      const failure = yield* Effect.flip(
-        provider.sendTurn({
-          threadId: session.threadId,
-          input: "legacy duplicate",
-          attachments: [],
-        }),
+      yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "legacy duplicate",
+        attachments: [],
+      });
+
+      assert.equal(routing.codex.readThread.mock.calls.length, 0);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 2);
+      yield* provider.stopSession({ threadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.readThread.mockClear();
+      routing.codex.stopSession.mockClear();
+    }),
+  );
+
+  it.effect("serializes concurrent explicit idle-only starts on the same thread", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-concurrent-idle-start");
+      const firstEnteredAdapter = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<void>();
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Deferred.succeed(firstEnteredAdapter, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseFirst)),
+          Effect.as({ threadId: input.threadId, turnId: asTurnId("turn-concurrent-winner") }),
+        ),
       );
 
+      const first = yield* provider
+        .sendTurn({ threadId, input: "first", attachments: [], expectedTurnId: null })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(firstEnteredAdapter);
+      const second = yield* provider
+        .sendTurn({ threadId, input: "second", attachments: [], expectedTurnId: null })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+
+      yield* Deferred.succeed(releaseFirst, undefined);
+      yield* Fiber.join(first);
+      const failure = yield* Fiber.join(second).pipe(Effect.flip);
+
       assert.instanceOf(failure, ProviderValidationError);
-      assert.include(failure.issue, "already has active turn");
+      assert.include(failure.issue, "already has active turn 'turn-concurrent-winner'");
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
       yield* provider.stopSession({ threadId });
       routing.codex.startSession.mockClear();
       routing.codex.sendTurn.mockClear();
+      routing.codex.readThread.mockClear();
+      routing.codex.stopSession.mockClear();
+    }),
+  );
+
+  it.effect("keeps explicit idle-only starts on different threads independent", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const blockedThreadId = asThreadId("thread-idle-blocked");
+      const independentThreadId = asThreadId("thread-idle-independent");
+      const blockedEnteredAdapter = yield* Deferred.make<void>();
+      const releaseBlocked = yield* Deferred.make<void>();
+      for (const threadId of [blockedThreadId, independentThreadId]) {
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+      }
+      routing.codex.sendTurn.mockImplementation((input) =>
+        input.threadId === blockedThreadId
+          ? Deferred.succeed(blockedEnteredAdapter, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseBlocked)),
+              Effect.as({ threadId: input.threadId, turnId: asTurnId("turn-blocked") }),
+            )
+          : Effect.succeed({
+              threadId: input.threadId,
+              turnId: asTurnId("turn-independent"),
+            }),
+      );
+
+      const blocked = yield* provider
+        .sendTurn({
+          threadId: blockedThreadId,
+          input: "blocked",
+          attachments: [],
+          expectedTurnId: null,
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(blockedEnteredAdapter);
+      const independent = yield* provider.sendTurn({
+        threadId: independentThreadId,
+        input: "independent",
+        attachments: [],
+        expectedTurnId: null,
+      });
+
+      assert.equal(independent.turnId, "turn-independent");
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 2);
+      yield* Deferred.succeed(releaseBlocked, undefined);
+      yield* Fiber.join(blocked);
+      for (const threadId of [blockedThreadId, independentThreadId]) {
+        yield* provider.stopSession({ threadId });
+      }
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockReset();
+      routing.codex.sendTurn.mockImplementation((input) =>
+        Effect.succeed({
+          threadId: input.threadId,
+          turnId: TurnId.make(`turn-${String(input.threadId)}`),
+        }),
+      );
       routing.codex.readThread.mockClear();
       routing.codex.stopSession.mockClear();
     }),
