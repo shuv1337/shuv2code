@@ -37,7 +37,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@shuv2code/contracts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { ProviderAdapterRequestError, ProviderValidationError } from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -251,14 +251,14 @@ describe("ProviderCommandReactor", () => {
         ),
       );
     });
-    const sendTurn = vi.fn((_: unknown) =>
+    const sendTurn = vi.fn<ProviderServiceShape["sendTurn"]>((_) =>
       Effect.succeed({
         threadId: ThreadId.make("thread-1"),
         turnId: asTurnId("turn-1"),
       }),
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
-    const steerTurn = vi.fn((_: unknown) =>
+    const steerTurn = vi.fn<ProviderServiceShape["steerTurn"]>((_) =>
       Effect.succeed({
         threadId: ThreadId.make("thread-1"),
         turnId: asTurnId("turn-1"),
@@ -399,7 +399,7 @@ describe("ProviderCommandReactor", () => {
         const engine = yield* OrchestrationEngineService;
         return {
           readEvents: engine.readEvents,
-          dispatch: (command) => {
+          dispatch: (command, options) => {
             if (command.type === "thread.title.regeneration.complete") {
               titleRegenerationCompletionDispatchAttempts += 1;
               if (
@@ -421,7 +421,7 @@ describe("ProviderCommandReactor", () => {
                 return Effect.die(new Error("Injected provider effect recovery failure"));
               }
             }
-            return engine.dispatch(command);
+            return engine.dispatch(command, options);
           },
           get streamDomainEvents() {
             return engine.streamDomainEvents;
@@ -2418,6 +2418,7 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
     expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
+      turnId: "turn-1",
     });
   });
 
@@ -2925,6 +2926,233 @@ describe("ProviderCommandReactor", () => {
       clientUserMessageId: "message-turn-steer",
     });
     expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("starts an explicit idle-only turn when steering loses to terminal completion", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.steerTurn.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "turn/steer",
+          detail: "Codex turn precondition failed: expected turn-terminal, found no active turn.",
+        }),
+      ),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-terminal-fallback"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-terminal"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.steer",
+        commandId: CommandId.make("cmd-terminal-fallback"),
+        threadId: ThreadId.make("thread-1"),
+        expectedTurnId: asTurnId("turn-terminal"),
+        message: {
+          messageId: asMessageId("message-terminal-fallback"),
+          role: "user",
+          text: "Continue after completion.",
+          attachments: [],
+        },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      input: "Continue after completion.",
+      clientUserMessageId: "message-terminal-fallback",
+      expectedTurnId: null,
+      interactionMode: "default",
+    });
+    await waitFor(async () => {
+      const outcomes = (await harness.readEvents()).filter(
+        (event) => event.type === "thread.provider-effect-outcome-set",
+      );
+      return outcomes.length >= 4;
+    });
+    const outcomes = (await harness.readEvents()).flatMap((event) =>
+      event.type === "thread.provider-effect-outcome-set" ? [event.payload.outcome] : [],
+    );
+    expect(outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "steer",
+          state: "stale",
+          sanitizedCode: "already_terminal",
+        }),
+        expect.objectContaining({ operation: "start", state: "pending" }),
+        expect.objectContaining({
+          operation: "start",
+          state: "confirmed",
+          sanitizedCode: "provider_acknowledged",
+        }),
+      ]),
+    );
+    const startOutcomes = outcomes.filter((outcome) => outcome.operation === "start");
+    expect(startOutcomes[0]?.operationId).toBe(startOutcomes[1]?.operationId);
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.steer.failed"),
+    ).toBe(false);
+    expect(
+      thread?.messages.find((message) => message.id === "message-terminal-fallback")?.turnId,
+    ).toBeNull();
+  });
+
+  it("does not retry a stale steer target", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.steerTurn.mockImplementation(() =>
+      Effect.fail(
+        new ProviderValidationError({
+          operation: "ProviderService.steerTurn",
+          issue: "stale_target: expected turn 'turn-old', current turn is 'turn-new'.",
+        }),
+      ),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-stale-steer"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-old"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.steer",
+        commandId: CommandId.make("cmd-stale-steer"),
+        threadId: ThreadId.make("thread-1"),
+        expectedTurnId: asTurnId("turn-old"),
+        message: {
+          messageId: asMessageId("message-stale-steer"),
+          role: "user",
+          text: "Do not retry this.",
+          attachments: [],
+        },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () =>
+      (await harness.readEvents()).some(
+        (event) =>
+          event.type === "thread.provider-effect-outcome-set" &&
+          event.payload.outcome.sanitizedCode === "stale_target",
+      ),
+    );
+    expect(harness.steerTurn).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("records a derived start failure when the terminal fallback loses", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.steerTurn.mockImplementation(() =>
+      Effect.fail(
+        new ProviderValidationError({
+          operation: "ProviderService.steerTurn",
+          issue: "already_terminal: thread 'thread-1' has no active turn.",
+        }),
+      ),
+    );
+    harness.sendTurn.mockImplementation(() =>
+      Effect.fail(
+        new ProviderValidationError({
+          operation: "ProviderService.sendTurn",
+          issue: "stale_target: thread 'thread-1' already has active turn 'turn-winner'.",
+        }),
+      ),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-fallback-loser"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-terminal"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.steer",
+        commandId: CommandId.make("cmd-fallback-loser"),
+        threadId: ThreadId.make("thread-1"),
+        expectedTurnId: asTurnId("turn-terminal"),
+        message: {
+          messageId: asMessageId("message-fallback-loser"),
+          role: "user",
+          text: "Race another fallback.",
+          attachments: [],
+        },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return (
+        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
+        false
+      );
+    });
+    expect(harness.steerTurn).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    const outcomes = (await harness.readEvents()).flatMap((event) =>
+      event.type === "thread.provider-effect-outcome-set" ? [event.payload.outcome] : [],
+    );
+    expect(outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "steer",
+          state: "stale",
+          sanitizedCode: "already_terminal",
+        }),
+        expect.objectContaining({
+          operation: "start",
+          state: "stale",
+          sanitizedCode: "stale_target",
+        }),
+      ]),
+    );
   });
 
   it("sanitizes persisted voice-controller startup failures", async () => {

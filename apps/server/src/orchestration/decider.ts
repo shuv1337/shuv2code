@@ -106,7 +106,11 @@ function hasOpenBlockingRequest(thread: {
  */
 function threadHasQueuedTurnStart(
   thread: {
-    readonly messages: ReadonlyArray<{ readonly role: string; readonly createdAt: string }>;
+    readonly messages: ReadonlyArray<{
+      readonly role: string;
+      readonly turnId: TurnId | null;
+      readonly createdAt: string;
+    }>;
     readonly latestTurn: {
       readonly requestedAt: string;
       readonly startedAt: string | null;
@@ -118,7 +122,9 @@ function threadHasQueuedTurnStart(
 ): boolean {
   const latestUserMessageAtMs = thread.messages.reduce(
     (latest, message) =>
-      message.role === "user" ? Math.max(latest, Date.parse(message.createdAt)) : latest,
+      message.role === "user" && message.turnId === null
+        ? Math.max(latest, Date.parse(message.createdAt))
+        : latest,
     Number.NEGATIVE_INFINITY,
   );
   const latestTurnAtMs =
@@ -764,6 +770,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `stale_target: thread '${command.threadId}' has active turn '${targetThread.session?.activeTurnId}'.`,
         });
       }
+      if (
+        command.expectedTurnId === null &&
+        threadHasQueuedTurnStart(targetThread, command.createdAt)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `stale_target: thread '${command.threadId}' already has a queued turn start.`,
+        });
+      }
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
@@ -876,6 +891,66 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       return [...lifecycleResetEvents, userMessageEvent, turnStartRequestedEvent];
+    }
+
+    case "thread.turn.start.recover": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const message = targetThread.messages.find((entry) => entry.id === command.messageId);
+      if (!message || message.role !== "user") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `User message '${command.messageId}' does not exist on thread '${command.threadId}'.`,
+        });
+      }
+      if (threadHasQueuedTurnStart(targetThread, command.createdAt)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `stale_target: thread '${command.threadId}' already has a queued turn start.`,
+        });
+      }
+      const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.message-sent",
+        payload: {
+          threadId: command.threadId,
+          messageId: message.id,
+          role: "user",
+          text: message.text,
+          attachments: message.attachments ?? [],
+          turnId: null,
+          streaming: false,
+          createdAt: message.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+      const turnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        causationEventId: userMessageEvent.eventId,
+        type: "thread.turn-start-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: message.id,
+          runtimeMode: targetThread.runtimeMode,
+          interactionMode: targetThread.interactionMode,
+          expectedTurnId: null,
+          createdAt: command.createdAt,
+        },
+      };
+      return [userMessageEvent, turnStartRequestedEvent];
     }
 
     case "thread.turn.steer": {

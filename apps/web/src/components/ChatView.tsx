@@ -49,6 +49,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -221,6 +222,7 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { resolveComposerTurnDispatch } from "./chat/composerTurnDispatch";
 import {
   FILE_ONLY_BOOTSTRAP_PROMPT,
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
@@ -1183,6 +1185,7 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const steerThreadTurn = useAtomCommand(threadEnvironment.steerTurn, { reportFailure: false });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -1341,6 +1344,9 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
+  const [queuedRunningSendThreadIds, setQueuedRunningSendThreadIds] = useState<
+    ReadonlySet<ThreadId>
+  >(new Set());
   const terminalUiOpenByThreadRef = useRef<Record<string, boolean>>({});
 
   useLayoutEffect(() => {
@@ -2481,6 +2487,11 @@ function ChatViewContent(props: ChatViewProps) {
     const defaultInstanceId = defaultInstanceIdForDriver(selectedProvider);
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
+  const activeThreadTurnSteering = providerStatuses.find(
+    (status) =>
+      status.instanceId ===
+      (activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection.instanceId),
+  )?.capabilities?.turnSteering;
   const providerStatusBannerKey = getProviderStatusBannerKey(activeProviderStatus);
   const [dismissedProviderStatusBannerKey, setDismissedProviderStatusBannerKey] = useState<
     string | null
@@ -4681,6 +4692,33 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
 
+    const turnDispatch = resolveComposerTurnDispatch({
+      isServerThread,
+      isSynchronizing: threadSyncPhase !== null,
+      ...(activeThreadTurnSteering === undefined ? {} : { turnSteering: activeThreadTurnSteering }),
+      session: activeThread.session,
+    });
+    if (turnDispatch._tag === "blocked") {
+      setQueuedRunningSendThreadIds((current) => new Set(current).add(activeThread.id));
+      toastManager.add(
+        stackedThreadToast({
+          type: "info",
+          title: "Message queued on this device",
+          description:
+            turnDispatch.reason === "turn-steering-unsupported"
+              ? "This provider cannot steer the active turn. The message will send when the turn finishes."
+              : "The active turn is synchronizing. The message will send as soon as it can be targeted safely.",
+        }),
+      );
+      return;
+    }
+    setQueuedRunningSendThreadIds((current) => {
+      if (!current.has(activeThread.id)) return current;
+      const next = new Set(current);
+      next.delete(activeThread.id);
+      return next;
+    });
+
     sendInFlightRef.current = true;
     if (isDraftHeroState && activeThreadKey) {
       let resolveDockStarted: (() => void) | undefined;
@@ -4908,24 +4946,36 @@ function ChatViewContent(props: ChatViewProps) {
             }
           : undefined;
       beginLocalDispatch({ preparingWorktree: false });
-      const startResult = await startThreadTurn({
-        environmentId,
-        input: {
-          threadId: threadIdForSend,
-          message: {
-            messageId: messageIdForSend,
-            role: "user",
-            text: outgoingMessageText,
-            attachments: turnAttachmentsResult.value,
-          },
-          modelSelection: ctxSelectedModelSelection,
-          titleSeed: title,
-          runtimeMode,
-          interactionMode,
-          ...(bootstrap ? { bootstrap } : {}),
-          createdAt: messageCreatedAt,
-        },
-      });
+      const message = {
+        messageId: messageIdForSend,
+        role: "user" as const,
+        text: outgoingMessageText,
+        attachments: turnAttachmentsResult.value,
+      };
+      const startResult =
+        turnDispatch._tag === "steer"
+          ? await steerThreadTurn({
+              environmentId,
+              input: {
+                threadId: threadIdForSend,
+                expectedTurnId: turnDispatch.expectedTurnId,
+                message,
+                createdAt: messageCreatedAt,
+              },
+            })
+          : await startThreadTurn({
+              environmentId,
+              input: {
+                threadId: threadIdForSend,
+                message,
+                modelSelection: ctxSelectedModelSelection,
+                titleSeed: title,
+                runtimeMode,
+                interactionMode,
+                ...(bootstrap ? { bootstrap } : {}),
+                createdAt: messageCreatedAt,
+              },
+            });
       if (startResult._tag === "Failure") {
         failure = startResult;
       } else {
@@ -4985,6 +5035,34 @@ function ChatViewContent(props: ChatViewProps) {
       resetLocalDispatch();
     }
   };
+
+  const retryQueuedRunningSend = useEffectEvent(() => {
+    void onSend();
+  });
+  useEffect(() => {
+    if (
+      activeThread == null ||
+      !queuedRunningSendThreadIds.has(activeThread.id) ||
+      threadSyncPhase !== null ||
+      isConnecting ||
+      isSendBusy ||
+      sendInFlightRef.current
+    ) {
+      return;
+    }
+    const canDispatch =
+      (activeThread.session?.status !== "running" && activeThread.session?.status !== "starting") ||
+      (activeThreadTurnSteering === "same-turn" && activeThread.session.activeTurnId !== null);
+    if (!canDispatch) return;
+    retryQueuedRunningSend();
+  }, [
+    activeThread,
+    activeThreadTurnSteering,
+    isConnecting,
+    isSendBusy,
+    queuedRunningSendThreadIds,
+    threadSyncPhase,
+  ]);
 
   const onInterrupt = async () => {
     if (!activeThread) return;
@@ -5961,7 +6039,11 @@ function ChatViewContent(props: ChatViewProps) {
                             projectSelectionRequired={isLocalDraftThread && activeProject === null}
                             phase={phase}
                             isConnecting={isConnecting}
-                            isSendBusy={isSendBusy}
+                            isSendBusy={
+                              isSendBusy ||
+                              (activeThread !== undefined &&
+                                queuedRunningSendThreadIds.has(activeThread.id))
+                            }
                             sendDisabledReason={threadDetailLoading ? "Messages loading" : null}
                             isPreparingWorktree={isPreparingWorktree}
                             environmentUnavailable={activeEnvironmentUnavailableState}

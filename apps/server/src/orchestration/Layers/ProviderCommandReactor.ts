@@ -30,7 +30,7 @@ import { makeDrainableWorker } from "@shuv2code/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { ProviderAdapterRequestError, ProviderValidationError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
@@ -51,14 +51,9 @@ import {
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderValidationError = Schema.is(ProviderValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
-const decodeActorProvenanceJson = Schema.decodeUnknownOption(
-  Schema.fromJsonString(
-    Schema.Struct({
-      actorKind: Schema.String,
-    }),
-  ),
-);
+const decodeActorProvenanceJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
 const sensitiveProviderActorKinds = new Set([
   "voice-controller",
   "voice-controller-supervisor",
@@ -367,11 +362,21 @@ const make = Effect.gen(function* () {
       typeof error === "object" && error !== null && "_tag" in error
         ? String((error as { readonly _tag: unknown })._tag)
         : "";
-    const detail = isProviderAdapterRequestError(error) ? error.detail.toLowerCase() : "";
+    const detail = isProviderAdapterRequestError(error)
+      ? error.detail.toLowerCase()
+      : isProviderValidationError(error)
+        ? error.issue.toLowerCase()
+        : "";
     if (Cause.isTimeoutError(error)) {
       return { state: "indeterminate", sanitizedCode: "provider_timeout" };
     }
-    if (detail.includes("stale_target") || detail.includes("already_terminal")) {
+    if (
+      detail.includes("already_terminal") ||
+      (detail.includes("turn precondition failed") && detail.includes("found no active turn"))
+    ) {
+      return { state: "stale", sanitizedCode: "already_terminal" };
+    }
+    if (detail.includes("stale_target")) {
       return { state: "stale", sanitizedCode: "stale_target" };
     }
     if (
@@ -393,38 +398,57 @@ const make = Effect.gen(function* () {
     }
     const failReason = cause.reasons.find(Cause.isFailReason);
     const providerError = isProviderAdapterRequestError(failReason?.error)
-      ? failReason.error
-      : undefined;
+      ? failReason.error.detail
+      : isProviderValidationError(failReason?.error)
+        ? failReason.error.issue
+        : undefined;
     if (providerError) {
-      return providerError.detail;
+      return providerError;
     }
     return Cause.pretty(cause);
   };
 
-  const hasSensitiveProviderProvenance = Effect.fnUntraced(function* (event: ProviderIntentEvent) {
+  const providerActorProvenance = Effect.fnUntraced(function* (event: ProviderIntentEvent) {
     if (event.commandId === null) {
-      return false;
+      return Option.none<Readonly<Record<string, unknown>>>();
     }
     return yield* commandReceiptRepository.getByCommandId({ commandId: event.commandId }).pipe(
       Effect.match({
         // A persistence failure leaves provenance unknown. Fail closed so an
         // unstructured provider cause cannot cross the persistence boundary.
-        onFailure: () => true,
+        onFailure: () => Option.some({ actorKind: "unknown-sensitive-actor" }),
         onSuccess: (receiptOption) => {
           if (Option.isNone(receiptOption)) {
-            return false;
+            return Option.some({ actorKind: "unknown-sensitive-actor" });
           }
           const actorProvenanceJson = receiptOption.value.actorProvenanceJson;
           if (actorProvenanceJson === null || actorProvenanceJson === undefined) {
-            return false;
+            return Option.none();
           }
-          const provenance = decodeActorProvenanceJson(actorProvenanceJson);
-          return Option.isSome(provenance)
-            ? sensitiveProviderActorKinds.has(provenance.value.actorKind)
-            : true;
+          const decoded = decodeActorProvenanceJson(actorProvenanceJson);
+          if (
+            Option.isSome(decoded) &&
+            typeof decoded.value === "object" &&
+            decoded.value !== null &&
+            !Array.isArray(decoded.value) &&
+            "actorKind" in decoded.value &&
+            typeof decoded.value.actorKind === "string" &&
+            decoded.value.actorKind.length > 0
+          ) {
+            return Option.some(decoded.value as Readonly<Record<string, unknown>>);
+          }
+          return Option.some({ actorKind: "unknown-sensitive-actor" });
         },
       }),
     );
+  });
+
+  const hasSensitiveProviderProvenance = Effect.fnUntraced(function* (event: ProviderIntentEvent) {
+    const provenance = yield* providerActorProvenance(event);
+    return Option.isSome(provenance)
+      ? provenance.value.actorKind === "unknown-sensitive-actor" ||
+          sensitiveProviderActorKinds.has(String(provenance.value.actorKind))
+      : false;
   });
 
   const appendProviderEffectOutcome = Effect.fnUntraced(function* (input: {
@@ -1348,7 +1372,11 @@ const make = Effect.gen(function* () {
   const processTurnSteerRequested = Effect.fn("processTurnSteerRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-steer-requested" }>,
   ) {
-    const sensitiveProviderEffect = yield* hasSensitiveProviderProvenance(event);
+    const actorProvenance = yield* providerActorProvenance(event);
+    const sensitiveProviderEffect = Option.isSome(actorProvenance)
+      ? actorProvenance.value.actorKind === "unknown-sensitive-actor" ||
+        sensitiveProviderActorKinds.has(String(actorProvenance.value.actorKind))
+      : false;
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
       return;
@@ -1367,6 +1395,16 @@ const make = Effect.gen(function* () {
     }
 
     const operationId = providerOperationIdForEvent(event);
+    const providerInput = toNonEmptyProviderInput(message.text);
+    const steerRequest = {
+      threadId: event.payload.threadId,
+      expectedTurnId: event.payload.expectedTurnId,
+      ...(providerInput !== undefined ? { input: providerInput } : {}),
+      ...(message.attachments !== undefined && message.attachments.length > 0
+        ? { attachments: message.attachments }
+        : {}),
+      clientUserMessageId: event.payload.clientUserMessageId,
+    };
     yield* appendProviderEffectOutcome({
       operationId,
       operation: "steer",
@@ -1377,64 +1415,66 @@ const make = Effect.gen(function* () {
       sanitizedCode: "dispatch_pending",
       createdAt: event.payload.createdAt,
     });
-    yield* providerService
-      .steerTurn({
-        threadId: event.payload.threadId,
-        expectedTurnId: event.payload.expectedTurnId,
-        ...(toNonEmptyProviderInput(message.text) !== undefined
-          ? { input: toNonEmptyProviderInput(message.text) }
-          : {}),
-        ...(message.attachments !== undefined && message.attachments.length > 0
-          ? { attachments: message.attachments }
-          : {}),
-        clientUserMessageId: event.payload.clientUserMessageId,
-      })
-      .pipe(
-        Effect.timeout(providerEffectTimeout),
-        Effect.tap((turn) =>
-          appendProviderEffectOutcome({
-            operationId,
-            operation: "steer",
-            state: "confirmed",
-            threadId: event.payload.threadId,
-            expectedTurnId: event.payload.expectedTurnId,
-            actualTurnId: turn.turnId,
-            sanitizedCode: "provider_acknowledged",
-            createdAt: event.payload.createdAt,
-          }),
-        ),
-        Effect.catchCause((cause) => {
-          const outcome = classifyProviderEffectFailure(cause);
-          const recovery = appendProviderEffectOutcome({
-            operationId,
-            operation: "steer",
-            ...outcome,
-            threadId: event.payload.threadId,
-            expectedTurnId: event.payload.expectedTurnId,
-            actualTurnId: null,
-            createdAt: event.payload.createdAt,
-          }).pipe(
-            Effect.andThen(
-              appendProviderFailureActivity({
-                threadId: event.payload.threadId,
-                kind: "provider.turn.steer.failed",
-                summary: "Provider turn steer failed",
-                detail: formatFailureDetail(cause, sensitiveProviderEffect),
-                turnId: event.payload.expectedTurnId,
-                createdAt: event.payload.createdAt,
-              }),
-            ),
-          );
-          return recoverProviderEffectFailure({
-            operation: "steer",
-            event,
-            cause,
-            sensitiveProviderEffect,
-            recovery,
-          });
+    yield* providerService.steerTurn(steerRequest).pipe(
+      Effect.timeout(providerEffectTimeout),
+      Effect.tap((turn) =>
+        appendProviderEffectOutcome({
+          operationId,
+          operation: "steer",
+          state: "confirmed",
+          threadId: event.payload.threadId,
+          expectedTurnId: event.payload.expectedTurnId,
+          actualTurnId: turn.turnId,
+          sanitizedCode: "provider_acknowledged",
+          createdAt: event.payload.createdAt,
         }),
-        Effect.forkScoped,
-      );
+      ),
+      Effect.catchCause((cause) => {
+        const outcome = classifyProviderEffectFailure(cause);
+        const terminalFallback = Effect.gen(function* () {
+          yield* orchestrationEngine.dispatch(
+            {
+              type: "thread.turn.start.recover",
+              commandId: CommandId.make(`${operationId}:terminal-steer-recovery`),
+              threadId: event.payload.threadId,
+              messageId: event.payload.messageId,
+              createdAt: event.payload.createdAt,
+            },
+            Option.isSome(actorProvenance) ? { actorProvenance: actorProvenance.value } : undefined,
+          );
+        });
+        const recovery = appendProviderEffectOutcome({
+          operationId,
+          operation: "steer",
+          ...outcome,
+          threadId: event.payload.threadId,
+          expectedTurnId: event.payload.expectedTurnId,
+          actualTurnId: null,
+          createdAt: event.payload.createdAt,
+        }).pipe(
+          Effect.andThen(
+            outcome.sanitizedCode === "already_terminal"
+              ? terminalFallback
+              : appendProviderFailureActivity({
+                  threadId: event.payload.threadId,
+                  kind: "provider.turn.steer.failed",
+                  summary: "Provider turn steer failed",
+                  detail: formatFailureDetail(cause, sensitiveProviderEffect),
+                  turnId: event.payload.expectedTurnId,
+                  createdAt: event.payload.createdAt,
+                }),
+          ),
+        );
+        return recoverProviderEffectFailure({
+          operation: "steer",
+          event,
+          cause,
+          sensitiveProviderEffect,
+          recovery,
+        });
+      }),
+      Effect.forkScoped,
+    );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (

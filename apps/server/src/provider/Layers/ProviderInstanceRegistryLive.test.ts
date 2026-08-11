@@ -36,7 +36,9 @@ import {
 } from "@shuv2code/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
@@ -212,6 +214,19 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       expect(personalSnapshot.enabled).toBe(false);
       expect(personalSnapshot.continuation?.groupKey).toBe(
         "codex:home:/home/julius/.codex_personal",
+      );
+      expect(personalSnapshot.capabilities?.turnSteering).toBe("same-turn");
+
+      const changeFiber = yield* personal!.snapshot.streamChanges.pipe(
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const refreshedPersonalSnapshot = yield* personal!.snapshot.refresh;
+      const changedPersonalSnapshot = yield* Fiber.join(changeFiber);
+      expect(refreshedPersonalSnapshot.capabilities?.turnSteering).toBe("same-turn");
+      expect(Option.getOrThrow(changedPersonalSnapshot).capabilities?.turnSteering).toBe(
+        "same-turn",
       );
 
       const workSnapshot = yield* work!.snapshot.getSnapshot;

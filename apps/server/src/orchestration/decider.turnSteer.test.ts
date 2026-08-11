@@ -228,6 +228,57 @@ it.layer(NodeServices.layer)("thread turn steer decider", (it) => {
     }),
   );
 
+  it.effect("rejects an explicit idle start while another start is queued", () =>
+    Effect.gen(function* () {
+      const readModel = makeReadModel(null);
+      const thread = readModel.threads[0];
+      if (thread === undefined) throw new Error("Expected test thread.");
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.make("command-start-concurrent"),
+          threadId: THREAD_ID,
+          message: {
+            messageId: MessageId.make("message-start-concurrent"),
+            role: "user",
+            text: "Start concurrent work.",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          expectedTurnId: null,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        },
+        readModel: {
+          ...readModel,
+          threads: [
+            {
+              ...thread,
+              latestTurn: null,
+              session: null,
+              messages: [
+                {
+                  id: MessageId.make("message-start-queued"),
+                  role: "user",
+                  text: "Queued work.",
+                  turnId: null,
+                  streaming: false,
+                  createdAt: NOW,
+                  updatedAt: NOW,
+                },
+              ],
+            },
+          ],
+        },
+      }).pipe(Effect.flip);
+
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("queued turn start");
+      }
+    }),
+  );
+
   it.effect("requires the exact active turn for interruption", () =>
     Effect.gen(function* () {
       const error = yield* decideOrchestrationCommand({
