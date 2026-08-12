@@ -164,7 +164,7 @@ export const make = Effect.gen(function* () {
           ...(source ? { source } : {}),
           ...(input.target ? { target: input.target } : {}),
           ...(coordinates
-            ? { repository: coordinates.selector }
+            ? { repository: coordinates.selector, hostname: coordinates.hostname }
             : source?.repository
               ? { repository: source.repository }
               : {}),

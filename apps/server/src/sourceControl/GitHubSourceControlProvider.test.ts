@@ -684,6 +684,14 @@ it.effect(
           cliCalls += 1;
           return Effect.void;
         },
+        getRepositoryCloneUrls: () => {
+          cliCalls += 1;
+          return Effect.succeed({
+            nameWithOwner: "Acme/Shuv2Code",
+            url: "https://github.example.test/Acme/Shuv2Code",
+            sshUrl: "git@github.example.test:Acme/Shuv2Code.git",
+          });
+        },
         getDefaultBranch: () => {
           cliCalls += 1;
           return Effect.succeed("main");
@@ -732,6 +740,13 @@ it.effect(
           bodyFile: "/tmp/context-safety.md",
         })
         .pipe(Effect.flip);
+      const cloneUrlsError = yield* provider
+        .getRepositoryCloneUrls({
+          cwd: "/wrong-cwd-repository",
+          context,
+          repository: "Acme/Shuv2Code",
+        })
+        .pipe(Effect.flip);
       const defaultBranchError = yield* provider
         .getDefaultBranch({ cwd: "/wrong-cwd-repository", context })
         .pipe(Effect.flip);
@@ -744,20 +759,27 @@ it.effect(
         .pipe(Effect.flip);
 
       assert.deepStrictEqual(
-        [openListError, allListError, getError, createError, defaultBranchError, checkoutError].map(
-          (error) => ({
-            provider: error.provider,
-            operation: error.operation,
-            cwd: error.cwd,
-            command: error.command,
-            detail: error.detail,
-          }),
-        ),
+        [
+          openListError,
+          allListError,
+          getError,
+          createError,
+          cloneUrlsError,
+          defaultBranchError,
+          checkoutError,
+        ].map((error) => ({
+          provider: error.provider,
+          operation: error.operation,
+          cwd: error.cwd,
+          command: error.command,
+          detail: error.detail,
+        })),
         [
           "listChangeRequests",
           "listChangeRequests",
           "getChangeRequest",
           "createChangeRequest",
+          "getRepositoryCloneUrls",
           "getDefaultBranch",
           "checkoutChangeRequest",
         ].map((operation) => ({

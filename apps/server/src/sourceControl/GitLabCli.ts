@@ -22,6 +22,8 @@ import {
 import type * as SourceControlProvider from "./SourceControlProvider.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const PROJECT_LOOKUP_TIMEOUT_MS = 10_000;
+const PROJECT_LOOKUP_MAX_OUTPUT_BYTES = 64 * 1_024;
 
 const gitLabCliExecutionErrorContext = {
   operation: Schema.Literal("execute"),
@@ -186,6 +188,7 @@ export class GitLabRepositoryDecodeError extends Schema.TaggedErrorClass<GitLabR
       "createRepository",
       "createMergeRequest",
       "getDefaultBranch",
+      "listMergeRequests",
     ]),
     repository: Schema.optional(Schema.String),
   },
@@ -237,6 +240,7 @@ export interface GitLabMergeRequestSummary {
   readonly headRefName: string;
   readonly state?: "open" | "closed" | "merged";
   readonly updatedAt?: Option.Option<DateTime.Utc>;
+  readonly sourceProjectId?: number;
   readonly isCrossRepository?: boolean;
   readonly headRepositoryNameWithOwner?: string | null;
   readonly headRepositoryOwnerLogin?: string | null;
@@ -255,6 +259,7 @@ export class GitLabCli extends Context.Service<
       readonly cwd: string;
       readonly args: ReadonlyArray<string>;
       readonly timeoutMs?: number;
+      readonly maxOutputBytes?: number;
     }) => Effect.Effect<VcsProcess.VcsProcessOutput, GitLabCliError>;
 
     readonly listMergeRequests: (input: {
@@ -263,6 +268,7 @@ export class GitLabCli extends Context.Service<
       readonly source?: SourceControlProvider.SourceControlRefSelector;
       readonly target?: SourceControlProvider.SourceControlRefSelector;
       readonly repository?: string;
+      readonly hostname?: string;
       readonly state: "open" | "closed" | "merged" | "all";
       readonly limit?: number;
     }) => Effect.Effect<ReadonlyArray<GitLabMergeRequestSummary>, GitLabCliError>;
@@ -378,41 +384,26 @@ function sourceProjectIdentifier(
   return source?.repository ?? null;
 }
 
-function normalizeGitLabRepositoryPath(value: string | null | undefined): string | null {
-  const normalized =
-    value
-      ?.trim()
-      .replace(/^\/+|\/+$/gu, "")
-      .replace(/\.git$/iu, "") ?? "";
-  return normalized.length > 0 ? normalized.toLowerCase() : null;
-}
-
-function filterMergeRequestsBySourceRepository(
+function filterMergeRequestsBySourceProjectId(
   items: ReadonlyArray<GitLabMergeRequestSummary>,
   input: {
     readonly cwd: string;
-    readonly source?: SourceControlProvider.SourceControlRefSelector;
+    readonly sourceProjectId: number;
     readonly limit?: number;
   },
 ): Effect.Effect<ReadonlyArray<GitLabMergeRequestSummary>, GitLabCliError> {
-  const expectedRepository = normalizeGitLabRepositoryPath(input.source?.repository);
-  if (!expectedRepository) return Effect.succeed(items);
-
-  if (items.some((item) => !normalizeGitLabRepositoryPath(item.headRepositoryNameWithOwner))) {
+  if (items.some((item) => item.sourceProjectId === undefined)) {
     return Effect.fail(
       new GitLabCliCommandError({
         operation: "execute",
         command: "glab",
         cwd: input.cwd,
-        cause: new Error("GitLab omitted source project identity from the merge request list."),
+        cause: new Error("GitLab omitted source_project_id from the merge request list."),
       }),
     );
   }
 
-  const filtered = items.filter(
-    (item) =>
-      normalizeGitLabRepositoryPath(item.headRepositoryNameWithOwner) === expectedRepository,
-  );
+  const filtered = items.filter((item) => item.sourceProjectId === input.sourceProjectId);
   if (filtered.length === 0 && items.length >= (input.limit ?? 20)) {
     return Effect.fail(
       new GitLabCliCommandError({
@@ -465,6 +456,7 @@ export const make = Effect.gen(function* () {
         args: input.args,
         cwd: input.cwd,
         timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        ...(input.maxOutputBytes !== undefined ? { maxOutputBytes: input.maxOutputBytes } : {}),
       })
       .pipe(Effect.mapError(mapError));
 
@@ -474,6 +466,40 @@ export const make = Effect.gen(function* () {
         { operation: "execute", command: "glab", cwd: input.cwd },
         error,
       ),
+    );
+
+  const resolveProjectId = (input: {
+    readonly cwd: string;
+    readonly repository: string;
+    readonly hostname?: string;
+    readonly operation: "createMergeRequest" | "listMergeRequests";
+  }) =>
+    execute({
+      cwd: input.cwd,
+      args: [
+        "api",
+        ...(input.hostname ? ["--hostname", input.hostname] : []),
+        `projects/${encodeURIComponent(input.repository)}`,
+      ],
+      timeoutMs: PROJECT_LOOKUP_TIMEOUT_MS,
+      maxOutputBytes: PROJECT_LOOKUP_MAX_OUTPUT_BYTES,
+    }).pipe(
+      Effect.map((result) => result.stdout.trim()),
+      Effect.flatMap((raw) =>
+        decodeGitLabProjectId(raw).pipe(
+          Effect.mapError(
+            (cause) =>
+              new GitLabRepositoryDecodeError({
+                operation: input.operation,
+                command: "glab",
+                cwd: input.cwd,
+                repository: input.repository,
+                cause,
+              }),
+          ),
+        ),
+      ),
+      Effect.map((project) => project.id),
     );
 
   const executeMergeRequest = (input: {
@@ -495,48 +521,79 @@ export const make = Effect.gen(function* () {
 
   return GitLabCli.of({
     execute,
-    listMergeRequests: (input) =>
-      execute({
-        cwd: input.cwd,
-        args: [
-          "mr",
-          "list",
-          ...(input.repository ? ["--repo", input.repository] : []),
-          "--source-branch",
-          sourceRefName(input),
-          ...(input.target ? ["--target-branch", input.target.refName] : []),
-          ...stateArgs(input.state),
-          "--per-page",
-          String(input.limit ?? 20),
-          "--output",
-          "json",
-        ],
-      }).pipe(
-        Effect.map((result) => result.stdout.trim()),
-        Effect.flatMap((raw) =>
-          raw.length === 0
-            ? Effect.succeed([])
-            : Effect.sync(() => decodeGitLabMergeRequestListJson(raw)).pipe(
-                Effect.flatMap((decoded) => {
-                  if (!Result.isSuccess(decoded)) {
-                    return Effect.fail(
-                      new GitLabMergeRequestListDecodeError({
-                        operation: "listMergeRequests",
-                        command: "glab",
-                        cwd: input.cwd,
-                        cause: decoded.failure,
-                      }),
-                    );
-                  }
-
-                  return filterMergeRequestsBySourceRepository(
-                    decoded.success.map(toSummaryWithOptionalUpdatedAt),
-                    input,
-                  );
+    listMergeRequests: (input) => {
+      const sourceProject = sourceProjectIdentifier(input.source);
+      const sourceProjectId: Effect.Effect<number | null, GitLabCliError> =
+        sourceProject === null
+          ? Effect.succeed(null)
+          : input.hostname
+            ? resolveProjectId({
+                cwd: input.cwd,
+                repository: sourceProject,
+                hostname: input.hostname,
+                operation: "listMergeRequests",
+              })
+            : Effect.fail(
+                new GitLabCliCommandError({
+                  operation: "execute",
+                  command: "glab",
+                  cwd: input.cwd,
+                  cause: new Error(
+                    "GitLab source-project lookup requires an explicit repository hostname.",
+                  ),
                 }),
-              ),
+              );
+
+      return sourceProjectId.pipe(
+        Effect.flatMap((expectedSourceProjectId) =>
+          execute({
+            cwd: input.cwd,
+            args: [
+              "mr",
+              "list",
+              ...(input.repository ? ["--repo", input.repository] : []),
+              "--source-branch",
+              sourceRefName(input),
+              ...(input.target ? ["--target-branch", input.target.refName] : []),
+              ...stateArgs(input.state),
+              "--per-page",
+              String(input.limit ?? 20),
+              "--output",
+              "json",
+            ],
+          }).pipe(
+            Effect.map((result) => result.stdout.trim()),
+            Effect.flatMap((raw) =>
+              raw.length === 0
+                ? Effect.succeed([])
+                : Effect.sync(() => decodeGitLabMergeRequestListJson(raw)).pipe(
+                    Effect.flatMap((decoded) => {
+                      if (!Result.isSuccess(decoded)) {
+                        return Effect.fail(
+                          new GitLabMergeRequestListDecodeError({
+                            operation: "listMergeRequests",
+                            command: "glab",
+                            cwd: input.cwd,
+                            cause: decoded.failure,
+                          }),
+                        );
+                      }
+
+                      const summaries = decoded.success.map(toSummaryWithOptionalUpdatedAt);
+                      return expectedSourceProjectId === null
+                        ? Effect.succeed(summaries)
+                        : filterMergeRequestsBySourceProjectId(summaries, {
+                            cwd: input.cwd,
+                            sourceProjectId: expectedSourceProjectId,
+                            ...(input.limit !== undefined ? { limit: input.limit } : {}),
+                          });
+                    }),
+                  ),
+            ),
+          ),
         ),
-      ),
+      );
+    },
     getMergeRequest: (input) =>
       executeMergeRequest({
         cwd: input.cwd,
@@ -656,31 +713,12 @@ export const make = Effect.gen(function* () {
       const targetProject = input.target?.repository;
       const sourceProjectId: Effect.Effect<number | null, GitLabCliError> =
         sourceProject !== null && sourceProject !== targetProject
-          ? execute({
+          ? resolveProjectId({
               cwd: input.cwd,
-              args: [
-                "api",
-                ...(input.hostname ? ["--hostname", input.hostname] : []),
-                `projects/${encodeURIComponent(sourceProject)}`,
-              ],
-            }).pipe(
-              Effect.map((result) => result.stdout.trim()),
-              Effect.flatMap((raw) =>
-                decodeGitLabProjectId(raw).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new GitLabRepositoryDecodeError({
-                        operation: "createMergeRequest",
-                        command: "glab",
-                        cwd: input.cwd,
-                        repository: sourceProject,
-                        cause,
-                      }),
-                  ),
-                ),
-              ),
-              Effect.map((project) => project.id),
-            )
+              repository: sourceProject,
+              ...(input.hostname ? { hostname: input.hostname } : {}),
+              operation: "createMergeRequest",
+            })
           : Effect.succeed(null);
 
       return sourceProjectId.pipe(

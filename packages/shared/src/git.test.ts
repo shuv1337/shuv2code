@@ -94,6 +94,9 @@ describe("parseGitHubRepositorySelectorFromRemoteUrl", () => {
         "https://github.example.test/nested/Acme/Shuv2Code.git",
       ),
     ).toBeNull();
+    expect(
+      parseGitHubRepositorySelectorFromRemoteUrl("git@github.com@evil.test:Acme/Shuv2Code.git"),
+    ).toBeNull();
   });
 });
 

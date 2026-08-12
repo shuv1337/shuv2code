@@ -72,6 +72,7 @@ layer("GitLabCli.layer", (it) => {
         baseRefName: "main",
         headRefName: "feature/mr-threads",
         state: "open",
+        sourceProjectId: 101,
         isCrossRepository: true,
         headRepositoryNameWithOwner: "octocat/shuv2code",
         headRepositoryOwnerLogin: "octocat",
@@ -154,33 +155,37 @@ layer("GitLabCli.layer", (it) => {
 
   it.effect("filters merge requests by the exact fork source repository", () =>
     Effect.gen(function* () {
-      mockedRun.mockReturnValueOnce(
-        Effect.succeed(
-          processOutput(
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            JSON.stringify([
-              {
-                iid: 44,
-                title: "Other fork",
-                web_url: "https://gitlab.com/upstream/project/-/merge_requests/44",
-                target_branch: "main",
-                source_branch: "feature/shared",
-                state: "opened",
-                source_project: { path_with_namespace: "other/project" },
-              },
-              {
-                iid: 45,
-                title: "Selected fork",
-                web_url: "https://gitlab.com/upstream/project/-/merge_requests/45",
-                target_branch: "main",
-                source_branch: "feature/shared",
-                state: "opened",
-                source_project: { path_with_namespace: "selected/project" },
-              },
-            ]),
+      mockedRun
+        .mockReturnValueOnce(Effect.succeed(processOutput('{"id":202}')))
+        .mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // Real `glab mr list --output json` includes the numeric project ID,
+              // but does not include the nested source_project object.
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify([
+                {
+                  iid: 44,
+                  title: "Other fork",
+                  web_url: "https://gitlab.example.test/upstream/project/-/merge_requests/44",
+                  target_branch: "main",
+                  source_branch: "feature/shared",
+                  state: "opened",
+                  source_project_id: 201,
+                },
+                {
+                  iid: 45,
+                  title: "Selected fork",
+                  web_url: "https://gitlab.example.test/upstream/project/-/merge_requests/45",
+                  target_branch: "main",
+                  source_branch: "feature/shared",
+                  state: "opened",
+                  source_project_id: 202,
+                },
+              ]),
+            ),
           ),
-        ),
-      );
+        );
 
       const glab = yield* GitLabCli.GitLabCli;
       const result = yield* glab.listMergeRequests({
@@ -188,6 +193,8 @@ layer("GitLabCli.layer", (it) => {
         headSelector: "feature/shared",
         source: { refName: "feature/shared", repository: "selected/project" },
         target: { refName: "main", repository: "upstream/project" },
+        repository: "https://gitlab.example.test/upstream/project",
+        hostname: "gitlab.example.test",
         state: "open",
         limit: 100,
       });
@@ -196,28 +203,51 @@ layer("GitLabCli.layer", (it) => {
         result.map((item) => item.number),
         [45],
       );
+      expect(mockedRun).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          command: "glab",
+          cwd: "/repo",
+          args: ["api", "--hostname", "gitlab.example.test", "projects/selected%2Fproject"],
+          timeoutMs: 10_000,
+          maxOutputBytes: 65_536,
+        }),
+      );
+      expect(mockedRun).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          args: expect.arrayContaining([
+            "mr",
+            "list",
+            "--repo",
+            "https://gitlab.example.test/upstream/project",
+          ]),
+        }),
+      );
     }),
   );
 
   it.effect("fails closed when a fork lookup omits source identity", () =>
     Effect.gen(function* () {
-      mockedRun.mockReturnValueOnce(
-        Effect.succeed(
-          processOutput(
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            JSON.stringify([
-              {
-                iid: 46,
-                title: "Missing source identity",
-                web_url: "https://gitlab.com/upstream/project/-/merge_requests/46",
-                target_branch: "main",
-                source_branch: "feature/shared",
-                state: "opened",
-              },
-            ]),
+      mockedRun
+        .mockReturnValueOnce(Effect.succeed(processOutput('{"id":202}')))
+        .mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify([
+                {
+                  iid: 46,
+                  title: "Missing source identity",
+                  web_url: "https://gitlab.com/upstream/project/-/merge_requests/46",
+                  target_branch: "main",
+                  source_branch: "feature/shared",
+                  state: "opened",
+                },
+              ]),
+            ),
           ),
-        ),
-      );
+        );
 
       const glab = yield* GitLabCli.GitLabCli;
       const error = yield* glab
@@ -225,6 +255,7 @@ layer("GitLabCli.layer", (it) => {
           cwd: "/repo",
           headSelector: "feature/shared",
           source: { refName: "feature/shared", repository: "selected/project" },
+          hostname: "gitlab.com",
           state: "open",
           limit: 100,
         })
@@ -234,26 +265,9 @@ layer("GitLabCli.layer", (it) => {
     }),
   );
 
-  it.effect("fails closed when exact fork filtering saturates the candidate limit", () =>
+  it.effect("fails before listing when the source project ID response is invalid", () =>
     Effect.gen(function* () {
-      mockedRun.mockReturnValueOnce(
-        Effect.succeed(
-          processOutput(
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            JSON.stringify(
-              [47, 48].map((iid) => ({
-                iid,
-                title: `Other fork ${iid}`,
-                web_url: `https://gitlab.com/upstream/project/-/merge_requests/${iid}`,
-                target_branch: "main",
-                source_branch: "feature/shared",
-                state: "opened",
-                source_project: { path_with_namespace: `other-${iid}/project` },
-              })),
-            ),
-          ),
-        ),
-      );
+      mockedRun.mockReturnValueOnce(Effect.succeed(processOutput('{"id":"selected/project"}')));
 
       const glab = yield* GitLabCli.GitLabCli;
       const error = yield* glab
@@ -261,6 +275,49 @@ layer("GitLabCli.layer", (it) => {
           cwd: "/repo",
           headSelector: "feature/shared",
           source: { refName: "feature/shared", repository: "selected/project" },
+          hostname: "gitlab.com",
+          state: "open",
+          limit: 100,
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, GitLabCli.GitLabRepositoryDecodeError);
+      assert.strictEqual(error.operation, "listMergeRequests");
+      assert.strictEqual(error.repository, "selected/project");
+      assert.strictEqual(mockedRun.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("fails closed when exact fork filtering saturates the candidate limit", () =>
+    Effect.gen(function* () {
+      mockedRun
+        .mockReturnValueOnce(Effect.succeed(processOutput('{"id":202}')))
+        .mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify(
+                [47, 48].map((iid) => ({
+                  iid,
+                  title: `Other fork ${iid}`,
+                  web_url: `https://gitlab.com/upstream/project/-/merge_requests/${iid}`,
+                  target_branch: "main",
+                  source_branch: "feature/shared",
+                  state: "opened",
+                  source_project_id: iid,
+                })),
+              ),
+            ),
+          ),
+        );
+
+      const glab = yield* GitLabCli.GitLabCli;
+      const error = yield* glab
+        .listMergeRequests({
+          cwd: "/repo",
+          headSelector: "feature/shared",
+          source: { refName: "feature/shared", repository: "selected/project" },
+          hostname: "gitlab.com",
           state: "open",
           limit: 2,
         })
