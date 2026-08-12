@@ -79,7 +79,7 @@ describe("detectSourceControlProviderFromRemoteUrl", () => {
     });
   });
 
-  it("rejects GitHub-like hostnames without a distinct GitHub label", () => {
+  it("requires exact DNS labels for self-hosted provider detection", () => {
     expect(
       detectSourceControlProviderFromRemoteUrl("https://notgithub.example.test/owner/repo.git")
         ?.kind,
@@ -91,5 +91,26 @@ describe("detectSourceControlProviderFromRemoteUrl", () => {
     expect(
       detectSourceControlProviderFromRemoteUrl("https://github.example.test/owner/repo.git")?.kind,
     ).toBe("github");
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://notgitlab.example.test/owner/repo.git")
+        ?.kind,
+    ).toBe("unknown");
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://gitlab.example.test/owner/repo.git")?.kind,
+    ).toBe("gitlab");
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://notbitbucket.example.test/owner/repo.git")
+        ?.kind,
+    ).toBe("unknown");
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://bitbucket.example.test/owner/repo.git")
+        ?.kind,
+    ).toBe("bitbucket");
+  });
+
+  it("rejects ambiguous SCP authorities", () => {
+    expect(
+      detectSourceControlProviderFromRemoteUrl("git@github.com@evil.test:owner/repo.git"),
+    ).toBeNull();
   });
 });

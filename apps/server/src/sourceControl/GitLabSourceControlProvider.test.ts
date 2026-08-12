@@ -207,6 +207,7 @@ it.effect("routes GitLab change requests through the explicitly selected reposit
       source: { refName: "feature/provider", repository: "example/selected" },
       target: { refName: "release", repository: "wrong/target" },
       repository: "https://gitlab.com/example/selected",
+      hostname: "gitlab.com",
       state: "open",
       limit: 1,
     });

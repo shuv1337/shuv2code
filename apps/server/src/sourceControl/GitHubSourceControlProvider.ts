@@ -384,20 +384,24 @@ export const make = Effect.gen(function* () {
         ),
       ),
     getRepositoryCloneUrls: (input) =>
-      github.getRepositoryCloneUrls(input).pipe(
-        Effect.mapError(
-          (error) =>
-            new SourceControlProviderError({
-              provider: "github",
-              operation: "getRepositoryCloneUrls",
-              command: error.command,
-              cwd: input.cwd,
-              repository: SourceControlProvider.transportSafeSourceControlErrorValue(
-                input.repository,
-              ),
-              detail: error.detail,
-              cause: error,
-            }),
+      contextRepositoryInput(input.context, "getRepositoryCloneUrls", input.cwd).pipe(
+        Effect.flatMap(() =>
+          github.getRepositoryCloneUrls({ cwd: input.cwd, repository: input.repository }).pipe(
+            Effect.mapError(
+              (error) =>
+                new SourceControlProviderError({
+                  provider: "github",
+                  operation: "getRepositoryCloneUrls",
+                  command: error.command,
+                  cwd: input.cwd,
+                  repository: SourceControlProvider.transportSafeSourceControlErrorValue(
+                    input.repository,
+                  ),
+                  detail: error.detail,
+                  cause: error,
+                }),
+            ),
+          ),
         ),
       ),
     createRepository: (input) =>

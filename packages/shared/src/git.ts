@@ -8,7 +8,10 @@ import type {
 } from "@shuv2code/contracts";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
-import { detectSourceControlProviderFromRemoteUrl } from "./sourceControl.ts";
+import {
+  detectSourceControlProviderFromRemoteUrl,
+  parseScpStyleGitRemote,
+} from "./sourceControl.ts";
 
 export const WORKTREE_BRANCH_PREFIX = "shuv2code";
 // Canonical form is `shuv2code/<8 hex>`. Older mobile builds generated `shuv2code/<uuid>`
@@ -171,10 +174,10 @@ function parseGitHubRepositoryCoordinatesFromRemoteUrl(
     return null;
   }
 
-  const scpMatch = /^git@([^:/\s]+):(.+)$/iu.exec(trimmed);
-  if (scpMatch?.[1] && scpMatch[2] && isGitHubRemoteHostname(scpMatch[1])) {
-    const nameWithOwner = parseGitHubRepositoryPath(scpMatch[2]);
-    return nameWithOwner ? { host: scpMatch[1].toLowerCase(), nameWithOwner } : null;
+  const scpRemote = parseScpStyleGitRemote(trimmed);
+  if (scpRemote?.username.toLowerCase() === "git" && isGitHubRemoteHostname(scpRemote.host)) {
+    const nameWithOwner = parseGitHubRepositoryPath(scpRemote.path);
+    return nameWithOwner ? { host: scpRemote.host, nameWithOwner } : null;
   }
 
   try {
