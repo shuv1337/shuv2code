@@ -22,7 +22,9 @@ import {
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
+  CODEX_RESUME_ROLLOUT_MAX_BYTES,
   CODEX_VOICE_CONTROLLER_DEVELOPER_INSTRUCTIONS,
+  findCodexRolloutPathByThreadId,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   makeCodexSessionRuntime,
@@ -679,11 +681,117 @@ describe("openCodexThread", () => {
         resumeThreadId: "stale-thread",
       });
 
-      NodeAssert.equal(opened.thread.id, "fresh-thread");
+      NodeAssert.equal(opened.response.thread.id, "fresh-thread");
+      NodeAssert.equal(opened.continuityState, "fallback_new");
       NodeAssert.deepStrictEqual(
         calls.map((call) => call.method),
         ["thread/resume", "thread/start"],
       );
+    }),
+  );
+
+  it.effect("starts fresh without loading an oversized rollout", () =>
+    Effect.gen(function* () {
+      const calls: Array<"thread/start" | "thread/resume"> = [];
+      const client = {
+        request: <M extends "thread/start" | "thread/resume">(
+          method: M,
+          _payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push(method);
+          return Effect.succeed(
+            makeThreadOpenResponse(
+              method === "thread/start" ? "replacement-thread" : "old-thread",
+            ) as CodexRpc.ClientRequestResponsesByMethod[M],
+          );
+        },
+      };
+
+      const opened = yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "old-thread",
+        resumeRolloutBytes: () => Effect.succeed(CODEX_RESUME_ROLLOUT_MAX_BYTES + 1),
+      });
+
+      NodeAssert.deepStrictEqual(calls, ["thread/start"]);
+      NodeAssert.equal(opened.response.thread.id, "replacement-thread");
+      NodeAssert.equal(opened.continuityState, "fallback_new");
+    }),
+  );
+
+  it.effect("resumes a rollout within the size guard", () =>
+    Effect.gen(function* () {
+      const calls: Array<"thread/start" | "thread/resume"> = [];
+      const client = {
+        request: <M extends "thread/start" | "thread/resume">(
+          method: M,
+          _payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push(method);
+          return Effect.succeed(
+            makeThreadOpenResponse("old-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+          );
+        },
+      };
+
+      const opened = yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "old-thread",
+        resumeRolloutBytes: () => Effect.succeed(CODEX_RESUME_ROLLOUT_MAX_BYTES),
+      });
+
+      NodeAssert.deepStrictEqual(calls, ["thread/resume"]);
+      NodeAssert.equal(opened.response.thread.id, "old-thread");
+      NodeAssert.equal(opened.continuityState, "resumed");
+    }),
+  );
+
+  it.effect("reads rollout paths from Codex state-db metadata only", () =>
+    Effect.gen(function* () {
+      const payloads: Array<CodexRpc.ClientRequestParamsByMethod["thread/list"]> = [];
+      const client = {
+        request: <M extends "thread/list">(
+          _method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          payloads.push(payload);
+          return Effect.succeed({
+            data: [
+              {
+                id: "old-thread",
+                path: "/tmp/old-thread.jsonl",
+              },
+            ],
+            nextCursor: null,
+          } as unknown as CodexRpc.ClientRequestResponsesByMethod[M]);
+        },
+      };
+
+      const path = yield* findCodexRolloutPathByThreadId({
+        client,
+        providerThreadId: "old-thread",
+      });
+
+      NodeAssert.equal(path, "/tmp/old-thread.jsonl");
+      NodeAssert.deepStrictEqual(payloads, [
+        {
+          limit: 100,
+          sortDirection: "desc",
+          sortKey: "updated_at",
+          sourceKinds: [],
+          useStateDbOnly: true,
+        },
+      ]);
     }),
   );
 

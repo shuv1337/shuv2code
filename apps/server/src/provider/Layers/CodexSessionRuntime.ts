@@ -56,6 +56,12 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
 ];
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
+/**
+ * Above this size, replaying a Codex JSONL rollout is no longer allowed on the
+ * interactive session-start path. This is a latency guard, not a retention
+ * policy: the old rollout remains untouched and auditable on disk.
+ */
+export const CODEX_RESUME_ROLLOUT_MAX_BYTES = 128 * 1024 * 1024;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
@@ -156,6 +162,8 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
+  /** Read a rollout's byte size without loading its contents. */
+  readonly rolloutSizeBytes?: (path: string) => Effect.Effect<number | undefined>;
   readonly appServerArgs?: ReadonlyArray<string>;
   readonly sharedAppServer?: CodexSessionRuntimeSharedAppServerOptions;
   readonly threadPurpose?: ThreadPurpose;
@@ -672,6 +680,11 @@ type CodexThreadOpenResponse =
   | CodexRpc.ClientRequestResponsesByMethod["thread/start"]
   | CodexRpc.ClientRequestResponsesByMethod["thread/resume"];
 
+export interface CodexThreadOpenResult {
+  readonly response: CodexThreadOpenResponse;
+  readonly continuityState: "new" | "resumed" | "fallback_new";
+}
+
 type CodexThreadOpenMethod = "thread/start" | "thread/resume";
 
 interface CodexThreadOpenClient {
@@ -716,6 +729,49 @@ interface CodexCreationRecoveryClient {
     payload: CodexRpc.ClientRequestParamsByMethod[M],
   ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
 }
+
+interface CodexRolloutLookupClient {
+  readonly request: <M extends "thread/list">(
+    method: M,
+    payload: CodexRpc.ClientRequestParamsByMethod[M],
+  ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
+}
+
+/**
+ * Resolve the persisted rollout path from Codex's state database only. The
+ * explicit state-db mode is critical: normal thread/list is allowed to scan
+ * JSONL files to repair metadata, which would recreate the startup stall this
+ * preflight is intended to avoid.
+ */
+export const findCodexRolloutPathByThreadId = Effect.fnUntraced(function* (input: {
+  readonly client: CodexRolloutLookupClient;
+  readonly providerThreadId: string;
+}) {
+  let cursor: string | null | undefined;
+  let pageCount = 0;
+
+  do {
+    if (pageCount >= 100) {
+      return undefined;
+    }
+    const page = yield* input.client.request("thread/list", {
+      limit: 100,
+      sortDirection: "desc",
+      sortKey: "updated_at",
+      sourceKinds: [],
+      useStateDbOnly: true,
+      ...(cursor ? { cursor } : {}),
+    });
+    const match = page.data.find((candidate) => candidate.id === input.providerThreadId);
+    if (match !== undefined) {
+      return typeof match.path === "string" && match.path.length > 0 ? match.path : undefined;
+    }
+    cursor = page.nextCursor;
+    pageCount += 1;
+  } while (cursor);
+
+  return undefined;
+});
 
 /**
  * Resolve a possibly-created provider thread by the exact durable
@@ -831,10 +887,12 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly resumeRolloutBytes?: (providerThreadId: string) => Effect.Effect<number | undefined>;
+  readonly maxResumeRolloutBytes?: number;
   readonly threadPurpose?: ThreadPurpose;
   readonly threadSource?: string;
   readonly threadConfigOverrides?: CodexThreadConfigOverrides;
-}): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
+}): Effect.Effect<CodexThreadOpenResult, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const commonParams = buildThreadStartParams({
     cwd: input.cwd,
@@ -850,25 +908,58 @@ export const openCodexThread = (input: {
   };
 
   if (resumeThreadId === undefined) {
-    return input.client.request("thread/start", startParams);
+    return input.client.request("thread/start", startParams).pipe(
+      Effect.map((response) => ({
+        response,
+        continuityState: "new" as const,
+      })),
+    );
   }
 
-  return input.client
-    .request("thread/resume", {
-      threadId: resumeThreadId,
-      ...commonParams,
-    })
-    .pipe(
-      Effect.catchIf(isRecoverableThreadResumeError, (error) =>
-        Effect.logWarning("codex app-server thread resume fell back to fresh start", {
-          threadId: input.threadId,
-          requestedRuntimeMode: input.runtimeMode,
-          resumeThreadId,
-          recoverable: true,
-          cause: error,
-        }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
-      ),
-    );
+  return Effect.gen(function* () {
+    const maxResumeRolloutBytes = input.maxResumeRolloutBytes ?? CODEX_RESUME_ROLLOUT_MAX_BYTES;
+    const rolloutBytes =
+      input.resumeRolloutBytes === undefined
+        ? undefined
+        : yield* input.resumeRolloutBytes(resumeThreadId);
+    if (rolloutBytes !== undefined && rolloutBytes > maxResumeRolloutBytes) {
+      yield* Effect.logWarning("codex app-server skipped oversized thread resume", {
+        threadId: input.threadId,
+        resumeThreadId,
+        rolloutBytes,
+        maxResumeRolloutBytes,
+      });
+      const response = yield* input.client.request("thread/start", startParams);
+      return { response, continuityState: "fallback_new" as const };
+    }
+
+    return yield* input.client
+      .request("thread/resume", {
+        threadId: resumeThreadId,
+        ...commonParams,
+      })
+      .pipe(
+        Effect.map((response) => ({
+          response,
+          continuityState: "resumed" as const,
+        })),
+        Effect.catchIf(isRecoverableThreadResumeError, (error) =>
+          Effect.logWarning("codex app-server thread resume fell back to fresh start", {
+            threadId: input.threadId,
+            requestedRuntimeMode: input.runtimeMode,
+            resumeThreadId,
+            recoverable: true,
+            cause: error,
+          }).pipe(
+            Effect.andThen(input.client.request("thread/start", startParams)),
+            Effect.map((response) => ({
+              response,
+              continuityState: "fallback_new" as const,
+            })),
+          ),
+        ),
+      );
+  });
 };
 
 function readNotificationThreadId(notification: CodexServerNotification): string | undefined {
@@ -1721,9 +1812,28 @@ export const makeCodexSessionRuntime = (
       yield* client.notify("initialized", undefined);
 
       const requestedModel = normalizeCodexModelSlug(options.model);
+      const rolloutSizeBytes = options.rolloutSizeBytes;
+      const resumeRolloutBytes =
+        rolloutSizeBytes === undefined
+          ? undefined
+          : (providerThreadId: string) =>
+              findCodexRolloutPathByThreadId({ client, providerThreadId }).pipe(
+                Effect.flatMap((rolloutPath) =>
+                  rolloutPath === undefined
+                    ? Effect.succeed(undefined)
+                    : rolloutSizeBytes(rolloutPath),
+                ),
+                Effect.catchCause((cause) =>
+                  Effect.logDebug("codex rollout size preflight unavailable", {
+                    threadId: options.threadId,
+                    providerThreadId,
+                    cause,
+                  }).pipe(Effect.as(undefined)),
+                ),
+              );
 
       const threadConfigOverrides = options.sharedAppServer?.threadConfigOverrides;
-      const opened =
+      const openedResult =
         options.creationRecoveryThreadSource === undefined
           ? yield* openCodexThread({
               client,
@@ -1733,20 +1843,25 @@ export const makeCodexSessionRuntime = (
               requestedModel,
               serviceTier: options.serviceTier,
               resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+              ...(resumeRolloutBytes ? { resumeRolloutBytes } : {}),
               ...(options.threadPurpose ? { threadPurpose: options.threadPurpose } : {}),
               ...(options.threadSource ? { threadSource: options.threadSource } : {}),
               ...(threadConfigOverrides ? { threadConfigOverrides } : {}),
             })
-          : yield* recoverCodexThreadBySource({
-              client,
-              runtimeMode: options.runtimeMode,
-              cwd: options.cwd,
-              requestedModel,
-              serviceTier: options.serviceTier,
-              ...(options.threadPurpose ? { threadPurpose: options.threadPurpose } : {}),
-              threadSource: options.creationRecoveryThreadSource,
-              ...(threadConfigOverrides ? { threadConfigOverrides } : {}),
-            });
+          : {
+              response: yield* recoverCodexThreadBySource({
+                client,
+                runtimeMode: options.runtimeMode,
+                cwd: options.cwd,
+                requestedModel,
+                serviceTier: options.serviceTier,
+                ...(options.threadPurpose ? { threadPurpose: options.threadPurpose } : {}),
+                threadSource: options.creationRecoveryThreadSource,
+                ...(threadConfigOverrides ? { threadConfigOverrides } : {}),
+              }),
+              continuityState: "resumed" as const,
+            };
+      const opened = openedResult.response;
 
       const providerThreadId = opened.thread.id;
       yield* materializeVoiceControllerThread(client, options.threadPurpose, providerThreadId);
@@ -1760,6 +1875,7 @@ export const makeCodexSessionRuntime = (
         cwd: opened.cwd,
         model: opened.model,
         resumeCursor: { threadId: providerThreadId },
+        continuityState: openedResult.continuityState,
         runtimeInstanceId,
         providerSessionId: opened.thread.sessionId,
         providerThreadId,

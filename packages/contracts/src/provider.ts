@@ -34,6 +34,9 @@ const ProviderSessionStatus = Schema.Literals([
   "closed",
 ]);
 
+export const ProviderSessionContinuityState = Schema.Literals(["new", "resumed", "fallback_new"]);
+export type ProviderSessionContinuityState = typeof ProviderSessionContinuityState.Type;
+
 export const ProviderSession = Schema.Struct({
   provider: ProviderDriverKind,
   // Optional during the driver/instance migration. Once every producer
@@ -46,6 +49,8 @@ export const ProviderSession = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   threadId: ThreadId,
   resumeCursor: Schema.optional(Schema.Unknown),
+  /** How this concrete provider runtime relates to its prior durable binding. */
+  continuityState: Schema.optional(ProviderSessionContinuityState),
   activeTurnId: Schema.optional(TurnId),
   runtimeInstanceId: Schema.optional(TrimmedNonEmptyString),
   providerSessionId: Schema.optional(TrimmedNonEmptyString),

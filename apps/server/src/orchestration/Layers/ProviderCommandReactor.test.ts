@@ -613,6 +613,95 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
 
+  it("bootstraps a replacement provider session from canonical thread history", async () => {
+    let startCount = 0;
+    const harness = await createHarness({
+      startSessionEffect: (session) => {
+        startCount += 1;
+        return Effect.succeed({
+          ...session,
+          continuityState: startCount === 1 ? "new" : "fallback_new",
+        });
+      },
+    });
+    const threadId = ThreadId.make("thread-1");
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-continuity-first-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("continuity-user-1"),
+          role: "user",
+          text: "Trace the provider reconnect delay.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-continuity-assistant-delta"),
+        threadId,
+        messageId: asMessageId("continuity-assistant-1"),
+        delta: "The persisted provider rollout is too large.",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-continuity-assistant-complete"),
+        threadId,
+        messageId: asMessageId("continuity-assistant-1"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.stop",
+        commandId: CommandId.make("cmd-continuity-stop"),
+        threadId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-continuity-replacement-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("continuity-user-2"),
+          role: "user",
+          text: "Continue in this same shuv2code thread.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    const replacementInput = harness.sendTurn.mock.calls[1]?.[0].input ?? "";
+    expect(replacementInput).toContain(
+      "The provider session was replaced, but the shuv2code thread, workspace, and timeline are unchanged.",
+    );
+    expect(replacementInput).toContain("USER:\nTrace the provider reconnect delay.");
+    expect(replacementInput).toContain("ASSISTANT:\nThe persisted provider rollout is too large.");
+    expect(replacementInput).toContain(
+      "Latest user request (answer this now):\nContinue in this same shuv2code thread.",
+    );
+  });
+
   effectIt.effect("projects starting before a slow provider session finishes", () =>
     Effect.gen(function* () {
       const releaseStart = yield* Deferred.make<void>();

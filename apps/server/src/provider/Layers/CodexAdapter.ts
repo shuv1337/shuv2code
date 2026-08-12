@@ -1639,6 +1639,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
             : {}),
+          rolloutSizeBytes: (rolloutPath) =>
+            fileSystem.stat(rolloutPath).pipe(
+              Effect.map((stat) => Number(stat.size)),
+              Effect.orElseSucceed(() => undefined),
+            ),
           ...(input.threadSource !== undefined ? { threadSource: input.threadSource } : {}),
           ...(creationRecoveryThreadSource !== undefined ? { creationRecoveryThreadSource } : {}),
           ...(input.runtimeInstanceId !== undefined

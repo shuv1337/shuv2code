@@ -11,6 +11,7 @@ import {
   type ProviderEffectOutcomeState,
   ThreadId,
   type ProviderSession,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type RuntimeMode,
   type TurnId,
 } from "@shuv2code/contracts";
@@ -50,6 +51,7 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { buildProviderContinuityInput } from "../providerContinuity.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderValidationError = Schema.is(ProviderValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -810,7 +812,10 @@ const make = Effect.gen(function* () {
         !shouldRestartForModelChange &&
         !shouldRestartForModelSelectionChange
       ) {
-        return existingSessionThreadId;
+        return {
+          threadId: existingSessionThreadId,
+          continuityState: "resumed" as const,
+        };
       }
 
       const resumeCursor = shouldRestartForModelChange
@@ -847,12 +852,20 @@ const make = Effect.gen(function* () {
         cwd: restartedSession.cwd,
       });
       yield* bindSessionToThread(restartedSession);
-      return restartedSession.threadId;
+      return {
+        threadId: restartedSession.threadId,
+        continuityState:
+          restartedSession.continuityState ??
+          (resumeCursor === undefined ? ("new" as const) : ("resumed" as const)),
+      };
     }
 
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
-    return startedSession.threadId;
+    return {
+      threadId: startedSession.threadId,
+      continuityState: startedSession.continuityState,
+    };
   });
 
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
@@ -873,7 +886,7 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    yield* ensureSessionForThread(input.threadId, input.createdAt, {
+    const sessionOutcome = yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       pendingTurnStart: true,
       ...(input.recoveryPolicy === "forbid" ? { recoveryPolicy: "forbid" as const } : {}),
@@ -882,7 +895,27 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
+    const shouldBootstrapContinuity =
+      (thread.purpose === undefined || thread.purpose === "standard") &&
+      (sessionOutcome.continuityState === "new" ||
+        sessionOutcome.continuityState === "fallback_new");
+    const continuityInput = shouldBootstrapContinuity
+      ? buildProviderContinuityInput({
+          messages: thread.messages.filter((message) => message.id !== input.clientUserMessageId),
+          latestUserRequest: input.messageText,
+          maxChars: PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+        })
+      : undefined;
+    if (continuityInput !== undefined && continuityInput.includedCount > 0) {
+      yield* Effect.logInfo("provider command reactor bootstrapping replacement session", {
+        threadId: input.threadId,
+        continuityState: sessionOutcome.continuityState,
+        includedMessageCount: continuityInput.includedCount,
+        omittedMessageCount: continuityInput.omittedCount,
+        truncated: continuityInput.truncated,
+      });
+    }
+    const normalizedInput = toNonEmptyProviderInput(continuityInput?.text ?? input.messageText);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()
