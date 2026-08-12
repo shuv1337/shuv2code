@@ -43,6 +43,56 @@ export type DefaultBranchConfirmableAction =
   | "commit_push"
   | "commit_push_pr";
 
+export interface JjActionAvailability {
+  readonly canDescribe: boolean;
+  readonly canStartChange: boolean;
+  readonly canFetch: boolean;
+  readonly canPush: boolean;
+  readonly canCreateChangeRequest: boolean;
+  readonly pushUnavailableReason: string | null;
+}
+
+export function resolveJjActionBookmark(status: VcsStatusResult): string | null {
+  const refName = status.kind === "jj" ? status.refName : null;
+  return refName !== null && status.workingCopy?.bookmarks.includes(refName) === true
+    ? refName
+    : null;
+}
+
+export function resolveJjActionAvailability(status: VcsStatusResult): JjActionAvailability {
+  const workingCopy = status.workingCopy;
+  const hasBookmark = resolveJjActionBookmark(status) !== null;
+  const pushUnavailableReason = workingCopy?.hasConflicts
+    ? "Resolve working-copy conflicts before pushing."
+    : !workingCopy?.description.trim()
+      ? "Describe the current change before pushing."
+      : !hasBookmark
+        ? "Create a bookmark before pushing this change."
+        : !status.hasPrimaryRemote
+          ? "Add a Git remote before pushing a bookmark."
+          : status.capabilities?.supportsPush !== true
+            ? "This VCS driver does not support bookmark push."
+            : null;
+  return {
+    canDescribe: status.capabilities?.supportsDescribeChange === true && workingCopy != null,
+    canStartChange: status.capabilities?.supportsStartChange === true,
+    canFetch: status.capabilities?.supportsFetch === true && status.hasPrimaryRemote,
+    canPush: pushUnavailableReason === null,
+    canCreateChangeRequest:
+      pushUnavailableReason === null && status.capabilities?.supportsChangeRequests === true,
+    pushUnavailableReason,
+  };
+}
+
+export function resolveJjWorkingCopyLabel(status: VcsStatusResult): string {
+  const workingCopy = status.workingCopy;
+  const changeId = workingCopy?.changeId ?? "unknown";
+  const bookmarks = workingCopy?.bookmarks ?? [];
+  return bookmarks.length > 0
+    ? `Change ${changeId} · bookmarks ${bookmarks.join(", ")}`
+    : `Anonymous change ${changeId} · no bookmark`;
+}
+
 function resolveChangeRequestTerminology(
   gitStatus: VcsStatusResult | null,
 ): ChangeRequestTerminology {

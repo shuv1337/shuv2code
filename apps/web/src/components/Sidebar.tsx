@@ -742,7 +742,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
               </TooltipPopup>
             </Tooltip>
           )}
-          <ThreadWorktreeIndicator thread={thread} />
+          <ThreadWorktreeIndicator thread={thread} vcsKind={gitStatus.data?.kind ?? "unknown"} />
           {terminalStatus && (
             <Tooltip>
               <TooltipTrigger

@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -110,6 +111,33 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
 
         expect(yield* checkpointStore.isGitRepository(tmp)).toBe(true);
+      }),
+    );
+  });
+
+  describe("supportsCheckpoints", () => {
+    it.effect("reports checkpoint support for the actively selected Git driver", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+
+        expect(yield* checkpointStore.supportsCheckpoints(tmp)).toBe(true);
+      }),
+    );
+
+    it.effect("reports no checkpoint support for a native JJ repository", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* Effect.sync(() =>
+          NodeChildProcess.execFileSync("jj", ["git", "init", "--no-colocate", "."], {
+            cwd: tmp,
+            stdio: "ignore",
+          }),
+        );
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+
+        expect(yield* checkpointStore.supportsCheckpoints(tmp)).toBe(false);
       }),
     );
   });

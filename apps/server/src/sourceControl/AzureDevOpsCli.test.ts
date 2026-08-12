@@ -158,6 +158,7 @@ describe("AzureDevOpsCli.layer", () => {
       const result = yield* az.listPullRequests({
         cwd: "/repo",
         headSelector: "origin:feature/merged",
+        target: { refName: "release", repository: "ignored/other" },
         state: "merged",
         limit: 10,
       });
@@ -174,6 +175,8 @@ describe("AzureDevOpsCli.layer", () => {
           "true",
           "--source-branch",
           "feature/merged",
+          "--target-branch",
+          "release",
           "--status",
           "completed",
           "--top",
@@ -274,12 +277,48 @@ describe("AzureDevOpsCli.layer", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("creates pull requests using the body file as the Azure description", () =>
+  it.effect("creates pull requests through a file payload without placing the body in argv", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const bodyFile = `/tmp/shuv2code-azure-devops-cli-.md`;
-      yield* fileSystem.writeFileString(bodyFile, "Generated body");
-      mockRun.mockReturnValueOnce(Effect.succeed(processOutput("{}")));
+      const bodyFile = yield* fileSystem.makeTempFileScoped({
+        prefix: "shuv2code-azure-devops-cli-body-",
+        suffix: ".md",
+      });
+      const body = [
+        "# Exact body",
+        "",
+        "Quotes: \"double\" and 'single'.",
+        "Shell-like text stays literal: $(touch nope) `ticks` $HOME; --description @not-a-file",
+        "Backslash: \\\\ and Unicode: café ☕",
+        "",
+        "large-body-sentinel:" + "x".repeat(70_000),
+        "",
+      ].join("\n");
+      yield* fileSystem.writeFileString(bodyFile, body);
+      let requestFile: string | null = null;
+      let requestBody: string | null = null;
+      mockRun
+        .mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify({
+                id: "repository-id",
+                project: { id: "project-id" },
+              }),
+            ),
+          ),
+        )
+        .mockImplementationOnce((request) =>
+          Effect.gen(function* () {
+            const fileIndex = request.args.indexOf("--in-file");
+            requestFile = request.args[fileIndex + 1] ?? null;
+            requestBody = requestFile
+              ? yield* fileSystem.readFileString(requestFile).pipe(Effect.orDie)
+              : null;
+            return processOutput("{}");
+          }),
+        );
 
       const az = yield* AzureDevOpsCli.AzureDevOpsCli;
       yield* az.createPullRequest({
@@ -290,14 +329,206 @@ describe("AzureDevOpsCli.layer", () => {
         bodyFile,
       });
 
-      expect(mockRun).toHaveBeenCalledWith(
+      expect(mockRun).toHaveBeenCalledTimes(2);
+      expect(mockRun).toHaveBeenNthCalledWith(1, {
+        operation: "AzureDevOpsCli.execute",
+        command: "az",
+        cwd: "/repo",
+        args: ["repos", "show", "--detect", "true", "--only-show-errors", "--output", "json"],
+        timeoutMs: 30_000,
+      });
+      assert.notEqual(requestFile, null);
+      expect(mockRun).toHaveBeenNthCalledWith(2, {
+        operation: "AzureDevOpsCli.execute",
+        command: "az",
+        cwd: "/repo",
+        args: [
+          "devops",
+          "invoke",
+          "--only-show-errors",
+          "--detect",
+          "true",
+          "--area",
+          "git",
+          "--resource",
+          "pullRequests",
+          "--route-parameters",
+          "project=project-id",
+          "repositoryId=repository-id",
+          "--http-method",
+          "POST",
+          "--api-version",
+          "7.1",
+          "--encoding",
+          "utf-8",
+          "--in-file",
+          requestFile,
+          "--output",
+          "none",
+        ],
+        timeoutMs: 30_000,
+      });
+      assert.notEqual(requestBody, null);
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      assert.deepStrictEqual(JSON.parse(requestBody ?? ""), {
+        sourceRefName: "refs/heads/feature/provider",
+        targetRefName: "refs/heads/main",
+        title: "Provider PR",
+        description: body,
+      });
+      assert.equal(mockRun.mock.calls[1]?.[0].args.includes(body), false);
+      assert.equal(
+        mockRun.mock.calls[1]?.[0].args.join("\0").includes("large-body-sentinel"),
+        false,
+      );
+      assert.equal(mockRun.mock.calls[1]?.[0].args.includes(bodyFile), false);
+      assert.equal(yield* fileSystem.exists(requestFile ?? ""), false);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("uses explicit Azure repository coordinates instead of cwd detection", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const bodyFile = yield* fileSystem.makeTempFileScoped({
+        prefix: "shuv2code-azure-devops-cli-explicit-body-",
+        suffix: ".md",
+      });
+      yield* fileSystem.writeFileString(bodyFile, "Explicit body");
+      mockRun
+        .mockReturnValueOnce(Effect.succeed(processOutput("[]")))
+        .mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify({
+                id: "selected-repository-id",
+                project: { id: "selected-project-id" },
+              }),
+            ),
+          ),
+        )
+        .mockReturnValueOnce(Effect.succeed(processOutput("{}")))
+        .mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify({
+                name: "selected-repo",
+                webUrl: "https://dev.azure.com/acme/selected-project/_git/selected-repo",
+                remoteUrl: "https://dev.azure.com/acme/selected-project/_git/selected-repo",
+                sshUrl: "git@ssh.dev.azure.com:v3/acme/selected-project/selected-repo",
+                project: { name: "selected-project" },
+                defaultBranch: "refs/heads/develop",
+              }),
+            ),
+          ),
+        );
+      const repository = {
+        repository: "selected-repo",
+        project: "selected-project",
+        organization: "https://dev.azure.com/acme",
+      };
+
+      const az = yield* AzureDevOpsCli.AzureDevOpsCli;
+      yield* az.listPullRequests({
+        cwd: "/repo",
+        repository,
+        headSelector: "feature/provider",
+        state: "open",
+        limit: 1,
+      });
+      yield* az.createPullRequest({
+        cwd: "/repo",
+        repository,
+        baseBranch: "develop",
+        headSelector: "feature/provider",
+        title: "Selected repository PR",
+        bodyFile,
+      });
+      const defaultBranch = yield* az.getDefaultBranch({ cwd: "/repo", repository });
+      const selectorArgs = [
+        "--detect",
+        "false",
+        "--repository",
+        "selected-repo",
+        "--project",
+        "selected-project",
+        "--organization",
+        "https://dev.azure.com/acme",
+      ];
+
+      expect(mockRun).toHaveBeenNthCalledWith(
+        1,
         expect.objectContaining({
           command: "az",
           cwd: "/repo",
-          args: expect.arrayContaining(["--description", `@${bodyFile}`]),
+          args: [
+            "repos",
+            "pr",
+            "list",
+            ...selectorArgs,
+            "--source-branch",
+            "feature/provider",
+            "--status",
+            "active",
+            "--top",
+            "1",
+            "--only-show-errors",
+            "--output",
+            "json",
+          ],
         }),
       );
-      expect(mockRun.mock.calls[0]?.[0].args).not.toContain("--output");
+      expect(mockRun).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          command: "az",
+          cwd: "/repo",
+          args: ["repos", "show", ...selectorArgs, "--only-show-errors", "--output", "json"],
+        }),
+      );
+      expect(mockRun).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({
+          command: "az",
+          cwd: "/repo",
+          args: [
+            "devops",
+            "invoke",
+            "--only-show-errors",
+            "--detect",
+            "false",
+            "--organization",
+            "https://dev.azure.com/acme",
+            "--area",
+            "git",
+            "--resource",
+            "pullRequests",
+            "--route-parameters",
+            "project=selected-project-id",
+            "repositoryId=selected-repository-id",
+            "--http-method",
+            "POST",
+            "--api-version",
+            "7.1",
+            "--encoding",
+            "utf-8",
+            "--in-file",
+            expect.any(String),
+            "--output",
+            "none",
+          ],
+        }),
+      );
+      expect(mockRun).toHaveBeenNthCalledWith(
+        4,
+        expect.objectContaining({
+          command: "az",
+          cwd: "/repo",
+          args: ["repos", "show", ...selectorArgs, "--only-show-errors", "--output", "json"],
+        }),
+      );
+      assert.strictEqual(defaultBranch, "develop");
     }).pipe(Effect.provide(layer)),
   );
 

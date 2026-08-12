@@ -39,6 +39,55 @@ function toChangeRequest(summary: GitLabCli.GitLabMergeRequestSummary): ChangeRe
   };
 }
 
+interface GitLabRepositoryCoordinates {
+  readonly hostname: string;
+  readonly repository: string;
+  readonly selector: string;
+}
+
+function normalizeGitLabRepositoryPath(value: string): string | null {
+  const repository = value
+    .trim()
+    .replace(/^\/+|\/+$/gu, "")
+    .replace(/\.git$/u, "");
+  return repository.length > 0 ? repository : null;
+}
+
+function gitLabRepositoryCoordinates(
+  context: SourceControlProvider.SourceControlProviderContext | undefined,
+): GitLabRepositoryCoordinates | null {
+  if (context === undefined) return null;
+
+  let hostname: string | null = null;
+  let repository: string | null = null;
+  const scpMatch = /^[^@\s]+@([^:\s]+):(.+)$/u.exec(context.remoteUrl.trim());
+  if (scpMatch?.[1] && scpMatch[2]) {
+    hostname = scpMatch[1];
+    repository = normalizeGitLabRepositoryPath(scpMatch[2]);
+  } else {
+    try {
+      const remote = new URL(context.remoteUrl);
+      hostname = remote.host;
+      repository = normalizeGitLabRepositoryPath(remote.pathname);
+    } catch {
+      return null;
+    }
+  }
+  if (!hostname || !repository) return null;
+
+  let origin = `https://${hostname}`;
+  try {
+    origin = new URL(context.provider.baseUrl).origin;
+  } catch {
+    // The parsed remote host still provides a credential-free repository selector.
+  }
+  return {
+    hostname,
+    repository,
+    selector: `${origin}/${repository}`,
+  };
+}
+
 function parseGitLabAuth(input: SourceControlAuthProbeInput) {
   const output = combinedAuthOutput(input);
   const authenticatedHost = findAuthenticatedGitLabHost(parseGitLabAuthStatusHosts(output));
@@ -107,11 +156,18 @@ export const make = Effect.gen(function* () {
     kind: "gitlab",
     listChangeRequests: (input) => {
       const source = SourceControlProvider.sourceControlRefFromInput(input);
+      const coordinates = gitLabRepositoryCoordinates(input.context);
       return gitlab
         .listMergeRequests({
           cwd: input.cwd,
           headSelector: input.headSelector,
           ...(source ? { source } : {}),
+          ...(input.target ? { target: input.target } : {}),
+          ...(coordinates
+            ? { repository: coordinates.selector }
+            : source?.repository
+              ? { repository: source.repository }
+              : {}),
           state: input.state,
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
         })
@@ -153,13 +209,20 @@ export const make = Effect.gen(function* () {
       ),
     createChangeRequest: (input) => {
       const source = SourceControlProvider.sourceControlRefFromInput(input);
+      const coordinates = gitLabRepositoryCoordinates(input.context);
+      const target =
+        input.target ??
+        (coordinates
+          ? { refName: input.baseRefName, repository: coordinates.repository }
+          : undefined);
       return gitlab
         .createMergeRequest({
           cwd: input.cwd,
           baseBranch: input.baseRefName,
           headSelector: input.headSelector,
           ...(source ? { source } : {}),
-          ...(input.target ? { target: input.target } : {}),
+          ...(target ? { target } : {}),
+          ...(coordinates ? { hostname: coordinates.hostname } : {}),
           title: input.title,
           bodyFile: input.bodyFile,
         })
@@ -214,20 +277,29 @@ export const make = Effect.gen(function* () {
             }),
         ),
       ),
-    getDefaultBranch: (input) =>
-      gitlab.getDefaultBranch(input).pipe(
-        Effect.mapError(
-          (error) =>
-            new SourceControlProviderError({
-              provider: "gitlab",
-              operation: "getDefaultBranch",
-              command: error.command,
-              cwd: input.cwd,
-              detail: error.detail,
-              cause: error,
-            }),
-        ),
-      ),
+    getDefaultBranch: (input) => {
+      const coordinates = gitLabRepositoryCoordinates(input.context);
+      return gitlab
+        .getDefaultBranch({
+          cwd: input.cwd,
+          ...(coordinates
+            ? { repository: coordinates.repository, hostname: coordinates.hostname }
+            : {}),
+        })
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new SourceControlProviderError({
+                provider: "gitlab",
+                operation: "getDefaultBranch",
+                command: error.command,
+                cwd: input.cwd,
+                detail: error.detail,
+                cause: error,
+              }),
+          ),
+        );
+    },
     checkoutChangeRequest: (input) =>
       gitlab.checkoutMergeRequest(input).pipe(
         Effect.mapError(

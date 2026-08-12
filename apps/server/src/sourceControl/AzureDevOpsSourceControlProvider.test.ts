@@ -132,3 +132,134 @@ it.effect("uses Azure CLI repository detection for default branch lookup", () =>
     assert.strictEqual(cwdInput, "/repo");
   }),
 );
+
+it.effect("routes Azure DevOps change requests through the explicitly selected repository", () =>
+  Effect.gen(function* () {
+    let listInput:
+      | Parameters<AzureDevOpsCli.AzureDevOpsCli["Service"]["listPullRequests"]>[0]
+      | null = null;
+    let createInput:
+      | Parameters<AzureDevOpsCli.AzureDevOpsCli["Service"]["createPullRequest"]>[0]
+      | null = null;
+    let defaultInput:
+      | Parameters<AzureDevOpsCli.AzureDevOpsCli["Service"]["getDefaultBranch"]>[0]
+      | null = null;
+    const provider = yield* makeProvider({
+      listPullRequests: (input) => {
+        listInput = input;
+        return Effect.succeed([]);
+      },
+      createPullRequest: (input) => {
+        createInput = input;
+        return Effect.void;
+      },
+      getDefaultBranch: (input) => {
+        defaultInput = input;
+        return Effect.succeed("develop");
+      },
+    });
+    const context = {
+      provider: {
+        kind: "azure-devops",
+        name: "Azure DevOps",
+        baseUrl: "https://dev.azure.com/acme",
+      },
+      remoteName: "upstream",
+      remoteUrl: "https://dev.azure.com/acme/selected-project/_git/selected-repo",
+    } as const;
+
+    yield* provider.listChangeRequests({
+      cwd: "/repo",
+      context,
+      source: {
+        refName: "feature/provider",
+        repository: "acme/selected-project/_git/selected-repo",
+      },
+      target: { refName: "release", repository: "wrong/project/_git/repo" },
+      headSelector: "feature/provider",
+      state: "open",
+      limit: 1,
+    });
+    yield* provider.createChangeRequest({
+      cwd: "/repo",
+      context,
+      source: {
+        refName: "feature/provider",
+        repository: "acme/selected-project/_git/selected-repo",
+      },
+      baseRefName: "develop",
+      headSelector: "feature/provider",
+      title: "Selected repository PR",
+      bodyFile: "/tmp/body.md",
+    });
+    const defaultBranch = yield* provider.getDefaultBranch({ cwd: "/repo", context });
+    const repository = {
+      repository: "selected-repo",
+      project: "selected-project",
+      organization: "https://dev.azure.com/acme",
+    };
+
+    assert.deepStrictEqual(listInput, {
+      cwd: "/repo",
+      headSelector: "feature/provider",
+      source: {
+        refName: "feature/provider",
+        repository: "acme/selected-project/_git/selected-repo",
+      },
+      target: { refName: "release", repository: "wrong/project/_git/repo" },
+      repository,
+      state: "open",
+      limit: 1,
+    });
+    assert.deepStrictEqual(createInput, {
+      cwd: "/repo",
+      baseBranch: "develop",
+      headSelector: "feature/provider",
+      source: {
+        refName: "feature/provider",
+        repository: "acme/selected-project/_git/selected-repo",
+      },
+      repository,
+      title: "Selected repository PR",
+      bodyFile: "/tmp/body.md",
+    });
+    assert.deepStrictEqual(defaultInput, { cwd: "/repo", repository });
+    assert.strictEqual(defaultBranch, "develop");
+  }),
+);
+
+it.effect("parses the project after DefaultCollection in legacy Azure DevOps URLs", () =>
+  Effect.gen(function* () {
+    let defaultInput:
+      | Parameters<AzureDevOpsCli.AzureDevOpsCli["Service"]["getDefaultBranch"]>[0]
+      | null = null;
+    const provider = yield* makeProvider({
+      getDefaultBranch: (input) => {
+        defaultInput = input;
+        return Effect.succeed("main");
+      },
+    });
+    const context = {
+      provider: {
+        kind: "azure-devops",
+        name: "Azure DevOps",
+        baseUrl: "https://acme.visualstudio.com",
+      },
+      remoteName: "legacy",
+      remoteUrl:
+        "https://acme.visualstudio.com/DefaultCollection/selected-project/_git/selected-repo",
+    } as const;
+
+    const defaultBranch = yield* provider.getDefaultBranch({ cwd: "/repo", context });
+
+    assert.strictEqual(defaultBranch, "main");
+    assert.deepStrictEqual(defaultInput, {
+      cwd: "/repo",
+      repository: {
+        repository: "selected-repo",
+        project: "selected-project",
+        organization: "https://acme.visualstudio.com",
+      },
+    });
+  }),
+);

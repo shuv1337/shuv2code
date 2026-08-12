@@ -14,6 +14,7 @@ import type {
   SourceControlPublishRepositoryResult,
   SourceControlRepositoryVisibility,
   VcsStatusResult,
+  VcsSelectableKind,
 } from "@shuv2code/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -24,14 +25,24 @@ import {
   ChevronDownIcon,
   CloudUploadIcon,
   ExternalLinkIcon,
-  GitBranchPlusIcon,
   GitCommitIcon,
   InfoIcon,
   LockIcon,
   GlobeIcon,
+  BookmarkIcon,
+  PencilIcon,
+  PlusIcon,
+  RefreshCwIcon,
 } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
-import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "~/components/Icons";
+import {
+  AzureDevOpsIcon,
+  BitbucketIcon,
+  GitHubIcon,
+  GitLabIcon,
+  JujutsuIcon,
+  GitIcon,
+} from "~/components/Icons";
 import { RadioGroup } from "~/components/ui/radio-group";
 import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
@@ -45,6 +56,9 @@ import {
   requiresDefaultBranchConfirmation,
   resolveDefaultBranchActionDialogCopy,
   resolveLiveThreadBranchUpdate,
+  resolveJjActionBookmark,
+  resolveJjActionAvailability,
+  resolveJjWorkingCopyLabel,
   resolveThreadBranchMetadataPatch,
   resolveQuickAction,
   resolveThreadBranchUpdate,
@@ -137,6 +151,325 @@ interface RunGitActionWithToastInput {
 }
 
 const GIT_STATUS_WINDOW_REFRESH_DEBOUNCE_MS = 250;
+
+function vcsKindLabel(kind: VcsSelectableKind): string {
+  return kind === "jj" ? "Jujutsu" : "Git";
+}
+
+function JjActionsGroup(props: {
+  readonly environmentId: ScopedThreadRef["environmentId"] | null;
+  readonly cwd: string;
+  readonly status: VcsStatusResult;
+  readonly refreshStatus: RefreshVcsStatus;
+  readonly threadToastData: ThreadToastData | undefined;
+}) {
+  const describeChange = useAtomCommand(vcsEnvironment.describeChange, { reportFailure: false });
+  const startChange = useAtomCommand(vcsEnvironment.startChange, { reportFailure: false });
+  const fetch = useAtomCommand(vcsEnvironment.fetch, { reportFailure: false });
+  const pushBookmark = useAtomCommand(vcsEnvironment.pushBookmark, { reportFailure: false });
+  const createChangeRequest = useAtomCommand(vcsEnvironment.createChangeRequest, {
+    reportFailure: false,
+  });
+  const createBookmark = useAtomCommand(vcsEnvironment.createRef, { reportFailure: false });
+  const [descriptionOpen, setDescriptionOpen] = useState(false);
+  const [description, setDescription] = useState(props.status.workingCopy?.description ?? "");
+  const [bookmarkOpen, setBookmarkOpen] = useState(false);
+  const [bookmarkName, setBookmarkName] = useState("");
+  const [changeRequestOpen, setChangeRequestOpen] = useState(false);
+  const [changeRequestTitle, setChangeRequestTitle] = useState("");
+  const [changeRequestBody, setChangeRequestBody] = useState("");
+  const [changeRequestBase, setChangeRequestBase] = useState("");
+  const [pending, setPending] = useState<string | null>(null);
+  const workingCopy = props.status.workingCopy;
+  const currentBookmark = resolveJjActionBookmark(props.status);
+  const availability = resolveJjActionAvailability(props.status);
+
+  const refresh = () => {
+    if (props.environmentId !== null) {
+      requestVcsStatusRefresh(props.refreshStatus, props.environmentId, props.cwd);
+    }
+  };
+
+  const run = async (label: string, action: () => Promise<unknown>) => {
+    setPending(label);
+    const toastId = toastManager.add({
+      type: "loading",
+      title: label,
+      timeout: 0,
+      data: props.threadToastData,
+    });
+    try {
+      const result = (await action()) as { readonly _tag: string };
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result as never);
+        toastManager.update(toastId, {
+          type: "error",
+          title: `${label} failed`,
+          description: error instanceof Error ? error.message : "An error occurred.",
+          data: props.threadToastData,
+        });
+        return;
+      }
+      toastManager.update(toastId, {
+        type: "success",
+        title: label,
+        data: props.threadToastData,
+      });
+      refresh();
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const runDescribe = () => {
+    if (props.environmentId === null || description.trim().length === 0) return;
+    setDescriptionOpen(false);
+    void run("Change described", () =>
+      describeChange({
+        environmentId: props.environmentId!,
+        input: { cwd: props.cwd, description: description.trim() },
+      }),
+    );
+  };
+
+  const runCreateBookmark = () => {
+    if (props.environmentId === null || bookmarkName.trim().length === 0) return;
+    setBookmarkOpen(false);
+    void run("Bookmark set", () =>
+      createBookmark({
+        environmentId: props.environmentId!,
+        input: { cwd: props.cwd, refName: bookmarkName.trim() },
+      }),
+    );
+  };
+
+  const openChangeRequestDialog = () => {
+    const currentDescription = workingCopy?.description.trim() ?? "";
+    setChangeRequestTitle(currentDescription.split("\n")[0] ?? "");
+    setChangeRequestBody(currentDescription);
+    setChangeRequestOpen(true);
+  };
+
+  const runCreateChangeRequest = () => {
+    if (
+      props.environmentId === null ||
+      currentBookmark === null ||
+      changeRequestTitle.trim().length === 0
+    ) {
+      return;
+    }
+    setChangeRequestOpen(false);
+    void run("Change request created", () =>
+      createChangeRequest({
+        environmentId: props.environmentId!,
+        input: {
+          cwd: props.cwd,
+          bookmarkName: currentBookmark,
+          ...(changeRequestBase.trim() ? { baseRefName: changeRequestBase.trim() } : {}),
+          title: changeRequestTitle.trim(),
+          body: changeRequestBody,
+        },
+      }),
+    );
+  };
+
+  return (
+    <>
+      <div className="shrink-0">
+        <Menu>
+          <MenuTrigger
+            render={<Button aria-label="Jujutsu actions" size="icon-xs" variant="outline" />}
+            disabled={pending !== null}
+          >
+            <JujutsuIcon aria-hidden className="size-3.5" />
+          </MenuTrigger>
+          <MenuPopup align="end" className="min-w-72">
+            <div className="border-b px-2 py-2 text-xs text-muted-foreground">
+              <div>{resolveJjWorkingCopyLabel(props.status)}</div>
+              <div>Workspace {workingCopy?.workspaceName ?? "unknown"}</div>
+              <div>
+                {workingCopy?.bookmarks.length
+                  ? `Bookmarks ${workingCopy.bookmarks.join(", ")}`
+                  : "Anonymous change (no bookmark)"}
+              </div>
+              {workingCopy?.hasConflicts ? (
+                <div className="text-destructive">
+                  {workingCopy.conflictPaths.length} conflicted file(s)
+                </div>
+              ) : null}
+            </div>
+            <MenuItem
+              disabled={!availability.canDescribe}
+              onClick={() => {
+                setDescription(workingCopy?.description ?? "");
+                setDescriptionOpen(true);
+              }}
+            >
+              <PencilIcon />
+              Describe change...
+            </MenuItem>
+            <MenuItem onClick={() => setBookmarkOpen(true)}>
+              <BookmarkIcon />
+              Create or move bookmark...
+            </MenuItem>
+            <MenuItem
+              disabled={!availability.canStartChange}
+              onClick={() => {
+                if (props.environmentId === null) return;
+                void run("New change started", () =>
+                  startChange({
+                    environmentId: props.environmentId!,
+                    input: { cwd: props.cwd },
+                  }),
+                );
+              }}
+            >
+              <PlusIcon />
+              Start new change
+            </MenuItem>
+            <MenuItem
+              disabled={!availability.canFetch}
+              onClick={() => {
+                if (props.environmentId === null) return;
+                void run("Fetched bookmarks", () =>
+                  fetch({ environmentId: props.environmentId!, input: { cwd: props.cwd } }),
+                );
+              }}
+            >
+              <RefreshCwIcon />
+              Fetch bookmarks
+            </MenuItem>
+            <MenuItem
+              disabled={!availability.canPush}
+              onClick={() => {
+                if (props.environmentId === null || currentBookmark === null) return;
+                void run(`Pushed ${currentBookmark}`, () =>
+                  pushBookmark({
+                    environmentId: props.environmentId!,
+                    input: { cwd: props.cwd, bookmarkName: currentBookmark },
+                  }),
+                );
+              }}
+            >
+              <CloudUploadIcon />
+              Push {currentBookmark ?? "bookmark"}
+            </MenuItem>
+            <MenuItem
+              disabled={!availability.canCreateChangeRequest}
+              onClick={openChangeRequestDialog}
+            >
+              <ExternalLinkIcon />
+              Create change request...
+            </MenuItem>
+            {availability.pushUnavailableReason ? (
+              <p className="px-2 py-1.5 text-xs text-warning">
+                {availability.pushUnavailableReason}
+              </p>
+            ) : null}
+          </MenuPopup>
+        </Menu>
+      </div>
+
+      <Dialog open={descriptionOpen} onOpenChange={setDescriptionOpen}>
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Describe change</DialogTitle>
+            <DialogDescription>
+              Set the description for change {workingCopy?.changeId ?? "@"}. This does not create a
+              Git commit.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <Textarea
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDescriptionOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={description.trim().length === 0} onClick={runDescribe}>
+              Describe
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+
+      <Dialog open={bookmarkOpen} onOpenChange={setBookmarkOpen}>
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Set bookmark</DialogTitle>
+            <DialogDescription>
+              Point a bookmark at the current change. Bookmarks are explicit pointers, not active
+              branches.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <Input
+              value={bookmarkName}
+              onChange={(event) => setBookmarkName(event.target.value)}
+              placeholder="feature/change-name"
+              aria-label="Bookmark name"
+            />
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBookmarkOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={bookmarkName.trim().length === 0} onClick={runCreateBookmark}>
+              Set bookmark
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+
+      <Dialog open={changeRequestOpen} onOpenChange={setChangeRequestOpen}>
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Create change request</DialogTitle>
+            <DialogDescription>
+              Push bookmark {currentBookmark ?? "(missing)"} with Jujutsu, then ask the detected
+              forge to open a change request. Leave the target blank to use the detected trunk
+              bookmark.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="space-y-3">
+            <Input
+              value={changeRequestTitle}
+              onChange={(event) => setChangeRequestTitle(event.target.value)}
+              placeholder="Change request title"
+              aria-label="Change request title"
+            />
+            <Input
+              value={changeRequestBase}
+              onChange={(event) => setChangeRequestBase(event.target.value)}
+              placeholder="Target bookmark (detected automatically)"
+              aria-label="Target bookmark"
+            />
+            <Textarea
+              value={changeRequestBody}
+              onChange={(event) => setChangeRequestBody(event.target.value)}
+              placeholder="Description"
+              aria-label="Change request description"
+            />
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setChangeRequestOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={changeRequestTitle.trim().length === 0 || currentBookmark === null}
+              onClick={runCreateChangeRequest}
+            >
+              Push and create
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+    </>
+  );
+}
 
 type RefreshVcsStatus = (target: {
   readonly environmentId: ScopedThreadRef["environmentId"];
@@ -1106,7 +1439,8 @@ export default function GitActionsControl({
   const allSelected = excludedFiles.size === 0;
   const noneSelected = selectedFiles.length === 0;
 
-  const initAction = useVcsInitAction(sourceControlScope);
+  const initGitAction = useVcsInitAction(sourceControlScope, "git");
+  const initJjAction = useVcsInitAction(sourceControlScope, "jj");
   const runImmediateGitAction = useGitStackedAction(sourceControlScope);
   const pullAction = useVcsPullAction(sourceControlScope);
   const isGitActionRunning = useSourceControlActionRunning(
@@ -1119,7 +1453,12 @@ export default function GitActionsControl({
     activeDraftThread.worktreePath === null;
 
   useEffect(() => {
-    if (isGitActionRunning || isSelectingWorktreeBase || activeServerThread) {
+    if (
+      gitStatusForActions?.kind === "jj" ||
+      isGitActionRunning ||
+      isSelectingWorktreeBase ||
+      activeServerThread
+    ) {
       return;
     }
 
@@ -1650,40 +1989,97 @@ export default function GitActionsControl({
     [gitCwd, openInPreferredEditor, threadToastData],
   );
 
-  const canPublishRepository = isRepo && gitStatusForActions !== null && !hasPrimaryRemote;
+  const canPublishRepository =
+    isRepo &&
+    gitStatusForActions !== null &&
+    gitStatusForActions.kind === "git" &&
+    !hasPrimaryRemote;
+
+  const defaultInitKind = gitStatusForActions?.selection?.defaultKind ?? "git";
+  const isInitPending = initGitAction.isPending || initJjAction.isPending;
+  const runInit = (kind: VcsSelectableKind) => {
+    if (isInitPending) return;
+    const action = kind === "jj" ? initJjAction : initGitAction;
+    void (async () => {
+      const result = await action.run();
+      if (result._tag === "Success") {
+        gitStatusQuery.refresh();
+        return;
+      }
+      if (isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: `${vcsKindLabel(kind)} initialization failed`,
+          description: error instanceof Error ? error.message : "An error occurred.",
+          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+        }),
+      );
+    })();
+  };
 
   if (!gitCwd) return null;
 
   return (
     <>
       {!isRepo ? (
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={initAction.isPending}
-          onClick={() => {
-            void (async () => {
-              const result = await initAction.run();
-              if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
-                return;
+        <Group aria-label="Initialize version control" className="shrink-0">
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={isInitPending}
+            onClick={() => runInit(defaultInitKind)}
+          >
+            {defaultInitKind === "jj" ? (
+              <JujutsuIcon className="size-3.5" aria-hidden />
+            ) : (
+              <GitIcon className="size-3.5" aria-hidden />
+            )}
+            <span className="ml-0.5">
+              {isInitPending
+                ? "Initializing..."
+                : defaultInitKind === "jj"
+                  ? "Initialize Jujutsu + Git"
+                  : "Initialize Git"}
+            </span>
+          </Button>
+          <GroupSeparator />
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  aria-label="Version control initialization options"
+                  size="icon-xs"
+                  variant="outline"
+                />
               }
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Git initialization failed",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                  ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-                }),
-              );
-            })();
-          }}
-        >
-          <GitBranchPlusIcon className="size-3.5" aria-hidden />
-          <span className="ml-0.5">
-            {initAction.isPending ? "Initializing..." : "Initialize Git"}
-          </span>
-        </Button>
+              disabled={isInitPending}
+            >
+              <ChevronDownIcon aria-hidden className="size-4" />
+            </MenuTrigger>
+            <MenuPopup align="end" className="min-w-56">
+              <MenuItem onClick={() => runInit("git")}>
+                <GitIcon />
+                Initialize Git
+                {defaultInitKind === "git" ? <CheckIcon className="ml-auto" /> : null}
+              </MenuItem>
+              <MenuItem onClick={() => runInit("jj")}>
+                <JujutsuIcon />
+                Initialize Jujutsu + Git
+                {defaultInitKind === "jj" ? <CheckIcon className="ml-auto" /> : null}
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+        </Group>
+      ) : gitStatusForActions?.kind === "jj" ? (
+        <JjActionsGroup
+          environmentId={activeEnvironmentId}
+          cwd={gitCwd}
+          status={gitStatusForActions}
+          refreshStatus={refreshVcsStatus}
+          threadToastData={threadToastData}
+        />
       ) : (
         <Group aria-label="Git actions" className="shrink-0">
           {quickActionDisabledReason ? (

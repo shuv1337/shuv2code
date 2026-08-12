@@ -3965,6 +3965,7 @@ function ChatViewContent(props: ChatViewProps) {
   const sendEnvMode = resolveSendEnvMode({
     requestedEnvMode: envMode,
     isGitRepo,
+    supportsWorktrees: gitStatusQuery.data?.capabilities?.supportsWorktrees ?? false,
   });
   const localCheckoutBranchMismatch = useMemo(
     () =>
@@ -4688,7 +4689,12 @@ function ChatViewContent(props: ChatViewProps) {
     const shouldCreateWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
     if (shouldCreateWorktree && !activeThreadBranch) {
-      setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
+      setThreadError(
+        threadIdForSend,
+        gitStatusQuery.data?.kind === "jj"
+          ? "Select a base bookmark before sending in New workspace mode."
+          : "Select a base branch before sending in New worktree mode.",
+      );
       return;
     }
 

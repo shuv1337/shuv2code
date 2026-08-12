@@ -3,10 +3,29 @@ import type * as Effect from "effect/Effect";
 
 import type {
   VcsDriverCapabilities,
+  VcsCreateRefInput,
+  VcsCreateRefResult,
+  VcsCreateWorktreeInput,
+  VcsCreateWorktreeResult,
+  VcsDescribeChangeInput,
+  VcsDescribeChangeResult,
   VcsError,
+  VcsFetchInput,
+  VcsFetchResult,
   VcsInitInput,
+  VcsListRefsInput,
+  VcsListRefsResult,
   VcsListRemotesResult,
   VcsListWorkspaceFilesResult,
+  VcsPushBookmarkInput,
+  VcsPushBookmarkResult,
+  VcsRemoveWorktreeInput,
+  VcsStartChangeInput,
+  VcsStartChangeResult,
+  VcsStatusInput,
+  VcsStatusResult,
+  VcsSwitchRefInput,
+  VcsSwitchRefResult,
   ReviewDiffPreviewInput,
   ReviewDiffPreviewResult,
   VcsRepositoryIdentity,
@@ -73,8 +92,26 @@ export class VcsDriver extends Context.Service<
       relativePaths: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<string>, VcsError>;
     readonly initRepository: (input: VcsInitInput) => Effect.Effect<void, VcsError>;
+    readonly status?: (input: VcsStatusInput) => Effect.Effect<VcsStatusResult, VcsError>;
+    readonly listRefs?: (input: VcsListRefsInput) => Effect.Effect<VcsListRefsResult, VcsError>;
+    readonly createWorktree?: (
+      input: VcsCreateWorktreeInput,
+    ) => Effect.Effect<VcsCreateWorktreeResult, VcsError>;
+    readonly removeWorktree?: (input: VcsRemoveWorktreeInput) => Effect.Effect<void, VcsError>;
+    readonly createRef?: (input: VcsCreateRefInput) => Effect.Effect<VcsCreateRefResult, VcsError>;
+    readonly switchRef?: (input: VcsSwitchRefInput) => Effect.Effect<VcsSwitchRefResult, VcsError>;
+    readonly describeChange?: (
+      input: VcsDescribeChangeInput,
+    ) => Effect.Effect<VcsDescribeChangeResult, VcsError>;
+    readonly startChange?: (
+      input: VcsStartChangeInput,
+    ) => Effect.Effect<VcsStartChangeResult, VcsError>;
+    readonly fetch?: (input: VcsFetchInput) => Effect.Effect<VcsFetchResult, VcsError>;
+    readonly pushBookmark?: (
+      input: VcsPushBookmarkInput,
+    ) => Effect.Effect<VcsPushBookmarkResult, VcsError>;
     readonly getDiffPreview?: (
       input: ReviewDiffPreviewInput,
     ) => Effect.Effect<ReviewDiffPreviewResult, VcsError>;
   }
->()("@shuv2code/vcs/VcsDriver") {}
+>()("shuv2code/vcs/VcsDriver") {}

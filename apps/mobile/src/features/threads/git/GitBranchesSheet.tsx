@@ -7,6 +7,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AndroidSheetHeader } from "../../../components/AndroidScreenHeader";
 import { AppText as Text, AppTextInput as TextInput } from "../../../components/AppText";
 import { cn } from "../../../lib/cn";
+import {
+  canUseGitOnlyActions,
+  sourceControlRefLabel,
+} from "../../../state/git-action-availability";
 import { useEnvironmentQuery } from "../../../state/query";
 import { useThreadSelection } from "../../../state/use-thread-selection";
 import { useSelectedThreadGitActions } from "../../../state/use-selected-thread-git-actions";
@@ -37,7 +41,8 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
       : null,
   );
 
-  const currentBranchLabel = gitStatus.data?.refName ?? selectedThread?.branch ?? "Detached HEAD";
+  const gitOnlyActionsAvailable = canUseGitOnlyActions(gitStatus.data);
+  const currentBranchLabel = sourceControlRefLabel(gitStatus.data, selectedThread?.branch);
   const currentWorktreePath = selectedThreadWorktreePath;
   const availableBranches = gitState.selectedThreadBranches;
   const branchesLoading = gitState.selectedThreadBranchesLoading;
@@ -45,7 +50,11 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
 
   const [newBranchName, setNewBranchName] = useState("");
   const [worktreeBaseBranch, setWorktreeBaseBranch] = useState(
-    currentBranchLabel === "Detached HEAD" ? "main" : currentBranchLabel,
+    currentBranchLabel === "Detached HEAD" ||
+      currentBranchLabel === "Unbookmarked change" ||
+      currentBranchLabel === "No active ref"
+      ? "main"
+      : currentBranchLabel,
   );
   const [worktreeBranchName, setWorktreeBranchName] = useState("");
 
@@ -68,114 +77,138 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
         contentInset={{ bottom: Math.max(insets.bottom, 18) + 18 }}
         contentContainerClassName="gap-4 px-5 pt-2"
       >
-        <View className="gap-2 rounded-[18px] border border-border bg-card px-4 py-4">
-          <Text className="text-foreground-secondary text-2xs font-shuv2code-bold tracking-[1px] uppercase">
-            New branch
-          </Text>
-          <TextInput
-            value={newBranchName}
-            onChangeText={setNewBranchName}
-            placeholder="feature/mobile-polish"
-            className="rounded-[18px]"
-          />
-          <SheetActionButton
-            icon="plus"
-            label="Create & checkout"
-            tone="primary"
-            disabled={busy || newBranchName.trim().length === 0}
-            onPress={() => {
-              const branch = sanitizeFeatureBranchName(newBranchName.trim());
-              if (branch.length === 0) return;
-              void gitActions.onCreateSelectedThreadBranch(branch).then(() => {
-                setNewBranchName("");
-                navigation.goBack();
-              });
-            }}
-          />
-        </View>
-
-        <View className="gap-2 rounded-[18px] border border-border bg-card px-4 py-4">
-          <Text className="text-foreground-secondary text-2xs font-shuv2code-bold tracking-[1px] uppercase">
-            New worktree
-          </Text>
-          <TextInput
-            value={worktreeBaseBranch}
-            onChangeText={setWorktreeBaseBranch}
-            placeholder="main"
-            className="rounded-[18px]"
-          />
-          <TextInput
-            value={worktreeBranchName}
-            onChangeText={setWorktreeBranchName}
-            placeholder="feature/mobile-thread"
-            className="rounded-[18px]"
-          />
-          <SheetActionButton
-            icon="square.split.2x1"
-            label="Create worktree"
-            tone="primary"
-            disabled={
-              busy ||
-              worktreeBaseBranch.trim().length === 0 ||
-              worktreeBranchName.trim().length === 0
-            }
-            onPress={() => {
-              const baseBranch = worktreeBaseBranch.trim();
-              const newBranch = worktreeBranchName.trim();
-              if (baseBranch.length === 0 || newBranch.length === 0) return;
-              void gitActions.onCreateSelectedThreadWorktree({ baseBranch, newBranch }).then(() => {
-                setWorktreeBranchName("");
-                navigation.goBack();
-              });
-            }}
-          />
-        </View>
-
-        <View className="gap-2">
-          <Text className="text-foreground-secondary text-2xs font-shuv2code-bold tracking-[1px] uppercase">
-            Existing branches
-          </Text>
-          {branchesLoading ? (
-            <Text className="text-foreground-secondary text-sm font-medium">
-              Loading branches...
+        {!gitOnlyActionsAvailable ? (
+          <View className="gap-2 rounded-[18px] border border-border bg-card px-4 py-4">
+            <Text className="text-foreground text-base font-shuv2code-bold">
+              Branch actions unavailable
             </Text>
-          ) : null}
-          {!branchesLoading && availableBranches.length === 0 ? (
-            <Text className="text-foreground-secondary text-sm font-medium">
-              No local branches found.
+            <Text className="text-foreground-secondary text-sm font-medium leading-normal">
+              {gitStatus.data?.kind === "jj"
+                ? "Switching branches and creating Git worktrees are unavailable while Jujutsu is active."
+                : "Waiting for an active Git repository."}
             </Text>
-          ) : null}
-          {availableBranches.map((branch) => {
-            const disabled = disabledExistingBranches.has(branch.name);
-            const subtitle = branch.worktreePath
-              ? branch.worktreePath === currentWorktreePath
-                ? "Checked out in this thread"
-                : "Checked out in another worktree"
-              : branch.isDefault
-                ? "Default branch"
-                : "Local branch";
-
-            return (
-              <Pressable
-                key={branch.name}
-                className={cn(
-                  "gap-1 rounded-[18px] border px-4 py-3 disabled:opacity-[0.45]",
-                  branch.current ? "border-subtle-strong" : "border-border",
-                )}
-                disabled={busy || disabled}
+          </View>
+        ) : (
+          <>
+            <View className="gap-2 rounded-[18px] border border-border bg-card px-4 py-4">
+              <Text className="text-foreground-secondary text-2xs font-shuv2code-bold tracking-[1px] uppercase">
+                New branch
+              </Text>
+              <TextInput
+                value={newBranchName}
+                onChangeText={setNewBranchName}
+                placeholder="feature/mobile-polish"
+                className="rounded-[18px]"
+              />
+              <SheetActionButton
+                icon="plus"
+                label="Create & checkout"
+                tone="primary"
+                disabled={busy || newBranchName.trim().length === 0}
                 onPress={() => {
-                  void gitActions.onCheckoutSelectedThreadBranch(branch.name).then(() => {
+                  if (!gitOnlyActionsAvailable) return;
+                  const branch = sanitizeFeatureBranchName(newBranchName.trim());
+                  if (branch.length === 0) return;
+                  void gitActions.onCreateSelectedThreadBranch(branch).then(() => {
+                    setNewBranchName("");
                     navigation.goBack();
                   });
                 }}
-              >
-                <View className="absolute inset-0 rounded-[18px] bg-card" />
-                <Text className="text-foreground text-base font-shuv2code-bold">{branch.name}</Text>
-                <Text className="text-foreground-secondary text-xs font-medium">{subtitle}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
+              />
+            </View>
+
+            <View className="gap-2 rounded-[18px] border border-border bg-card px-4 py-4">
+              <Text className="text-foreground-secondary text-2xs font-shuv2code-bold tracking-[1px] uppercase">
+                New worktree
+              </Text>
+              <TextInput
+                value={worktreeBaseBranch}
+                onChangeText={setWorktreeBaseBranch}
+                placeholder="main"
+                className="rounded-[18px]"
+              />
+              <TextInput
+                value={worktreeBranchName}
+                onChangeText={setWorktreeBranchName}
+                placeholder="feature/mobile-thread"
+                className="rounded-[18px]"
+              />
+              <SheetActionButton
+                icon="square.split.2x1"
+                label="Create worktree"
+                tone="primary"
+                disabled={
+                  busy ||
+                  worktreeBaseBranch.trim().length === 0 ||
+                  worktreeBranchName.trim().length === 0
+                }
+                onPress={() => {
+                  if (!gitOnlyActionsAvailable) return;
+                  const baseBranch = worktreeBaseBranch.trim();
+                  const newBranch = worktreeBranchName.trim();
+                  if (baseBranch.length === 0 || newBranch.length === 0) return;
+                  void gitActions
+                    .onCreateSelectedThreadWorktree({ baseBranch, newBranch })
+                    .then(() => {
+                      setWorktreeBranchName("");
+                      navigation.goBack();
+                    });
+                }}
+              />
+            </View>
+
+            <View className="gap-2">
+              <Text className="text-foreground-secondary text-2xs font-shuv2code-bold tracking-[1px] uppercase">
+                Existing branches
+              </Text>
+              {branchesLoading ? (
+                <Text className="text-foreground-secondary text-sm font-medium">
+                  Loading branches...
+                </Text>
+              ) : null}
+              {!branchesLoading && availableBranches.length === 0 ? (
+                <Text className="text-foreground-secondary text-sm font-medium">
+                  No local branches found.
+                </Text>
+              ) : null}
+              {availableBranches.map((branch) => {
+                const disabled = disabledExistingBranches.has(branch.name);
+                const subtitle = branch.worktreePath
+                  ? branch.worktreePath === currentWorktreePath
+                    ? "Checked out in this thread"
+                    : "Checked out in another worktree"
+                  : branch.isDefault
+                    ? "Default branch"
+                    : "Local branch";
+
+                return (
+                  <Pressable
+                    key={branch.name}
+                    className={cn(
+                      "gap-1 rounded-[18px] border px-4 py-3 disabled:opacity-[0.45]",
+                      branch.current ? "border-subtle-strong" : "border-border",
+                    )}
+                    disabled={busy || disabled}
+                    onPress={() => {
+                      if (!gitOnlyActionsAvailable) return;
+                      void gitActions.onCheckoutSelectedThreadBranch(branch.name).then(() => {
+                        navigation.goBack();
+                      });
+                    }}
+                  >
+                    <View className="absolute inset-0 rounded-[18px] bg-card" />
+                    <Text className="text-foreground text-base font-shuv2code-bold">
+                      {branch.name}
+                    </Text>
+                    <Text className="text-foreground-secondary text-xs font-medium">
+                      {subtitle}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </>
+        )}
       </ScrollView>
     </View>
   );

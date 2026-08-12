@@ -1,15 +1,18 @@
 import { ChevronDownIcon, GitPullRequestIcon, InfoIcon, RefreshCwIcon } from "lucide-react";
+import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
 import { useState, type ReactNode } from "react";
 import type {
   BackgroundActivitySettings,
+  EnvironmentId,
   SourceControlProviderKind,
   SourceControlDiscoveryResult,
   SourceControlProviderAuth,
   SourceControlProviderDiscoveryItem,
   VcsDriverKind,
   VcsDiscoveryItem,
+  VcsSelectableKind,
 } from "@shuv2code/contracts";
 import {
   getBackgroundActivityBaseProfile,
@@ -19,9 +22,13 @@ import {
 
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
+import { useProjects, useThreadShells } from "../../state/entities";
 import { usePrimaryEnvironment } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
 import { sourceControlEnvironment } from "../../state/sourceControl";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { vcsEnvironment } from "../../state/vcs";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
@@ -41,7 +48,7 @@ import {
   NumberFieldIncrement,
   NumberFieldInput,
 } from "../ui/number-field";
-import { Switch } from "../ui/switch";
+import { RadioGroup } from "../ui/radio-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   AzureDevOpsIcon,
@@ -56,9 +63,15 @@ import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
 import { SettingResetButton, SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
+import {
+  resolveDefaultVcsOptions,
+  resolveDefaultVcsRefreshCwds,
+  updateDefaultVcsKindAndRefresh,
+} from "./SourceControlSettings.logic";
 
 const EMPTY_DISCOVERY_RESULT: SourceControlDiscoveryResult = {
   versionControlSystems: [],
+  companionTools: [],
   sourceControlProviders: [],
 };
 
@@ -329,7 +342,9 @@ function DiscoveryItemRow({
               </Button>
             ) : null}
             {!isVcsNotReady(item) ? (
-              <Switch checked={enabled} disabled aria-label={`${item.label} availability`} />
+              <Badge variant={enabled ? "success" : "warning"} size="sm">
+                {enabled ? "Available" : "Unavailable"}
+              </Badge>
             ) : null}
           </div>
         </div>
@@ -342,6 +357,103 @@ function DiscoveryItemRow({
           </CollapsibleContent>
         </Collapsible>
       ) : null}
+    </div>
+  );
+}
+
+function DefaultVersionControlSettings({
+  environmentId,
+  items,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly items: ReadonlyArray<VcsDiscoveryItem>;
+}) {
+  const settings = usePrimarySettings();
+  const projects = useProjects();
+  const threads = useThreadShells();
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, "default VCS update");
+  const refreshStatus = useAtomCommand(vcsEnvironment.refreshStatus, { reportFailure: false });
+  const [pendingKind, setPendingKind] = useState<VcsSelectableKind | null>(null);
+  const defaultOptions = resolveDefaultVcsOptions(items);
+  const refreshCwds = resolveDefaultVcsRefreshCwds({ environmentId, projects, threads });
+  const options = [
+    {
+      kind: "git" as const,
+      label: "Git",
+      description: "Use branches and worktrees when both Git and Jujutsu are available.",
+      Icon: GitIcon,
+    },
+    {
+      kind: "jj" as const,
+      label: "Jujutsu",
+      description: "Use changes, bookmarks, and workspaces when both systems are available.",
+      Icon: JujutsuIcon,
+    },
+  ];
+
+  return (
+    <div className="mb-2 rounded-xl border border-border/60 bg-muted/10 p-3 sm:p-4">
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-foreground">Default version control</p>
+        <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
+          Used when a project supports both systems and has no project override. Projects that only
+          support one system continue to use the one that is available.
+        </p>
+      </div>
+      <RadioGroup
+        value={settings.defaultVcsKind}
+        onValueChange={(value) => {
+          if (pendingKind !== null) return;
+          const kind = value as VcsSelectableKind;
+          setPendingKind(kind);
+          void updateDefaultVcsKindAndRefresh({
+            environmentId,
+            kind,
+            refreshCwds,
+            updateSettings,
+            refreshStatus,
+          }).finally(() => setPendingKind(null));
+        }}
+        aria-label="Default version control"
+        className="mt-3 grid gap-2 sm:grid-cols-2"
+      >
+        {options.map((option) => {
+          const isAvailable =
+            defaultOptions.find((candidate) => candidate.kind === option.kind)?.available ?? false;
+          return (
+            <label
+              key={option.kind}
+              className={cn(
+                "flex cursor-pointer items-start gap-3 rounded-lg border border-border/70 bg-background/70 p-3 transition-colors hover:bg-muted/30",
+                !isAvailable && "cursor-not-allowed opacity-60",
+              )}
+            >
+              <RadioPrimitive.Root
+                value={option.kind}
+                disabled={!isAvailable || pendingKind !== null}
+                aria-label={`Use ${option.label} by default`}
+                className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border border-input data-checked:border-primary"
+              >
+                <RadioPrimitive.Indicator className="size-2 rounded-full bg-primary data-unchecked:hidden" />
+              </RadioPrimitive.Root>
+              <span className="min-w-0 space-y-1">
+                <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  <option.Icon className="size-4" aria-hidden />
+                  {option.label}
+                  {!isAvailable ? (
+                    <Badge variant="warning" size="sm">
+                      Not installed
+                    </Badge>
+                  ) : null}
+                </span>
+                <span className="block text-xs leading-relaxed text-muted-foreground">
+                  {option.description}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+      </RadioGroup>
     </div>
   );
 }
@@ -519,7 +631,10 @@ export function SourceControlSettingsPanel() {
   );
   const result = discovery.data ?? EMPTY_DISCOVERY_RESULT;
   const hasVersionControlSystems = result.versionControlSystems.length > 0;
-  const hasDiscoveryItems = hasVersionControlSystems || result.sourceControlProviders.length > 0;
+  const hasDiscoveryItems =
+    hasVersionControlSystems ||
+    result.companionTools.length > 0 ||
+    result.sourceControlProviders.length > 0;
   const isInitialScanPending = discovery.isPending && discovery.data === null;
   const handleScan = () => {
     discovery.refresh();
@@ -540,7 +655,7 @@ export function SourceControlSettingsPanel() {
           </Button>
         }
       />
-      <TooltipPopup side="top">Rescan Git and hosting integrations</TooltipPopup>
+      <TooltipPopup side="top">Rescan version control and hosting integrations</TooltipPopup>
     </Tooltip>
   );
 
@@ -553,15 +668,28 @@ export function SourceControlSettingsPanel() {
         </>
       ) : hasDiscoveryItems ? (
         <>
-          {hasVersionControlSystems ? (
+          {hasVersionControlSystems && environmentId !== null ? (
             <SettingsSection
               id={searchableSetting("source-control").id}
               title="Version Control"
               headerAction={scanButton}
             >
+              <DefaultVersionControlSettings
+                environmentId={environmentId}
+                items={result.versionControlSystems}
+              />
               {result.versionControlSystems.map((item) => (
                 <DiscoveryItemRow key={`vcs:${item.kind}`} item={item}>
-                  {item.kind === "git" ? <GitFetchIntervalSettings /> : undefined}
+                  {item.kind === "git" ? (
+                    <GitFetchIntervalSettings />
+                  ) : item.kind === "jj" ? (
+                    <div className="text-xs text-muted-foreground">
+                      {result.companionTools.find((tool) => tool.kind === "juzu")?.status ===
+                      "available"
+                        ? "Juzu terminal integration is available."
+                        : "Juzu is not installed; normal terminals remain available."}
+                    </div>
+                  ) : undefined}
                 </DiscoveryItemRow>
               ))}
             </SettingsSection>

@@ -168,7 +168,7 @@ function toBaseUrl(host: string): string {
 }
 
 function isGitHubHost(host: string): boolean {
-  return host === "github.com" || host.includes("github");
+  return host === "github.com" || host.split(".").includes("github");
 }
 
 function isGitLabHost(host: string): boolean {
@@ -176,7 +176,9 @@ function isGitLabHost(host: string): boolean {
 }
 
 function isAzureDevOpsHost(host: string): boolean {
-  return host === "dev.azure.com" || host.endsWith(".visualstudio.com");
+  return (
+    host === "dev.azure.com" || host === "ssh.dev.azure.com" || host.endsWith(".visualstudio.com")
+  );
 }
 
 function isBitbucketHost(host: string): boolean {

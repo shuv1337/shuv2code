@@ -344,6 +344,95 @@ describe("GitHubCli.layer", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("targets explicit GHES coordinates for list, create, and default branch", () =>
+    Effect.gen(function* () {
+      mockRun
+        .mockReturnValueOnce(Effect.succeed(processOutput("[]")))
+        .mockReturnValueOnce(Effect.succeed(processOutput("")))
+        .mockReturnValueOnce(Effect.succeed(processOutput("main\n")));
+
+      const gh = yield* GitHubCli.GitHubCli;
+      const repository = "github.example.test/Acme/Shuv2Code";
+      const bodyFile = "/tmp/pr body-$HOME-`uname`.md";
+
+      yield* gh.listOpenPullRequests({
+        cwd: "/repo",
+        headSelector: "feature/ghes",
+        target: { refName: "release/ghes", repository: "ignored/other" },
+        repository,
+        limit: 3,
+      });
+      yield* gh.createPullRequest({
+        cwd: "/repo",
+        baseBranch: "main",
+        headSelector: "Acme:feature/ghes",
+        title: "GHES pull request",
+        bodyFile,
+        repository,
+      });
+      const defaultBranch = yield* gh.getDefaultBranch({ cwd: "/repo", repository });
+
+      assert.strictEqual(defaultBranch, "main");
+      expect(mockRun).toHaveBeenNthCalledWith(1, {
+        operation: "GitHubCli.execute",
+        command: "gh",
+        args: [
+          "pr",
+          "list",
+          "--repo",
+          repository,
+          "--head",
+          "feature/ghes",
+          "--base",
+          "release/ghes",
+          "--state",
+          "open",
+          "--limit",
+          "3",
+          "--json",
+          "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+        ],
+        cwd: "/repo",
+        timeoutMs: 30_000,
+      });
+      expect(mockRun).toHaveBeenNthCalledWith(2, {
+        operation: "GitHubCli.execute",
+        command: "gh",
+        args: [
+          "pr",
+          "create",
+          "--repo",
+          repository,
+          "--base",
+          "main",
+          "--head",
+          "Acme:feature/ghes",
+          "--title",
+          "GHES pull request",
+          "--body-file",
+          bodyFile,
+        ],
+        cwd: "/repo",
+        timeoutMs: 30_000,
+      });
+      expect(mockRun).toHaveBeenNthCalledWith(3, {
+        operation: "GitHubCli.execute",
+        command: "gh",
+        args: [
+          "repo",
+          "view",
+          repository,
+          "--json",
+          "defaultBranchRef",
+          "--jq",
+          ".defaultBranchRef.name",
+        ],
+        cwd: "/repo",
+        timeoutMs: 30_000,
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("surfaces a friendly error when the pull request is not found", () =>
     Effect.gen(function* () {
       const cause = new VcsProcessExitError({

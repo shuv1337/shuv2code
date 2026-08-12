@@ -7,6 +7,7 @@ import {
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
+  parseGitHubRepositorySelectorFromRemoteUrl,
   WORKTREE_BRANCH_PREFIX,
 } from "./git.ts";
 
@@ -50,6 +51,49 @@ describe("parseGitHubRepositoryNameWithOwnerFromRemoteUrl", () => {
     expect(
       parseGitHubRepositoryNameWithOwnerFromRemoteUrl("https://github.com/shuv1337/Shuv2Code.git"),
     ).toBe("shuv1337/Shuv2Code");
+  });
+});
+
+describe("parseGitHubRepositorySelectorFromRemoteUrl", () => {
+  it("preserves github.com owner/repository behavior", () => {
+    expect(
+      parseGitHubRepositorySelectorFromRemoteUrl("git@github.com:shuv1337/Shuv2Code.git"),
+    ).toBe("shuv1337/Shuv2Code");
+  });
+
+  it("includes the selected GHES host for HTTPS and SSH remotes", () => {
+    expect(
+      parseGitHubRepositorySelectorFromRemoteUrl("https://GitHub.Corp.Example/Acme/Shuv2Code.git"),
+    ).toBe("github.corp.example/Acme/Shuv2Code");
+    expect(
+      parseGitHubRepositorySelectorFromRemoteUrl("git@GitHub.Example.Test:Acme/Shuv2Code.git"),
+    ).toBe("github.example.test/Acme/Shuv2Code");
+    expect(
+      parseGitHubRepositorySelectorFromRemoteUrl(
+        "ssh://git@GitHub.Example.Test/Acme/Shuv2Code.git",
+      ),
+    ).toBe("github.example.test/Acme/Shuv2Code");
+    expect(
+      parseGitHubRepositorySelectorFromRemoteUrl(
+        "https://user:secret@GitHub.Example.Test/Acme/Shuv2Code.git",
+      ),
+    ).toBe("github.example.test/Acme/Shuv2Code");
+  });
+
+  it("rejects non-GitHub and ambiguous repository paths", () => {
+    expect(
+      parseGitHubRepositorySelectorFromRemoteUrl("https://gitlab.example.test/Acme/Shuv2Code.git"),
+    ).toBeNull();
+    expect(
+      parseGitHubRepositorySelectorFromRemoteUrl(
+        "https://notgithub.example.test/Acme/Shuv2Code.git",
+      ),
+    ).toBeNull();
+    expect(
+      parseGitHubRepositorySelectorFromRemoteUrl(
+        "https://github.example.test/nested/Acme/Shuv2Code.git",
+      ),
+    ).toBeNull();
   });
 });
 
@@ -111,12 +155,31 @@ describe("applyGitStatusStreamEvent", () => {
     };
 
     expect(applyGitStatusStreamEvent(null, { _tag: "remoteUpdated", remote })).toEqual({
+      kind: "unknown",
+      capabilities: {
+        kind: "unknown",
+        supportsWorktrees: false,
+        supportsBookmarks: false,
+        supportsAtomicSnapshot: false,
+        supportsPushDefaultRemote: false,
+        supportsStatus: false,
+        supportsRefMutation: false,
+        supportsWorkspaceMutation: false,
+        supportsDescribeChange: false,
+        supportsStartChange: false,
+        supportsFetch: false,
+        supportsPush: false,
+        supportsChangeRequests: false,
+        supportsJuzu: false,
+        ignoreClassifier: "native",
+      },
       isRepo: true,
       hasPrimaryRemote: false,
       isDefaultRef: false,
       refName: null,
       hasWorkingTreeChanges: false,
       workingTree: { files: [], insertions: 0, deletions: 0 },
+      workingCopy: null,
       hasUpstream: true,
       aheadCount: 2,
       behindCount: 1,
@@ -126,6 +189,30 @@ describe("applyGitStatusStreamEvent", () => {
 
   it("preserves local-only fields when applying a remote update", () => {
     const current: VcsStatusResult = {
+      kind: "git",
+      capabilities: {
+        kind: "git",
+        supportsWorktrees: true,
+        supportsBookmarks: false,
+        supportsAtomicSnapshot: false,
+        supportsPushDefaultRemote: true,
+        supportsStatus: true,
+        supportsRefMutation: true,
+        supportsWorkspaceMutation: true,
+        supportsDescribeChange: false,
+        supportsStartChange: false,
+        supportsFetch: true,
+        supportsPush: true,
+        supportsChangeRequests: true,
+        supportsJuzu: false,
+        ignoreClassifier: "native",
+      },
+      selection: {
+        availableKinds: ["git", "jj"],
+        projectKind: "git",
+        defaultKind: "jj",
+        source: "project",
+      },
       isRepo: true,
       sourceControlProvider: {
         kind: "github",
@@ -141,6 +228,7 @@ describe("applyGitStatusStreamEvent", () => {
         insertions: 1,
         deletions: 0,
       },
+      workingCopy: null,
       hasUpstream: false,
       aheadCount: 0,
       behindCount: 0,

@@ -18,6 +18,7 @@ import {
   type VcsCreateRefResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
+  type VcsFetchResult,
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewResult,
   type VcsInitInput,
@@ -265,7 +266,7 @@ export class GitVcsDriver extends Context.Service<
     readonly initRepo: (input: VcsInitInput) => Effect.Effect<void, GitCommandError>;
     readonly listLocalBranchNames: (cwd: string) => Effect.Effect<string[], GitCommandError>;
   }
->()("@shuv2code/vcs/GitVcsDriver") {}
+>()("shuv2code/vcs/GitVcsDriver") {}
 
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
@@ -276,6 +277,24 @@ const WORKSPACE_GIT_HARDENED_CONFIG_ARGS = [
   "-c",
   "core.untrackedCache=false",
 ] as const;
+
+export const GIT_VCS_CAPABILITIES = {
+  kind: "git" as const,
+  supportsWorktrees: true,
+  supportsBookmarks: false,
+  supportsAtomicSnapshot: false,
+  supportsPushDefaultRemote: true,
+  supportsStatus: true,
+  supportsRefMutation: true,
+  supportsWorkspaceMutation: true,
+  supportsDescribeChange: false,
+  supportsStartChange: false,
+  supportsFetch: true,
+  supportsPush: true,
+  supportsChangeRequests: true,
+  supportsJuzu: false,
+  ignoreClassifier: "native" as const,
+};
 
 const nowFreshness = Effect.fn("GitVcsDriver.nowFreshness")(function* () {
   const now = yield* DateTime.now;
@@ -395,14 +414,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const vcsProcess = yield* VcsProcess.VcsProcess;
-  const capabilities = {
-    kind: "git" as const,
-    supportsWorktrees: true,
-    supportsBookmarks: false,
-    supportsAtomicSnapshot: false,
-    supportsPushDefaultRemote: true,
-    ignoreClassifier: "native" as const,
-  };
+  const capabilities = GIT_VCS_CAPABILITIES;
 
   const isInsideWorkTree: VcsDriver.VcsDriver["Service"]["isInsideWorkTree"] = (cwd) =>
     gitCommand(
@@ -595,6 +607,25 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       timeoutMs: 10_000,
       maxOutputBytes: 64 * 1024,
     }).pipe(Effect.asVoid);
+
+  const fetch: NonNullable<VcsDriver.VcsDriver["Service"]["fetch"]> = Effect.fn(
+    "GitVcsDriver.fetch",
+  )(function* (input) {
+    yield* gitCommand(
+      vcsProcess,
+      "GitVcsDriver.fetch",
+      input.cwd,
+      ["fetch", "--quiet", ...(input.remoteName ? ["--", input.remoteName] : [])],
+      {
+        timeoutMs: 120_000,
+        maxOutputBytes: 4 * 1024 * 1024,
+      },
+    );
+    return {
+      status: "fetched",
+      remoteName: input.remoteName ?? null,
+    } satisfies VcsFetchResult;
+  });
 
   const resolveHeadCommit = (cwd: string) =>
     execute({
@@ -860,6 +891,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     listRemotes,
     filterIgnoredPaths,
     initRepository,
+    fetch,
   };
 });
 

@@ -1,8 +1,10 @@
 import { FolderGit2Icon, FolderGitIcon, FolderIcon, HistoryIcon } from "lucide-react";
+import type { VcsDriverKind } from "@shuv2code/contracts";
 import { memo, useMemo } from "react";
 
 import {
   resolveCurrentWorkspaceLabel,
+  resolveAvailableEnvModes,
   resolveEnvModeLabel,
   resolveLockedWorkspaceLabel,
   type EnvMode,
@@ -26,6 +28,8 @@ interface BranchToolbarEnvModeSelectorProps {
   onEnvModeChange: (mode: EnvMode) => void;
   previousWorktreeLabel?: string | null;
   onUsePreviousWorktree?: () => void;
+  vcsKind?: VcsDriverKind;
+  supportsWorktrees?: boolean;
 }
 
 export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSelector({
@@ -35,17 +39,24 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   onEnvModeChange,
   previousWorktreeLabel,
   onUsePreviousWorktree,
+  vcsKind = "git",
+  supportsWorktrees = true,
 }: BranchToolbarEnvModeSelectorProps) {
   const showPreviousWorktree = Boolean(previousWorktreeLabel && onUsePreviousWorktree);
   const envModeItems = useMemo(
     () => [
-      { value: "local", label: resolveCurrentWorkspaceLabel(activeWorktreePath) },
-      { value: "worktree", label: resolveEnvModeLabel("worktree") },
+      ...resolveAvailableEnvModes(supportsWorktrees).map((value) => ({
+        value,
+        label:
+          value === "local"
+            ? resolveCurrentWorkspaceLabel(activeWorktreePath, vcsKind)
+            : resolveEnvModeLabel(value, vcsKind),
+      })),
       ...(showPreviousWorktree && previousWorktreeLabel
         ? [{ value: PREVIOUS_WORKTREE_SELECT_VALUE, label: previousWorktreeLabel }]
         : []),
     ],
-    [activeWorktreePath, previousWorktreeLabel, showPreviousWorktree],
+    [activeWorktreePath, previousWorktreeLabel, showPreviousWorktree, supportsWorktrees, vcsKind],
   );
 
   if (envLocked) {
@@ -54,12 +65,12 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         {activeWorktreePath ? (
           <>
             <FolderGitIcon className="size-3" />
-            {resolveLockedWorkspaceLabel(activeWorktreePath)}
+            {resolveLockedWorkspaceLabel(activeWorktreePath, vcsKind)}
           </>
         ) : (
           <>
             <FolderIcon className="size-3" />
-            {resolveLockedWorkspaceLabel(activeWorktreePath)}
+            {resolveLockedWorkspaceLabel(activeWorktreePath, vcsKind)}
           </>
         )}
       </span>
@@ -104,15 +115,17 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
               ) : (
                 <FolderIcon className="size-3" />
               )}
-              {resolveCurrentWorkspaceLabel(activeWorktreePath)}
+              {resolveCurrentWorkspaceLabel(activeWorktreePath, vcsKind)}
             </span>
           </SelectItem>
-          <SelectItem value="worktree">
-            <span className="inline-flex items-center gap-1.5">
-              <FolderGit2Icon className="size-3" />
-              {resolveEnvModeLabel("worktree")}
-            </span>
-          </SelectItem>
+          {supportsWorktrees ? (
+            <SelectItem value="worktree">
+              <span className="inline-flex items-center gap-1.5">
+                <FolderGit2Icon className="size-3" />
+                {resolveEnvModeLabel("worktree", vcsKind)}
+              </span>
+            </SelectItem>
+          ) : null}
           {showPreviousWorktree && previousWorktreeLabel ? (
             <SelectItem value={PREVIOUS_WORKTREE_SELECT_VALUE}>
               <span className="inline-flex items-center gap-1.5">

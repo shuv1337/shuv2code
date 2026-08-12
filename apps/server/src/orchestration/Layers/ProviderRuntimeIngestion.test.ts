@@ -51,6 +51,7 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -239,9 +240,14 @@ describe("ProviderRuntimeIngestion", () => {
     startIngestion?: boolean;
     seedProviderSession?: boolean;
     durableRecoveryInstances?: ReadonlySet<ProviderInstanceId>;
+    hasGitMetadata?: boolean;
+    supportsCheckpoints?: boolean;
   }) {
     const workspaceRoot = makeTempDir("shuv2code-provider-project-");
-    NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
+    if (options?.hasGitMetadata !== false) {
+      NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
+    }
+    const checkpointSupportCalls: string[] = [];
     const provider = createProviderServiceHarness(
       options?.durableRecoveryInstances
         ? { durableRecoveryInstances: options.durableRecoveryInstances }
@@ -264,6 +270,15 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
+      Layer.provideMerge(
+        Layer.mock(CheckpointStore.CheckpointStore)({
+          supportsCheckpoints: (cwd) =>
+            Effect.sync(() => {
+              checkpointSupportCalls.push(cwd);
+              return options?.supportsCheckpoints ?? true;
+            }),
+        }),
+      ),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
@@ -344,11 +359,14 @@ describe("ProviderRuntimeIngestion", () => {
     return {
       engine,
       dispatch: (command: Parameters<typeof engine.dispatch>[0]) =>
-        runtime.runPromise(engine.dispatch(command)),
+        runtime?.runPromise(engine.dispatch(command)) ??
+        Promise.reject(new Error("Provider runtime harness is unavailable.")),
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
       setListSessionsFailure: provider.setListSessionsFailure,
+      workspaceRoot,
+      checkpointSupportCalls,
       start,
       drain,
     };
@@ -3223,6 +3241,67 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.status).toBe("missing");
     expect(checkpoint?.assistantMessageId).toBe("assistant:item-p1-assistant");
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
+  });
+
+  it("uses checkpoint capability detection for provider diff placeholders outside Git worktrees", async () => {
+    const harness = await createHarness({ hasGitMetadata: false });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-turn-diff-capability"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-capability"),
+      itemId: asItemId("item-capability-assistant"),
+      payload: {
+        unifiedDiff: "diff --git a/file.txt b/file.txt\n+hello\n",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.checkpoints.some(
+        (checkpoint: ProviderRuntimeTestCheckpoint) =>
+          checkpoint.turnId === "turn-capability" && checkpoint.status === "missing",
+      ),
+    );
+
+    expect(harness.checkpointSupportCalls).toContain(harness.workspaceRoot);
+    expect(
+      thread.checkpoints.find(
+        (checkpoint: ProviderRuntimeTestCheckpoint) => checkpoint.turnId === "turn-capability",
+      )?.checkpointRef,
+    ).toBe("provider-diff:evt-turn-diff-capability");
+  });
+
+  it("does not project provider diff placeholders when the selected VCS lacks checkpoints", async () => {
+    const harness = await createHarness({ supportsCheckpoints: false });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-turn-diff-no-checkpoints"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-no-checkpoints"),
+      itemId: asItemId("item-no-checkpoints"),
+      payload: {
+        unifiedDiff: "diff --git a/file.txt b/file.txt\n+hello\n",
+      },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(harness.checkpointSupportCalls).toContain(harness.workspaceRoot);
+    expect(
+      thread?.checkpoints.some(
+        (checkpoint: ProviderRuntimeTestCheckpoint) => checkpoint.turnId === "turn-no-checkpoints",
+      ),
+    ).toBe(false);
   });
 
   it("projects context window updates into normalized thread activities", async () => {

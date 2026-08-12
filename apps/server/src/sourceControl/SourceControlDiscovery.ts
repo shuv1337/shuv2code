@@ -52,8 +52,19 @@ const VCS_PROBES: ReadonlyArray<VcsProbe> = [
     label: "Jujutsu",
     executable: "jj",
     versionArgs: ["--version"],
-    implemented: false,
+    implemented: true,
     installHint: "Install Jujutsu with `brew install jj` or from https://github.com/jj-vcs/jj.",
+  },
+];
+
+const COMPANION_PROBES = [
+  {
+    kind: "juzu" as const,
+    label: "Juzu",
+    executable: "juzu",
+    versionArgs: ["--version"] as const,
+    implemented: true,
+    installHint: "Install Juzu to open Jujutsu workspaces in the integrated terminal.",
   },
 ];
 
@@ -62,14 +73,14 @@ export class SourceControlDiscovery extends Context.Service<
   {
     readonly discover: Effect.Effect<SourceControlDiscoveryResult>;
   }
->()("@shuv2code/sourceControl/SourceControlDiscovery") {}
+>()("shuv2code/sourceControl/SourceControlDiscovery") {}
 
 export const make = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const process = yield* VcsProcess.VcsProcess;
   const sourceControlProviders = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
 
-  const probe = <Kind extends VcsDriverKind>(
+  const probe = <Kind extends string>(
     input: DiscoveryProbe & { readonly kind: Kind },
   ): Effect.Effect<DiscoveryProbeResult<Kind>> => {
     const executable = input.executable;
@@ -133,6 +144,12 @@ export const make = Effect.gen(function* () {
       versionControlSystems: Effect.all(
         VCS_PROBES.map((entry) => probe(entry)) as ReadonlyArray<Effect.Effect<VcsDiscoveryItem>>,
         { concurrency: "unbounded" },
+      ),
+      companionTools: Effect.all(
+        COMPANION_PROBES.map((entry) => probe(entry)),
+        {
+          concurrency: "unbounded",
+        },
       ),
       sourceControlProviders: sourceControlProviders.discover,
     }),

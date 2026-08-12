@@ -16,6 +16,11 @@ import { useCallback, useMemo } from "react";
 import { Alert } from "react-native";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import {
+  canUseGitOnlyActions,
+  sourceControlRefLabel,
+  sourceControlReviewSummary,
+} from "../../state/git-action-availability";
+import {
   basename,
   getTerminalStatusLabel,
   projectScriptMenuIcon,
@@ -112,30 +117,28 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
   const threadId = props.threadId;
   const { gitStatus, gitOperationLabel, onPull, onRunAction } = props;
 
-  const currentBranchLabel = gitStatus?.refName ?? props.currentBranch ?? "Detached HEAD";
+  const currentBranchLabel = sourceControlRefLabel(gitStatus, props.currentBranch);
   const busy = gitOperationLabel !== null;
   const isRepo = gitStatus?.isRepo ?? true;
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
   const isDefaultRef = gitStatus?.isDefaultRef ?? false;
+  const gitOnlyActionsAvailable = canUseGitOnlyActions(gitStatus);
+  const sourceControlLabel = gitStatus?.kind === "jj" ? "Jujutsu" : "Git";
 
   const quickAction = useMemo(
     () =>
-      isRepo
+      isRepo && gitOnlyActionsAvailable
         ? resolveQuickAction(gitStatus, busy, isDefaultRef, hasPrimaryRemote)
-        : {
-            label: "Git unavailable",
-            disabled: true,
-            kind: "show_hint" as const,
-            hint: "This workspace is not a git repository.",
-          },
-    [busy, gitStatus, hasPrimaryRemote, isDefaultRef, isRepo],
+        : null,
+    [busy, gitOnlyActionsAvailable, gitStatus, hasPrimaryRemote, isDefaultRef, isRepo],
   );
 
-  const quickActionHint = quickAction.disabled
+  const quickActionHint = quickAction?.disabled
     ? (quickAction.hint ?? "This action is unavailable.")
     : null;
 
-  const quickActionIcon: QuickActionIcon = (() => {
+  const quickActionIcon: QuickActionIcon | null = (() => {
+    if (quickAction === null) return null;
     if (quickAction.kind === "run_pull") return "arrow.down.circle";
     if (quickAction.kind === "open_pr") return "arrow.up.right.circle";
     if (quickAction.kind === "run_action") {
@@ -159,6 +162,9 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
 
   const runActionWithPrompt = useCallback(
     async (input: GitActionRequestInput) => {
+      if (!gitOnlyActionsAvailable) {
+        return;
+      }
       const confirmableAction =
         input.action === "push" ||
         input.action === "create_pr" ||
@@ -187,10 +193,21 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
 
       await onRunAction(input);
     },
-    [environmentId, gitStatus, isDefaultRef, onRunAction, navigation, threadId],
+    [
+      environmentId,
+      gitOnlyActionsAvailable,
+      gitStatus,
+      isDefaultRef,
+      onRunAction,
+      navigation,
+      threadId,
+    ],
   );
 
   const runQuickAction = useCallback(async () => {
+    if (!gitOnlyActionsAvailable || quickAction === null) {
+      return;
+    }
     if (quickAction.kind === "open_pr") {
       await openExistingPr();
       return;
@@ -202,7 +219,7 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
     if (quickAction.kind === "run_action" && quickAction.action) {
       await runActionWithPrompt({ action: quickAction.action });
     }
-  }, [onPull, openExistingPr, quickAction, runActionWithPrompt]);
+  }, [gitOnlyActionsAvailable, onPull, openExistingPr, quickAction, runActionWithPrompt]);
 
   const openFiles = useCallback(() => {
     if (props.onOpenFilesInspector) {
@@ -235,6 +252,7 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
 
   return {
     currentBranchLabel,
+    gitOnlyActionsAvailable,
     isRepo,
     openFiles,
     openGitInspector,
@@ -243,6 +261,7 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
     quickActionHint,
     quickActionIcon,
     runQuickAction,
+    sourceControlLabel,
   };
 }
 
@@ -319,10 +338,10 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
         variant: "plain",
       },
       git: {
-        accessibilityLabel: "Git actions",
+        accessibilityLabel: `${model.sourceControlLabel} actions`,
         icon: { name: "point.topleft.down.curvedto.point.bottomright.up", type: "sfSymbol" },
         identifier: "thread-right-git",
-        label: "Git",
+        label: model.sourceControlLabel,
         menu: {
           items: [
             {
@@ -336,16 +355,20 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
               onPress: (): void => {},
               type: "action",
             },
+            ...(model.quickAction !== null && model.quickActionIcon !== null
+              ? [
+                  {
+                    description: model.quickActionHint ?? undefined,
+                    disabled: model.quickAction.disabled,
+                    icon: { name: model.quickActionIcon, type: "sfSymbol" as const },
+                    label: model.quickAction.label,
+                    onPress: (): void => void model.runQuickAction(),
+                    type: "action" as const,
+                  },
+                ]
+              : []),
             {
-              description: model.quickActionHint ?? undefined,
-              disabled: model.quickAction.disabled,
-              icon: { name: model.quickActionIcon, type: "sfSymbol" },
-              label: model.quickAction.label,
-              onPress: (): void => void model.runQuickAction(),
-              type: "action",
-            },
-            {
-              description: "Turn diffs and worktree changes",
+              description: sourceControlReviewSummary(props.gitStatus),
               disabled: !model.isRepo,
               icon: { name: "text.bubble", type: "sfSymbol" },
               label: "Review changes",
@@ -353,14 +376,16 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
               type: "action",
             },
             {
-              description: "Commit, files, branches",
+              description: model.gitOnlyActionsAvailable
+                ? "Commit, files, branches"
+                : "Review, files, bookmarks",
               icon: { name: "ellipsis", type: "sfSymbol" },
               label: "More",
               onPress: model.openGitInspector,
               type: "action",
             },
           ],
-          title: "Git",
+          title: model.sourceControlLabel,
         },
         sharesBackground: true,
         type: "menu",
@@ -369,15 +394,17 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
     }),
     [
       model.currentBranchLabel,
+      model.gitOnlyActionsAvailable,
       model.isRepo,
       model.openFiles,
       model.openGitInspector,
       model.openReview,
-      model.quickAction.disabled,
-      model.quickAction.label,
+      model.quickAction?.disabled,
+      model.quickAction?.label,
       model.quickActionHint,
       model.quickActionIcon,
       model.runQuickAction,
+      model.sourceControlLabel,
       props.canOpenFiles,
       props.canOpenTerminal,
       props.gitStatus,
@@ -514,26 +541,30 @@ export function ThreadGitMenu(props: ThreadGitMenuProps) {
           {compactMenuBranchLabel(model.currentBranchLabel)}
         </NativeHeaderToolbar.Label>
       </NativeHeaderToolbar.MenuAction>
-      <NativeHeaderToolbar.MenuAction
-        icon={model.quickActionIcon}
-        disabled={model.quickAction.disabled}
-        onPress={() => void model.runQuickAction()}
-        subtitle={model.quickActionHint ?? undefined}
-      >
-        <NativeHeaderToolbar.Label>{model.quickAction.label}</NativeHeaderToolbar.Label>
-      </NativeHeaderToolbar.MenuAction>
+      {model.quickAction !== null && model.quickActionIcon !== null ? (
+        <NativeHeaderToolbar.MenuAction
+          icon={model.quickActionIcon}
+          disabled={model.quickAction.disabled}
+          onPress={() => void model.runQuickAction()}
+          subtitle={model.quickActionHint ?? undefined}
+        >
+          <NativeHeaderToolbar.Label>{model.quickAction.label}</NativeHeaderToolbar.Label>
+        </NativeHeaderToolbar.MenuAction>
+      ) : null}
       <NativeHeaderToolbar.MenuAction
         icon="text.bubble"
         disabled={!model.isRepo}
         onPress={model.openReview}
-        subtitle="Turn diffs and worktree changes"
+        subtitle={sourceControlReviewSummary(props.gitStatus)}
       >
         <NativeHeaderToolbar.Label>Review changes</NativeHeaderToolbar.Label>
       </NativeHeaderToolbar.MenuAction>
       <NativeHeaderToolbar.MenuAction
         icon="ellipsis"
         onPress={model.openGitInspector}
-        subtitle="Commit, files, branches"
+        subtitle={
+          model.gitOnlyActionsAvailable ? "Commit, files, branches" : "Review, files, bookmarks"
+        }
       >
         <NativeHeaderToolbar.Label>More</NativeHeaderToolbar.Label>
       </NativeHeaderToolbar.MenuAction>

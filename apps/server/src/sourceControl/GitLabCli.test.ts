@@ -152,6 +152,124 @@ layer("GitLabCli.layer", (it) => {
     }),
   );
 
+  it.effect("filters merge requests by the exact fork source repository", () =>
+    Effect.gen(function* () {
+      mockedRun.mockReturnValueOnce(
+        Effect.succeed(
+          processOutput(
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                iid: 44,
+                title: "Other fork",
+                web_url: "https://gitlab.com/upstream/project/-/merge_requests/44",
+                target_branch: "main",
+                source_branch: "feature/shared",
+                state: "opened",
+                source_project: { path_with_namespace: "other/project" },
+              },
+              {
+                iid: 45,
+                title: "Selected fork",
+                web_url: "https://gitlab.com/upstream/project/-/merge_requests/45",
+                target_branch: "main",
+                source_branch: "feature/shared",
+                state: "opened",
+                source_project: { path_with_namespace: "selected/project" },
+              },
+            ]),
+          ),
+        ),
+      );
+
+      const glab = yield* GitLabCli.GitLabCli;
+      const result = yield* glab.listMergeRequests({
+        cwd: "/repo",
+        headSelector: "feature/shared",
+        source: { refName: "feature/shared", repository: "selected/project" },
+        target: { refName: "main", repository: "upstream/project" },
+        state: "open",
+        limit: 100,
+      });
+
+      assert.deepStrictEqual(
+        result.map((item) => item.number),
+        [45],
+      );
+    }),
+  );
+
+  it.effect("fails closed when a fork lookup omits source identity", () =>
+    Effect.gen(function* () {
+      mockedRun.mockReturnValueOnce(
+        Effect.succeed(
+          processOutput(
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                iid: 46,
+                title: "Missing source identity",
+                web_url: "https://gitlab.com/upstream/project/-/merge_requests/46",
+                target_branch: "main",
+                source_branch: "feature/shared",
+                state: "opened",
+              },
+            ]),
+          ),
+        ),
+      );
+
+      const glab = yield* GitLabCli.GitLabCli;
+      const error = yield* glab
+        .listMergeRequests({
+          cwd: "/repo",
+          headSelector: "feature/shared",
+          source: { refName: "feature/shared", repository: "selected/project" },
+          state: "open",
+          limit: 100,
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, GitLabCli.GitLabCliCommandError);
+    }),
+  );
+
+  it.effect("fails closed when exact fork filtering saturates the candidate limit", () =>
+    Effect.gen(function* () {
+      mockedRun.mockReturnValueOnce(
+        Effect.succeed(
+          processOutput(
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify(
+              [47, 48].map((iid) => ({
+                iid,
+                title: `Other fork ${iid}`,
+                web_url: `https://gitlab.com/upstream/project/-/merge_requests/${iid}`,
+                target_branch: "main",
+                source_branch: "feature/shared",
+                state: "opened",
+                source_project: { path_with_namespace: `other-${iid}/project` },
+              })),
+            ),
+          ),
+        ),
+      );
+
+      const glab = yield* GitLabCli.GitLabCli;
+      const error = yield* glab
+        .listMergeRequests({
+          cwd: "/repo",
+          headSelector: "feature/shared",
+          source: { refName: "feature/shared", repository: "selected/project" },
+          state: "open",
+          limit: 2,
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, GitLabCli.GitLabCliCommandError);
+    }),
+  );
+
   it.effect("reads repository clone URLs", () =>
     Effect.gen(function* () {
       mockedRun.mockReturnValueOnce(
@@ -217,6 +335,192 @@ layer("GitLabCli.layer", (it) => {
           ],
         }),
       );
+    }),
+  );
+
+  it.effect("uses explicit GitLab repository coordinates instead of cwd detection", () =>
+    Effect.gen(function* () {
+      mockedRun
+        .mockReturnValueOnce(Effect.succeed(processOutput("[]")))
+        .mockReturnValueOnce(Effect.succeed(processOutput("{}")))
+        .mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify({ default_branch: "develop" }),
+            ),
+          ),
+        );
+
+      const glab = yield* GitLabCli.GitLabCli;
+      yield* glab.listMergeRequests({
+        cwd: "/repo",
+        repository: "https://gitlab.example.test/example/selected",
+        headSelector: "feature/provider",
+        target: { refName: "release", repository: "ignored/other" },
+        state: "open",
+        limit: 1,
+      });
+      yield* glab.createMergeRequest({
+        cwd: "/repo",
+        baseBranch: "develop",
+        headSelector: "feature/provider",
+        source: { refName: "feature/provider", repository: "example/selected" },
+        target: { refName: "develop", repository: "example/selected" },
+        hostname: "gitlab.example.test",
+        title: "Selected repository MR",
+        bodyFile: "/tmp/body.md",
+      });
+      const defaultBranch = yield* glab.getDefaultBranch({
+        cwd: "/repo",
+        repository: "example/selected",
+        hostname: "gitlab.example.test",
+      });
+
+      expect(mockedRun).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          command: "glab",
+          cwd: "/repo",
+          args: [
+            "mr",
+            "list",
+            "--repo",
+            "https://gitlab.example.test/example/selected",
+            "--source-branch",
+            "feature/provider",
+            "--target-branch",
+            "release",
+            "--per-page",
+            "1",
+            "--output",
+            "json",
+          ],
+        }),
+      );
+      expect(mockedRun).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          command: "glab",
+          cwd: "/repo",
+          args: [
+            "api",
+            "--hostname",
+            "gitlab.example.test",
+            "--method",
+            "POST",
+            "projects/example%2Fselected/merge_requests",
+            "--raw-field",
+            "source_branch=feature/provider",
+            "--raw-field",
+            "target_branch=develop",
+            "--raw-field",
+            "title=Selected repository MR",
+            "--field",
+            "description=@/tmp/body.md",
+          ],
+        }),
+      );
+      expect(mockedRun).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({
+          command: "glab",
+          cwd: "/repo",
+          args: ["api", "--hostname", "gitlab.example.test", "projects/example%2Fselected"],
+        }),
+      );
+      assert.strictEqual(defaultBranch, "develop");
+    }),
+  );
+
+  it.effect("resolves a numeric source project ID for cross-project merge requests", () =>
+    Effect.gen(function* () {
+      mockedRun
+        .mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify({ id: 4312 }),
+            ),
+          ),
+        )
+        .mockReturnValueOnce(Effect.succeed(processOutput("{}")));
+
+      const glab = yield* GitLabCli.GitLabCli;
+      yield* glab.createMergeRequest({
+        cwd: "/repo",
+        baseBranch: "main",
+        headSelector: "feature/provider",
+        source: { refName: "feature/provider", repository: "fork/repository" },
+        target: { refName: "main", repository: "upstream/repository" },
+        hostname: "code.example.test",
+        title: "Cross-project MR",
+        bodyFile: "/tmp/body.md",
+      });
+
+      expect(mockedRun).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          command: "glab",
+          cwd: "/repo",
+          args: ["api", "--hostname", "code.example.test", "projects/fork%2Frepository"],
+        }),
+      );
+      expect(mockedRun).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          command: "glab",
+          cwd: "/repo",
+          args: [
+            "api",
+            "--hostname",
+            "code.example.test",
+            "--method",
+            "POST",
+            "projects/upstream%2Frepository/merge_requests",
+            "--raw-field",
+            "source_branch=feature/provider",
+            "--raw-field",
+            "target_branch=main",
+            "--field",
+            "source_project_id=4312",
+            "--raw-field",
+            "title=Cross-project MR",
+            "--field",
+            "description=@/tmp/body.md",
+          ],
+        }),
+      );
+    }),
+  );
+
+  it.effect("fails before creation when a cross-project source has no numeric project ID", () =>
+    Effect.gen(function* () {
+      mockedRun.mockReturnValueOnce(
+        Effect.succeed(
+          processOutput(
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify({ id: "fork/repository" }),
+          ),
+        ),
+      );
+
+      const glab = yield* GitLabCli.GitLabCli;
+      const error = yield* glab
+        .createMergeRequest({
+          cwd: "/repo",
+          baseBranch: "main",
+          headSelector: "feature/provider",
+          source: { refName: "feature/provider", repository: "fork/repository" },
+          target: { refName: "main", repository: "upstream/repository" },
+          title: "Cross-project MR",
+          bodyFile: "/tmp/body.md",
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, GitLabCli.GitLabRepositoryDecodeError);
+      assert.strictEqual(error.operation, "createMergeRequest");
+      assert.strictEqual(mockedRun.mock.calls.length, 1);
     }),
   );
 

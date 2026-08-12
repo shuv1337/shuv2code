@@ -1,0 +1,12 @@
+diff --git a/android/CMakeLists.txt b/android/CMakeLists.txt
+index ed8bc9f..a589003 100644
+--- a/android/CMakeLists.txt
++++ b/android/CMakeLists.txt
+@@ -7,6 +7,7 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
+ find_library(LOG_LIB log)
+ find_library(ONIG_LIB onig
+     PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src/main/jniLibs/${ANDROID_ABI}
++    NO_DEFAULT_PATH
+     NO_CMAKE_FIND_ROOT_PATH
+     REQUIRED
+ )

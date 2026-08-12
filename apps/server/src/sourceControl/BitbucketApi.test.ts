@@ -219,7 +219,8 @@ it.effect("lists pull requests with Bitbucket state and source branch query para
     const bitbucket = yield* BitbucketApi.BitbucketApi;
     const result = yield* bitbucket.listPullRequests({
       cwd: "/repo",
-      headSelector: "origin:feature/merged",
+      headSelector: "feature/merged",
+      target: { refName: 'release/"quoted', repository: "ignored/other" },
       state: "merged",
       limit: 10,
     });
@@ -233,9 +234,150 @@ it.effect("lists pull requests with Bitbucket state and source branch query para
     assert.deepStrictEqual(request?.urlParams.params, [
       ["pagelen", "10"],
       ["sort", "-updated_on"],
-      ["q", 'source.branch.name = "feature/merged" AND state = "MERGED"'],
+      [
+        "q",
+        'source.branch.name = "feature/merged" AND destination.branch.name = "release/\\"quoted" AND state = "MERGED"',
+      ],
       ["state", "MERGED"],
     ]);
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("filters fork pull requests by the exact source repository across bounded pages", () => {
+  const { execute, layer } = makeLayer({
+    response: (request) => {
+      const page = request.urlParams.params.find(([key]) => key === "page")?.[1];
+      if (page === "2") {
+        return Response.json({
+          values: [
+            {
+              ...bitbucketPullRequest,
+              id: 52,
+              source: {
+                branch: { name: "feature/fork" },
+                repository: {
+                  full_name: "octocat/shuv2code",
+                  workspace: { slug: "octocat" },
+                },
+              },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        values: [
+          {
+            ...bitbucketPullRequest,
+            id: 51,
+            source: {
+              branch: { name: "feature/fork" },
+              repository: {
+                full_name: "another/shuv2code",
+                workspace: { slug: "another" },
+              },
+            },
+          },
+        ],
+        next: "https://api.bitbucket.org/2.0/repositories/shuv1337/shuv2code/pullrequests?page=2",
+      });
+    },
+  });
+
+  return Effect.gen(function* () {
+    const bitbucket = yield* BitbucketApi.BitbucketApi;
+    const result = yield* bitbucket.listPullRequests({
+      cwd: "/repo",
+      headSelector: "feature/fork",
+      source: { refName: "feature/fork", repository: "octocat/shuv2code" },
+      target: { refName: "main", repository: "shuv1337/shuv2code" },
+      state: "open",
+      limit: 100,
+    });
+
+    assert.deepStrictEqual(
+      result.map((item) => item.number),
+      [52],
+    );
+    assert.strictEqual(execute.mock.calls.length, 2);
+    assert.deepStrictEqual(execute.mock.calls[0]?.[0].urlParams.params, [
+      ["pagelen", "50"],
+      ["sort", "-updated_on"],
+      [
+        "q",
+        'source.branch.name = "feature/fork" AND source.repository.full_name = "octocat/shuv2code" AND destination.branch.name = "main" AND state = "OPEN"',
+      ],
+      ["state", "OPEN"],
+    ]);
+    assert.deepStrictEqual(
+      execute.mock.calls[1]?.[0].urlParams.params.find(([key]) => key === "page"),
+      ["page", "2"],
+    );
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("fails closed when an exact fork lookup exhausts its bounded pages", () => {
+  const { layer } = makeLayer({
+    response: () =>
+      Response.json({
+        values: [
+          {
+            ...bitbucketPullRequest,
+            source: {
+              branch: { name: "feature/fork" },
+              repository: {
+                full_name: "another/shuv2code",
+                workspace: { slug: "another" },
+              },
+            },
+          },
+        ],
+        next: "https://api.bitbucket.org/2.0/repositories/shuv1337/shuv2code/pullrequests?page=2",
+      }),
+  });
+
+  return Effect.gen(function* () {
+    const bitbucket = yield* BitbucketApi.BitbucketApi;
+    const error = yield* bitbucket
+      .listPullRequests({
+        cwd: "/repo",
+        headSelector: "feature/fork",
+        source: { refName: "feature/fork", repository: "octocat/shuv2code" },
+        state: "open",
+        limit: 50,
+      })
+      .pipe(Effect.flip);
+
+    assert.instanceOf(error, BitbucketApi.BitbucketPullRequestLookupError);
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("rejects self-hosted Bitbucket contexts before contacting the Cloud API", () => {
+  const { execute, layer } = makeLayer({
+    response: () => Response.json({ values: [] }),
+  });
+
+  return Effect.gen(function* () {
+    const bitbucket = yield* BitbucketApi.BitbucketApi;
+    const error = yield* bitbucket
+      .listPullRequests({
+        cwd: "/repo",
+        context: {
+          provider: {
+            kind: "bitbucket",
+            name: "Bitbucket Self-Hosted",
+            baseUrl: "https://bitbucket.corp.example",
+          },
+          remoteName: "origin",
+          remoteUrl: "git@bitbucket.corp.example:team/repository.git",
+        },
+        headSelector: "feature/self-hosted",
+        state: "open",
+      })
+      .pipe(Effect.flip);
+
+    assert.instanceOf(error, BitbucketApi.BitbucketUnsupportedHostError);
+    assert.strictEqual(error.hostname, "bitbucket.corp.example");
+    assert.strictEqual(execute.mock.calls.length, 0);
   }).pipe(Effect.provide(layer));
 });
 
@@ -461,7 +603,8 @@ it.effect("creates pull requests using the official REST payload shape", () => {
     yield* bitbucket.createPullRequest({
       cwd: "/repo",
       baseBranch: "main",
-      headSelector: "owner:feature/provider",
+      headSelector: "feature/provider",
+      source: { refName: "feature/provider", repository: "fork/provider-repository" },
       title: "Provider PR",
       bodyFile,
     });
@@ -481,7 +624,7 @@ it.effect("creates pull requests using the official REST payload shape", () => {
       description: "PR body",
       source: {
         branch: { name: "feature/provider" },
-        repository: { full_name: "owner/shuv2code" },
+        repository: { full_name: "fork/provider-repository" },
       },
       destination: {
         branch: { name: "main" },

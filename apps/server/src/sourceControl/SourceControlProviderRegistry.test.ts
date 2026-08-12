@@ -226,6 +226,52 @@ it.effect("routes authenticated self-hosted GitLab remotes on non-standard ports
   }),
 );
 
+it.effect("refines the exact selected self-hosted remote independently of the primary remote", () =>
+  Effect.gen(function* () {
+    let authProbeCount = 0;
+    const registry = yield* makeRegistry({
+      remotes: [
+        { name: "origin", url: "git@github.com:example/primary.git" },
+        { name: "review", url: "https://forge.example.test/group/project.git" },
+      ],
+      process: {
+        run: (input) =>
+          Effect.sync(() => {
+            authProbeCount += 1;
+            assert.strictEqual(input.operation, "source-control.discovery.refine-unknown-remote");
+            assert.strictEqual(input.command, "glab");
+            assert.deepStrictEqual(input.args, ["auth", "status"]);
+            return processOutput(`forge.example.test
+  ✓ Logged in to forge.example.test as gitlab-user
+  ✓ Token found: ******
+`);
+          }),
+      },
+    });
+
+    const primary = yield* registry.resolveHandle({ cwd: "/repo" });
+    const selected = yield* registry.resolveRemoteHandle({
+      cwd: "/repo",
+      remoteName: "review",
+      remoteUrl: "https://forge.example.test/group/project.git",
+    });
+
+    assert.strictEqual(primary.provider.kind, "github");
+    assert.strictEqual(primary.context?.remoteName, "origin");
+    assert.strictEqual(selected.provider.kind, "gitlab");
+    assert.deepStrictEqual(selected.context, {
+      provider: {
+        kind: "gitlab",
+        name: "GitLab Self-Hosted",
+        baseUrl: "https://forge.example.test",
+      },
+      remoteName: "review",
+      remoteUrl: "https://forge.example.test/group/project.git",
+    });
+    assert.strictEqual(authProbeCount, 1);
+  }),
+);
+
 it.effect("routes Bitbucket remotes to the Bitbucket provider", () =>
   Effect.gen(function* () {
     const registry = yield* makeRegistry({

@@ -27,6 +27,8 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
 const DEFAULT_API_BASE_URL = "https://api.bitbucket.org/2.0";
+const BITBUCKET_CLOUD_HOST = "bitbucket.org";
+const BITBUCKET_MAX_PAGE_SIZE = 50;
 
 const BitbucketApiEnvConfig = Config.all({
   baseUrl: Config.string("SHUV2CODE_BITBUCKET_API_BASE_URL").pipe(
@@ -147,6 +149,30 @@ export class BitbucketRepositoryRemoteNotFoundError extends Schema.TaggedErrorCl
   }
 }
 
+export class BitbucketUnsupportedHostError extends Schema.TaggedErrorClass<BitbucketUnsupportedHostError>()(
+  "BitbucketUnsupportedHostError",
+  {
+    cwd: Schema.String,
+    hostname: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Bitbucket API failed in resolveRepository: Bitbucket host ${this.hostname} is not supported.`;
+  }
+}
+
+export class BitbucketPullRequestLookupError extends Schema.TaggedErrorClass<BitbucketPullRequestLookupError>()(
+  "BitbucketPullRequestLookupError",
+  {
+    cwd: Schema.String,
+    detail: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Bitbucket API failed in listPullRequests: ${this.detail}`;
+  }
+}
+
 export class BitbucketPullRequestBodyReadError extends Schema.TaggedErrorClass<BitbucketPullRequestBodyReadError>()(
   "BitbucketPullRequestBodyReadError",
   {
@@ -182,6 +208,8 @@ export const BitbucketApiError = Schema.Union([
   BitbucketRepositoryVcsResolveError,
   BitbucketRepositoryRemotesListError,
   BitbucketRepositoryRemoteNotFoundError,
+  BitbucketUnsupportedHostError,
+  BitbucketPullRequestLookupError,
   BitbucketPullRequestBodyReadError,
   BitbucketCheckoutError,
 ]);
@@ -238,6 +266,7 @@ const BitbucketUserSchema = Schema.Struct({
 });
 
 export interface BitbucketRepositoryLocator {
+  readonly hostname: typeof BITBUCKET_CLOUD_HOST;
   readonly workspace: string;
   readonly repoSlug: string;
 }
@@ -251,6 +280,7 @@ export class BitbucketApi extends Context.Service<
       readonly context?: SourceControlProvider.SourceControlProviderContext;
       readonly headSelector: string;
       readonly source?: SourceControlProvider.SourceControlRefSelector;
+      readonly target?: SourceControlProvider.SourceControlRefSelector;
       readonly state: "open" | "closed" | "merged" | "all";
       readonly limit?: number;
     }) => Effect.Effect<ReadonlyArray<NormalizedBitbucketPullRequestRecord>, BitbucketApiError>;
@@ -290,7 +320,7 @@ export class BitbucketApi extends Context.Service<
       readonly force?: boolean;
     }) => Effect.Effect<void, BitbucketApiError>;
   }
->()("@shuv2code/sourceControl/BitbucketApi") {}
+>()("shuv2code/sourceControl/BitbucketApi") {}
 
 function nonEmpty(value: string | undefined): Option.Option<string> {
   const trimmed = value?.trim();
@@ -303,14 +333,6 @@ function normalizeChangeRequestId(reference: string): string {
     trimmed,
   );
   return urlMatch?.[1] ?? trimmed;
-}
-
-function sourceWorkspace(input: {
-  readonly headSelector: string;
-  readonly source?: SourceControlProvider.SourceControlRefSelector;
-}): string | undefined {
-  if (input.source?.owner) return input.source.owner;
-  return SourceControlProvider.parseSourceControlOwnerRef(input.headSelector)?.owner;
 }
 
 function toBitbucketStates(state: "open" | "closed" | "merged" | "all"): ReadonlyArray<string> {
@@ -337,12 +359,15 @@ function bitbucketStateFilter(states: ReadonlyArray<string>): string {
 }
 
 function parseBitbucketRepositorySlug(value: string): BitbucketRepositoryLocator | null {
-  const normalized = value.trim().replace(/\.git$/u, "");
+  const normalized = value
+    .trim()
+    .replace(/^\/+|\/+$/gu, "")
+    .replace(/\.git$/u, "");
   const parts = normalized.split("/").filter((part) => part.length > 0);
-  if (parts.length < 2) return null;
-  const workspace = parts.at(-2);
-  const repoSlug = parts.at(-1);
-  return workspace && repoSlug ? { workspace, repoSlug } : null;
+  if (parts.length !== 2) return null;
+  const workspace = parts[0];
+  const repoSlug = parts[1];
+  return workspace && repoSlug ? { hostname: BITBUCKET_CLOUD_HOST, workspace, repoSlug } : null;
 }
 
 function requireRepositoryLocator(
@@ -358,18 +383,57 @@ function requireRepositoryLocator(
       );
 }
 
-function parseBitbucketRemoteUrl(remoteUrl: string): BitbucketRepositoryLocator | null {
+interface BitbucketRemoteCoordinates {
+  readonly hostname: string;
+  readonly repository: BitbucketRepositoryLocator | null;
+}
+
+function parseBitbucketRemoteCoordinates(remoteUrl: string): BitbucketRemoteCoordinates | null {
   const trimmed = remoteUrl.trim();
-  if (trimmed.startsWith("git@")) {
-    const pathStart = trimmed.indexOf(":");
-    return pathStart < 0 ? null : parseBitbucketRepositorySlug(trimmed.slice(pathStart + 1));
+  const scpMatch = /^[^@\s]+@([^:\s]+):(.+)$/u.exec(trimmed);
+  if (scpMatch?.[1] && scpMatch[2]) {
+    return {
+      hostname: scpMatch[1].toLowerCase(),
+      repository: parseBitbucketRepositorySlug(scpMatch[2]),
+    };
   }
 
   try {
-    return parseBitbucketRepositorySlug(new URL(trimmed).pathname);
+    const url = new URL(trimmed);
+    return {
+      hostname: url.hostname.toLowerCase(),
+      repository: parseBitbucketRepositorySlug(url.pathname),
+    };
   } catch {
     return null;
   }
+}
+
+function bitbucketCloudRepositoryFromRemoteUrl(
+  remoteUrl: string,
+): BitbucketRepositoryLocator | null {
+  const coordinates = parseBitbucketRemoteCoordinates(remoteUrl);
+  return coordinates?.hostname === BITBUCKET_CLOUD_HOST ? coordinates.repository : null;
+}
+
+function repositoryFullName(repository: BitbucketRepositoryLocator): string {
+  return `${repository.workspace}/${repository.repoSlug}`;
+}
+
+function sourceRepositoryFullName(
+  input: {
+    readonly headSelector: string;
+    readonly source?: SourceControlProvider.SourceControlRefSelector;
+  },
+  destination: BitbucketRepositoryLocator,
+): Effect.Effect<string | null, BitbucketApiError> {
+  if (input.source?.repository !== undefined) {
+    return requireRepositoryLocator(input.source.repository).pipe(Effect.map(repositoryFullName));
+  }
+  const owner =
+    input.source?.owner ??
+    SourceControlProvider.parseSourceControlOwnerRef(input.headSelector)?.owner;
+  return Effect.succeed(owner ? `${owner}/${destination.repoSlug}` : null);
 }
 
 function normalizeRepositoryCloneUrls(
@@ -558,13 +622,23 @@ export const make = Effect.gen(function* () {
     readonly context?: SourceControlProvider.SourceControlProviderContext;
     readonly repository?: string;
   }) {
+    if (input.context?.provider.kind === "bitbucket") {
+      const coordinates = parseBitbucketRemoteCoordinates(input.context.remoteUrl);
+      if (!coordinates || coordinates.hostname !== BITBUCKET_CLOUD_HOST) {
+        return yield* new BitbucketUnsupportedHostError({
+          cwd: input.cwd,
+          hostname: coordinates?.hostname ?? input.context.provider.baseUrl,
+        });
+      }
+    }
+
     const fromRepository =
       input.repository !== undefined ? parseBitbucketRepositorySlug(input.repository) : null;
     if (fromRepository) return fromRepository;
 
     const fromContext =
       input.context?.provider.kind === "bitbucket"
-        ? parseBitbucketRemoteUrl(input.context.remoteUrl)
+        ? bitbucketCloudRepositoryFromRemoteUrl(input.context.remoteUrl)
         : null;
     if (fromContext) return fromContext;
 
@@ -587,10 +661,21 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+    let unsupportedHostname: string | null = null;
     for (const remote of remotes.remotes) {
       if (detectSourceControlProviderFromRemoteUrl(remote.url)?.kind !== "bitbucket") continue;
-      const parsed = parseBitbucketRemoteUrl(remote.url);
-      if (parsed) return parsed;
+      const coordinates = parseBitbucketRemoteCoordinates(remote.url);
+      if (coordinates?.hostname === BITBUCKET_CLOUD_HOST && coordinates.repository) {
+        return coordinates.repository;
+      }
+      unsupportedHostname ??= coordinates?.hostname ?? null;
+    }
+
+    if (unsupportedHostname) {
+      return yield* new BitbucketUnsupportedHostError({
+        cwd: input.cwd,
+        hostname: unsupportedHostname,
+      });
     }
 
     return yield* new BitbucketRepositoryRemoteNotFoundError({
@@ -662,7 +747,7 @@ export const make = Effect.gen(function* () {
     if (
       input.context?.provider.kind === "bitbucket" &&
       !input.isCrossRepository &&
-      parseBitbucketRemoteUrl(input.context.remoteUrl) !== null
+      bitbucketCloudRepositoryFromRemoteUrl(input.context.remoteUrl) !== null
     ) {
       return input.context.remoteName;
     }
@@ -704,20 +789,35 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => authFromConfig(config)),
     ),
     listPullRequests: (input) =>
-      resolveRepository(input).pipe(
-        Effect.flatMap((repository) => {
-          const states = toBitbucketStates(input.state);
+      Effect.gen(function* () {
+        const repository = yield* resolveRepository(input);
+        const expectedSourceRepository = yield* sourceRepositoryFullName(input, repository);
+        const states = toBitbucketStates(input.state);
+        const limit = Math.max(1, input.limit ?? 20);
+        const pageSize = Math.min(limit, BITBUCKET_MAX_PAGE_SIZE);
+        const maxPages = Math.max(1, Math.ceil(limit / pageSize));
+        const items: Array<NormalizedBitbucketPullRequestRecord> = [];
+
+        for (let page = 1; page <= maxPages; page += 1) {
           const query: Record<string, string | ReadonlyArray<string>> = {
-            pagelen: String(Math.max(1, Math.min(input.limit ?? 20, 50))),
+            pagelen: String(pageSize),
+            ...(page > 1 ? { page: String(page) } : {}),
             sort: "-updated_on",
             q: bitbucketQueryString([
               `source.branch.name = "${SourceControlProvider.sourceBranch(input).replaceAll('"', '\\"')}"`,
+              ...(expectedSourceRepository
+                ? [
+                    `source.repository.full_name = "${expectedSourceRepository.replaceAll('"', '\\"')}"`,
+                  ]
+                : []),
+              ...(input.target
+                ? [`destination.branch.name = "${input.target.refName.replaceAll('"', '\\"')}"`]
+                : []),
               bitbucketStateFilter(states),
             ]),
             state: states,
           };
-
-          return executeJson(
+          const list = yield* executeJson(
             "listPullRequests",
             HttpClientRequest.get(
               apiUrl(
@@ -727,9 +827,33 @@ export const make = Effect.gen(function* () {
             ),
             BitbucketPullRequestListSchema,
           );
-        }),
-        Effect.map((list) => list.values.map(normalizeBitbucketPullRequestRecord)),
-      ),
+          const pageItems = list.values.map(normalizeBitbucketPullRequestRecord);
+          if (
+            expectedSourceRepository &&
+            pageItems.some((item) => item.headRepositoryNameWithOwner == null)
+          ) {
+            return yield* new BitbucketPullRequestLookupError({
+              cwd: input.cwd,
+              detail: "Bitbucket omitted source repository identity from the pull request list.",
+            });
+          }
+          items.push(
+            ...pageItems.filter(
+              (item) =>
+                !expectedSourceRepository ||
+                item.headRepositoryNameWithOwner?.toLowerCase() ===
+                  expectedSourceRepository.toLowerCase(),
+            ),
+          );
+          if (items.length >= limit) return items.slice(0, limit);
+          if (!list.next) return items;
+        }
+
+        return yield* new BitbucketPullRequestLookupError({
+          cwd: input.cwd,
+          detail: "Bitbucket pull request lookup reached its bounded page limit.",
+        });
+      }),
     getPullRequest: (input) =>
       getRawPullRequest(input).pipe(Effect.map(normalizeBitbucketPullRequestRecord)),
     getRepositoryCloneUrls: (input) =>
@@ -767,7 +891,7 @@ export const make = Effect.gen(function* () {
               }),
           ),
         );
-        const sourceOwner = sourceWorkspace(input);
+        const sourceRepository = yield* sourceRepositoryFullName(input, repository);
         const body = {
           title: input.title,
           description,
@@ -775,10 +899,10 @@ export const make = Effect.gen(function* () {
             branch: {
               name: SourceControlProvider.sourceBranch(input),
             },
-            ...(sourceOwner
+            ...(sourceRepository
               ? {
                   repository: {
-                    full_name: `${sourceOwner}/${input.source?.repository ?? repository.repoSlug}`,
+                    full_name: sourceRepository,
                   },
                 }
               : {}),

@@ -141,8 +141,10 @@ export function terminalStatusFromRunningIds(
 
 export function ThreadWorktreeIndicator({
   thread,
+  vcsKind = "git",
 }: {
   thread: Pick<SidebarThreadSummary, "id" | "branch" | "worktreePath">;
+  vcsKind?: "git" | "jj" | "unknown";
 }) {
   const worktreePath = thread.worktreePath?.trim();
   if (!worktreePath) {
@@ -150,9 +152,10 @@ export function ThreadWorktreeIndicator({
   }
 
   const displayPath = formatWorktreePathForDisplay(worktreePath);
+  const workspaceLabel = vcsKind === "jj" ? "Workspace" : "Worktree";
   const tooltip = thread.branch
-    ? `Worktree: ${displayPath} (${thread.branch})`
-    : `Worktree: ${displayPath}`;
+    ? `${workspaceLabel}: ${displayPath} (${thread.branch})`
+    : `${workspaceLabel}: ${displayPath}`;
 
   return (
     <Tooltip>

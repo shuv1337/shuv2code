@@ -108,3 +108,42 @@ it.effect("GitVcsDriver forwards execute env to the VCS process", () => {
     ),
   );
 });
+
+it.effect("GitVcsDriver exposes an argv-safe fetch through the registry driver shape", () => {
+  const calls: VcsProcess.VcsProcessInput[] = [];
+
+  return Effect.gen(function* () {
+    const driver = yield* GitVcsDriver.makeVcsDriverShape();
+    const fetch = driver.fetch;
+    if (!fetch) {
+      return assert.fail("Git registry driver did not implement fetch");
+    }
+
+    const remoteName = "--upload-pack=touch /tmp/shuv2code-fetch-should-not-run";
+    const result = yield* fetch({ cwd: "/repo", remoteName });
+
+    assert.deepStrictEqual(result, { status: "fetched", remoteName });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.command, "git");
+    assert.deepStrictEqual(calls[0]?.args, ["-C", "/repo", "fetch", "--quiet", "--", remoteName]);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(VcsProcess.VcsProcess)({
+          run: (input) =>
+            Effect.sync(() => {
+              calls.push(input);
+              return {
+                exitCode: ChildProcessSpawner.ExitCode(0),
+                stdout: "",
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            }),
+        }),
+      ),
+    ),
+  );
+});

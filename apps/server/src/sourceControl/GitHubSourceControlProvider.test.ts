@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -28,6 +29,16 @@ function makeProvider(github: Partial<GitHubCli.GitHubCli["Service"]>) {
   return GitHubSourceControlProvider.make.pipe(
     Effect.provide(Layer.mock(GitHubCli.GitHubCli)(github)),
   );
+}
+
+const isGitHubCliCommandError = Schema.is(GitHubCli.GitHubCliCommandError);
+
+function assertGitHubCliCommandError(
+  value: unknown,
+): asserts value is GitHubCli.GitHubCliCommandError {
+  if (!isGitHubCliCommandError(value)) {
+    assert.fail("Expected a GitHubCliCommandError");
+  }
 }
 
 it.effect("maps GitHub PR summaries into provider-neutral change requests", () =>
@@ -161,6 +172,49 @@ it.effect("uses gh json listing for non-open change request state queries", () =
   }),
 );
 
+it.effect("targets the selected GHES repository for non-open change request listings", () =>
+  Effect.gen(function* () {
+    let executeArgs: ReadonlyArray<string> = [];
+    const provider = yield* makeProvider({
+      execute: (input) => {
+        executeArgs = input.args;
+        return Effect.succeed(processResult(""));
+      },
+    });
+
+    yield* provider.listChangeRequests({
+      cwd: "/repo",
+      context: {
+        provider: {
+          kind: "github",
+          name: "GitHub Self-Hosted",
+          baseUrl: "https://github.example.test",
+        },
+        remoteName: "enterprise",
+        remoteUrl: "https://github.example.test/Acme/Shuv2Code.git",
+      },
+      headSelector: "feature/merged",
+      state: "all",
+      limit: 10,
+    });
+
+    assert.deepStrictEqual(executeArgs, [
+      "pr",
+      "list",
+      "--repo",
+      "github.example.test/Acme/Shuv2Code",
+      "--head",
+      "feature/merged",
+      "--state",
+      "all",
+      "--limit",
+      "10",
+      "--json",
+      "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
+    ]);
+  }),
+);
+
 it.effect("treats empty non-open change request listing output as no results", () =>
   Effect.gen(function* () {
     const provider = yield* makeProvider({
@@ -191,6 +245,11 @@ it.effect("creates GitHub PRs through provider-neutral input names", () =>
 
     yield* provider.createChangeRequest({
       cwd: "/repo",
+      context: {
+        provider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
+        remoteName: "origin",
+        remoteUrl: "git@github.com:owner/project.git",
+      },
       baseRefName: "main",
       headSelector: "owner:feature/provider",
       title: "Provider PR",
@@ -203,8 +262,514 @@ it.effect("creates GitHub PRs through provider-neutral input names", () =>
       headSelector: "owner:feature/provider",
       title: "Provider PR",
       bodyFile: "/tmp/body.md",
+      repository: "owner/project",
     });
   }),
+);
+
+it.effect("keeps the selected target repo while qualifying only fork PR heads", () =>
+  Effect.gen(function* () {
+    const createInputs: Array<Parameters<GitHubCli.GitHubCli["Service"]["createPullRequest"]>[0]> =
+      [];
+    const provider = yield* makeProvider({
+      createPullRequest: (input) => {
+        createInputs.push(input);
+        return Effect.void;
+      },
+    });
+    const context = {
+      provider: { kind: "github" as const, name: "GitHub", baseUrl: "https://github.com" },
+      remoteName: "upstream",
+      remoteUrl: "https://github.com/upstream/project.git",
+    };
+
+    yield* provider.createChangeRequest({
+      cwd: "/repo",
+      context,
+      source: { refName: "feature/fork", repository: "contributor/project" },
+      target: { refName: "main", repository: "upstream/project" },
+      baseRefName: "main",
+      headSelector: "feature/fork",
+      title: "Fork PR",
+      bodyFile: "/tmp/fork-body.md",
+    });
+    yield* provider.createChangeRequest({
+      cwd: "/repo",
+      context,
+      source: { refName: "feature/same", repository: "UPSTREAM/PROJECT" },
+      target: { refName: "main", repository: "upstream/project" },
+      baseRefName: "main",
+      headSelector: "legacy-owner:ignored-branch",
+      title: "Same-project PR",
+      bodyFile: "/tmp/same-body.md",
+    });
+
+    assert.deepStrictEqual(createInputs, [
+      {
+        cwd: "/repo",
+        baseBranch: "main",
+        headSelector: "contributor:feature/fork",
+        title: "Fork PR",
+        bodyFile: "/tmp/fork-body.md",
+        repository: "upstream/project",
+      },
+      {
+        cwd: "/repo",
+        baseBranch: "main",
+        headSelector: "feature/same",
+        title: "Same-project PR",
+        bodyFile: "/tmp/same-body.md",
+        repository: "upstream/project",
+      },
+    ]);
+  }),
+);
+
+it.effect("lists fork branches against the selected target repository", () =>
+  Effect.gen(function* () {
+    let listInput: Parameters<GitHubCli.GitHubCli["Service"]["listOpenPullRequests"]>[0] | null =
+      null;
+    const provider = yield* makeProvider({
+      listOpenPullRequests: (input) => {
+        listInput = input;
+        return Effect.succeed([
+          {
+            number: 40,
+            title: "Wrong fork",
+            url: "https://github.com/upstream/project/pull/40",
+            baseRefName: "main",
+            headRefName: "feature/fork",
+            headRepositoryOwnerLogin: "someone-else",
+          },
+          {
+            number: 41,
+            title: "Matching fork",
+            url: "https://github.com/upstream/project/pull/41",
+            baseRefName: "main",
+            headRefName: "feature/fork",
+            headRepositoryOwnerLogin: "Contributor",
+          },
+        ]);
+      },
+    });
+
+    const changeRequests = yield* provider.listChangeRequests({
+      cwd: "/repo",
+      context: {
+        provider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
+        remoteName: "upstream",
+        remoteUrl: "https://github.com/upstream/project.git",
+      },
+      source: { refName: "feature/fork", repository: "Contributor/project" },
+      target: { refName: "release", repository: "wrong/target" },
+      headSelector: "stale-owner:stale-branch",
+      state: "open",
+      limit: 1,
+    });
+
+    assert.deepStrictEqual(listInput, {
+      cwd: "/repo",
+      headSelector: "feature/fork",
+      target: { refName: "release", repository: "wrong/target" },
+      repository: "upstream/project",
+      limit: 100,
+    });
+    assert.deepStrictEqual(
+      changeRequests.map((item) => item.number),
+      [41],
+    );
+  }),
+);
+
+it.effect("uses the fork head and selected target for non-open duplicate lookup", () =>
+  Effect.gen(function* () {
+    let executeArgs: ReadonlyArray<string> = [];
+    const provider = yield* makeProvider({
+      execute: (input) => {
+        executeArgs = input.args;
+        return Effect.succeed(
+          processResult(
+            JSON.stringify([
+              {
+                number: 40,
+                title: "Wrong fork",
+                url: "https://github.com/upstream/project/pull/40",
+                baseRefName: "main",
+                headRefName: "feature/fork",
+                state: "OPEN",
+                headRepositoryOwner: { login: "someone-else" },
+              },
+              {
+                number: 41,
+                title: "Matching fork",
+                url: "https://github.com/upstream/project/pull/41",
+                baseRefName: "main",
+                headRefName: "feature/fork",
+                state: "OPEN",
+                headRepositoryOwner: { login: "contributor" },
+              },
+            ]),
+          ),
+        );
+      },
+    });
+
+    const changeRequests = yield* provider.listChangeRequests({
+      cwd: "/repo",
+      context: {
+        provider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
+        remoteName: "upstream",
+        remoteUrl: "https://github.com/upstream/project.git",
+      },
+      source: { refName: "feature/fork", repository: "contributor/project" },
+      target: { refName: "release", repository: "wrong/target" },
+      headSelector: "feature/fork",
+      state: "all",
+      limit: 1,
+    });
+
+    assert.deepStrictEqual(executeArgs.slice(0, 12), [
+      "pr",
+      "list",
+      "--repo",
+      "upstream/project",
+      "--head",
+      "feature/fork",
+      "--base",
+      "release",
+      "--state",
+      "all",
+      "--limit",
+      "100",
+    ]);
+    assert.deepStrictEqual(
+      changeRequests.map((item) => item.number),
+      [41],
+    );
+  }),
+);
+
+it.effect("fails closed when an open fork lookup saturates before finding the source owner", () =>
+  Effect.gen(function* () {
+    let queryLimit: number | undefined;
+    const provider = yield* makeProvider({
+      listOpenPullRequests: (input) => {
+        queryLimit = input.limit;
+        return Effect.succeed(
+          Array.from({ length: 100 }, (_, index) => ({
+            number: index + 1,
+            title: `Wrong fork ${index + 1}`,
+            url: `https://github.com/upstream/project/pull/${index + 1}`,
+            baseRefName: "main",
+            headRefName: "feature/fork",
+            headRepositoryOwnerLogin: `other-${index + 1}`,
+          })),
+        );
+      },
+    });
+
+    const error = yield* provider
+      .listChangeRequests({
+        cwd: "/fork-worktree",
+        context: {
+          provider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
+          remoteName: "upstream",
+          remoteUrl: "https://github.com/upstream/project.git",
+        },
+        source: { refName: "feature/fork", repository: "contributor/project" },
+        headSelector: "feature/fork",
+        state: "open",
+        limit: 1,
+      })
+      .pipe(Effect.flip);
+
+    assert.strictEqual(queryLimit, 100);
+    assert.strictEqual(error.operation, "listChangeRequests");
+    assertGitHubCliCommandError(error.cause);
+    assert.strictEqual(error.cause.cwd, "/fork-worktree");
+  }),
+);
+
+it.effect(
+  "fails closed when a non-open fork lookup saturates before finding the source owner",
+  () =>
+    Effect.gen(function* () {
+      let executeArgs: ReadonlyArray<string> = [];
+      const provider = yield* makeProvider({
+        execute: (input) => {
+          executeArgs = input.args;
+          return Effect.succeed(
+            processResult(
+              JSON.stringify(
+                Array.from({ length: 100 }, (_, index) => ({
+                  number: index + 1,
+                  title: `Wrong fork ${index + 1}`,
+                  url: `https://github.com/upstream/project/pull/${index + 1}`,
+                  baseRefName: "main",
+                  headRefName: "feature/fork",
+                  state: "OPEN",
+                  headRepositoryOwner: { login: `other-${index + 1}` },
+                })),
+              ),
+            ),
+          );
+        },
+      });
+
+      const error = yield* provider
+        .listChangeRequests({
+          cwd: "/fork-worktree",
+          context: {
+            provider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
+            remoteName: "upstream",
+            remoteUrl: "https://github.com/upstream/project.git",
+          },
+          source: { refName: "feature/fork", repository: "contributor/project" },
+          headSelector: "feature/fork",
+          state: "all",
+          limit: 1,
+        })
+        .pipe(Effect.flip);
+
+      assert.deepStrictEqual(executeArgs.slice(8, 10), ["--limit", "100"]);
+      assertGitHubCliCommandError(error.cause);
+      assert.strictEqual(error.cause.cwd, "/fork-worktree");
+    }),
+);
+
+it.effect("fails closed when GitHub omits a candidate owner during fork disambiguation", () =>
+  Effect.gen(function* () {
+    const provider = yield* makeProvider({
+      listOpenPullRequests: () =>
+        Effect.succeed([
+          {
+            number: 40,
+            title: "Owner unavailable",
+            url: "https://github.com/upstream/project/pull/40",
+            baseRefName: "main",
+            headRefName: "feature/fork",
+          },
+        ]),
+    });
+
+    const error = yield* provider
+      .listChangeRequests({
+        cwd: "/fork-worktree",
+        context: {
+          provider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
+          remoteName: "upstream",
+          remoteUrl: "https://github.com/upstream/project.git",
+        },
+        source: { refName: "feature/fork", repository: "contributor/project" },
+        headSelector: "feature/fork",
+        state: "open",
+        limit: 1,
+      })
+      .pipe(Effect.flip);
+
+    assertGitHubCliCommandError(error.cause);
+    assert.strictEqual(error.cause.cwd, "/fork-worktree");
+  }),
+);
+
+it.effect("keeps selected GHES coordinates for HTTPS and SSH provider operations", () =>
+  Effect.gen(function* () {
+    let listInput: Parameters<GitHubCli.GitHubCli["Service"]["listOpenPullRequests"]>[0] | null =
+      null;
+    let createInput: Parameters<GitHubCli.GitHubCli["Service"]["createPullRequest"]>[0] | null =
+      null;
+    let defaultBranchInput:
+      | Parameters<GitHubCli.GitHubCli["Service"]["getDefaultBranch"]>[0]
+      | null = null;
+    const provider = yield* makeProvider({
+      listOpenPullRequests: (input) => {
+        listInput = input;
+        return Effect.succeed([]);
+      },
+      createPullRequest: (input) => {
+        createInput = input;
+        return Effect.void;
+      },
+      getDefaultBranch: (input) => {
+        defaultBranchInput = input;
+        return Effect.succeed("main");
+      },
+    });
+    const providerInfo = {
+      kind: "github" as const,
+      name: "GitHub Self-Hosted",
+      baseUrl: "https://github.corp.example",
+    };
+
+    yield* provider.listChangeRequests({
+      cwd: "/repo",
+      context: {
+        provider: providerInfo,
+        remoteName: "enterprise-https",
+        remoteUrl: "https://GitHub.Corp.Example/Acme/Shuv2Code.git",
+      },
+      headSelector: "feature/provider",
+      state: "open",
+      limit: 1,
+    });
+    yield* provider.createChangeRequest({
+      cwd: "/repo",
+      context: {
+        provider: providerInfo,
+        remoteName: "enterprise-ssh",
+        remoteUrl: "git@GitHub.Corp.Example:Acme/Shuv2Code.git",
+      },
+      source: { refName: "feature/provider", repository: "Contributor/Shuv2Code" },
+      target: { refName: "main", repository: "Acme/Shuv2Code" },
+      baseRefName: "main",
+      headSelector: "feature/provider",
+      title: "Provider PR",
+      bodyFile: "/tmp/body.md",
+    });
+    yield* provider.getDefaultBranch({
+      cwd: "/repo",
+      context: {
+        provider: providerInfo,
+        remoteName: "enterprise-ssh-url",
+        remoteUrl: "ssh://git@GitHub.Corp.Example/Acme/Shuv2Code.git",
+      },
+    });
+
+    assert.deepStrictEqual(listInput, {
+      cwd: "/repo",
+      headSelector: "feature/provider",
+      repository: "github.corp.example/Acme/Shuv2Code",
+      limit: 1,
+    });
+    assert.deepStrictEqual(createInput, {
+      cwd: "/repo",
+      baseBranch: "main",
+      headSelector: "Contributor:feature/provider",
+      title: "Provider PR",
+      bodyFile: "/tmp/body.md",
+      repository: "github.corp.example/Acme/Shuv2Code",
+    });
+    assert.deepStrictEqual(defaultBranchInput, {
+      cwd: "/repo",
+      repository: "github.corp.example/Acme/Shuv2Code",
+    });
+  }),
+);
+
+it.effect(
+  "fails closed before invoking GitHub CLI for an invalid explicit repository context",
+  () =>
+    Effect.gen(function* () {
+      let cliCalls = 0;
+      const provider = yield* makeProvider({
+        execute: () => {
+          cliCalls += 1;
+          return Effect.succeed(processResult(""));
+        },
+        listOpenPullRequests: () => {
+          cliCalls += 1;
+          return Effect.succeed([]);
+        },
+        getPullRequest: () => {
+          cliCalls += 1;
+          return Effect.succeed({
+            number: 1,
+            title: "Unexpected PR",
+            url: "https://github.example.test/Acme/Shuv2Code/pull/1",
+            baseRefName: "main",
+            headRefName: "feature/unexpected",
+          });
+        },
+        createPullRequest: () => {
+          cliCalls += 1;
+          return Effect.void;
+        },
+        getDefaultBranch: () => {
+          cliCalls += 1;
+          return Effect.succeed("main");
+        },
+        checkoutPullRequest: () => {
+          cliCalls += 1;
+          return Effect.void;
+        },
+      });
+      const context = {
+        provider: {
+          kind: "github" as const,
+          name: "GitHub Self-Hosted",
+          baseUrl: "https://github.example.test",
+        },
+        remoteName: "enterprise",
+        remoteUrl: "https://github.example.test/nested/Acme/Shuv2Code.git",
+      };
+
+      const openListError = yield* provider
+        .listChangeRequests({
+          cwd: "/wrong-cwd-repository",
+          context,
+          headSelector: "feature/context",
+          state: "open",
+        })
+        .pipe(Effect.flip);
+      const allListError = yield* provider
+        .listChangeRequests({
+          cwd: "/wrong-cwd-repository",
+          context,
+          headSelector: "feature/context",
+          state: "all",
+        })
+        .pipe(Effect.flip);
+      const getError = yield* provider
+        .getChangeRequest({ cwd: "/wrong-cwd-repository", context, reference: "1" })
+        .pipe(Effect.flip);
+      const createError = yield* provider
+        .createChangeRequest({
+          cwd: "/wrong-cwd-repository",
+          context,
+          baseRefName: "main",
+          headSelector: "feature/context",
+          title: "Context safety",
+          bodyFile: "/tmp/context-safety.md",
+        })
+        .pipe(Effect.flip);
+      const defaultBranchError = yield* provider
+        .getDefaultBranch({ cwd: "/wrong-cwd-repository", context })
+        .pipe(Effect.flip);
+      const checkoutError = yield* provider
+        .checkoutChangeRequest({
+          cwd: "/wrong-cwd-repository",
+          context,
+          reference: "1",
+        })
+        .pipe(Effect.flip);
+
+      assert.deepStrictEqual(
+        [openListError, allListError, getError, createError, defaultBranchError, checkoutError].map(
+          (error) => ({
+            provider: error.provider,
+            operation: error.operation,
+            cwd: error.cwd,
+            command: error.command,
+            detail: error.detail,
+          }),
+        ),
+        [
+          "listChangeRequests",
+          "listChangeRequests",
+          "getChangeRequest",
+          "createChangeRequest",
+          "getDefaultBranch",
+          "checkoutChangeRequest",
+        ].map((operation) => ({
+          provider: "github" as const,
+          operation,
+          cwd: "/wrong-cwd-repository",
+          command: undefined,
+          detail: "The selected GitHub remote does not contain a valid GitHub repository URL.",
+        })),
+      );
+      assert.strictEqual(cliCalls, 0);
+    }),
 );
 
 it("accepts active authenticated GitHub accounts when another account fails", () => {
