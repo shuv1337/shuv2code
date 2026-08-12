@@ -69,12 +69,11 @@ describe("DesktopLifecycle", () => {
       });
 
       const desktopWindowLayer = Layer.succeed(DesktopWindow.DesktopWindow, {
-        createMain: Effect.die("unexpected window creation"),
         ensureMain: Effect.die("unexpected window creation"),
         revealOrCreateMain: Effect.die("unexpected window creation"),
         activate: Effect.void,
         createMainIfBackendReady: Effect.void,
-        showConnectingSplash: Effect.void,
+        showStartupShell: Effect.void,
         handleBackendReady: () => Effect.void,
         handleBackendNotReady: Effect.void,
         flushMainWindowBounds: Effect.void,

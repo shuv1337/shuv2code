@@ -60,7 +60,7 @@ const environmentInput = {
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
-function makeFakeBrowserWindow() {
+function makeFakeBrowserWindow(options?: { readonly loadURL?: (url: string) => Promise<void> }) {
   const windowListeners = new Map<string, (...args: readonly unknown[]) => void>();
   const webContentsListeners = new Map<string, (...args: readonly unknown[]) => void>();
   const mainSession = {
@@ -98,7 +98,7 @@ function makeFakeBrowserWindow() {
     isMaximized: vi.fn(() => false),
     isMinimized: vi.fn(() => false),
     isVisible: vi.fn(() => true),
-    loadURL: vi.fn(() => Promise.resolve()),
+    loadURL: vi.fn(options?.loadURL ?? (() => Promise.resolve())),
     maximize: vi.fn(),
     on: vi.fn((eventName: string, listener: (...args: readonly unknown[]) => void) => {
       windowListeners.set(eventName, listener);
@@ -304,7 +304,7 @@ function makeTestLayer(input: {
 // currentMainOrFirst mirrors the real fallback to the first live window (the
 // splash, before any main is registered). Reveal targets are recorded so tests
 // can assert what activation actually surfaced.
-const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | null)[]) =>
+const makeMainWindowScenario = (createOutcomes: readonly (Electron.BrowserWindow | null)[]) =>
   Effect.gen(function* () {
     const createdWindows = yield* Ref.make<Electron.BrowserWindow[]>([]);
     const createCalls = yield* Ref.make(0);
@@ -1112,105 +1112,247 @@ describe("DesktopWindow", () => {
     }),
   );
 
-  it.effect(
-    "retries opening the real main on activate when a failed post-readiness open left only the splash",
-    () =>
-      Effect.gen(function* () {
-        const splash = makeFakeBrowserWindow();
-        const main = makeFakeBrowserWindow();
-        // create #1 -> splash, #2 -> fails (the pool swallows this post-readiness
-        // window-open error), #3 -> the real main on activate's retry.
-        const scenario = yield* makeSplashScenario([splash.window, null, main.window]);
-
-        yield* Effect.gen(function* () {
-          const desktopWindow = yield* DesktopWindow.DesktopWindow;
-
-          // 1. WSL-only boot shows the connecting splash.
-          yield* desktopWindow.showConnectingSplash;
-          assert.equal(yield* Ref.get(scenario.createCalls), 1);
-
-          // 2. Backend reports ready, but opening the real main fails. The pool
-          //    swallows that error in production, so handleBackendReady fails
-          //    here without a registered main window -- only the splash is open.
-          const readyExit = yield* Effect.exit(
-            desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773")),
-          );
-          assert.equal(readyExit._tag, "Failure");
-          assert.equal(yield* Ref.get(scenario.createCalls), 2);
-          assert.isTrue(Option.isNone(yield* Ref.get(scenario.mainWindow)));
-
-          // 3. Activating must not mistake the splash for the main window: it
-          //    retries the open and brings up the real main instead of leaving
-          //    the user stranded on "Connecting to WSL".
-          yield* desktopWindow.activate;
-          assert.equal(yield* Ref.get(scenario.createCalls), 3);
-          const registeredMain = yield* Ref.get(scenario.mainWindow);
-          assert.isTrue(Option.isSome(registeredMain));
-          assert.equal(Option.getOrThrow(registeredMain), main.window);
-        }).pipe(Effect.provide(scenario.layer));
-      }),
-  );
-
-  it.effect(
-    "re-reveals the connecting splash on activate while the backend is still cold-booting",
-    () =>
-      Effect.gen(function* () {
-        const splash = makeFakeBrowserWindow();
-        // Only the splash is ever created; the backend never reports ready.
-        const scenario = yield* makeSplashScenario([splash.window]);
-
-        yield* Effect.gen(function* () {
-          const desktopWindow = yield* DesktopWindow.DesktopWindow;
-
-          yield* desktopWindow.showConnectingSplash;
-          assert.equal(yield* Ref.get(scenario.createCalls), 1);
-
-          // Taskbar/dock activation during cold boot must bring the splash back
-          // rather than no-op and leave it hidden until the backend finishes.
-          yield* desktopWindow.activate;
-          assert.equal(yield* Ref.get(scenario.createCalls), 1);
-          assert.deepEqual(yield* Ref.get(scenario.revealedWindows), [splash.window]);
-        }).pipe(Effect.provide(scenario.layer));
-      }),
-  );
-
-  it.effect("does not dispatch menu actions to the splash before the backend is ready", () =>
+  it.effect("retries main-window creation on activate after readiness creation fails", () =>
     Effect.gen(function* () {
-      const splash = makeFakeBrowserWindow();
       const main = makeFakeBrowserWindow();
-      const scenario = yield* makeSplashScenario([splash.window, main.window]);
+      const scenario = yield* makeMainWindowScenario([null, main.window]);
 
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
-        yield* desktopWindow.showConnectingSplash;
-        yield* desktopWindow.dispatchMenuAction("open-settings");
+        const readyExit = yield* Effect.exit(
+          desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773")),
+        );
+        assert.equal(readyExit._tag, "Failure");
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+
+        yield* desktopWindow.activate;
+
+        assert.equal(yield* Ref.get(scenario.createCalls), 2);
+        assert.equal(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("loads the application in the existing startup-shell window", () =>
+    Effect.gen(function* () {
+      const main = makeFakeBrowserWindow();
+      const scenario = yield* makeMainWindowScenario([main.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+
+        yield* desktopWindow.showStartupShell;
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+        assert.isTrue(Option.isSome(yield* Ref.get(scenario.mainWindow)));
+        assert.match(String(main.loadURL.mock.calls[0]), /^data:text\/html/);
+
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
 
         assert.equal(yield* Ref.get(scenario.createCalls), 1);
-        assert.equal(splash.send.mock.calls.length, 0);
+        assert.deepEqual(main.loadURL.mock.calls[1], ["shuv2code-dev://app/"]);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("keeps retrying shell-to-application navigation after repeated rejection", () =>
+    Effect.gen(function* () {
+      let applicationLoadAttempts = 0;
+      const main = makeFakeBrowserWindow({
+        loadURL: (url) => {
+          if (url === "shuv2code-dev://app/" && applicationLoadAttempts++ < 2) {
+            return Promise.reject(new Error("transient protocol failure"));
+          }
+          return Promise.resolve();
+        },
+      });
+      const scenario = yield* makeMainWindowScenario([main.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+
+        yield* desktopWindow.showStartupShell;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        assert.equal(applicationLoadAttempts, 1);
+
+        yield* TestClock.adjust(250);
+        yield* Effect.yieldNow;
+        assert.equal(applicationLoadAttempts, 2);
+
+        yield* TestClock.adjust(250);
+        yield* Effect.yieldNow;
+
+        assert.equal(applicationLoadAttempts, 3);
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("cancels a pending application-load retry when the window closes", () =>
+    Effect.gen(function* () {
+      let applicationLoadAttempts = 0;
+      let destroyed = false;
+      const main = makeFakeBrowserWindow({
+        loadURL: (url) => {
+          if (url === "shuv2code-dev://app/") {
+            applicationLoadAttempts += 1;
+            return Promise.reject(new Error("transient protocol failure"));
+          }
+          return Promise.resolve();
+        },
+      });
+      main.isDestroyed.mockImplementation(() => destroyed);
+      const scenario = yield* makeMainWindowScenario([main.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.showStartupShell;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        assert.equal(applicationLoadAttempts, 1);
+
+        main.windowListeners.get("closed")?.();
+        yield* Effect.yieldNow;
+        destroyed = true;
+        yield* TestClock.adjust(250);
+        yield* Effect.yieldNow;
+
+        assert.equal(applicationLoadAttempts, 1);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("re-reveals the main startup-shell window on activate while the backend is cold", () =>
+    Effect.gen(function* () {
+      const main = makeFakeBrowserWindow();
+      const scenario = yield* makeMainWindowScenario([main.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+
+        yield* desktopWindow.showStartupShell;
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+
+        // Taskbar/dock activation reveals that same registered main window.
+        yield* desktopWindow.activate;
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+        assert.deepEqual(yield* Ref.get(scenario.revealedWindows), [main.window]);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("sizes the startup shell like the main window", () =>
+    Effect.gen(function* () {
+      const main = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const createdWindowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+      const layer = makeTestLayer({
+        window: main.window,
+        createCount,
+        mainWindow,
+        createdWindowOptions,
+        desktopSettings: {
+          ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+          mainWindowBounds: { x: 80, y: 40, width: 1440, height: 900 },
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.showStartupShell;
+
+        assert.equal(createdWindowOptions[0]?.x, 80);
+        assert.equal(createdWindowOptions[0]?.y, 40);
+        assert.equal(createdWindowOptions[0]?.width, 1440);
+        assert.equal(createdWindowOptions[0]?.height, 900);
+        assert.equal(createdWindowOptions[0]?.minWidth, 840);
+        assert.equal(createdWindowOptions[0]?.minHeight, 620);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("retries shell-to-application navigation after a load timeout", () =>
+    Effect.gen(function* () {
+      let applicationLoadAttempts = 0;
+      const main = makeFakeBrowserWindow({
+        loadURL: (url) => {
+          if (url === "shuv2code-dev://app/" && applicationLoadAttempts++ === 0) {
+            return new Promise(() => undefined);
+          }
+          return Promise.resolve();
+        },
+      });
+      const scenario = yield* makeMainWindowScenario([main.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.showStartupShell;
+        const ready = yield* desktopWindow
+          .handleBackendReady(new URL("http://127.0.0.1:3773"))
+          .pipe(Effect.forkChild);
+
+        yield* TestClock.adjust(5_000);
+        yield* Fiber.join(ready);
+        yield* TestClock.adjust(250);
+        yield* Effect.yieldNow;
+
+        assert.equal(applicationLoadAttempts, 2);
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("does not dispatch menu actions while app navigation is retrying", () =>
+    Effect.gen(function* () {
+      const main = makeFakeBrowserWindow({
+        loadURL: (url) =>
+          url === "shuv2code-dev://app/"
+            ? Promise.reject(new Error("transient protocol failure"))
+            : Promise.resolve(),
+      });
+      const scenario = yield* makeMainWindowScenario([main.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.showStartupShell;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        yield* desktopWindow.dispatchMenuAction("open-settings");
+
         assert.equal(main.send.mock.calls.length, 0);
       }).pipe(Effect.provide(scenario.layer));
     }),
   );
 
-  it.effect("dispatches menu actions after backend readiness when no main window exists", () =>
+  it.effect("does not dispatch menu actions to the startup shell before the backend is ready", () =>
     Effect.gen(function* () {
-      const splash = makeFakeBrowserWindow();
       const main = makeFakeBrowserWindow();
-      const scenario = yield* makeSplashScenario([splash.window, null, main.window]);
+      const scenario = yield* makeMainWindowScenario([main.window]);
 
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
-        yield* desktopWindow.showConnectingSplash;
-        const readyExit = yield* Effect.exit(
-          desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773")),
-        );
-        assert.equal(readyExit._tag, "Failure");
-
+        yield* desktopWindow.showStartupShell;
         yield* desktopWindow.dispatchMenuAction("open-settings");
 
-        assert.equal(yield* Ref.get(scenario.createCalls), 3);
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+        assert.equal(main.send.mock.calls.length, 0);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("dispatches menu actions to the same main window after backend readiness", () =>
+    Effect.gen(function* () {
+      const main = makeFakeBrowserWindow();
+      const scenario = yield* makeMainWindowScenario([main.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+
+        yield* desktopWindow.showStartupShell;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        yield* desktopWindow.dispatchMenuAction("open-settings");
+
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
         assert.deepEqual(main.send.mock.calls, [[MENU_ACTION_CHANNEL, "open-settings"]]);
       }).pipe(Effect.provide(scenario.layer));
     }),
