@@ -4,6 +4,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 
 import * as Electron from "electron";
 
@@ -25,6 +26,7 @@ const TITLEBAR_LIGHT_SYMBOL_COLOR = "#1f2937";
 const TITLEBAR_DARK_SYMBOL_COLOR = "#f8fafc";
 const MAIN_WINDOW_BOUNDS_PERSIST_DEBOUNCE_MS = 500;
 const DEVELOPMENT_LOAD_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
+const APPLICATION_LOAD_TIMEOUT_MS = 5_000;
 const DEVELOPMENT_RETRYABLE_LOAD_ERROR_CODES = new Set([
   -2, // ERR_FAILED
   -7, // ERR_TIMED_OUT
@@ -57,21 +59,19 @@ export type DesktopWindowError =
 export class DesktopWindow extends Context.Service<
   DesktopWindow,
   {
-    readonly createMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly ensureMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly revealOrCreateMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly activate: Effect.Effect<void, DesktopWindowError>;
     readonly createMainIfBackendReady: Effect.Effect<void, DesktopWindowError>;
-    // Show a lightweight "Connecting to WSL" splash window immediately (wsl-only
-    // mode), before the WSL backend that serves the renderer is ready. It is
-    // dismissed automatically once the real main window reveals.
-    readonly showConnectingSplash: Effect.Effect<void>;
+    // Creates and reveals the real main BrowserWindow immediately with a
+    // backend-independent local startup document. Backend readiness navigates
+    // this same window to the application; no disposable splash window exists.
+    readonly showStartupShell: Effect.Effect<void>;
     // Marks the primary backend as ready so `createMainIfBackendReady` and the
-    // macOS "activate without windows" path may open the real main window. The
-    // renderer now always loads the local client URL (getDesktopUrl) and connects
-    // to the backend through the connection layer, so the reported httpBaseUrl is
-    // no longer used to point the window at the backend — it is kept only for the
-    // readiness log and to preserve the callback contract the backend pool drives.
+    // macOS "activate without windows" path may load the application. The
+    // renderer always uses the local client URL (getDesktopUrl) and connects to
+    // the backend through the connection layer, so the reported httpBaseUrl is
+    // retained only for readiness logging and the backend-pool callback contract.
     readonly handleBackendReady: (httpBaseUrl: URL) => Effect.Effect<void, DesktopWindowError>;
     // Called when the backend transitions back to "not ready" (clean stop,
     // restart, crash). Clears the latch that lets `activate` auto-create a
@@ -142,15 +142,14 @@ export function resolveInitialMainWindowBounds(
   return DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE;
 }
 
-// A self-contained "Connecting to WSL" splash, shown immediately in wsl-only
-// mode while the WSL backend (which serves the renderer) cold-boots. Inlined as
-// a data URL so it needs no bundled asset and no backend — pure CSS, no JS.
-function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean): string {
+// A self-contained local startup document shown in the real main BrowserWindow
+// before backend discovery or boot. Inlined so it needs no bundled asset/backend.
+function buildStartupShellDataUrl(shouldUseDarkColors: boolean): string {
   const background = getInitialWindowBackgroundColor(shouldUseDarkColors);
   const label = shouldUseDarkColors ? "#9ca3af" : "#6b7280";
   const accent = shouldUseDarkColors ? "#f8fafc" : "#1f2937";
   const track = shouldUseDarkColors ? "rgba(248,250,252,0.18)" : "rgba(31,41,55,0.18)";
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">Connecting to WSL…</div></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">Starting shuv2code…</div></body></html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
@@ -252,46 +251,28 @@ export const make = Effect.gen(function* () {
   // createMainIfBackendReady, which gates the post-readiness window
   // open in development and the macOS "activate without windows" path.
   const backendReadyRef = yield* Ref.make(false);
-  // The transient "Connecting to WSL" splash window, tracked separately so it
-  // is never mistaken for the real main window.
-  const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+  const mainWindowMutation = yield* Semaphore.make(1);
+  // Tracks whether the real main window is currently displaying the local
+  // startup document. This is cleared before that same window loads the app.
+  const startupShellWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(
+    Option.none(),
+  );
+  const applicationLoadRetryRef = yield* Ref.make<Option.Option<Fiber.Fiber<void, never>>>(
+    Option.none(),
+  );
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
 
-  const dismissConnectingSplash = Effect.gen(function* () {
-    const splash = yield* Ref.getAndSet(splashWindowRef, Option.none());
-    if (Option.isSome(splash) && !splash.value.isDestroyed()) {
-      splash.value.close();
-    }
-  });
+  const currentMainWindow = electronWindow.currentMainOrFirst;
+  const focusedMainWindow = electronWindow.focusedMainOrFirst;
+  const applicationUrl = getDesktopUrl(environment.isDevelopment);
 
-  // currentMainOrFirst / focusedMainOrFirst fall back to "any first window",
-  // which during WSL-only boot is the connecting splash. The splash is never
-  // registered via setMain, so it must be treated as "no real main window" --
-  // otherwise ensureMain/activate/dispatchMenuAction latch onto it and never
-  // open (or retry) the real main. That is the failure the pool's swallowed
-  // post-readiness window-open error would otherwise strand the user in:
-  // splash up, backend ready, no main, and activation only re-reveals splash.
-  const withoutSplash = (window: Option.Option<Electron.BrowserWindow>) =>
-    Ref.get(splashWindowRef).pipe(
-      Effect.map((splash) =>
-        Option.isSome(splash) && Option.isSome(window) && window.value === splash.value
-          ? Option.none<Electron.BrowserWindow>()
-          : window,
-      ),
-    );
-
-  const currentMainWindow = electronWindow.currentMainOrFirst.pipe(Effect.flatMap(withoutSplash));
-  const focusedMainWindow = electronWindow.focusedMainOrFirst.pipe(Effect.flatMap(withoutSplash));
-
-  const createWindow = Effect.fn("desktop.window.createWindow")(function* (): Effect.fn.Return<
-    Electron.BrowserWindow,
-    DesktopWindowError
-  > {
+  const createWindow = Effect.fn("desktop.window.createWindow")(function* (
+    initialContent: "application" | "startup-shell",
+  ): Effect.fn.Return<Electron.BrowserWindow, DesktopWindowError> {
     yield* previewManager.getBrowserSession();
-    const applicationUrl = getDesktopUrl(environment.isDevelopment);
     const iconPaths = yield* assets.iconPaths;
     const iconOption = getIconOption(iconPaths, environment.platform);
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
@@ -630,15 +611,18 @@ export const make = Effect.gen(function* () {
       revealSubscribers.push((fire) => window.webContents.once("did-finish-load", fire));
     }
     bindFirstRevealTrigger(revealSubscribers, () => {
-      // Reveal the real window, then close the connecting splash (if any) so the
-      // two don't overlap and there's no blank gap between them.
       if (persistedSettings.mainWindowMaximized) {
         window.maximize();
       }
-      void runPromise(Effect.andThen(electronWindow.reveal(window), dismissConnectingSplash));
+      void runPromise(electronWindow.reveal(window));
     });
 
-    loadApplication();
+    if (initialContent === "startup-shell") {
+      yield* Ref.set(startupShellWindowRef, Option.some(window));
+      void window.loadURL(buildStartupShellDataUrl(shouldUseDarkColors)).catch(() => undefined);
+    } else {
+      loadApplication();
+    }
     if (environment.isDevelopment) {
       window.webContents.openDevTools({ mode: "detach" });
     }
@@ -646,26 +630,42 @@ export const make = Effect.gen(function* () {
     window.on("closed", () => {
       clearDevelopmentLoadRetry();
       clearBoundsPersist();
-      void runPromise(electronWindow.clearMain(Option.some(window)));
+      void runPromise(
+        Effect.all([
+          electronWindow.clearMain(Option.some(window)),
+          Ref.getAndSet(applicationLoadRetryRef, Option.none()).pipe(
+            Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: Fiber.interrupt })),
+          ),
+          Ref.update(startupShellWindowRef, (current) =>
+            Option.isSome(current) && current.value === window ? Option.none() : current,
+          ),
+        ]).pipe(Effect.asVoid),
+      );
     });
 
     return window;
   });
 
-  const createMain = Effect.gen(function* () {
-    const window = yield* createWindow();
+  const createAndRegisterMain = Effect.fn("desktop.window.createAndRegisterMain")(function* (
+    initialContent: "application" | "startup-shell",
+  ) {
+    const window = yield* createWindow(initialContent);
     yield* electronWindow.setMain(window);
-    yield* logWindowInfo("main window created");
+    yield* logWindowInfo("main window created", { initialContent });
     return window;
-  }).pipe(Effect.withSpan("desktop.window.createMain"));
+  });
 
-  const ensureMain = Effect.gen(function* () {
-    const existingWindow = yield* currentMainWindow;
-    if (Option.isSome(existingWindow)) {
-      return existingWindow.value;
-    }
-    return yield* createMain;
-  }).pipe(Effect.withSpan("desktop.window.ensureMain"));
+  const ensureMain = mainWindowMutation
+    .withPermits(1)(
+      Effect.gen(function* () {
+        const existingWindow = yield* currentMainWindow;
+        if (Option.isSome(existingWindow)) {
+          return existingWindow.value;
+        }
+        return yield* createAndRegisterMain("application");
+      }),
+    )
+    .pipe(Effect.withSpan("desktop.window.ensureMain"));
 
   const revealOrCreateMain = Effect.gen(function* () {
     const window = yield* ensureMain;
@@ -673,87 +673,84 @@ export const make = Effect.gen(function* () {
     return window;
   }).pipe(Effect.withSpan("desktop.window.revealOrCreateMain"));
 
-  const createMainIfBackendReady = Effect.gen(function* () {
-    const backendReady = yield* Ref.get(backendReadyRef);
-    if (!backendReady) return;
-    const existingWindow = yield* currentMainWindow;
-    if (Option.isSome(existingWindow)) return;
-    yield* createMain;
-  }).pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
+  const loadApplicationInMain: (window: Electron.BrowserWindow) => Effect.Effect<void> = Effect.fn(
+    "desktop.window.loadApplicationInMain",
+  )(function* (window: Electron.BrowserWindow) {
+    const startupShell = yield* Ref.get(startupShellWindowRef);
+    if (Option.isNone(startupShell) || startupShell.value !== window || window.isDestroyed())
+      return;
+    const loadResult = yield* Effect.tryPromise(() => window.loadURL(applicationUrl)).pipe(
+      Effect.timeoutOption(APPLICATION_LOAD_TIMEOUT_MS),
+      Effect.option,
+    );
+    if (Option.isSome(loadResult) && Option.isSome(loadResult.value)) {
+      yield* Ref.set(startupShellWindowRef, Option.none());
+      return;
+    }
+    yield* logWindowWarning("failed to load application in main window", {
+      timedOut: Option.isSome(loadResult),
+      url: applicationUrl,
+    });
+    const activeRetry = yield* Ref.get(applicationLoadRetryRef);
+    if (Option.isNone(activeRetry)) {
+      const retry: Fiber.Fiber<void, never> = runFork(
+        Effect.sleep(250).pipe(
+          Effect.andThen(Ref.set(applicationLoadRetryRef, Option.none())),
+          Effect.andThen(loadApplicationInMain(window)),
+        ),
+      );
+      yield* Ref.set(applicationLoadRetryRef, Option.some(retry));
+    }
+  });
 
-  const showConnectingSplash = Effect.gen(function* () {
-    // Only when nothing is shown yet: no real window, no existing splash.
-    const existingSplash = yield* Ref.get(splashWindowRef);
-    if (Option.isSome(existingSplash)) return;
-    const existingWindow = yield* electronWindow.currentMainOrFirst;
-    if (Option.isSome(existingWindow)) return;
+  const createMainIfBackendReady = mainWindowMutation
+    .withPermits(1)(
+      Effect.gen(function* () {
+        const backendReady = yield* Ref.get(backendReadyRef);
+        if (!backendReady) return;
+        const existingWindow = yield* currentMainWindow;
+        if (Option.isSome(existingWindow)) {
+          yield* loadApplicationInMain(existingWindow.value);
+          return;
+        }
+        yield* createAndRegisterMain("application");
+      }),
+    )
+    .pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
 
-    const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
-    const splash = yield* electronWindow.create({
-      width: 360,
-      height: 220,
-      resizable: false,
-      minimizable: false,
-      maximizable: false,
-      fullscreenable: false,
-      frame: false,
-      center: true,
-      show: false,
-      skipTaskbar: false,
-      backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
-      title: environment.displayName,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    });
-    yield* Ref.set(splashWindowRef, Option.some(splash));
-    splash.once("closed", () => {
-      void runPromise(Ref.set(splashWindowRef, Option.none()));
-    });
-    splash.once("ready-to-show", () => {
-      if (!splash.isDestroyed()) {
-        splash.show();
-      }
-    });
-    void splash.loadURL(buildConnectingSplashDataUrl(shouldUseDarkColors));
-    yield* logWindowInfo("connecting splash shown");
-  }).pipe(
-    // The splash is best-effort UX — never let it fail startup.
-    Effect.catch((error) =>
-      logWindowWarning("failed to show connecting splash", { message: error.message }),
-    ),
-    Effect.withSpan("desktop.window.showConnectingSplash"),
-  );
+  const showStartupShell = mainWindowMutation
+    .withPermits(1)(
+      Effect.gen(function* () {
+        const existingWindow = yield* currentMainWindow;
+        if (Option.isSome(existingWindow)) return;
+        yield* createAndRegisterMain("startup-shell");
+        yield* logWindowInfo("startup shell shown");
+      }),
+    )
+    .pipe(
+      // The startup document is best-effort UX; never let it fail startup.
+      Effect.catch((error) =>
+        logWindowWarning("failed to show startup shell", { message: error.message }),
+      ),
+      Effect.withSpan("desktop.window.showStartupShell"),
+    );
 
   return DesktopWindow.of({
-    createMain,
     ensureMain,
     revealOrCreateMain,
     activate: Effect.gen(function* () {
       const existingWindow = yield* currentMainWindow;
       if (Option.isSome(existingWindow)) {
+        if (yield* Ref.get(backendReadyRef)) {
+          yield* loadApplicationInMain(existingWindow.value);
+        }
         yield* electronWindow.reveal(existingWindow.value);
         return;
-      }
-      // No real main window yet. While the backend is still cold-booting,
-      // re-reveal the connecting splash so taskbar/dock activation brings it
-      // back instead of doing nothing. Once the backend is ready we fall
-      // through to (re)create the real main -- including retrying a previously
-      // failed open the pool swallowed -- rather than latching onto the splash.
-      const backendReady = yield* Ref.get(backendReadyRef);
-      if (!backendReady) {
-        const splash = yield* Ref.get(splashWindowRef);
-        if (Option.isSome(splash)) {
-          yield* electronWindow.reveal(splash.value);
-          return;
-        }
       }
       yield* createMainIfBackendReady;
     }).pipe(Effect.withSpan("desktop.window.activate")),
     createMainIfBackendReady,
-    showConnectingSplash,
+    showStartupShell,
     handleBackendReady: Effect.fn("desktop.window.handleBackendReady")(function* (httpBaseUrl) {
       yield* Ref.set(backendReadyRef, true);
       yield* logWindowInfo("backend ready", { source: "http", url: httpBaseUrl.href });
@@ -767,10 +764,9 @@ export const make = Effect.gen(function* () {
     ),
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action) {
       yield* Effect.annotateCurrentSpan({ action });
+      if (!(yield* Ref.get(backendReadyRef))) return;
+      if (Option.isSome(yield* Ref.get(startupShellWindowRef))) return;
       const existingWindow = yield* focusedMainWindow;
-      if (Option.isNone(existingWindow) && !(yield* Ref.get(backendReadyRef))) {
-        return;
-      }
       const targetWindow = Option.isSome(existingWindow) ? existingWindow.value : yield* ensureMain;
 
       const send = () => {
