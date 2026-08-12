@@ -1,4 +1,11 @@
-import type { EnvironmentId, VcsDriverKind, VcsRef, ProjectId } from "@shuv2code/contracts";
+import type {
+  EnvironmentId,
+  VcsDriverKind,
+  VcsRef,
+  ProjectId,
+  VcsRepositorySelection,
+} from "@shuv2code/contracts";
+import { deriveLocalBranchNameFromRemoteRef } from "@shuv2code/shared/git";
 import * as Schema from "effect/Schema";
 import { toSortableTimestamp } from "../lib/threadSort";
 export {
@@ -15,6 +22,10 @@ export interface EnvironmentOption {
 
 export const EnvMode = Schema.Literals(["local", "worktree"]);
 export type EnvMode = typeof EnvMode.Type;
+
+export function resolveAvailableEnvModes(supportsWorktrees: boolean): ReadonlyArray<EnvMode> {
+  return supportsWorktrees ? ["local", "worktree"] : ["local"];
+}
 
 const GENERIC_LOCAL_ENVIRONMENT_LABELS = new Set(["local", "local environment"]);
 
@@ -52,6 +63,26 @@ export function shouldShowEnvironmentIndicator(input: {
 }): boolean {
   if (input.canPickEnvironment) return true;
   return input.activeEnvironment !== null && !input.activeEnvironment.isPrimary;
+}
+
+export function shouldShowVcsSelector(
+  selection: VcsRepositorySelection | undefined,
+): selection is VcsRepositorySelection {
+  return (
+    selection !== undefined &&
+    selection.availableKinds.length > 0 &&
+    (selection.availableKinds.length > 1 || selection.source === "fallback")
+  );
+}
+
+export function resolveBranchSelectionRefName(input: {
+  readonly kind: VcsDriverKind;
+  readonly ref: Pick<VcsRef, "name" | "isRemote">;
+}): string {
+  if (input.kind !== "git" || input.ref.isRemote !== true) {
+    return input.ref.name;
+  }
+  return deriveLocalBranchNameFromRemoteRef(input.ref.name);
 }
 
 export function resolveEnvModeLabel(mode: EnvMode, kind: VcsDriverKind = "git"): string {

@@ -24,6 +24,12 @@ import { AppText as Text } from "../../../components/AppText";
 import { nativeHeaderScrollEdgeEffects } from "../../../native/StackHeader";
 import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 import { useEnvironmentQuery } from "../../../state/query";
+import {
+  canUseGitOnlyActions,
+  sourceControlRefLabel,
+  sourceControlReviewDetail,
+  sourceControlWorkspaceLabel,
+} from "../../../state/git-action-availability";
 import { useThreadSelection } from "../../../state/use-thread-selection";
 import { useSelectedThreadGitActions } from "../../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../../state/use-selected-thread-git-state";
@@ -67,7 +73,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
       : null,
   );
 
-  const currentBranchLabel = gitStatus.data?.refName ?? selectedThread?.branch ?? "Detached HEAD";
+  const currentBranchLabel = sourceControlRefLabel(gitStatus.data, selectedThread?.branch);
   const currentStatusSummary = statusSummary(gitStatus.data);
   const currentWorktreePath = selectedThreadWorktreePath;
   const gitOperationLabel = gitState.gitOperationLabel;
@@ -75,10 +81,14 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
   const isRepo = gitStatus.data?.isRepo ?? true;
   const hasPrimaryRemote = gitStatus.data?.hasPrimaryRemote ?? false;
   const isDefaultRef = gitStatus.data?.isDefaultRef ?? false;
+  const gitOnlyActionsAvailable = canUseGitOnlyActions(gitStatus.data);
 
   const menuItems = useMemo(
-    () => (isRepo ? buildMenuItems(gitStatus.data, busy, hasPrimaryRemote) : []),
-    [busy, gitStatus.data, hasPrimaryRemote, isRepo],
+    () =>
+      isRepo && gitOnlyActionsAvailable
+        ? buildMenuItems(gitStatus.data, busy, hasPrimaryRemote)
+        : [],
+    [busy, gitOnlyActionsAvailable, gitStatus.data, hasPrimaryRemote, isRepo],
   );
 
   const sheetMenuItems = useMemo(
@@ -112,6 +122,9 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
 
   const runActionWithPrompt = useCallback(
     async (input: GitActionRequestInput) => {
+      if (!gitOnlyActionsAvailable) {
+        return;
+      }
       const confirmableAction =
         input.action === "push" ||
         input.action === "create_pr" ||
@@ -143,12 +156,21 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
       }
       await gitActions.onRunSelectedThreadGitAction(input);
     },
-    [environmentId, gitActions, gitStatus.data, isDefaultRef, isInspector, navigation, threadId],
+    [
+      environmentId,
+      gitActions,
+      gitOnlyActionsAvailable,
+      gitStatus.data,
+      isDefaultRef,
+      isInspector,
+      navigation,
+      threadId,
+    ],
   );
 
   const onPressMenuItem = useCallback(
     async (item: (typeof menuItems)[number]) => {
-      if (item.disabled) return;
+      if (!gitOnlyActionsAvailable || item.disabled) return;
       if (item.kind === "open_pr") {
         await openExistingPr();
         return;
@@ -168,7 +190,14 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
         await runActionWithPrompt({ action: "create_pr" });
       }
     },
-    [environmentId, openExistingPr, navigation, runActionWithPrompt, threadId],
+    [
+      environmentId,
+      gitOnlyActionsAvailable,
+      openExistingPr,
+      navigation,
+      runActionWithPrompt,
+      threadId,
+    ],
   );
 
   // Status facts live on the relevant rows instead of crowding the header
@@ -195,7 +224,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
     [gitStatus.data, menuItems],
   );
 
-  const behindCount = gitStatus.data?.behindCount ?? 0;
+  const behindCount = gitOnlyActionsAvailable ? (gitStatus.data?.behindCount ?? 0) : 0;
 
   // Deterministic pull-to-refresh state. Tying RefreshControl to the query's
   // isPending flag left the spinner stuck (the status query reports pending
@@ -260,7 +289,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
         <SheetListRow
           icon="text.bubble"
           title="Review changes"
-          subtitle="Inspect turn diffs, worktree changes, and base branch diff"
+          subtitle={sourceControlReviewDetail(gitStatus.data)}
           disabled={busy || !isRepo}
           onPress={() => {
             const params = { environmentId, threadId };
@@ -271,22 +300,28 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
             );
           }}
         />
-        <View className="ml-12 h-px bg-border" />
-        <SheetListRow
-          icon="point.topleft.down.curvedto.point.bottomright.up"
-          title="Branches & worktrees"
-          subtitle="Switch branch, create branch, or move to a worktree"
-          disabled={busy || !isRepo}
-          onPress={() =>
-            navigation.navigate("GitBranches", {
-              environmentId: String(environmentId),
-              threadId: String(threadId),
-            })
-          }
-        />
+        {gitOnlyActionsAvailable ? (
+          <>
+            <View className="ml-12 h-px bg-border" />
+            <SheetListRow
+              icon="point.topleft.down.curvedto.point.bottomright.up"
+              title="Branches & worktrees"
+              subtitle="Switch branch, create branch, or move to a worktree"
+              disabled={busy || !isRepo}
+              onPress={() =>
+                navigation.navigate("GitBranches", {
+                  environmentId: String(environmentId),
+                  threadId: String(threadId),
+                })
+              }
+            />
+          </>
+        ) : null}
       </View>
 
-      {currentWorktreePath ? <MetaCard label="Worktree" value={currentWorktreePath} /> : null}
+      {currentWorktreePath ? (
+        <MetaCard label={sourceControlWorkspaceLabel(gitStatus.data)} value={currentWorktreePath} />
+      ) : null}
     </ScrollView>
   );
 

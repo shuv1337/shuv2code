@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ControlPillMenu } from "../../components/ControlPill";
 import { SymbolView } from "../../components/AppSymbol";
-import { T3Wordmark } from "../../components/T3Wordmark";
+import { Shuv2CodeWordmark } from "../../components/Shuv2CodeWordmark";
 import { HOME_HORIZONTAL_INSET } from "../../lib/layoutMetrics";
 import { resolveMobileStageLabel } from "../../lib/mobileBranding";
 import { useThemeColor } from "../../lib/useThemeColor";
@@ -209,7 +209,7 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
           <View className="flex-row items-center gap-2.5">
             <View className="flex-1 flex-row items-center gap-2">
               {/* Mirrors the desktop SidebarBrand: shuv2code mark + muted "Code". */}
-              <T3Wordmark color={iconColor} height={15} />
+              <Shuv2CodeWordmark color={iconColor} height={15} />
               <RNText className="-ml-0.5 text-[21px] font-shuv2code-medium tracking-[-0.5px] text-foreground-muted">
                 Code
               </RNText>

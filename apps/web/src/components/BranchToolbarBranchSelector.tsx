@@ -41,7 +41,7 @@ import { cn } from "../lib/utils";
 import { parsePullRequestReference } from "../pullRequestReference";
 import { getSourceControlPresentation } from "../sourceControlPresentation";
 import {
-  deriveLocalBranchNameFromRemoteRef,
+  resolveBranchSelectionRefName,
   resolveBranchTriggerLabel,
   resolveBranchToolbarPrBranch,
   resolveBranchSelectionTarget,
@@ -76,6 +76,7 @@ interface BranchToolbarBranchSelectorProps {
   threadId: ThreadId;
   draftId?: DraftId;
   envLocked: boolean;
+  supportsWorktrees?: boolean;
   effectiveEnvModeOverride?: "local" | "worktree";
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (refName: string | null) => void;
@@ -95,6 +96,7 @@ export function BranchToolbarBranchSelector({
   threadId,
   draftId,
   envLocked,
+  supportsWorktrees = true,
   effectiveEnvModeOverride,
   activeThreadBranchOverride,
   onActiveThreadBranchOverrideChange,
@@ -145,13 +147,14 @@ export function BranchToolbarBranchSelector({
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const branchCwd = activeWorktreePath ?? activeProjectCwd;
   const hasServerThread = serverThread !== null;
-  const effectiveEnvMode =
+  const requestedEnvMode =
     effectiveEnvModeOverride ??
     resolveEffectiveEnvMode({
       activeWorktreePath,
       hasServerThread,
       draftThreadEnvMode: draftThread?.envMode,
     });
+  const effectiveEnvMode = supportsWorktrees ? requestedEnvMode : "local";
 
   // ---------------------------------------------------------------------------
   // Thread branch mutation (colocated — only this component calls it)
@@ -239,7 +242,8 @@ export function BranchToolbarBranchSelector({
     branchRefState.data?.nextCursor !== null && branchRefState.data?.nextCursor !== undefined;
   const isFetchingNextPage = branchRefState.isFetchingNextPage;
   const isInitialBranchesLoadPending = branchRefState.isPending && branchRefState.data === null;
-  const isJj = branchStatusQuery.data?.kind === "jj";
+  const vcsKind = branchStatusQuery.data?.kind ?? "unknown";
+  const isJj = vcsKind === "jj";
   const currentGitBranch =
     branchStatusQuery.data?.refName ?? refs.find((refName) => refName.current)?.name ?? null;
   const sourceControlPresentation = useMemo(
@@ -261,7 +265,7 @@ export function BranchToolbarBranchSelector({
   const normalizedDeferredBranchQuery = deferredTrimmedBranchQuery.toLowerCase();
   const prReference = isJj ? null : parsePullRequestReference(trimmedBranchQuery);
   const isSelectingWorktreeBase =
-    effectiveEnvMode === "worktree" && !envLocked && !activeWorktreePath;
+    supportsWorktrees && effectiveEnvMode === "worktree" && !envLocked && !activeWorktreePath;
   const checkoutPullRequestItemValue =
     prReference && onCheckoutPullRequestRequest ? `__checkout_pull_request__:${prReference}` : null;
   const canCreateBranch = !isSelectingWorktreeBase && trimmedBranchQuery.length > 0;
@@ -416,9 +420,7 @@ export function BranchToolbarBranchSelector({
       return;
     }
 
-    const selectedBranchName = refName.isRemote
-      ? deriveLocalBranchNameFromRemoteRef(refName.name)
-      : refName.name;
+    const selectedBranchName = resolveBranchSelectionRefName({ kind: vcsKind, ref: refName });
 
     setIsBranchMenuOpen(false);
     onComposerFocusRequest?.();

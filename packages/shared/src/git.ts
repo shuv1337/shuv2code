@@ -141,21 +141,77 @@ export function normalizeGitRemoteUrl(value: string): string {
   return normalized;
 }
 
+function isGitHubRemoteHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "github.com" || normalized.split(".").includes("github");
+}
+
+function parseGitHubRepositoryPath(pathname: string): string | null {
+  const segments = pathname
+    .replace(/^\/+|\/+$/gu, "")
+    .split("/")
+    .filter(Boolean);
+  if (segments.length !== 2) {
+    return null;
+  }
+
+  const owner = segments[0]?.trim() ?? "";
+  const repository = (segments[1]?.trim() ?? "").replace(/\.git$/iu, "");
+  if (!owner || !repository || /\s/u.test(owner) || /\s/u.test(repository)) {
+    return null;
+  }
+  return `${owner}/${repository}`;
+}
+
+function parseGitHubRepositoryCoordinatesFromRemoteUrl(
+  value: string | null,
+): { readonly host: string; readonly nameWithOwner: string } | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return null;
+  }
+
+  const scpMatch = /^git@([^:/\s]+):(.+)$/iu.exec(trimmed);
+  if (scpMatch?.[1] && scpMatch[2] && isGitHubRemoteHostname(scpMatch[1])) {
+    const nameWithOwner = parseGitHubRepositoryPath(scpMatch[2]);
+    return nameWithOwner ? { host: scpMatch[1].toLowerCase(), nameWithOwner } : null;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (
+      !["git:", "http:", "https:", "ssh:"].includes(url.protocol) ||
+      !isGitHubRemoteHostname(url.hostname)
+    ) {
+      return null;
+    }
+    const nameWithOwner = parseGitHubRepositoryPath(url.pathname);
+    return nameWithOwner ? { host: url.host.toLowerCase(), nameWithOwner } : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Best-effort parse of a GitHub `owner/repo` identifier from common remote URL shapes.
  */
 export function parseGitHubRepositoryNameWithOwnerFromRemoteUrl(url: string | null): string | null {
-  const trimmed = url?.trim() ?? "";
-  if (trimmed.length === 0) {
+  return parseGitHubRepositoryCoordinatesFromRemoteUrl(url)?.nameWithOwner ?? null;
+}
+
+/**
+ * Parse the explicit repository selector accepted by `gh --repo`.
+ * github.com keeps the traditional `owner/repo` form while GHES selectors
+ * include their authenticated host so the CLI cannot fall back to cwd.
+ */
+export function parseGitHubRepositorySelectorFromRemoteUrl(url: string | null): string | null {
+  const coordinates = parseGitHubRepositoryCoordinatesFromRemoteUrl(url);
+  if (!coordinates) {
     return null;
   }
-
-  const match =
-    /^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/|git:\/\/github\.com\/)([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i.exec(
-      trimmed,
-    );
-  const repositoryNameWithOwner = match?.[1]?.trim() ?? "";
-  return repositoryNameWithOwner.length > 0 ? repositoryNameWithOwner : null;
+  return coordinates.host === "github.com"
+    ? coordinates.nameWithOwner
+    : `${coordinates.host}/${coordinates.nameWithOwner}`;
 }
 
 function deriveLocalBranchNameCandidatesFromRemoteRef(

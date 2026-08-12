@@ -16,6 +16,7 @@ import {
   decodeGitHubPullRequestJson,
   decodeGitHubPullRequestListJson,
 } from "./gitHubPullRequests.ts";
+import type * as SourceControlProvider from "./SourceControlProvider.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -208,6 +209,7 @@ export class GitHubCli extends Context.Service<
     readonly listOpenPullRequests: (input: {
       readonly cwd: string;
       readonly headSelector: string;
+      readonly target?: SourceControlProvider.SourceControlRefSelector;
       readonly repository?: string;
       readonly limit?: number;
     }) => Effect.Effect<ReadonlyArray<GitHubPullRequestSummary>, GitHubCliError>;
@@ -333,6 +335,7 @@ export const make = Effect.gen(function* () {
           ...(input.repository ? ["--repo", input.repository] : []),
           "--head",
           input.headSelector,
+          ...(input.target ? ["--base", input.target.refName] : []),
           "--state",
           "open",
           "--limit",

@@ -18,6 +18,7 @@ import {
   type VcsCreateRefResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
+  type VcsFetchResult,
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewResult,
   type VcsInitInput,
@@ -607,6 +608,25 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       maxOutputBytes: 64 * 1024,
     }).pipe(Effect.asVoid);
 
+  const fetch: NonNullable<VcsDriver.VcsDriver["Service"]["fetch"]> = Effect.fn(
+    "GitVcsDriver.fetch",
+  )(function* (input) {
+    yield* gitCommand(
+      vcsProcess,
+      "GitVcsDriver.fetch",
+      input.cwd,
+      ["fetch", "--quiet", ...(input.remoteName ? ["--", input.remoteName] : [])],
+      {
+        timeoutMs: 120_000,
+        maxOutputBytes: 4 * 1024 * 1024,
+      },
+    );
+    return {
+      status: "fetched",
+      remoteName: input.remoteName ?? null,
+    } satisfies VcsFetchResult;
+  });
+
   const resolveHeadCommit = (cwd: string) =>
     execute({
       operation: "GitVcsDriver.checkpoints.resolveHeadCommit",
@@ -871,6 +891,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     listRemotes,
     filterIgnoredPaths,
     initRepository,
+    fetch,
   };
 });
 

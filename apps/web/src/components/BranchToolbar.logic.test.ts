@@ -4,6 +4,7 @@ import {
   dedupeRemoteBranchesWithLocalMatches,
   deriveLocalBranchNameFromRemoteRef,
   resolveEnvironmentOptionLabel,
+  resolveBranchSelectionRefName,
   resolveBranchSelectionTarget,
   resolveCurrentWorkspaceLabel,
   resolveDraftEnvModeAfterBranchChange,
@@ -16,12 +17,67 @@ import {
   resolveLocalCheckoutBranchMismatch,
   resolvePreviousWorktreeLabel,
   resolvePreviousWorktreeSeed,
+  resolveAvailableEnvModes,
   shouldIncludeBranchPickerItem,
   shouldShowEnvironmentIndicator,
+  shouldShowVcsSelector,
 } from "./BranchToolbar.logic";
+
+describe("resolveAvailableEnvModes", () => {
+  it("hides unsupported workspace creation modes", () => {
+    expect(resolveAvailableEnvModes(false)).toEqual(["local"]);
+    expect(resolveAvailableEnvModes(true)).toEqual(["local", "worktree"]);
+  });
+});
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+
+describe("shouldShowVcsSelector", () => {
+  it("shows normal colocated choices", () => {
+    expect(
+      shouldShowVcsSelector({
+        availableKinds: ["git", "jj"],
+        projectKind: null,
+        defaultKind: "git",
+        source: "user-default",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the recovery control visible when fallback leaves one available kind", () => {
+    expect(
+      shouldShowVcsSelector({
+        availableKinds: ["jj"],
+        projectKind: "git",
+        defaultKind: "git",
+        source: "fallback",
+      }),
+    ).toBe(true);
+  });
+
+  it("hides fallback metadata when no VCS is actually available", () => {
+    expect(
+      shouldShowVcsSelector({
+        availableKinds: [],
+        projectKind: null,
+        defaultKind: "git",
+        source: "fallback",
+      }),
+    ).toBe(false);
+  });
+
+  it("hides a healthy single-kind repository", () => {
+    expect(
+      shouldShowVcsSelector({
+        availableKinds: ["jj"],
+        projectKind: null,
+        defaultKind: "jj",
+        source: "user-default",
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("resolvePreviousWorktreeSeed", () => {
   it("picks the most recently updated worktree thread", () => {
@@ -486,6 +542,35 @@ describe("deriveLocalBranchNameFromRemoteRef", () => {
   it("returns the original name when ref is malformed", () => {
     expect(deriveLocalBranchNameFromRemoteRef("origin/")).toBe("origin/");
     expect(deriveLocalBranchNameFromRemoteRef("/feature/demo")).toBe("/feature/demo");
+  });
+});
+
+describe("resolveBranchSelectionRefName", () => {
+  it("derives local metadata names for Git remote branches", () => {
+    expect(
+      resolveBranchSelectionRefName({
+        kind: "git",
+        ref: { name: "origin/feature/foo", isRemote: true },
+      }),
+    ).toBe("feature/foo");
+  });
+
+  it("preserves JJ remote bookmark names in thread metadata", () => {
+    expect(
+      resolveBranchSelectionRefName({
+        kind: "jj",
+        ref: { name: "feature/foo@origin", isRemote: true },
+      }),
+    ).toBe("feature/foo@origin");
+  });
+
+  it("does not normalize an unknown VCS as Git", () => {
+    expect(
+      resolveBranchSelectionRefName({
+        kind: "unknown",
+        ref: { name: "feature/foo@origin", isRemote: true },
+      }),
+    ).toBe("feature/foo@origin");
   });
 });
 

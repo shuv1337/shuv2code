@@ -26,6 +26,7 @@ import {
 import { toastManager } from "./ui/toast";
 import { vcsEnvironment } from "../state/vcs";
 import { useAtomCommand } from "../state/use-atom-command";
+import { shouldShowVcsSelector } from "./BranchToolbar.logic";
 
 function vcsKindLabel(kind: VcsDriverKind | undefined): string {
   if (kind === "jj") return "Jujutsu";
@@ -50,7 +51,7 @@ export function BranchToolbarVcsSelector({
   const [pendingKind, setPendingKind] = useState<VcsSelectableKind | "default" | null>(null);
   const selection = status.selection;
 
-  if (!selection || selection.availableKinds.length < 2) return null;
+  if (!shouldShowVcsSelector(selection)) return null;
 
   const setPreference = (value: string) => {
     if (pendingKind !== null) return;

@@ -103,6 +103,8 @@ it.effect("lists Bitbucket PRs through provider-neutral input names", () =>
     yield* provider.listChangeRequests({
       cwd: "/repo",
       headSelector: "feature/provider",
+      source: { refName: "feature/provider", repository: "fork/repository" },
+      target: { refName: "release", repository: "ignored/other" },
       state: "all",
       limit: 10,
     });
@@ -110,6 +112,8 @@ it.effect("lists Bitbucket PRs through provider-neutral input names", () =>
     assert.deepStrictEqual(listInput, {
       cwd: "/repo",
       headSelector: "feature/provider",
+      source: { refName: "feature/provider", repository: "fork/repository" },
+      target: { refName: "release", repository: "ignored/other" },
       state: "all",
       limit: 10,
     });
@@ -131,7 +135,8 @@ it.effect("creates Bitbucket PRs through provider-neutral input names", () =>
     yield* provider.createChangeRequest({
       cwd: "/repo",
       baseRefName: "main",
-      headSelector: "owner:feature/provider",
+      headSelector: "feature/provider",
+      source: { refName: "feature/provider", repository: "fork/repository" },
       title: "Provider PR",
       bodyFile: "/tmp/body.md",
     });
@@ -139,10 +144,10 @@ it.effect("creates Bitbucket PRs through provider-neutral input names", () =>
     assert.deepStrictEqual(createInput, {
       cwd: "/repo",
       baseBranch: "main",
-      headSelector: "owner:feature/provider",
+      headSelector: "feature/provider",
       source: {
-        owner: "owner",
         refName: "feature/provider",
+        repository: "fork/repository",
       },
       title: "Provider PR",
       bodyFile: "/tmp/body.md",

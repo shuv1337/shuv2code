@@ -5,8 +5,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { CheckpointRef, type VcsError } from "@shuv2code/contracts";
+import type { VcsError } from "@shuv2code/contracts";
 import * as JjVcsDriver from "./JjVcsDriver.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
@@ -43,44 +44,6 @@ runVcsDriverContractSuite<VcsDriver.VcsDriver, JjContractError>({
   },
 });
 
-it.effect("captures stable jj checkpoints, diffs them, and restores their contents", () =>
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const cwd = yield* fileSystem.makeTempDirectoryScoped({
-      prefix: "shuv2code-jj-checkpoint-",
-    });
-    const driver = yield* VcsDriver.VcsDriver;
-    const checkpoints = driver.checkpoints;
-    assert.ok(checkpoints);
-
-    yield* driver.initRepository({ cwd, kind: "jj" });
-    yield* writeFile(cwd, "note.txt", "one\n");
-
-    const first = CheckpointRef.make("refs/shuv2code/checkpoints/test/turn/1");
-    const second = CheckpointRef.make("refs/shuv2code/checkpoints/test/turn/2");
-    yield* checkpoints.captureCheckpoint({ cwd, checkpointRef: first });
-
-    yield* writeFile(cwd, "note.txt", "two\n");
-    yield* checkpoints.captureCheckpoint({ cwd, checkpointRef: second });
-
-    const diff = yield* checkpoints.diffCheckpoints({
-      cwd,
-      fromCheckpointRef: first,
-      toCheckpointRef: second,
-      ignoreWhitespace: false,
-    });
-    assert.include(diff, "-one");
-    assert.include(diff, "+two");
-
-    assert.isTrue(yield* checkpoints.restoreCheckpoint({ cwd, checkpointRef: first }));
-    assert.equal(yield* fileSystem.readFileString(path.join(cwd, "note.txt")), "one\n");
-
-    yield* checkpoints.deleteCheckpointRefs({ cwd, checkpointRefs: [first, second] });
-    assert.isFalse(yield* checkpoints.hasCheckpointRef({ cwd, checkpointRef: first }));
-  }).pipe(Effect.provide(JjContractLayer)),
-);
-
 it.effect("builds review previews from the jj working-copy change", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -99,4 +62,38 @@ it.effect("builds review previews from the jj working-copy change", () =>
     assert.include(preview.sources[0]?.diff ?? "", "review.txt");
     assert.equal(preview.sources[0]?.headRef, "@");
   }).pipe(Effect.provide(JjContractLayer)),
+);
+
+it.effect("fails closed when JJ bookmark output is truncated", () =>
+  Effect.gen(function* () {
+    const driver = yield* JjVcsDriver.makeVcsDriver;
+    const listRefs = driver.listRefs;
+    assert.ok(listRefs);
+
+    const error = yield* listRefs({ cwd: "/virtual/repo" }).pipe(Effect.flip);
+    assert.include(error.message, "bookmark output was truncated");
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(VcsProcess.VcsProcess)({
+          run: (input) => {
+            const isBookmarkList =
+              input.command === "jj" &&
+              input.args.includes("bookmark") &&
+              input.args.includes("--all-remotes");
+            return Effect.succeed({
+              exitCode: ChildProcessSpawner.ExitCode(0),
+              stdout: isBookmarkList
+                ? '{"name":"main","target":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}\n'
+                : '{"commitId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","changeId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","description":"","empty":true,"conflict":false,"conflictPaths":[]}\n',
+              stderr: "",
+              stdoutTruncated: isBookmarkList,
+              stderrTruncated: false,
+            });
+          },
+        }),
+      ),
+    ),
+  ),
 );

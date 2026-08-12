@@ -51,6 +51,11 @@ export class SourceControlProviderRegistry extends Context.Service<
     readonly resolveHandle: (input: {
       readonly cwd: string;
     }) => Effect.Effect<SourceControlProviderHandle, SourceControlProviderError>;
+    readonly resolveRemoteHandle: (input: {
+      readonly cwd: string;
+      readonly remoteName: string;
+      readonly remoteUrl: string;
+    }) => Effect.Effect<SourceControlProviderHandle, SourceControlProviderError>;
     readonly resolve: (input: {
       readonly cwd: string;
     }) => Effect.Effect<
@@ -59,7 +64,7 @@ export class SourceControlProviderRegistry extends Context.Service<
     >;
     readonly discover: Effect.Effect<ReadonlyArray<SourceControlProviderDiscoveryItem>>;
   }
->()("@shuv2code/sourceControl/SourceControlProviderRegistry") {}
+>()("shuv2code/sourceControl/SourceControlProviderRegistry") {}
 
 function unsupportedProvider(
   kind: SourceControlProviderKind,
@@ -253,21 +258,41 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
       timeToLive: (exit) => (Exit.isSuccess(exit) ? PROVIDER_DETECTION_CACHE_TTL : Duration.zero),
     });
 
+    const handleForContext = (
+      context: SourceControlProvider.SourceControlProviderContext | null,
+    ): SourceControlProviderHandle => {
+      const kind = context?.provider.kind ?? "unknown";
+      const provider = providers.get(kind) ?? unsupportedProvider(kind);
+      return {
+        provider: bindProviderContext(provider, context),
+        context,
+      };
+    };
+
     const resolveHandle: SourceControlProviderRegistry["Service"]["resolveHandle"] = (input) =>
-      Cache.get(providerContextCache, input.cwd).pipe(
-        Effect.map((context) => {
-          const kind = context?.provider.kind ?? "unknown";
-          const provider = providers.get(kind) ?? unsupportedProvider(kind);
-          return {
-            provider: bindProviderContext(provider, context),
-            context,
-          } satisfies SourceControlProviderHandle;
-        }),
-      );
+      Cache.get(providerContextCache, input.cwd).pipe(Effect.map(handleForContext));
+
+    const resolveRemoteHandle: SourceControlProviderRegistry["Service"]["resolveRemoteHandle"] =
+      Effect.fn("SourceControlProviderRegistry.resolveRemoteHandle")(function* (input) {
+        const context = selectProviderContext([
+          {
+            name: input.remoteName,
+            url: input.remoteUrl,
+          },
+        ]);
+        const refinedContext = yield* refineUnknownRemoteProvider({
+          specs: discoverySpecs,
+          process,
+          cwd: input.cwd,
+          context,
+        });
+        return handleForContext(refinedContext);
+      });
 
     return SourceControlProviderRegistry.of({
       get,
       resolveHandle,
+      resolveRemoteHandle,
       resolve: (input) => resolveHandle(input).pipe(Effect.map((handle) => handle.provider)),
       discover: Effect.all(
         discoverySpecs.map((spec) =>

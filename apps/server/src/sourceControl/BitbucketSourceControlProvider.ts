@@ -43,6 +43,7 @@ export const make = Effect.gen(function* () {
           ...(input.context ? { context: input.context } : {}),
           headSelector: input.headSelector,
           ...(source ? { source } : {}),
+          ...(input.target ? { target: input.target } : {}),
           state: input.state,
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
         })

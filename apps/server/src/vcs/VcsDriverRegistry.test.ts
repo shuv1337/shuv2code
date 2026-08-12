@@ -28,7 +28,7 @@ function selectionTestLayer(input: {
 }) {
   return Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
     Layer.provide(NodeServices.layer),
-    Layer.provide(ServerSettings.layerTest({ defaultVcsKind: input.defaultKind })),
+    Layer.provideMerge(ServerSettings.layerTest({ defaultVcsKind: input.defaultKind })),
     Layer.provide(
       Layer.mock(VcsProjectConfig.VcsProjectConfig)({
         resolveKind: (request) =>

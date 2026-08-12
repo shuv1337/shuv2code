@@ -52,9 +52,16 @@ export interface JjActionAvailability {
   readonly pushUnavailableReason: string | null;
 }
 
+export function resolveJjActionBookmark(status: VcsStatusResult): string | null {
+  const refName = status.kind === "jj" ? status.refName : null;
+  return refName !== null && status.workingCopy?.bookmarks.includes(refName) === true
+    ? refName
+    : null;
+}
+
 export function resolveJjActionAvailability(status: VcsStatusResult): JjActionAvailability {
   const workingCopy = status.workingCopy;
-  const hasBookmark = (workingCopy?.bookmarks.length ?? 0) > 0;
+  const hasBookmark = resolveJjActionBookmark(status) !== null;
   const pushUnavailableReason = workingCopy?.hasConflicts
     ? "Resolve working-copy conflicts before pushing."
     : !workingCopy?.description.trim()

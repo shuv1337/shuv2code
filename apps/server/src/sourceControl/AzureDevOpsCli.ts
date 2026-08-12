@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
@@ -153,10 +154,29 @@ export class AzureDevOpsPullRequestDecodeError extends Schema.TaggedErrorClass<A
   }
 }
 
+export class AzureDevOpsPullRequestPayloadError extends Schema.TaggedErrorClass<AzureDevOpsPullRequestPayloadError>()(
+  "AzureDevOpsPullRequestPayloadError",
+  {
+    operation: Schema.Literal("createPullRequest"),
+    command: Schema.Literal("az"),
+    cwd: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  get detail(): string {
+    return "Failed to prepare the Azure DevOps pull request payload.";
+  }
+
+  override get message(): string {
+    return `Azure DevOps CLI failed in ${this.operation}: ${this.detail}`;
+  }
+}
+
 const AzureDevOpsRepositoryDecodeOperation = Schema.Literals([
   "getRepositoryCloneUrls",
   "getDefaultBranch",
   "createRepository",
+  "createPullRequest",
 ]);
 
 export class AzureDevOpsRepositoryDecodeError extends Schema.TaggedErrorClass<AzureDevOpsRepositoryDecodeError>()(
@@ -182,6 +202,7 @@ export const AzureDevOpsCliError = Schema.Union([
   AzureDevOpsCommandFailedError,
   AzureDevOpsPullRequestListDecodeError,
   AzureDevOpsPullRequestDecodeError,
+  AzureDevOpsPullRequestPayloadError,
   AzureDevOpsRepositoryDecodeError,
 ]);
 export type AzureDevOpsCliError = typeof AzureDevOpsCliError.Type;
@@ -192,6 +213,12 @@ export interface AzureDevOpsRepositoryCloneUrls {
   readonly nameWithOwner: string;
   readonly url: string;
   readonly sshUrl: string;
+}
+
+export interface AzureDevOpsRepositoryLocator {
+  readonly repository: string;
+  readonly project?: string;
+  readonly organization?: string;
 }
 
 export class AzureDevOpsCli extends Context.Service<
@@ -207,6 +234,8 @@ export class AzureDevOpsCli extends Context.Service<
       readonly cwd: string;
       readonly headSelector: string;
       readonly source?: SourceControlProvider.SourceControlRefSelector;
+      readonly target?: SourceControlProvider.SourceControlRefSelector;
+      readonly repository?: AzureDevOpsRepositoryLocator;
       readonly state: "open" | "closed" | "merged" | "all";
       readonly limit?: number;
     }) => Effect.Effect<ReadonlyArray<NormalizedAzureDevOpsPullRequestRecord>, AzureDevOpsCliError>;
@@ -233,12 +262,14 @@ export class AzureDevOpsCli extends Context.Service<
       readonly headSelector: string;
       readonly source?: SourceControlProvider.SourceControlRefSelector;
       readonly target?: SourceControlProvider.SourceControlRefSelector;
+      readonly repository?: AzureDevOpsRepositoryLocator;
       readonly title: string;
       readonly bodyFile: string;
     }) => Effect.Effect<void, AzureDevOpsCliError>;
 
     readonly getDefaultBranch: (input: {
       readonly cwd: string;
+      readonly repository?: AzureDevOpsRepositoryLocator;
     }) => Effect.Effect<string | null, AzureDevOpsCliError>;
 
     readonly checkoutPullRequest: (input: {
@@ -247,7 +278,7 @@ export class AzureDevOpsCli extends Context.Service<
       readonly remoteName?: string;
     }) => Effect.Effect<void, AzureDevOpsCliError>;
   }
->()("@shuv2code/sourceControl/AzureDevOpsCli") {}
+>()("shuv2code/sourceControl/AzureDevOpsCli") {}
 
 function normalizeChangeRequestId(reference: string): string {
   const trimmed = reference.trim().replace(/^#/, "");
@@ -280,6 +311,24 @@ const RawAzureDevOpsRepositorySchema = Schema.Struct({
   ),
   defaultBranch: Schema.optional(Schema.NullOr(Schema.String)),
 });
+
+const RawAzureDevOpsPullRequestRepositorySchema = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  project: Schema.Struct({
+    id: TrimmedNonEmptyString,
+  }),
+});
+
+const AzureDevOpsCreatePullRequestPayloadSchema = Schema.Struct({
+  sourceRefName: Schema.String,
+  targetRefName: Schema.String,
+  title: Schema.String,
+  description: Schema.String,
+});
+
+const encodeAzureDevOpsCreatePullRequestPayload = Schema.encodeEffect(
+  Schema.fromJsonString(AzureDevOpsCreatePullRequestPayloadSchema),
+);
 
 function normalizeDefaultBranch(value: string | null | undefined): string | null {
   const trimmed = value?.trim().replace(/^refs\/heads\//, "") ?? "";
@@ -314,6 +363,39 @@ function parseRepositorySpecifier(repository: string): {
   };
 }
 
+function repositoryArgs(
+  repository: AzureDevOpsRepositoryLocator | undefined,
+): ReadonlyArray<string> {
+  if (repository === undefined) {
+    return ["--detect", "true"];
+  }
+  return [
+    "--detect",
+    "false",
+    "--repository",
+    repository.repository,
+    ...(repository.project ? ["--project", repository.project] : []),
+    ...(repository.organization ? ["--organization", repository.organization] : []),
+  ];
+}
+
+function organizationArgs(
+  repository: AzureDevOpsRepositoryLocator | undefined,
+): ReadonlyArray<string> {
+  if (repository === undefined) {
+    return ["--detect", "true"];
+  }
+  return [
+    "--detect",
+    "false",
+    ...(repository.organization ? ["--organization", repository.organization] : []),
+  ];
+}
+
+function normalizeAzureDevOpsRefName(refName: string): string {
+  return refName.startsWith("refs/") ? refName : `refs/heads/${refName}`;
+}
+
 function decodeAzureDevOpsJson<S extends Schema.Top>(
   raw: string,
   schema: S,
@@ -335,6 +417,7 @@ function decodeAzureDevOpsJson<S extends Schema.Top>(
 }
 
 export const make = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
   const process = yield* VcsProcess.VcsProcess;
 
   const execute: AzureDevOpsCli["Service"]["execute"] = (input) =>
@@ -375,10 +458,10 @@ export const make = Effect.gen(function* () {
           "repos",
           "pr",
           "list",
-          "--detect",
-          "true",
+          ...repositoryArgs(input.repository),
           "--source-branch",
           SourceControlProvider.sourceBranch(input),
+          ...(input.target ? ["--target-branch", input.target.refName] : []),
           "--status",
           toAzureStatus(input.state),
           "--top",
@@ -484,29 +567,77 @@ export const make = Effect.gen(function* () {
       );
     },
     createPullRequest: (input) =>
-      execute({
-        cwd: input.cwd,
-        args: [
-          "repos",
-          "pr",
-          "create",
-          "--only-show-errors",
-          "--detect",
-          "true",
-          "--target-branch",
-          input.target?.refName ?? input.baseBranch,
-          "--source-branch",
-          SourceControlProvider.sourceBranch(input),
-          "--title",
-          input.title,
-          "--description",
-          `@${input.bodyFile}`,
-        ],
-      }).pipe(Effect.asVoid),
+      Effect.scoped(
+        Effect.gen(function* () {
+          const repository = yield* executeJson({
+            cwd: input.cwd,
+            args: ["repos", "show", ...repositoryArgs(input.repository)],
+          }).pipe(
+            Effect.map((result) => result.stdout.trim()),
+            Effect.flatMap((raw) =>
+              decodeAzureDevOpsJson(
+                raw,
+                RawAzureDevOpsPullRequestRepositorySchema,
+                "createPullRequest",
+                input.cwd,
+              ),
+            ),
+          );
+          const description = yield* fileSystem.readFileString(input.bodyFile);
+          const requestBody = yield* encodeAzureDevOpsCreatePullRequestPayload({
+            sourceRefName: normalizeAzureDevOpsRefName(SourceControlProvider.sourceBranch(input)),
+            targetRefName: normalizeAzureDevOpsRefName(input.target?.refName ?? input.baseBranch),
+            title: input.title,
+            description,
+          });
+          const requestFile = yield* fileSystem.makeTempFileScoped({
+            prefix: "shuv2code-azure-pr-",
+            suffix: ".json",
+          });
+          yield* fileSystem.writeFileString(requestFile, requestBody);
+          yield* execute({
+            cwd: input.cwd,
+            args: [
+              "devops",
+              "invoke",
+              "--only-show-errors",
+              ...organizationArgs(input.repository),
+              "--area",
+              "git",
+              "--resource",
+              "pullRequests",
+              "--route-parameters",
+              `project=${repository.project.id}`,
+              `repositoryId=${repository.id}`,
+              "--http-method",
+              "POST",
+              "--api-version",
+              "7.1",
+              "--encoding",
+              "utf-8",
+              "--in-file",
+              requestFile,
+              "--output",
+              "none",
+            ],
+          });
+        }).pipe(
+          Effect.mapError((cause) =>
+            isAzureDevOpsCliError(cause)
+              ? cause
+              : new AzureDevOpsPullRequestPayloadError({
+                  operation: "createPullRequest",
+                  command: "az",
+                  cwd: input.cwd,
+                  cause,
+                }),
+          ),
+        ),
+      ),
     getDefaultBranch: (input) =>
       executeJson({
         cwd: input.cwd,
-        args: ["repos", "show", "--detect", "true"],
+        args: ["repos", "show", ...repositoryArgs(input.repository)],
       }).pipe(
         Effect.map((result) => result.stdout.trim()),
         Effect.flatMap((raw) =>

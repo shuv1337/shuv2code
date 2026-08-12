@@ -3965,6 +3965,7 @@ function ChatViewContent(props: ChatViewProps) {
   const sendEnvMode = resolveSendEnvMode({
     requestedEnvMode: envMode,
     isGitRepo,
+    supportsWorktrees: gitStatusQuery.data?.capabilities?.supportsWorktrees ?? false,
   });
   const localCheckoutBranchMismatch = useMemo(
     () =>

@@ -72,6 +72,116 @@ function toChangeRequest(summary: {
   };
 }
 
+function decodePathSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function pathSegments(value: string): ReadonlyArray<string> {
+  return value
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .map(decodePathSegment);
+}
+
+function azureDevOpsRepositoryLocatorFromPath(
+  value: string,
+): AzureDevOpsCli.AzureDevOpsRepositoryLocator | null {
+  const segments = pathSegments(value.replace(/\.git$/u, ""));
+  const gitIndex = segments.findIndex((segment) => segment.toLowerCase() === "_git");
+  if (gitIndex > 0 && gitIndex < segments.length - 1) {
+    const repository = segments.slice(gitIndex + 1).join("/");
+    const project = segments[gitIndex - 1];
+    const organizationName = gitIndex > 1 ? segments[gitIndex - 2] : undefined;
+    if (!project || !repository) return null;
+    return {
+      repository,
+      project,
+      ...(organizationName ? { organization: `https://dev.azure.com/${organizationName}` } : {}),
+    };
+  }
+  if (segments.length < 2) return null;
+  const repository = segments.at(-1);
+  const project = segments.at(-2);
+  if (!repository || !project) return null;
+  return {
+    repository,
+    project,
+  };
+}
+
+function azureDevOpsRepositoryLocatorFromContext(
+  context: SourceControlProvider.SourceControlProviderContext | undefined,
+): AzureDevOpsCli.AzureDevOpsRepositoryLocator | null {
+  if (context === undefined) return null;
+
+  let hostname: string;
+  let pathname: string;
+  let origin: string | null = null;
+  const scpMatch = /^[^@\s]+@([^:\s]+):(.+)$/u.exec(context.remoteUrl.trim());
+  if (scpMatch?.[1] && scpMatch[2]) {
+    hostname = scpMatch[1].toLowerCase();
+    pathname = scpMatch[2];
+  } else {
+    try {
+      const remote = new URL(context.remoteUrl);
+      hostname = remote.hostname.toLowerCase();
+      pathname = remote.pathname;
+      origin = remote.origin;
+    } catch {
+      return azureDevOpsRepositoryLocatorFromPath(context.remoteUrl);
+    }
+  }
+
+  const segments = pathSegments(pathname.replace(/\.git$/u, ""));
+  if (hostname === "ssh.dev.azure.com" && segments[0]?.toLowerCase() === "v3") {
+    const organizationName = segments[1];
+    const project = segments[2];
+    const repository = segments.slice(3).join("/");
+    return organizationName && project && repository
+      ? {
+          organization: `https://dev.azure.com/${organizationName}`,
+          project,
+          repository,
+        }
+      : null;
+  }
+  if (hostname === "dev.azure.com") {
+    const organizationName = segments[0];
+    const project = segments[1];
+    const gitIndex = segments.findIndex((segment) => segment.toLowerCase() === "_git");
+    const repository = gitIndex >= 0 ? segments.slice(gitIndex + 1).join("/") : "";
+    return organizationName && project && repository
+      ? {
+          organization: `https://dev.azure.com/${organizationName}`,
+          project,
+          repository,
+        }
+      : null;
+  }
+  if (hostname.endsWith(".visualstudio.com")) {
+    const gitIndex = segments.findIndex((segment) => segment.toLowerCase() === "_git");
+    const project = gitIndex > 0 ? segments[gitIndex - 1] : segments[0];
+    const repository = gitIndex >= 0 ? segments.slice(gitIndex + 1).join("/") : "";
+    return origin && project && repository ? { organization: origin, project, repository } : null;
+  }
+  return azureDevOpsRepositoryLocatorFromPath(pathname);
+}
+
+function azureDevOpsRepositoryLocator(input: {
+  readonly context?: SourceControlProvider.SourceControlProviderContext;
+  readonly repository?: string;
+}): AzureDevOpsCli.AzureDevOpsRepositoryLocator | null {
+  return (
+    azureDevOpsRepositoryLocatorFromContext(input.context) ??
+    (input.repository ? azureDevOpsRepositoryLocatorFromPath(input.repository) : null)
+  );
+}
+
 export const make = Effect.gen(function* () {
   const azure = yield* AzureDevOpsCli.AzureDevOpsCli;
 
@@ -79,11 +189,17 @@ export const make = Effect.gen(function* () {
     kind: "azure-devops",
     listChangeRequests: (input) => {
       const source = SourceControlProvider.sourceControlRefFromInput(input);
+      const repository = azureDevOpsRepositoryLocator({
+        ...(input.context ? { context: input.context } : {}),
+        ...(source?.repository ? { repository: source.repository } : {}),
+      });
       return azure
         .listPullRequests({
           cwd: input.cwd,
           headSelector: input.headSelector,
           ...(source !== undefined ? { source } : {}),
+          ...(input.target !== undefined ? { target: input.target } : {}),
+          ...(repository ? { repository } : {}),
           state: input.state,
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
         })
@@ -125,6 +241,11 @@ export const make = Effect.gen(function* () {
       ),
     createChangeRequest: (input) => {
       const source = SourceControlProvider.sourceControlRefFromInput(input);
+      const repositoryRef = input.target?.repository ?? source?.repository;
+      const repository = azureDevOpsRepositoryLocator({
+        ...(input.context ? { context: input.context } : {}),
+        ...(repositoryRef ? { repository: repositoryRef } : {}),
+      });
       return azure
         .createPullRequest({
           cwd: input.cwd,
@@ -132,6 +253,7 @@ export const make = Effect.gen(function* () {
           headSelector: input.headSelector,
           ...(source !== undefined ? { source } : {}),
           ...(input.target !== undefined ? { target: input.target } : {}),
+          ...(repository ? { repository } : {}),
           title: input.title,
           bodyFile: input.bodyFile,
         })
@@ -186,8 +308,9 @@ export const make = Effect.gen(function* () {
             }),
         ),
       ),
-    getDefaultBranch: (input) =>
-      azure.getDefaultBranch({ cwd: input.cwd }).pipe(
+    getDefaultBranch: (input) => {
+      const repository = azureDevOpsRepositoryLocator(input);
+      return azure.getDefaultBranch({ cwd: input.cwd, ...(repository ? { repository } : {}) }).pipe(
         Effect.mapError(
           (error) =>
             new SourceControlProviderError({
@@ -199,7 +322,8 @@ export const make = Effect.gen(function* () {
               cause: error,
             }),
         ),
-      ),
+      );
+    },
     checkoutChangeRequest: (input) =>
       azure
         .checkoutPullRequest({

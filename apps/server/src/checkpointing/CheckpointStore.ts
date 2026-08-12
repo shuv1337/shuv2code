@@ -53,6 +53,9 @@ export class CheckpointStore extends Context.Service<
     /** Check whether cwd is inside a Git worktree. */
     readonly isGitRepository: (cwd: string) => Effect.Effect<boolean, CheckpointStoreError>;
 
+    /** Check whether the actively selected VCS driver supports checkpoints. */
+    readonly supportsCheckpoints: (cwd: string) => Effect.Effect<boolean, CheckpointStoreError>;
+
     /**
      * Capture a checkpoint commit and store it at the provided checkpoint ref.
      *
@@ -119,6 +122,12 @@ export const make = Effect.gen(function* () {
       .detect({ cwd, requestedKind: "git" })
       .pipe(Effect.map((repository) => repository !== null));
 
+  const supportsCheckpoints: CheckpointStore["Service"]["supportsCheckpoints"] = (cwd) =>
+    vcsRegistry.detect({ cwd }).pipe(
+      Effect.map((handle) => handle?.driver.checkpoints !== undefined),
+      Effect.orElseSucceed(() => false),
+    );
+
   const captureCheckpoint: CheckpointStore["Service"]["captureCheckpoint"] = Effect.fn(
     "captureCheckpoint",
   )(function* (input) {
@@ -159,6 +168,7 @@ export const make = Effect.gen(function* () {
 
   return CheckpointStore.of({
     isGitRepository,
+    supportsCheckpoints,
     captureCheckpoint,
     hasCheckpointRef,
     restoreCheckpoint,

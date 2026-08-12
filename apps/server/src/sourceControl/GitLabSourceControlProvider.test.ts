@@ -154,6 +154,81 @@ it.effect("creates GitLab MRs through provider-neutral input names", () =>
   }),
 );
 
+it.effect("routes GitLab change requests through the explicitly selected repository context", () =>
+  Effect.gen(function* () {
+    let listInput: Parameters<GitLabCli.GitLabCli["Service"]["listMergeRequests"]>[0] | null = null;
+    let createInput: Parameters<GitLabCli.GitLabCli["Service"]["createMergeRequest"]>[0] | null =
+      null;
+    let defaultInput: Parameters<GitLabCli.GitLabCli["Service"]["getDefaultBranch"]>[0] | null =
+      null;
+    const provider = yield* makeProvider({
+      listMergeRequests: (input) => {
+        listInput = input;
+        return Effect.succeed([]);
+      },
+      createMergeRequest: (input) => {
+        createInput = input;
+        return Effect.void;
+      },
+      getDefaultBranch: (input) => {
+        defaultInput = input;
+        return Effect.succeed("develop");
+      },
+    });
+    const context = {
+      provider: { kind: "gitlab", name: "GitLab", baseUrl: "https://gitlab.com" },
+      remoteName: "upstream",
+      remoteUrl: "git@gitlab.com:example/selected.git",
+    } as const;
+
+    yield* provider.listChangeRequests({
+      cwd: "/repo",
+      context,
+      source: { refName: "feature/provider", repository: "example/selected" },
+      target: { refName: "release", repository: "wrong/target" },
+      headSelector: "feature/provider",
+      state: "open",
+      limit: 1,
+    });
+    yield* provider.createChangeRequest({
+      cwd: "/repo",
+      context,
+      source: { refName: "feature/provider", repository: "example/selected" },
+      baseRefName: "develop",
+      headSelector: "feature/provider",
+      title: "Selected repository MR",
+      bodyFile: "/tmp/body.md",
+    });
+    const defaultBranch = yield* provider.getDefaultBranch({ cwd: "/repo", context });
+
+    assert.deepStrictEqual(listInput, {
+      cwd: "/repo",
+      headSelector: "feature/provider",
+      source: { refName: "feature/provider", repository: "example/selected" },
+      target: { refName: "release", repository: "wrong/target" },
+      repository: "https://gitlab.com/example/selected",
+      state: "open",
+      limit: 1,
+    });
+    assert.deepStrictEqual(createInput, {
+      cwd: "/repo",
+      baseBranch: "develop",
+      headSelector: "feature/provider",
+      source: { refName: "feature/provider", repository: "example/selected" },
+      target: { refName: "develop", repository: "example/selected" },
+      hostname: "gitlab.com",
+      title: "Selected repository MR",
+      bodyFile: "/tmp/body.md",
+    });
+    assert.deepStrictEqual(defaultInput, {
+      cwd: "/repo",
+      repository: "example/selected",
+      hostname: "gitlab.com",
+    });
+    assert.strictEqual(defaultBranch, "develop");
+  }),
+);
+
 it("accepts authenticated GitLab hosts when another configured host fails", () => {
   const auth = GitLabSourceControlProvider.discovery.parseAuth({
     exitCode: ChildProcessSpawner.ExitCode(1),

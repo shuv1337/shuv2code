@@ -20,6 +20,8 @@ import { threadEnvironment } from "../state/threads";
 import { vcsActionManager, vcsEnvironment } from "../state/vcs";
 import { uuidv4 } from "../lib/uuid";
 import { appAtomRegistry } from "./atom-registry";
+import { canUseGitOnlyActions } from "./git-action-availability";
+import { useEnvironmentQuery } from "./query";
 import { setPendingConnectionError } from "./use-remote-environment-registry";
 import { useAtomCommand } from "./use-atom-command";
 import { showGitActionResult } from "./use-vcs-action-state";
@@ -37,6 +39,15 @@ export function useSelectedThreadGitActions() {
   const pull = useAtomCommand(vcsEnvironment.pull, { reportFailure: false });
   const { selectedThread, selectedThreadProject } = useThreadSelection();
   const { selectedThreadCwd, selectedThreadWorktreePath } = useSelectedThreadWorktree();
+  const selectedThreadVcsStatus = useEnvironmentQuery(
+    selectedThread !== null && selectedThreadCwd !== null
+      ? vcsEnvironment.status({
+          environmentId: selectedThread.environmentId,
+          input: { cwd: selectedThreadCwd },
+        })
+      : null,
+  );
+  const gitOnlyActionsAvailable = canUseGitOnlyActions(selectedThreadVcsStatus.data);
   const runStackedAction = useAtomCommand(
     vcsActionManager.runStackedAction({
       environmentId: selectedThread?.environmentId ?? null,
@@ -165,11 +176,14 @@ export function useSelectedThreadGitActions() {
   );
 
   const refreshSelectedThreadBranches = useCallback(async (): Promise<ReadonlyArray<VcsRef>> => {
+    if (!gitOnlyActionsAvailable) {
+      return [];
+    }
     branchState.refresh();
     return dedupeRemoteBranchesWithLocalMatches(branchState.data?.refs ?? []).filter(
       (branch) => !branch.isRemote,
     );
-  }, [branchState]);
+  }, [branchState, gitOnlyActionsAvailable]);
 
   const syncSelectedThreadBranchState = useCallback(
     async (input: {
@@ -195,6 +209,9 @@ export function useSelectedThreadGitActions() {
 
   const onCheckoutSelectedThreadBranch = useCallback(
     async (branch: string) => {
+      if (!gitOnlyActionsAvailable) {
+        return;
+      }
       await runSelectedThreadGitMutation(
         "switch_ref",
         "Switching branch",
@@ -219,6 +236,7 @@ export function useSelectedThreadGitActions() {
       );
     },
     [
+      gitOnlyActionsAvailable,
       runSelectedThreadGitMutation,
       selectedThreadWorktreePath,
       syncSelectedThreadBranchState,
@@ -228,6 +246,9 @@ export function useSelectedThreadGitActions() {
 
   const onCreateSelectedThreadBranch = useCallback(
     async (branch: string) => {
+      if (!gitOnlyActionsAvailable) {
+        return;
+      }
       await runSelectedThreadGitMutation(
         "create_ref",
         "Creating branch",
@@ -252,6 +273,7 @@ export function useSelectedThreadGitActions() {
       );
     },
     [
+      gitOnlyActionsAvailable,
       runSelectedThreadGitMutation,
       selectedThreadWorktreePath,
       syncSelectedThreadBranchState,
@@ -261,6 +283,9 @@ export function useSelectedThreadGitActions() {
 
   const onCreateSelectedThreadWorktree = useCallback(
     async (nextWorktree: { readonly baseBranch: string; readonly newBranch: string }) => {
+      if (!gitOnlyActionsAvailable) {
+        return;
+      }
       await runSelectedThreadGitMutation(
         "create_worktree",
         "Creating worktree",
@@ -289,10 +314,18 @@ export function useSelectedThreadGitActions() {
         },
       );
     },
-    [createWorktree, runSelectedThreadGitMutation, syncSelectedThreadBranchState],
+    [
+      createWorktree,
+      gitOnlyActionsAvailable,
+      runSelectedThreadGitMutation,
+      syncSelectedThreadBranchState,
+    ],
   );
 
   const onPullSelectedThreadBranch = useCallback(async () => {
+    if (!gitOnlyActionsAvailable) {
+      return;
+    }
     await runSelectedThreadGitMutation(
       "pull",
       "Pulling latest changes",
@@ -315,10 +348,13 @@ export function useSelectedThreadGitActions() {
         return result;
       },
     );
-  }, [pull, refreshSelectedThreadGitStatus, runSelectedThreadGitMutation]);
+  }, [gitOnlyActionsAvailable, pull, refreshSelectedThreadGitStatus, runSelectedThreadGitMutation]);
 
   const onRunSelectedThreadGitAction = useCallback(
     async (input: GitActionRequestInput): Promise<GitRunStackedActionResult | null> => {
+      if (!gitOnlyActionsAvailable) {
+        return null;
+      }
       const actionId = uuidv4();
       return await runSelectedThreadGitMutation(
         "run_change_request",
@@ -365,6 +401,7 @@ export function useSelectedThreadGitActions() {
     },
     [
       runStackedAction,
+      gitOnlyActionsAvailable,
       refreshSelectedThreadGitStatus,
       runSelectedThreadGitMutation,
       selectedThreadWorktreePath,
@@ -380,5 +417,6 @@ export function useSelectedThreadGitActions() {
     onCreateSelectedThreadWorktree,
     onPullSelectedThreadBranch,
     onRunSelectedThreadGitAction,
+    gitOnlyActionsAvailable,
   };
 }

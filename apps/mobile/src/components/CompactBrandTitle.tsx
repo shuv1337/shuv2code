@@ -6,7 +6,7 @@ import type {
 import { Platform, View } from "react-native";
 
 import { AppText as Text } from "./AppText";
-import { T3Wordmark } from "./T3Wordmark";
+import { Shuv2CodeWordmark } from "./Shuv2CodeWordmark";
 import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
 import { resolveMobileStageLabel } from "../lib/mobileBranding";
 import { useThemeColor } from "../lib/useThemeColor";
@@ -52,7 +52,7 @@ export function CompactBrandTitle(
         marginLeft: titleOffset,
       }}
     >
-      <T3Wordmark color={iconColor} height={15} />
+      <Shuv2CodeWordmark color={iconColor} height={15} />
       <Text
         style={{
           color: mutedColor,

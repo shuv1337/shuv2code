@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import { useState, type ReactNode } from "react";
 import type {
   BackgroundActivitySettings,
+  EnvironmentId,
   SourceControlProviderKind,
   SourceControlDiscoveryResult,
   SourceControlProviderAuth,
@@ -21,9 +22,13 @@ import {
 
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
+import { useProjects, useThreadShells } from "../../state/entities";
 import { usePrimaryEnvironment } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
 import { sourceControlEnvironment } from "../../state/sourceControl";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { vcsEnvironment } from "../../state/vcs";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
@@ -58,7 +63,11 @@ import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
 import { SettingResetButton, SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
-import { resolveDefaultVcsOptions } from "./SourceControlSettings.logic";
+import {
+  resolveDefaultVcsOptions,
+  resolveDefaultVcsRefreshCwds,
+  updateDefaultVcsKindAndRefresh,
+} from "./SourceControlSettings.logic";
 
 const EMPTY_DISCOVERY_RESULT: SourceControlDiscoveryResult = {
   versionControlSystems: [],
@@ -353,13 +362,20 @@ function DiscoveryItemRow({
 }
 
 function DefaultVersionControlSettings({
+  environmentId,
   items,
 }: {
+  readonly environmentId: EnvironmentId;
   readonly items: ReadonlyArray<VcsDiscoveryItem>;
 }) {
   const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const projects = useProjects();
+  const threads = useThreadShells();
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, "default VCS update");
+  const refreshStatus = useAtomCommand(vcsEnvironment.refreshStatus, { reportFailure: false });
+  const [pendingKind, setPendingKind] = useState<VcsSelectableKind | null>(null);
   const defaultOptions = resolveDefaultVcsOptions(items);
+  const refreshCwds = resolveDefaultVcsRefreshCwds({ environmentId, projects, threads });
   const options = [
     {
       kind: "git" as const,
@@ -386,7 +402,18 @@ function DefaultVersionControlSettings({
       </div>
       <RadioGroup
         value={settings.defaultVcsKind}
-        onValueChange={(value) => updateSettings({ defaultVcsKind: value as VcsSelectableKind })}
+        onValueChange={(value) => {
+          if (pendingKind !== null) return;
+          const kind = value as VcsSelectableKind;
+          setPendingKind(kind);
+          void updateDefaultVcsKindAndRefresh({
+            environmentId,
+            kind,
+            refreshCwds,
+            updateSettings,
+            refreshStatus,
+          }).finally(() => setPendingKind(null));
+        }}
         aria-label="Default version control"
         className="mt-3 grid gap-2 sm:grid-cols-2"
       >
@@ -403,7 +430,7 @@ function DefaultVersionControlSettings({
             >
               <RadioPrimitive.Root
                 value={option.kind}
-                disabled={!isAvailable}
+                disabled={!isAvailable || pendingKind !== null}
                 aria-label={`Use ${option.label} by default`}
                 className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border border-input data-checked:border-primary"
               >
@@ -641,13 +668,16 @@ export function SourceControlSettingsPanel() {
         </>
       ) : hasDiscoveryItems ? (
         <>
-          {hasVersionControlSystems ? (
+          {hasVersionControlSystems && environmentId !== null ? (
             <SettingsSection
               id={searchableSetting("source-control").id}
               title="Version Control"
               headerAction={scanButton}
             >
-              <DefaultVersionControlSettings items={result.versionControlSystems} />
+              <DefaultVersionControlSettings
+                environmentId={environmentId}
+                items={result.versionControlSystems}
+              />
               {result.versionControlSystems.map((item) => (
                 <DiscoveryItemRow key={`vcs:${item.kind}`} item={item}>
                   {item.kind === "git" ? (

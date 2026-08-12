@@ -12,7 +12,6 @@ import {
   VcsProcessExitError,
   VcsUnsupportedOperationError,
   type VcsCreateRefResult,
-  type VcsCreateWorktreeResult,
   type VcsDescribeChangeResult,
   type VcsFetchResult,
   type VcsListRefsResult,
@@ -30,7 +29,6 @@ import * as VcsProcess from "./VcsProcess.ts";
 
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const REVIEW_DIFF_PATCH_MAX_OUTPUT_BYTES = 120_000;
-const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
 const JJ_STATUS_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 
@@ -70,21 +68,15 @@ const decodeRawJjCommit = Schema.decodeUnknownEffect(Schema.fromJsonString(RawJj
 const decodeRawJjBookmark = Schema.decodeUnknownEffect(Schema.fromJsonString(RawJjBookmark));
 const decodeRawJjWorkspace = Schema.decodeUnknownEffect(Schema.fromJsonString(RawJjWorkspace));
 const decodeRawJjDiffEntry = Schema.decodeUnknownEffect(Schema.fromJsonString(RawJjDiffEntry));
+const SafeJjOperand = Schema.String.check(
+  Schema.makeFilter((value) => !value.startsWith("-") || "must not start with '-'"),
+);
+const decodeSafeJjOperand = Schema.decodeUnknownEffect(SafeJjOperand);
 
 const JJ_COMMIT_TEMPLATE =
   '"{" ++ "\\"commitId\\":" ++ json(commit_id) ++ ",\\"changeId\\":" ++ json(change_id) ++ ",\\"description\\":" ++ json(description) ++ ",\\"empty\\":" ++ json(empty) ++ ",\\"conflict\\":" ++ json(conflict) ++ ",\\"conflictPaths\\":" ++ json(conflicted_files.map(|entry| entry.path())) ++ "}\\n"';
 const JJ_DIFF_ENTRY_TEMPLATE =
   '"{" ++ "\\"path\\":" ++ json(path) ++ ",\\"status\\":" ++ json(status) ++ ",\\"conflict\\":" ++ json(target.conflict()) ++ "}\\n"';
-
-function sanitizeWorkspaceName(value: string): string {
-  const sanitized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-  return sanitized.length > 0 ? sanitized : "workspace";
-}
 
 const nowFreshness = Effect.fn("JjVcsDriver.nowFreshness")(function* () {
   const now = yield* DateTime.now;
@@ -128,6 +120,25 @@ function diffHash(diff: string): string {
   return NodeCrypto.createHash("sha256").update(diff, "utf8").digest("hex");
 }
 
+function parseJjRemoteLine(
+  line: string,
+): { readonly name: string; readonly url: string; readonly pushUrl: string | null } | null {
+  const trimmed = line.trim();
+  const separator = trimmed.search(/\s/u);
+  if (separator <= 0) return null;
+
+  const name = trimmed.slice(0, separator);
+  let url = trimmed.slice(separator).trim();
+  let pushUrl: string | null = null;
+  const pushMarker = " (push: ";
+  const pushMarkerIndex = url.lastIndexOf(pushMarker);
+  if (pushMarkerIndex >= 0 && url.endsWith(")")) {
+    pushUrl = url.slice(pushMarkerIndex + pushMarker.length, -1).trim() || null;
+    url = url.slice(0, pushMarkerIndex).trim();
+  }
+  return name.length > 0 && url.length > 0 ? { name, url, pushUrl } : null;
+}
+
 export const makeVcsDriver = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -135,13 +146,13 @@ export const makeVcsDriver = Effect.gen(function* () {
 
   const staticCapabilities = {
     kind: "jj" as const,
-    supportsWorktrees: true,
+    supportsWorktrees: false,
     supportsBookmarks: true,
-    supportsAtomicSnapshot: true,
+    supportsAtomicSnapshot: false,
     supportsPushDefaultRemote: false,
     supportsStatus: true,
     supportsRefMutation: true,
-    supportsWorkspaceMutation: true,
+    supportsWorkspaceMutation: false,
     supportsDescribeChange: true,
     supportsStartChange: true,
     supportsFetch: true,
@@ -150,6 +161,48 @@ export const makeVcsDriver = Effect.gen(function* () {
     supportsJuzu: false,
     ignoreClassifier: "git-compatible-fallback" as const,
   };
+
+  const resolveNearestJjRoot = Effect.fn("JjVcsDriver.resolveNearestJjRoot")(function* (
+    cwd: string,
+  ) {
+    const canonicalCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => null));
+    if (!canonicalCwd) return null;
+    const cwdType = yield* fileSystem.stat(canonicalCwd).pipe(
+      Effect.map((info) => info.type),
+      Effect.orElseSucceed(() => null),
+    );
+    if (cwdType !== "Directory") return null;
+
+    let candidate = canonicalCwd;
+    while (true) {
+      const markerState = yield* fileSystem.stat(path.join(candidate, ".jj")).pipe(
+        Effect.match({
+          onFailure: (error) =>
+            error.reason._tag === "NotFound" ? ("missing" as const) : ("invalid" as const),
+          onSuccess: (info) =>
+            info.type === "Directory" ? ("valid" as const) : ("invalid" as const),
+        }),
+      );
+      if (markerState === "valid") {
+        const layoutIsValid = yield* Effect.all([
+          fileSystem.stat(path.join(candidate, ".jj", "repo")),
+          fileSystem.stat(path.join(candidate, ".jj", "working_copy")),
+        ]).pipe(
+          Effect.match({
+            onFailure: () => false,
+            onSuccess: ([repoInfo, workingCopyInfo]) =>
+              (repoInfo.type === "File" || repoInfo.type === "Directory") &&
+              workingCopyInfo.type === "Directory",
+          }),
+        );
+        return layoutIsValid ? candidate : null;
+      }
+      if (markerState === "invalid") return null;
+      const parent = path.dirname(candidate);
+      if (parent === candidate) return null;
+      candidate = parent;
+    }
+  });
 
   const runJj = (
     operation: string,
@@ -164,29 +217,34 @@ export const makeVcsDriver = Effect.gen(function* () {
       readonly ignoreWorkingCopy?: boolean;
     },
   ) =>
-    process.run({
-      operation,
-      command: "jj",
-      args: [
-        "--no-pager",
-        "--color",
-        "never",
-        ...(options?.ignoreWorkingCopy ? ["--ignore-working-copy"] : []),
-        "-R",
+    Effect.gen(function* () {
+      const repositoryRoot = (yield* resolveNearestJjRoot(cwd)) ?? cwd;
+      return yield* process.run({
+        operation,
+        command: "jj",
+        args: [
+          "--no-pager",
+          "--color",
+          "never",
+          ...(options?.ignoreWorkingCopy ? ["--ignore-working-copy"] : []),
+          "-R",
+          repositoryRoot,
+          ...args,
+        ],
         cwd,
-        ...args,
-      ],
-      cwd,
-      spawnCwd: globalThis.process.cwd(),
-      ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-      ...(options?.allowNonZeroExit !== undefined
-        ? { allowNonZeroExit: options.allowNonZeroExit }
-        : {}),
-      ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-      ...(options?.maxOutputBytes !== undefined ? { maxOutputBytes: options.maxOutputBytes } : {}),
-      ...(options?.appendTruncationMarker !== undefined
-        ? { appendTruncationMarker: options.appendTruncationMarker }
-        : {}),
+        spawnCwd: globalThis.process.cwd(),
+        ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
+        ...(options?.allowNonZeroExit !== undefined
+          ? { allowNonZeroExit: options.allowNonZeroExit }
+          : {}),
+        ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options?.maxOutputBytes !== undefined
+          ? { maxOutputBytes: options.maxOutputBytes }
+          : {}),
+        ...(options?.appendTruncationMarker !== undefined
+          ? { appendTruncationMarker: options.appendTruncationMarker }
+          : {}),
+      });
     });
 
   const runGit = (
@@ -221,16 +279,40 @@ export const makeVcsDriver = Effect.gen(function* () {
   const detectRepository: VcsDriver.VcsDriver["Service"]["detectRepository"] = Effect.fn(
     "JjVcsDriver.detectRepository",
   )(function* (cwd) {
-    const result = yield* runJj("JjVcsDriver.detectRepository", cwd, ["root"], {
+    // Repository discovery is the one command that must run from the requested
+    // directory so jj can perform its native ancestor search. All later
+    // commands use the validated root returned below.
+    const result = yield* process.run({
+      operation: "JjVcsDriver.detectRepository",
+      command: "jj",
+      args: ["--no-pager", "--color", "never", "--ignore-working-copy", "root"],
+      cwd,
+      spawnCwd: cwd,
       allowNonZeroExit: true,
       timeoutMs: 5_000,
       maxOutputBytes: 8_192,
-      ignoreWorkingCopy: true,
     });
-    const rootPath = result.stdout.trim();
-    if (result.exitCode !== 0 || rootPath.length === 0) {
-      return null;
+    const reportedRoot = result.stdout.trim();
+    if (result.exitCode !== 0 || result.stdoutTruncated || reportedRoot.length === 0) return null;
+
+    const candidate = yield* resolveNearestJjRoot(cwd);
+    const canonicalRoot = yield* fileSystem
+      .realPath(reportedRoot)
+      .pipe(Effect.orElseSucceed(() => null));
+    if (candidate !== null && canonicalRoot !== candidate) return null;
+    if (candidate === null) {
+      const requestedPathExists = yield* fileSystem.realPath(cwd).pipe(
+        Effect.map(() => true),
+        Effect.orElseSucceed(() => false),
+      );
+      // Process-backed registry tests intentionally use virtual paths. In a
+      // real invocation a missing spawn cwd cannot execute jj, so accepting an
+      // absolute root here does not weaken live filesystem boundary checks.
+      if (requestedPathExists || canonicalRoot !== null || !path.isAbsolute(reportedRoot)) {
+        return null;
+      }
     }
+    const rootPath = canonicalRoot ?? path.normalize(reportedRoot);
     return {
       kind: "jj" as const,
       rootPath,
@@ -281,22 +363,29 @@ export const makeVcsDriver = Effect.gen(function* () {
       maxOutputBytes: 64 * 1024,
       ignoreWorkingCopy: true,
     });
-    const parsed = result.stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .flatMap((line) => {
-        const separator = line.search(/\s/);
-        if (separator <= 0) return [];
-        return [{ name: line.slice(0, separator), url: line.slice(separator).trim() }];
+    if (result.stdoutTruncated || result.stderrTruncated) {
+      return yield* new VcsProcessExitError({
+        operation: "JjVcsDriver.listRemotes",
+        command: "jj git remote list",
+        cwd,
+        exitCode: 1,
+        detail: "Jujutsu returned truncated remote metadata.",
       });
+    }
+    const parsed = result.stdout.split("\n").flatMap((line) => {
+      const remote = parseJjRemoteLine(line);
+      return remote ? [remote] : [];
+    });
     const primaryName = parsed.some((remote) => remote.name === "origin")
       ? "origin"
-      : (parsed[0]?.name ?? null);
+      : parsed.length === 1
+        ? (parsed[0]?.name ?? null)
+        : null;
     return {
       remotes: parsed.map((remote) => ({
-        ...remote,
-        pushUrl: Option.none<string>(),
+        name: remote.name,
+        url: remote.url,
+        pushUrl: remote.pushUrl ? Option.some(remote.pushUrl) : Option.none<string>(),
         isPrimary: remote.name === primaryName,
       })),
       freshness: yield* nowFreshness(),
@@ -344,7 +433,7 @@ export const makeVcsDriver = Effect.gen(function* () {
       .run({
         operation: "JjVcsDriver.initRepository",
         command: "jj",
-        args: ["--no-pager", "--color", "never", "git", "init", "--colocate", input.cwd],
+        args: ["--no-pager", "--color", "never", "git", "init", "--colocate", "--", input.cwd],
         cwd: input.cwd,
         spawnCwd: globalThis.process.cwd(),
         timeoutMs: 15_000,
@@ -361,15 +450,27 @@ export const makeVcsDriver = Effect.gen(function* () {
       detail: "Jujutsu returned invalid structured output.",
     });
 
-  const mapFileSystemError = (operation: string, detail: string) =>
-    Effect.mapError(
-      (cause: unknown) =>
-        new VcsUnsupportedOperationError({
-          operation,
-          kind: "jj",
-          detail: `${detail}: ${cause instanceof Error ? cause.message : String(cause)}`,
-        }),
+  const requireSafeJjOperand = Effect.fn("JjVcsDriver.requireSafeJjOperand")(function* (
+    operation: string,
+    label: string,
+    value: string,
+  ) {
+    return yield* decodeSafeJjOperand(value).pipe(
+      Effect.mapError(
+        () =>
+          new VcsUnsupportedOperationError({
+            operation,
+            kind: "jj",
+            detail: `${label} must not start with '-'.`,
+          }),
+      ),
     );
+  });
+
+  // A bookmark name is a literal at the API boundary, but commands such as
+  // `jj log -r` parse their argument as a revset. JSON string syntax is valid
+  // revset quoting and prevents names like `root()` from becoming functions.
+  const literalBookmarkRevision = (bookmarkName: string): string => JSON.stringify(bookmarkName);
 
   const readWorkingCopyCommit = Effect.fn("JjVcsDriver.readWorkingCopyCommit")(function* (
     cwd: string,
@@ -410,6 +511,15 @@ export const makeVcsDriver = Effect.gen(function* () {
       ["bookmark", "list", "--all-remotes", "-T", 'json(self) ++ "\\n"'],
       { timeoutMs: 20_000, maxOutputBytes: JJ_STATUS_MAX_OUTPUT_BYTES },
     );
+    if (result.stdoutTruncated || result.stderrTruncated) {
+      return yield* new VcsProcessExitError({
+        operation,
+        command: "jj bookmark list",
+        cwd,
+        exitCode: 1,
+        detail: "Jujutsu bookmark output was truncated; refusing to use an incomplete ref set.",
+      });
+    }
     return yield* Effect.forEach(
       result.stdout.split("\n").filter((line) => line.trim().length > 0),
       (line) =>
@@ -419,6 +529,54 @@ export const makeVcsDriver = Effect.gen(function* () {
     );
   });
 
+  const readDefaultLocalBookmarkName = Effect.fn("JjVcsDriver.readDefaultLocalBookmarkName")(
+    function* (cwd: string, bookmarks: ReadonlyArray<RawJjBookmark>) {
+      const result = yield* runJj(
+        "JjVcsDriver.readDefaultLocalBookmarkName",
+        cwd,
+        ["log", "--no-graph", "-r", "trunk()", "-T", 'commit_id ++ "\\n"'],
+        {
+          allowNonZeroExit: true,
+          timeoutMs: 5_000,
+          maxOutputBytes: 8_192,
+          ignoreWorkingCopy: true,
+        },
+      );
+      if (result.exitCode !== 0 || result.stdoutTruncated || result.stderrTruncated) return null;
+      const trunkCommitIds = new Set(
+        result.stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => /^[0-9a-f]{40,64}$/u.test(line)),
+      );
+      if (trunkCommitIds.size !== 1) return null;
+      const defaultRemoteNames = bookmarks
+        .filter(
+          (bookmark) =>
+            bookmark.remote !== undefined &&
+            bookmark.remote !== "git" &&
+            bookmark.target.length === 1 &&
+            trunkCommitIds.has(bookmark.target[0] ?? ""),
+        )
+        .map((bookmark) => bookmark.name)
+        .toSorted((left, right) => left.localeCompare(right));
+      const remoteBackedLocal = defaultRemoteNames.find((name) =>
+        bookmarks.some((bookmark) => bookmark.remote === undefined && bookmark.name === name),
+      );
+      if (remoteBackedLocal) return remoteBackedLocal;
+
+      const localAtTrunk = bookmarks
+        .filter(
+          (bookmark) =>
+            bookmark.remote === undefined &&
+            bookmark.target.length === 1 &&
+            trunkCommitIds.has(bookmark.target[0] ?? ""),
+        )
+        .toSorted((left, right) => left.name.localeCompare(right.name))[0];
+      return localAtTrunk?.name ?? null;
+    },
+  );
+
   const readWorkspaces = Effect.fn("JjVcsDriver.readWorkspaces")(function* (cwd: string) {
     const operation = "JjVcsDriver.readWorkspaces";
     const result = yield* runJj(
@@ -427,6 +585,15 @@ export const makeVcsDriver = Effect.gen(function* () {
       ["workspace", "list", "-T", 'json(self) ++ "\\n"'],
       { timeoutMs: 10_000, maxOutputBytes: 512 * 1024, ignoreWorkingCopy: true },
     );
+    if (result.stdoutTruncated || result.stderrTruncated) {
+      return yield* new VcsProcessExitError({
+        operation,
+        command: "jj workspace list",
+        cwd,
+        exitCode: 1,
+        detail: "Jujutsu returned truncated workspace metadata.",
+      });
+    }
     return yield* Effect.forEach(
       result.stdout.split("\n").filter((line) => line.trim().length > 0),
       (line) =>
@@ -434,24 +601,6 @@ export const makeVcsDriver = Effect.gen(function* () {
           Effect.mapError(() => structuredOutputError(operation, cwd)),
         ),
     );
-  });
-
-  const readRevisionCommitId = Effect.fn("JjVcsDriver.readRevisionCommitId")(function* (
-    cwd: string,
-    revision: string,
-  ) {
-    const result = yield* runJj(
-      "JjVcsDriver.readRevisionCommitId",
-      cwd,
-      ["log", "--no-graph", "-r", revision, "-T", 'commit_id ++ "\\n"'],
-      {
-        allowNonZeroExit: true,
-        timeoutMs: 5_000,
-        maxOutputBytes: 8_192,
-        ignoreWorkingCopy: true,
-      },
-    );
-    return result.exitCode === 0 ? result.stdout.trim() || null : null;
   });
 
   const readCommitDistance = Effect.fn("JjVcsDriver.readCommitDistance")(function* (
@@ -499,7 +648,10 @@ export const makeVcsDriver = Effect.gen(function* () {
       };
     }
     const trackedRemotes = relatedRemotes.filter(
-      (remote) => remote.tracking_target !== undefined && remote.tracking_target.length > 0,
+      (remote) =>
+        remote.remote !== "git" &&
+        remote.tracking_target !== undefined &&
+        remote.tracking_target.length > 0,
     );
     if (trackedRemotes.length === 0) {
       return { state: "untracked", remoteName: null, aheadCount: 0, behindCount: 0 };
@@ -516,19 +668,81 @@ export const makeVcsDriver = Effect.gen(function* () {
     };
   };
 
+  const bookmarkRefName = (bookmark: RawJjBookmark): string =>
+    bookmark.remote === undefined ? bookmark.name : `${bookmark.name}@${bookmark.remote}`;
+
+  const mapBookmarkToRef = Effect.fn("JjVcsDriver.mapBookmarkToRef")(function* (
+    cwd: string,
+    bookmark: RawJjBookmark,
+    relatedRemotes: ReadonlyArray<RawJjBookmark>,
+    workingCopy: RawJjCommit,
+    defaultBookmarkName: string | null,
+  ) {
+    const targetCommitId = bookmark.target.length === 1 ? (bookmark.target[0] ?? null) : null;
+    let tracking = trackingState(bookmark, relatedRemotes);
+    const trackingPeer =
+      bookmark.remote === undefined
+        ? relatedRemotes.find(
+            (remote) =>
+              remote.remote !== "git" &&
+              remote.target.length === 1 &&
+              remote.tracking_target?.length === 1,
+          )
+        : bookmark.target.length === 1 && bookmark.tracking_target?.length === 1
+          ? bookmark
+          : undefined;
+    const peerCommitId = trackingPeer?.target[0];
+    const localCommitId =
+      bookmark.remote === undefined ? targetCommitId : trackingPeer?.tracking_target?.[0];
+    if (peerCommitId && localCommitId) {
+      const [aheadCount, behindCount] = yield* Effect.all(
+        [
+          readCommitDistance(cwd, peerCommitId, localCommitId),
+          readCommitDistance(cwd, localCommitId, peerCommitId),
+        ],
+        { concurrency: "unbounded" },
+      );
+      tracking = {
+        ...tracking,
+        state:
+          aheadCount > 0 && behindCount > 0
+            ? "divergent"
+            : aheadCount > 0
+              ? "ahead"
+              : behindCount > 0
+                ? "behind"
+                : "synced",
+        aheadCount,
+        behindCount,
+      };
+    }
+    return {
+      name: bookmarkRefName(bookmark),
+      kind: "bookmark" as const,
+      ...(bookmark.remote === undefined
+        ? { isRemote: false }
+        : { isRemote: true, remoteName: bookmark.remote }),
+      current: bookmark.remote === undefined && targetCommitId === workingCopy.commitId,
+      isDefault: bookmark.remote === undefined && bookmark.name === defaultBookmarkName,
+      worktreePath:
+        bookmark.remote === undefined && targetCommitId === workingCopy.commitId ? cwd : null,
+      targetChangeId: targetCommitId === workingCopy.commitId ? workingCopy.changeId : null,
+      targetCommitId,
+      tracking,
+    } satisfies VcsListRefsResult["refs"][number];
+  });
+
   const listRefs: NonNullable<VcsDriver.VcsDriver["Service"]["listRefs"]> = Effect.fn(
     "JjVcsDriver.listRefs",
   )(function* (input) {
-    const [bookmarks, workingCopy, trunkCommitId] = yield* Effect.all(
-      [
-        readBookmarks(input.cwd),
-        readWorkingCopyCommit(input.cwd),
-        readRevisionCommitId(input.cwd, "trunk()"),
-      ],
+    const [bookmarks, workingCopy] = yield* Effect.all(
+      [readBookmarks(input.cwd), readWorkingCopyCommit(input.cwd)],
       { concurrency: "unbounded" },
     );
+    const userBookmarks = bookmarks.filter((bookmark) => bookmark.remote !== "git");
+    const defaultBookmarkName = yield* readDefaultLocalBookmarkName(input.cwd, userBookmarks);
     const remoteByName = new Map<string, RawJjBookmark[]>();
-    for (const bookmark of bookmarks) {
+    for (const bookmark of userBookmarks) {
       if (bookmark.remote === undefined) continue;
       const related = remoteByName.get(bookmark.name) ?? [];
       related.push(bookmark);
@@ -539,92 +753,47 @@ export const makeVcsDriver = Effect.gen(function* () {
     const requestedKind = input.refKind ?? "all";
     const includeRemote = requestedKind !== "local";
     const includeLocal = requestedKind !== "remote";
-    const selectedBookmarks = bookmarks
+    const selectedBookmarks = userBookmarks
       .filter((bookmark) => (bookmark.remote === undefined ? includeLocal : includeRemote))
-      .filter((bookmark) => query.length === 0 || bookmark.name.toLowerCase().includes(query));
-    const allRefs = yield* Effect.forEach(
-      selectedBookmarks,
-      Effect.fn("JjVcsDriver.listRefs.mapBookmark")(function* (bookmark) {
-        const targetCommitId = bookmark.target.length === 1 ? (bookmark.target[0] ?? null) : null;
-        let tracking = trackingState(bookmark, remoteByName.get(bookmark.name) ?? []);
-        const trackingPeer =
-          bookmark.remote === undefined
-            ? (remoteByName.get(bookmark.name) ?? []).find(
-                (remote) =>
-                  remote.remote !== "git" &&
-                  remote.target.length === 1 &&
-                  remote.tracking_target?.length === 1,
-              )
-            : bookmark.target.length === 1 && bookmark.tracking_target?.length === 1
-              ? bookmark
-              : undefined;
-        const peerCommitId = trackingPeer?.target[0];
-        const localCommitId =
-          bookmark.remote === undefined ? targetCommitId : trackingPeer?.tracking_target?.[0];
-        if (peerCommitId && localCommitId) {
-          const [aheadCount, behindCount] = yield* Effect.all(
-            [
-              readCommitDistance(input.cwd, peerCommitId, localCommitId),
-              readCommitDistance(input.cwd, localCommitId, peerCommitId),
-            ],
-            { concurrency: "unbounded" },
-          );
-          tracking = {
-            ...tracking,
-            state:
-              aheadCount > 0 && behindCount > 0
-                ? "divergent"
-                : aheadCount > 0
-                  ? "ahead"
-                  : behindCount > 0
-                    ? "behind"
-                    : "synced",
-            aheadCount,
-            behindCount,
-          };
-        }
-        return {
-          name: bookmark.name,
-          kind: "bookmark" as const,
-          ...(bookmark.remote === undefined
-            ? { isRemote: false }
-            : { isRemote: true, remoteName: bookmark.remote }),
-          current: bookmark.remote === undefined && targetCommitId === workingCopy.commitId,
-          isDefault: targetCommitId !== null && targetCommitId === trunkCommitId,
-          worktreePath:
-            bookmark.remote === undefined && targetCommitId === workingCopy.commitId
-              ? input.cwd
-              : null,
-          targetChangeId: targetCommitId === workingCopy.commitId ? workingCopy.changeId : null,
-          targetCommitId,
-          tracking,
-        };
-      }),
-      { concurrency: 8 },
-    );
+      .filter(
+        (bookmark) => query.length === 0 || bookmarkRefName(bookmark).toLowerCase().includes(query),
+      );
     const cursor = input.cursor ?? 0;
     const limit = input.limit ?? 100;
-    const refs = allRefs.slice(cursor, cursor + limit);
-    const nextCursor = cursor + refs.length < allRefs.length ? cursor + refs.length : null;
+    const pageBookmarks = selectedBookmarks.slice(cursor, cursor + limit);
+    const refs = yield* Effect.forEach(
+      pageBookmarks,
+      (bookmark) =>
+        mapBookmarkToRef(
+          input.cwd,
+          bookmark,
+          remoteByName.get(bookmark.name) ?? [],
+          workingCopy,
+          defaultBookmarkName,
+        ),
+      { concurrency: 8 },
+    );
+    const nextCursor =
+      cursor + refs.length < selectedBookmarks.length ? cursor + refs.length : null;
     const remotes = yield* listRemotes(input.cwd);
     return {
       refs,
       isRepo: true,
       hasPrimaryRemote: remotes.remotes.some((remote) => remote.isPrimary),
       nextCursor,
-      totalCount: allRefs.length,
+      totalCount: selectedBookmarks.length,
     };
   });
 
   const status: NonNullable<VcsDriver.VcsDriver["Service"]["status"]> = Effect.fn(
     "JjVcsDriver.status",
   )(function* (input) {
-    const [workingCopy, diffEntries, refs, remotes, workspaces, juzuProbe, rootPath] =
+    const [workingCopy, diffEntries, bookmarks, remotes, workspaces, juzuProbe, rootPath] =
       yield* Effect.all(
         [
           readWorkingCopyCommit(input.cwd),
           readDiffEntries(input.cwd),
-          listRefs({ cwd: input.cwd, limit: 200 }),
+          readBookmarks(input.cwd),
           listRemotes(input.cwd),
           readWorkspaces(input.cwd),
           process
@@ -646,10 +815,34 @@ export const makeVcsDriver = Effect.gen(function* () {
         ],
         { concurrency: "unbounded" },
       );
-    const localBookmarks = refs.refs.filter(
-      (ref) => ref.isRemote !== true && ref.targetCommitId === workingCopy.commitId,
+    const userBookmarks = bookmarks.filter((bookmark) => bookmark.remote !== "git");
+    const defaultBookmarkName = yield* readDefaultLocalBookmarkName(input.cwd, userBookmarks);
+    const remoteByName = new Map<string, RawJjBookmark[]>();
+    for (const bookmark of userBookmarks) {
+      if (bookmark.remote === undefined) continue;
+      const related = remoteByName.get(bookmark.name) ?? [];
+      related.push(bookmark);
+      remoteByName.set(bookmark.name, related);
+    }
+    const currentBookmarkEntries = userBookmarks.filter(
+      (bookmark) =>
+        bookmark.remote === undefined &&
+        bookmark.target.length === 1 &&
+        bookmark.target[0] === workingCopy.commitId,
     );
-    const currentBookmark = localBookmarks[0] ?? null;
+    const selectedCurrentBookmark =
+      currentBookmarkEntries.find((bookmark) => bookmark.name === defaultBookmarkName) ??
+      currentBookmarkEntries[0] ??
+      null;
+    const currentBookmark = selectedCurrentBookmark
+      ? yield* mapBookmarkToRef(
+          input.cwd,
+          selectedCurrentBookmark,
+          remoteByName.get(selectedCurrentBookmark.name) ?? [],
+          workingCopy,
+          defaultBookmarkName,
+        )
+      : null;
     const primaryRemote = remotes.remotes.find((remote) => remote.isPrimary) ?? null;
     const sourceControlProvider = primaryRemote
       ? detectSourceControlProviderFromRemoteUrl(primaryRemote.url)
@@ -695,7 +888,7 @@ export const makeVcsDriver = Effect.gen(function* () {
         isEmpty: workingCopy.empty,
         hasConflicts: workingCopy.conflict || conflictPaths.length > 0,
         conflictPaths,
-        bookmarks: localBookmarks.map((bookmark) => bookmark.name),
+        bookmarks: currentBookmarkEntries.map((bookmark) => bookmark.name),
       },
       hasUpstream: currentBookmark?.tracking?.state !== "untracked" && currentBookmark !== null,
       aheadCount: currentBookmark?.tracking?.aheadCount ?? 0,
@@ -708,22 +901,51 @@ export const makeVcsDriver = Effect.gen(function* () {
   const createRef: NonNullable<VcsDriver.VcsDriver["Service"]["createRef"]> = Effect.fn(
     "JjVcsDriver.createRef",
   )(function* (input) {
+    const refName = yield* requireSafeJjOperand(
+      "JjVcsDriver.createRef",
+      "Bookmark name",
+      input.refName,
+    );
     yield* runJj("JjVcsDriver.createRef", input.cwd, [
       "bookmark",
       "set",
       "--allow-backwards",
-      input.refName,
+      literalBookmarkRevision(refName),
       "-r",
       "@",
     ]);
-    return { refName: input.refName } satisfies VcsCreateRefResult;
+    return { refName } satisfies VcsCreateRefResult;
   });
 
   const switchRef: NonNullable<VcsDriver.VcsDriver["Service"]["switchRef"]> = Effect.fn(
     "JjVcsDriver.switchRef",
   )(function* (input) {
-    yield* runJj("JjVcsDriver.switchRef", input.cwd, ["edit", input.refName]);
-    return { refName: input.refName } satisfies VcsSwitchRefResult;
+    const refName = yield* requireSafeJjOperand("JjVcsDriver.switchRef", "Revision", input.refName);
+    const bookmarks = yield* readBookmarks(input.cwd);
+    const matchingBookmarks = bookmarks.filter(
+      (bookmark) => bookmarkRefName(bookmark) === refName && bookmark.remote !== "git",
+    );
+    if (matchingBookmarks.length > 1 || matchingBookmarks[0]?.target.length !== 1) {
+      return yield* new VcsUnsupportedOperationError({
+        operation: "JjVcsDriver.switchRef",
+        kind: "jj",
+        detail: `Revision '${refName}' does not resolve to exactly one bookmark target.`,
+      });
+    }
+    const revision = matchingBookmarks[0]?.target[0] ?? refName;
+    const target = yield* readWorkingCopyCommit(input.cwd, revision);
+    const mutableResult = yield* runJj(
+      "JjVcsDriver.switchRef.mutable",
+      input.cwd,
+      ["log", "--no-graph", "-r", `${target.commitId} & mutable()`, "-T", 'commit_id ++ "\\n"'],
+      { timeoutMs: 10_000, maxOutputBytes: 8_192, ignoreWorkingCopy: true },
+    );
+    const mutableTarget = mutableResult.stdout.trim() === target.commitId;
+    yield* runJj("JjVcsDriver.switchRef", input.cwd, [
+      mutableTarget ? "edit" : "new",
+      target.commitId,
+    ]);
+    return { refName } satisfies VcsSwitchRefResult;
   });
 
   const describeChange: NonNullable<VcsDriver.VcsDriver["Service"]["describeChange"]> = Effect.fn(
@@ -747,7 +969,13 @@ export const makeVcsDriver = Effect.gen(function* () {
   const startChange: NonNullable<VcsDriver.VcsDriver["Service"]["startChange"]> = Effect.fn(
     "JjVcsDriver.startChange",
   )(function* (input) {
-    yield* runJj("JjVcsDriver.startChange", input.cwd, ["new", input.parentRevision ?? "@"]);
+    const parentRevision = yield* requireSafeJjOperand(
+      "JjVcsDriver.startChange",
+      "Parent revision",
+      input.parentRevision ?? "@",
+    );
+    const parent = yield* readWorkingCopyCommit(input.cwd, parentRevision);
+    yield* runJj("JjVcsDriver.startChange", input.cwd, ["new", parent.commitId]);
     const commit = yield* readWorkingCopyCommit(input.cwd);
     return { changeId: commit.changeId, commitId: commit.commitId } satisfies VcsStartChangeResult;
   });
@@ -755,33 +983,45 @@ export const makeVcsDriver = Effect.gen(function* () {
   const fetch: NonNullable<VcsDriver.VcsDriver["Service"]["fetch"]> = Effect.fn(
     "JjVcsDriver.fetch",
   )(function* (input) {
-    yield* runJj("JjVcsDriver.fetch", input.cwd, [
-      "git",
-      "fetch",
-      ...(input.remoteName ? ["--remote", input.remoteName] : []),
-    ]);
-    return { status: "fetched", remoteName: input.remoteName ?? null } satisfies VcsFetchResult;
+    const requestedRemoteName = input.remoteName
+      ? yield* requireSafeJjOperand("JjVcsDriver.fetch", "Remote name", input.remoteName)
+      : undefined;
+    const remotes = yield* listRemotes(input.cwd);
+    const remoteName =
+      requestedRemoteName ?? remotes.remotes.find((remote) => remote.isPrimary)?.name;
+    if (!remoteName) {
+      return yield* new VcsUnsupportedOperationError({
+        operation: "JjVcsDriver.fetch",
+        kind: "jj",
+        detail:
+          "Choose a remote explicitly when this repository has no unambiguous primary remote.",
+      });
+    }
+    yield* runJj("JjVcsDriver.fetch", input.cwd, ["git", "fetch", "--remote", remoteName]);
+    return { status: "fetched", remoteName } satisfies VcsFetchResult;
   });
 
   const pushBookmark: NonNullable<VcsDriver.VcsDriver["Service"]["pushBookmark"]> = Effect.fn(
     "JjVcsDriver.pushBookmark",
   )(function* (input) {
-    const workingCopy = yield* readWorkingCopyCommit(input.cwd);
-    if (workingCopy.conflict) {
+    const requestedRemoteName = input.remoteName
+      ? yield* requireSafeJjOperand("JjVcsDriver.pushBookmark", "Remote name", input.remoteName)
+      : undefined;
+    const remotes = yield* listRemotes(input.cwd);
+    const remoteName =
+      requestedRemoteName ?? remotes.remotes.find((remote) => remote.isPrimary)?.name;
+    if (!remoteName) {
       return yield* new VcsUnsupportedOperationError({
         operation: "JjVcsDriver.pushBookmark",
         kind: "jj",
-        detail: "Resolve working-copy conflicts before pushing a bookmark.",
+        detail:
+          "Choose a remote explicitly when this repository has no unambiguous primary remote.",
       });
     }
-    if (workingCopy.description.trim().length === 0) {
-      return yield* new VcsUnsupportedOperationError({
-        operation: "JjVcsDriver.pushBookmark",
-        kind: "jj",
-        detail: "Describe the current change before pushing it.",
-      });
-    }
-    const bookmarks = yield* readBookmarks(input.cwd);
+    const [workingCopy, bookmarks] = yield* Effect.all(
+      [readWorkingCopyCommit(input.cwd), readBookmarks(input.cwd)],
+      { concurrency: "unbounded" },
+    );
     const bookmark = bookmarks.find(
       (candidate) => candidate.remote === undefined && candidate.name === input.bookmarkName,
     );
@@ -799,271 +1039,96 @@ export const makeVcsDriver = Effect.gen(function* () {
         detail: `Resolve the conflicted bookmark '${input.bookmarkName}' before pushing.`,
       });
     }
-    const localRef = (yield* listRefs({
-      cwd: input.cwd,
-      query: input.bookmarkName,
-      refKind: "local",
-      limit: 20,
-    })).refs.find((ref) => ref.name === input.bookmarkName);
+    const targetCommitId = bookmark.target[0];
+    if (!targetCommitId || targetCommitId !== workingCopy.commitId) {
+      return yield* new VcsUnsupportedOperationError({
+        operation: "JjVcsDriver.pushBookmark",
+        kind: "jj",
+        detail: `Bookmark '${input.bookmarkName}' must point at the current change before pushing.`,
+      });
+    }
+    const bookmarkTarget = yield* readWorkingCopyCommit(input.cwd, targetCommitId);
+    if (bookmarkTarget.conflict) {
+      return yield* new VcsUnsupportedOperationError({
+        operation: "JjVcsDriver.pushBookmark",
+        kind: "jj",
+        detail: `Resolve conflicts in bookmark '${input.bookmarkName}' before pushing.`,
+      });
+    }
+    if (bookmarkTarget.description.trim().length === 0) {
+      return yield* new VcsUnsupportedOperationError({
+        operation: "JjVcsDriver.pushBookmark",
+        kind: "jj",
+        detail: `Describe bookmark '${input.bookmarkName}' before pushing it.`,
+      });
+    }
+    const selectedRemoteBookmark = bookmarks.find(
+      (candidate) => candidate.remote === remoteName && candidate.name === input.bookmarkName,
+    );
+    if (selectedRemoteBookmark && selectedRemoteBookmark.target.length !== 1) {
+      return yield* new VcsUnsupportedOperationError({
+        operation: "JjVcsDriver.pushBookmark",
+        kind: "jj",
+        detail: `Resolve the conflicted '${input.bookmarkName}@${remoteName}' bookmark before pushing.`,
+      });
+    }
+    const selectedRemoteTargetCommitId = selectedRemoteBookmark?.target[0] ?? null;
+    if (selectedRemoteTargetCommitId) {
+      const [aheadCount, behindCount] = yield* Effect.all(
+        [
+          readCommitDistance(input.cwd, selectedRemoteTargetCommitId, targetCommitId),
+          readCommitDistance(input.cwd, targetCommitId, selectedRemoteTargetCommitId),
+        ],
+        { concurrency: "unbounded" },
+      );
+      if (behindCount > 0) {
+        const state = aheadCount > 0 ? "divergent" : "behind";
+        return yield* new VcsUnsupportedOperationError({
+          operation: "JjVcsDriver.pushBookmark",
+          kind: "jj",
+          detail: `Bookmark '${input.bookmarkName}' is ${state} relative to '${remoteName}'. Fetch and reconcile it before pushing.`,
+        });
+      }
+    }
+    const latestBookmarks = yield* readBookmarks(input.cwd);
+    const latestBookmark = latestBookmarks.find(
+      (candidate) => candidate.remote === undefined && candidate.name === input.bookmarkName,
+    );
+    if (latestBookmark?.target.length !== 1 || latestBookmark.target[0] !== targetCommitId) {
+      return yield* new VcsUnsupportedOperationError({
+        operation: "JjVcsDriver.pushBookmark",
+        kind: "jj",
+        detail: `Bookmark '${input.bookmarkName}' changed while preparing the push; retry it.`,
+      });
+    }
+    const latestRemoteBookmark = latestBookmarks.find(
+      (candidate) => candidate.remote === remoteName && candidate.name === input.bookmarkName,
+    );
     if (
-      localRef?.tracking?.state === "behind" ||
-      localRef?.tracking?.state === "divergent" ||
-      localRef?.tracking?.state === "conflicted"
+      (latestRemoteBookmark?.target.length === 1
+        ? (latestRemoteBookmark.target[0] ?? null)
+        : null) !== selectedRemoteTargetCommitId
     ) {
       return yield* new VcsUnsupportedOperationError({
         operation: "JjVcsDriver.pushBookmark",
         kind: "jj",
-        detail: `Bookmark '${input.bookmarkName}' is ${localRef.tracking.state} relative to its tracked remote. Fetch and reconcile it before pushing.`,
+        detail: `Remote bookmark '${input.bookmarkName}@${remoteName}' changed while preparing the push; retry it.`,
       });
     }
     yield* runJj("JjVcsDriver.pushBookmark", input.cwd, [
       "git",
       "push",
-      ...(input.remoteName ? ["--remote", input.remoteName] : []),
+      "--remote",
+      remoteName,
       "--bookmark",
       `exact:${input.bookmarkName}`,
     ]);
     return {
       status: "pushed",
       bookmarkName: input.bookmarkName,
-      remoteName: input.remoteName ?? null,
+      remoteName,
     } satisfies VcsPushBookmarkResult;
   });
-
-  const createWorktree: NonNullable<VcsDriver.VcsDriver["Service"]["createWorktree"]> = Effect.fn(
-    "JjVcsDriver.createWorktree",
-  )(function* (input) {
-    const repository = yield* detectRepository(input.cwd);
-    if (!repository) {
-      return yield* new VcsUnsupportedOperationError({
-        operation: "JjVcsDriver.createWorktree",
-        kind: "jj",
-        detail: "No Jujutsu repository was detected.",
-      });
-    }
-    const semanticName = input.newRefName ?? input.refName;
-    const workspaceName = sanitizeWorkspaceName(semanticName);
-    const workspacePath =
-      input.path ??
-      path.join(
-        repository.rootPath,
-        ".shuv2code",
-        "workspaces",
-        path.basename(repository.rootPath),
-        workspaceName,
-      );
-    if (
-      yield* fileSystem
-        .exists(workspacePath)
-        .pipe(mapFileSystemError("JjVcsDriver.createWorktree", "Could not inspect workspace path"))
-    ) {
-      return yield* new VcsUnsupportedOperationError({
-        operation: "JjVcsDriver.createWorktree",
-        kind: "jj",
-        detail: `Workspace path already exists: ${workspacePath}`,
-      });
-    }
-    if (input.newRefName) {
-      yield* runJj("JjVcsDriver.createWorktree.bookmark", input.cwd, [
-        "bookmark",
-        "set",
-        input.newRefName,
-        "-r",
-        input.baseRefName ?? input.refName,
-      ]);
-    }
-    yield* runJj("JjVcsDriver.createWorktree", input.cwd, [
-      "workspace",
-      "add",
-      "--name",
-      workspaceName,
-      "-r",
-      input.newRefName ?? input.refName,
-      workspacePath,
-    ]);
-    if (input.newRefName) {
-      yield* runJj("JjVcsDriver.createWorktree.moveBookmark", workspacePath, [
-        "bookmark",
-        "set",
-        input.newRefName,
-        "-r",
-        "@",
-      ]);
-    }
-    return {
-      worktree: { path: workspacePath, refName: semanticName },
-    } satisfies VcsCreateWorktreeResult;
-  });
-
-  const resolveRepoStoragePath = Effect.fn("JjVcsDriver.resolveRepoStoragePath")(function* (
-    root: string,
-  ) {
-    const repoEntry = path.join(root, ".jj", "repo");
-    const pointer = yield* fileSystem
-      .readFileString(repoEntry)
-      .pipe(Effect.orElseSucceed(() => ""));
-    return yield* fileSystem
-      .realPath(
-        pointer.trim().length > 0
-          ? path.resolve(path.dirname(repoEntry), pointer.trim())
-          : repoEntry,
-      )
-      .pipe(
-        mapFileSystemError(
-          "JjVcsDriver.resolveRepoStoragePath",
-          "Could not resolve Jujutsu repository storage",
-        ),
-      );
-  });
-
-  const removeWorktree: NonNullable<VcsDriver.VcsDriver["Service"]["removeWorktree"]> = Effect.fn(
-    "JjVcsDriver.removeWorktree",
-  )(function* (input) {
-    const [sourceRootResult, targetRootResult] = yield* Effect.all([
-      runJj("JjVcsDriver.removeWorktree.sourceRoot", input.cwd, ["root"], {
-        ignoreWorkingCopy: true,
-      }),
-      runJj("JjVcsDriver.removeWorktree.targetRoot", input.path, ["root"], {
-        ignoreWorkingCopy: true,
-      }),
-    ]);
-    const [sourceRoot, targetRoot, requestedTarget] = yield* Effect.all(
-      [
-        fileSystem.realPath(sourceRootResult.stdout.trim()),
-        fileSystem.realPath(targetRootResult.stdout.trim()),
-        fileSystem.realPath(input.path),
-      ],
-      { concurrency: "unbounded" },
-    ).pipe(mapFileSystemError("JjVcsDriver.removeWorktree", "Could not resolve workspace paths"));
-    if (targetRoot !== requestedTarget || sourceRoot === targetRoot) {
-      return yield* new VcsUnsupportedOperationError({
-        operation: "JjVcsDriver.removeWorktree",
-        kind: "jj",
-        detail: "Refusing to remove an unverified or current workspace path.",
-      });
-    }
-    const [sourceRepo, targetRepo] = yield* Effect.all([
-      resolveRepoStoragePath(sourceRoot),
-      resolveRepoStoragePath(targetRoot),
-    ]);
-    if (sourceRepo !== targetRepo) {
-      return yield* new VcsUnsupportedOperationError({
-        operation: "JjVcsDriver.removeWorktree",
-        kind: "jj",
-        detail: "Refusing to forget a workspace belonging to another repository.",
-      });
-    }
-    const targetCommit = yield* readWorkingCopyCommit(targetRoot);
-    if (!targetCommit.empty && input.force !== true) {
-      return yield* new VcsUnsupportedOperationError({
-        operation: "JjVcsDriver.removeWorktree",
-        kind: "jj",
-        detail: "The workspace has local changes; confirm forced removal to forget it.",
-      });
-    }
-    const matchingWorkspaces = (yield* readWorkspaces(input.cwd)).filter(
-      (workspace) => workspace.target.commit_id === targetCommit.commitId,
-    );
-    if (matchingWorkspaces.length !== 1) {
-      return yield* new VcsUnsupportedOperationError({
-        operation: "JjVcsDriver.removeWorktree",
-        kind: "jj",
-        detail: "Could not identify exactly one workspace for the verified path.",
-      });
-    }
-    const workspace = matchingWorkspaces[0];
-    if (!workspace) return;
-    yield* runJj("JjVcsDriver.removeWorktree.forget", input.cwd, [
-      "workspace",
-      "forget",
-      workspace.name,
-    ]);
-    yield* fileSystem
-      .remove(targetRoot, { recursive: true })
-      .pipe(
-        mapFileSystemError("JjVcsDriver.removeWorktree", "Could not remove forgotten workspace"),
-      );
-  });
-
-  const resolveRevision = (cwd: string, revision: string) =>
-    runJj(
-      "JjVcsDriver.checkpoints.resolveRevision",
-      cwd,
-      ["log", "--no-graph", "-r", revision, "-T", 'commit_id ++ "\\n"'],
-      {
-        allowNonZeroExit: true,
-        timeoutMs: 5_000,
-        maxOutputBytes: 8_192,
-        ignoreWorkingCopy: true,
-      },
-    ).pipe(
-      Effect.map((result) =>
-        result.exitCode === 0 && result.stdout.trim().length > 0 ? revision : null,
-      ),
-    );
-
-  const checkpoints: VcsDriver.VcsCheckpointOps = {
-    captureCheckpoint: (input) =>
-      runJj(
-        "JjVcsDriver.checkpoints.captureCheckpoint",
-        input.cwd,
-        ["tag", "set", "--allow-move", input.checkpointRef, "-r", "@"],
-        { timeoutMs: 10_000, maxOutputBytes: 64 * 1024 },
-      ).pipe(Effect.asVoid),
-    hasCheckpointRef: (input) =>
-      resolveRevision(input.cwd, input.checkpointRef).pipe(
-        Effect.map((revision) => revision !== null),
-      ),
-    restoreCheckpoint: Effect.fn("JjVcsDriver.checkpoints.restoreCheckpoint")(function* (input) {
-      const checkpoint = yield* resolveRevision(input.cwd, input.checkpointRef);
-      const source = checkpoint ?? (input.fallbackToHead ? "@-" : null);
-      if (!source) return false;
-      yield* runJj("JjVcsDriver.checkpoints.restoreCheckpoint.newChange", input.cwd, ["new", "@"], {
-        timeoutMs: 30_000,
-        maxOutputBytes: 1_000_000,
-      });
-      yield* runJj(
-        "JjVcsDriver.checkpoints.restoreCheckpoint",
-        input.cwd,
-        ["restore", "--from", source, "--into", "@"],
-        { timeoutMs: 30_000, maxOutputBytes: 1_000_000 },
-      );
-      return true;
-    }),
-    diffCheckpoints: Effect.fn("JjVcsDriver.checkpoints.diffCheckpoints")(function* (input) {
-      const from = yield* resolveRevision(input.cwd, input.fromCheckpointRef);
-      const fromRevision = from ?? (input.fallbackFromToHead ? "@-" : input.fromCheckpointRef);
-      const result = yield* runJj(
-        "JjVcsDriver.checkpoints.diffCheckpoints",
-        input.cwd,
-        [
-          "diff",
-          "--git",
-          ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
-          "--from",
-          fromRevision,
-          "--to",
-          input.toCheckpointRef,
-        ],
-        {
-          timeoutMs: 30_000,
-          maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
-          appendTruncationMarker: true,
-          ignoreWorkingCopy: true,
-        },
-      );
-      return result.stdout;
-    }),
-    deleteCheckpointRefs: (input) =>
-      input.checkpointRefs.length === 0
-        ? Effect.void
-        : runJj(
-            "JjVcsDriver.checkpoints.deleteCheckpointRefs",
-            input.cwd,
-            ["tag", "delete", ...input.checkpointRefs],
-            { timeoutMs: 10_000, maxOutputBytes: 64 * 1024 },
-          ).pipe(Effect.asVoid),
-  };
 
   const getDiffPreview = Effect.fn("JjVcsDriver.getDiffPreview")(function* (
     input: ReviewDiffPreviewInput,
@@ -1133,7 +1198,6 @@ export const makeVcsDriver = Effect.gen(function* () {
   return VcsDriver.VcsDriver.of({
     capabilities: staticCapabilities,
     execute,
-    checkpoints,
     detectRepository,
     isInsideWorkTree,
     listWorkspaceFiles,
@@ -1142,8 +1206,6 @@ export const makeVcsDriver = Effect.gen(function* () {
     initRepository,
     status,
     listRefs,
-    createWorktree,
-    removeWorktree,
     createRef,
     switchRef,
     describeChange,

@@ -1026,16 +1026,21 @@ export const makeWsRpcLayer = (
             if (bootstrap?.prepareWorktree) {
               let worktreeBaseRef = bootstrap.prepareWorktree.baseBranch;
               if (bootstrap.prepareWorktree.startFromOrigin) {
-                yield* gitWorkflow.fetchRemote({
+                yield* gitWorkflow.fetch({
                   cwd: bootstrap.prepareWorktree.projectCwd,
                   remoteName: "origin",
                 });
-                const resolvedRemoteBase = yield* gitWorkflow.resolveRemoteTrackingCommit({
+                const activeVcs = yield* vcsDriverRegistry.resolve({
                   cwd: bootstrap.prepareWorktree.projectCwd,
-                  refName: bootstrap.prepareWorktree.baseBranch,
-                  fallbackRemoteName: "origin",
                 });
-                worktreeBaseRef = resolvedRemoteBase.commitSha;
+                worktreeBaseRef =
+                  activeVcs.kind === "jj"
+                    ? `${bootstrap.prepareWorktree.baseBranch}@origin`
+                    : (yield* gitWorkflow.resolveRemoteTrackingCommit({
+                        cwd: bootstrap.prepareWorktree.projectCwd,
+                        refName: bootstrap.prepareWorktree.baseBranch,
+                        fallbackRemoteName: "origin",
+                      })).commitSha;
               }
               const worktree = yield* gitWorkflow.createWorktree({
                 cwd: bootstrap.prepareWorktree.projectCwd,
@@ -2371,7 +2376,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                       Layer.provide(
                         VcsDriverRegistry.layer.pipe(
                           Layer.provide(VcsProjectConfig.layer),
-                          Layer.provide(
+                          Layer.provideMerge(
                             Layer.succeed(ServerSettings.ServerSettingsService, serverSettings),
                           ),
                         ),

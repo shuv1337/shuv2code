@@ -53,6 +53,9 @@ describe("detectSourceControlProviderFromRemoteUrl", () => {
       detectSourceControlProviderFromRemoteUrl("https://dev.azure.com/org/project/_git/repo")?.kind,
     ).toBe("azure-devops");
     expect(
+      detectSourceControlProviderFromRemoteUrl("git@ssh.dev.azure.com:v3/org/project/repo")?.kind,
+    ).toBe("azure-devops");
+    expect(
       detectSourceControlProviderFromRemoteUrl("git@bitbucket.org:workspace/repo.git")?.kind,
     ).toBe("bitbucket");
   });
@@ -74,5 +77,19 @@ describe("detectSourceControlProviderFromRemoteUrl", () => {
       name: "self-hosted.example.test:8443",
       baseUrl: "https://self-hosted.example.test:8443",
     });
+  });
+
+  it("rejects GitHub-like hostnames without a distinct GitHub label", () => {
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://notgithub.example.test/owner/repo.git")
+        ?.kind,
+    ).toBe("unknown");
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://githubish.example.test/owner/repo.git")
+        ?.kind,
+    ).toBe("unknown");
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://github.example.test/owner/repo.git")?.kind,
+    ).toBe("github");
   });
 });

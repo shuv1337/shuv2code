@@ -26,6 +26,7 @@ import {
   resolvePreviousWorktreeLabel,
   resolvePreviousWorktreeSeed,
   shouldShowEnvironmentIndicator,
+  shouldShowVcsSelector,
 } from "./BranchToolbar.logic";
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
@@ -75,6 +76,7 @@ interface MobileRunContextSelectorProps {
   previousWorktreeLabel: string | null;
   onUsePreviousWorktree: () => void;
   vcsKind: VcsDriverKind;
+  supportsWorktrees: boolean;
 }
 
 const MobileRunContextSelector = memo(function MobileRunContextSelector({
@@ -91,6 +93,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   previousWorktreeLabel,
   onUsePreviousWorktree,
   vcsKind,
+  supportsWorktrees,
 }: MobileRunContextSelectorProps) {
   const activeEnvironment = useMemo(
     () => availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null,
@@ -198,12 +201,16 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
                 </span>
               </span>
             </MenuRadioItem>
-            <MenuRadioItem disabled={envModeLocked} value="worktree">
-              <span className="flex min-w-0 items-center gap-1.5">
-                <FolderGit2Icon className="size-3" />
-                <span className="min-w-0 truncate">{resolveEnvModeLabel("worktree", vcsKind)}</span>
-              </span>
-            </MenuRadioItem>
+            {supportsWorktrees ? (
+              <MenuRadioItem disabled={envModeLocked} value="worktree">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <FolderGit2Icon className="size-3" />
+                  <span className="min-w-0 truncate">
+                    {resolveEnvModeLabel("worktree", vcsKind)}
+                  </span>
+                </span>
+              </MenuRadioItem>
+            ) : null}
             {previousWorktreeLabel ? (
               <MenuRadioItem disabled={envModeLocked} value="previous-worktree">
                 <span className="flex min-w-0 items-center gap-1.5">
@@ -259,20 +266,23 @@ export const BranchToolbar = memo(function BranchToolbar({
       : null,
   );
   const vcsKind = vcsStatus.data?.kind ?? "unknown";
-  const canSelectVcs = (vcsStatus.data?.selection?.availableKinds.length ?? 0) > 1;
-  const effectiveEnvMode =
+  const supportsWorktrees = vcsStatus.data?.capabilities?.supportsWorktrees ?? false;
+  const canSelectVcs = shouldShowVcsSelector(vcsStatus.data?.selection);
+  const requestedEnvMode =
     effectiveEnvModeOverride ??
     resolveEffectiveEnvMode({
       activeWorktreePath,
       hasServerThread: serverThread !== null,
       draftThreadEnvMode: draftThread?.envMode,
     });
+  const effectiveEnvMode = supportsWorktrees ? requestedEnvMode : "local";
   const envModeLocked = envLocked || (serverThread !== null && activeWorktreePath !== null);
 
   // "Previous worktree" hops a draft into the most recently active worktree
   // of this project — the "keep going where I just was" follow-up flow. Only
   // drafts can hop; started server threads have their workspace pinned.
-  const canUsePreviousWorktree = draftThread !== null && serverThread === null && !envModeLocked;
+  const canUsePreviousWorktree =
+    supportsWorktrees && draftThread !== null && serverThread === null && !envModeLocked;
   const projectRefsForWorktreeLookup = useMemo(
     () => (canUsePreviousWorktree && activeProjectRef ? [activeProjectRef] : []),
     [canUsePreviousWorktree, activeProjectRef],
@@ -344,6 +354,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           previousWorktreeLabel={previousWorktreeLabel}
           onUsePreviousWorktree={onUsePreviousWorktree}
           vcsKind={vcsKind}
+          supportsWorktrees={supportsWorktrees}
         />
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-1">
@@ -366,6 +377,7 @@ export const BranchToolbar = memo(function BranchToolbar({
             previousWorktreeLabel={previousWorktreeLabel}
             onUsePreviousWorktree={onUsePreviousWorktree}
             vcsKind={vcsKind}
+            supportsWorktrees={supportsWorktrees}
           />
         </div>
       )}
@@ -376,6 +388,7 @@ export const BranchToolbar = memo(function BranchToolbar({
         threadId={threadId}
         {...(draftId ? { draftId } : {})}
         envLocked={envLocked}
+        supportsWorktrees={supportsWorktrees}
         {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
         {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
         {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}

@@ -462,47 +462,71 @@ const buildAppUnderTest = (options?: {
       initRepository: () => Effect.void,
       ...options?.layers?.vcsDriver,
     };
+    const detectDefaultVcsHandle = (input: VcsDriverRegistry.VcsDriverResolveInput) =>
+      defaultVcsDriver.detectRepository(input.cwd).pipe(
+        Effect.flatMap((repository) =>
+          repository
+            ? Effect.succeed(repository)
+            : defaultVcsDriver.isInsideWorkTree(input.cwd).pipe(
+                Effect.map((isInsideWorkTree) =>
+                  isInsideWorkTree
+                    ? {
+                        kind: "git" as const,
+                        rootPath: input.cwd,
+                        metadataPath: null,
+                        freshness: {
+                          source: "live-local" as const,
+                          observedAt: TEST_EPOCH,
+                          expiresAt: Option.none(),
+                        },
+                      }
+                    : null,
+                ),
+              ),
+        ),
+        Effect.map((repository) =>
+          repository
+            ? ({
+                kind: repository.kind,
+                repository,
+                driver: defaultVcsDriver,
+              } satisfies VcsDriverRegistry.VcsDriverHandle)
+            : null,
+        ),
+      );
     const vcsDriverRegistryLayer = Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
       get: () => Effect.succeed(defaultVcsDriver),
-      detect: (input) =>
-        defaultVcsDriver.detectRepository(input.cwd).pipe(
-          Effect.flatMap((repository) =>
-            repository
-              ? Effect.succeed(repository)
-              : defaultVcsDriver.isInsideWorkTree(input.cwd).pipe(
-                  Effect.map((isInsideWorkTree) =>
-                    isInsideWorkTree
-                      ? {
-                          kind: "git" as const,
-                          rootPath: input.cwd,
-                          metadataPath: null,
-                          freshness: {
-                            source: "live-local" as const,
-                            observedAt: TEST_EPOCH,
-                            expiresAt: Option.none(),
-                          },
-                        }
-                      : null,
-                  ),
-                ),
-          ),
-          Effect.map((repository) =>
-            repository
-              ? ({
-                  kind: repository.kind,
-                  repository,
-                  driver: defaultVcsDriver,
-                } satisfies VcsDriverRegistry.VcsDriverHandle)
-              : null,
-          ),
+      inspect: (input) =>
+        detectDefaultVcsHandle(input).pipe(
+          Effect.map((handle) => {
+            const defaultKind = defaultVcsDriver.capabilities.kind === "jj" ? "jj" : "git";
+            return {
+              handle,
+              selection: {
+                availableKinds:
+                  handle?.kind === "git" || handle?.kind === "jj" ? [handle.kind] : [],
+                projectKind: null,
+                defaultKind,
+                source:
+                  input.requestedKind === "git" || input.requestedKind === "jj"
+                    ? "request"
+                    : "user-default",
+              },
+            } satisfies VcsDriverRegistry.VcsDriverInspection;
+          }),
         ),
+      detect: detectDefaultVcsHandle,
       resolve: (input) =>
         Effect.succeed({
           kind:
-            input.requestedKind === "auto" || !input.requestedKind ? "git" : input.requestedKind,
+            input.requestedKind === "auto" || !input.requestedKind
+              ? defaultVcsDriver.capabilities.kind
+              : input.requestedKind,
           repository: {
             kind:
-              input.requestedKind === "auto" || !input.requestedKind ? "git" : input.requestedKind,
+              input.requestedKind === "auto" || !input.requestedKind
+                ? defaultVcsDriver.capabilities.kind
+                : input.requestedKind,
             rootPath: input.cwd,
             metadataPath: null,
             freshness: {
@@ -7141,10 +7165,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             pr: null,
           }),
         );
-        const fetchRemote = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0]) =>
+        const fetch = vi.fn(
+          (_: Parameters<NonNullable<VcsDriver.VcsDriver["Service"]["fetch"]>>[0]) =>
             Effect.sync(() => {
               bootstrapGitOperations.push("fetch");
+              return { status: "fetched" as const, remoteName: "origin" };
             }),
         );
         const fetchedOriginCommit = "0123456789abcdef0123456789abcdef01234567";
@@ -7188,9 +7213,22 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         yield* buildAppUnderTest({
           layers: {
             gitVcsDriver: {
-              fetchRemote,
               resolveRemoteTrackingCommit,
               createWorktree,
+            },
+            vcsDriver: {
+              detectRepository: (cwd) =>
+                Effect.succeed({
+                  kind: "git",
+                  rootPath: cwd,
+                  metadataPath: null,
+                  freshness: {
+                    source: "live-local",
+                    observedAt: TEST_EPOCH,
+                    expiresAt: Option.none(),
+                  },
+                }),
+              fetch,
             },
             vcsStatusBroadcaster: {
               refreshStatus,
@@ -7268,7 +7306,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           baseRefName: "main",
           path: null,
         });
-        assert.deepEqual(fetchRemote.mock.calls[0]?.[0], {
+        assert.deepEqual(fetch.mock.calls[0]?.[0], {
           cwd: "/tmp/project",
           remoteName: "origin",
         });
@@ -7306,6 +7344,152 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("starts Jujutsu workspaces from the fetched origin bookmark", () =>
+    Effect.gen(function* () {
+      const operations: string[] = [];
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const createWorktree = vi.fn(
+        (input: Parameters<NonNullable<VcsDriver.VcsDriver["Service"]["createWorktree"]>>[0]) =>
+          Effect.sync(() => {
+            operations.push("create-workspace");
+            return {
+              worktree: {
+                refName: input.newRefName ?? input.refName,
+                path: "/tmp/jj-bootstrap-workspace",
+              },
+            };
+          }),
+      );
+
+      yield* buildAppUnderTest({
+        layers: {
+          vcsDriver: {
+            capabilities: {
+              kind: "jj",
+              supportsWorktrees: true,
+              supportsBookmarks: true,
+              supportsAtomicSnapshot: true,
+              supportsPushDefaultRemote: false,
+              supportsStatus: true,
+              supportsRefMutation: true,
+              supportsWorkspaceMutation: true,
+              supportsDescribeChange: true,
+              supportsStartChange: true,
+              supportsFetch: true,
+              supportsPush: true,
+              supportsChangeRequests: true,
+              supportsJuzu: false,
+              ignoreClassifier: "git-compatible-fallback",
+            },
+            detectRepository: (cwd) =>
+              Effect.succeed({
+                kind: "jj",
+                rootPath: cwd,
+                metadataPath: `${cwd}/.jj`,
+                freshness: {
+                  source: "live-local",
+                  observedAt: TEST_EPOCH,
+                  expiresAt: Option.none(),
+                },
+              }),
+            fetch: () =>
+              Effect.sync(() => {
+                operations.push("fetch");
+                return { status: "fetched" as const, remoteName: "origin" };
+              }),
+            createWorktree,
+          },
+          vcsStatusBroadcaster: {
+            refreshStatus: () =>
+              Effect.succeed({
+                kind: "jj",
+                capabilities: {
+                  kind: "jj",
+                  supportsWorktrees: true,
+                  supportsBookmarks: true,
+                  supportsAtomicSnapshot: true,
+                  supportsPushDefaultRemote: false,
+                  supportsStatus: true,
+                  supportsRefMutation: true,
+                  supportsWorkspaceMutation: true,
+                  supportsDescribeChange: true,
+                  supportsStartChange: true,
+                  supportsFetch: true,
+                  supportsPush: true,
+                  supportsChangeRequests: true,
+                  supportsJuzu: false,
+                  ignoreClassifier: "git-compatible-fallback",
+                },
+                isRepo: true,
+                hasPrimaryRemote: true,
+                isDefaultRef: false,
+                refName: "shuv2code/jj-bootstrap",
+                hasWorkingTreeChanges: false,
+                workingTree: { files: [], insertions: 0, deletions: 0 },
+                workingCopy: null,
+                hasUpstream: true,
+                aheadCount: 0,
+                behindCount: 0,
+                pr: null,
+              }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+            readEvents: () => Stream.empty,
+          },
+        },
+      });
+
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-jj-bootstrap-turn-start"),
+            threadId: ThreadId.make("thread-jj-bootstrap"),
+            message: {
+              messageId: MessageId.make("msg-jj-bootstrap"),
+              role: "user",
+              text: "hello",
+              attachments: [],
+            },
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            bootstrap: {
+              prepareWorktree: {
+                projectCwd: "/tmp/jj-project",
+                baseBranch: "main",
+                branch: "shuv2code/jj-bootstrap",
+                startFromOrigin: true,
+              },
+              runSetupScript: false,
+            },
+            createdAt,
+          }),
+        ),
+      );
+
+      assert.deepEqual(operations, ["fetch", "create-workspace"]);
+      assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
+        cwd: "/tmp/jj-project",
+        refName: "main@origin",
+        newRefName: "shuv2code/jj-bootstrap",
+        baseRefName: "main",
+        path: null,
+      });
+      assert.deepEqual(
+        dispatchedCommands.map((command) => command.type),
+        ["thread.meta.update", "thread.turn.start"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("records setup-script failures without aborting bootstrap turn start", () =>
     Effect.gen(function* () {
       const dispatchedCommands: Array<OrchestrationCommand> = [];
@@ -7336,6 +7520,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       yield* buildAppUnderTest({
         layers: {
+          vcsDriver: {
+            detectRepository: (cwd) =>
+              Effect.succeed({
+                kind: "git",
+                rootPath: cwd,
+                metadataPath: null,
+                freshness: {
+                  source: "live-local",
+                  observedAt: TEST_EPOCH,
+                  expiresAt: Option.none(),
+                },
+              }),
+          },
           gitVcsDriver: {
             createWorktree,
           },
@@ -7441,6 +7638,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       yield* buildAppUnderTest({
         layers: {
+          vcsDriver: {
+            detectRepository: (cwd) =>
+              Effect.succeed({
+                kind: "git",
+                rootPath: cwd,
+                metadataPath: null,
+                freshness: {
+                  source: "live-local",
+                  observedAt: TEST_EPOCH,
+                  expiresAt: Option.none(),
+                },
+              }),
+          },
           gitVcsDriver: {
             createWorktree,
           },
@@ -7544,6 +7754,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       yield* buildAppUnderTest({
         layers: {
+          vcsDriver: {
+            detectRepository: (cwd) =>
+              Effect.succeed({
+                kind: "git",
+                rootPath: cwd,
+                metadataPath: null,
+                freshness: {
+                  source: "live-local",
+                  observedAt: TEST_EPOCH,
+                  expiresAt: Option.none(),
+                },
+              }),
+          },
           gitVcsDriver: {
             createWorktree,
           },

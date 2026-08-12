@@ -6,6 +6,8 @@ import {
   requiresDefaultBranchConfirmation,
   resolveAutoFeatureBranchName,
   resolveDefaultBranchActionDialogCopy,
+  resolveJjActionBookmark,
+  resolveJjActionAvailability,
   resolveLiveThreadBranchUpdate,
   resolveQuickAction,
   resolveThreadBranchUpdate,
@@ -50,6 +52,62 @@ function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
     ...overrides,
   };
 }
+
+function jjStatus(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
+  return status({
+    kind: "jj",
+    capabilities: {
+      ...status().capabilities!,
+      kind: "jj",
+      supportsBookmarks: true,
+      supportsPushDefaultRemote: false,
+      supportsDescribeChange: true,
+      supportsStartChange: true,
+      supportsJuzu: true,
+    },
+    refName: "feature/default",
+    workingCopy: {
+      changeId: "wxyz1234",
+      commitId: "0123456789abcdef",
+      description: "Native JJ change",
+      workspaceName: "feature-workspace",
+      isEmpty: false,
+      hasConflicts: false,
+      conflictPaths: [],
+      bookmarks: ["feature/default"],
+    },
+    ...overrides,
+  });
+}
+
+describe("resolveJjActionBookmark", () => {
+  it("uses the status-selected default when multiple bookmarks point at the working copy", () => {
+    const current = resolveJjActionBookmark(
+      jjStatus({
+        refName: "feature/default",
+        workingCopy: {
+          ...jjStatus().workingCopy!,
+          bookmarks: ["feature/first", "feature/default"],
+        },
+      }),
+    );
+
+    assert.equal(current, "feature/default");
+  });
+
+  it("fails closed when the selected ref is absent from the working-copy bookmarks", () => {
+    const inconsistent = jjStatus({
+      refName: "feature/stale",
+      workingCopy: {
+        ...jjStatus().workingCopy!,
+        bookmarks: ["feature/current"],
+      },
+    });
+
+    assert.equal(resolveJjActionBookmark(inconsistent), null);
+    assert.isFalse(resolveJjActionAvailability(inconsistent).canPush);
+  });
+});
 
 describe("when: ref is clean and has an open PR", () => {
   it("resolveQuickAction opens the existing PR", () => {

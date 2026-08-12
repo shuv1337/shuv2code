@@ -4,6 +4,7 @@ import { memo, useMemo } from "react";
 
 import {
   resolveCurrentWorkspaceLabel,
+  resolveAvailableEnvModes,
   resolveEnvModeLabel,
   resolveLockedWorkspaceLabel,
   type EnvMode,
@@ -28,6 +29,7 @@ interface BranchToolbarEnvModeSelectorProps {
   previousWorktreeLabel?: string | null;
   onUsePreviousWorktree?: () => void;
   vcsKind?: VcsDriverKind;
+  supportsWorktrees?: boolean;
 }
 
 export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSelector({
@@ -38,17 +40,23 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   previousWorktreeLabel,
   onUsePreviousWorktree,
   vcsKind = "git",
+  supportsWorktrees = true,
 }: BranchToolbarEnvModeSelectorProps) {
   const showPreviousWorktree = Boolean(previousWorktreeLabel && onUsePreviousWorktree);
   const envModeItems = useMemo(
     () => [
-      { value: "local", label: resolveCurrentWorkspaceLabel(activeWorktreePath, vcsKind) },
-      { value: "worktree", label: resolveEnvModeLabel("worktree", vcsKind) },
+      ...resolveAvailableEnvModes(supportsWorktrees).map((value) => ({
+        value,
+        label:
+          value === "local"
+            ? resolveCurrentWorkspaceLabel(activeWorktreePath, vcsKind)
+            : resolveEnvModeLabel(value, vcsKind),
+      })),
       ...(showPreviousWorktree && previousWorktreeLabel
         ? [{ value: PREVIOUS_WORKTREE_SELECT_VALUE, label: previousWorktreeLabel }]
         : []),
     ],
-    [activeWorktreePath, previousWorktreeLabel, showPreviousWorktree, vcsKind],
+    [activeWorktreePath, previousWorktreeLabel, showPreviousWorktree, supportsWorktrees, vcsKind],
   );
 
   if (envLocked) {
@@ -110,12 +118,14 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
               {resolveCurrentWorkspaceLabel(activeWorktreePath, vcsKind)}
             </span>
           </SelectItem>
-          <SelectItem value="worktree">
-            <span className="inline-flex items-center gap-1.5">
-              <FolderGit2Icon className="size-3" />
-              {resolveEnvModeLabel("worktree", vcsKind)}
-            </span>
-          </SelectItem>
+          {supportsWorktrees ? (
+            <SelectItem value="worktree">
+              <span className="inline-flex items-center gap-1.5">
+                <FolderGit2Icon className="size-3" />
+                {resolveEnvModeLabel("worktree", vcsKind)}
+              </span>
+            </SelectItem>
+          ) : null}
           {showPreviousWorktree && previousWorktreeLabel ? (
             <SelectItem value={PREVIOUS_WORKTREE_SELECT_VALUE}>
               <span className="inline-flex items-center gap-1.5">

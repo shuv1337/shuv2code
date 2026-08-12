@@ -56,6 +56,7 @@ import {
   requiresDefaultBranchConfirmation,
   resolveDefaultBranchActionDialogCopy,
   resolveLiveThreadBranchUpdate,
+  resolveJjActionBookmark,
   resolveJjActionAvailability,
   resolveJjWorkingCopyLabel,
   resolveThreadBranchMetadataPatch,
@@ -180,7 +181,7 @@ function JjActionsGroup(props: {
   const [changeRequestBase, setChangeRequestBase] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   const workingCopy = props.status.workingCopy;
-  const currentBookmark = workingCopy?.bookmarks[0] ?? null;
+  const currentBookmark = resolveJjActionBookmark(props.status);
   const availability = resolveJjActionAvailability(props.status);
 
   const refresh = () => {

@@ -8,14 +8,18 @@ vi.mock("../state/use-atom-command", () => ({
 
 import { BranchToolbarVcsSelector } from "./BranchToolbarVcsSelector";
 
-function status(kind: "git" | "jj", availableKinds: ReadonlyArray<"git" | "jj">): VcsStatusResult {
+function status(
+  kind: "git" | "jj",
+  availableKinds: ReadonlyArray<"git" | "jj">,
+  source: "user-default" | "fallback" = "user-default",
+): VcsStatusResult {
   return {
     kind,
     selection: {
       availableKinds,
       projectKind: null,
       defaultKind: "git",
-      source: "user-default",
+      source,
     },
   } as VcsStatusResult;
 }
@@ -45,5 +49,17 @@ describe("BranchToolbarVcsSelector", () => {
     );
 
     expect(markup).toBe("");
+  });
+
+  it("renders a recovery control for a fallback selection with one available VCS", () => {
+    const markup = renderToStaticMarkup(
+      <BranchToolbarVcsSelector
+        environmentId={EnvironmentId.make("local")}
+        cwd="/repo"
+        status={status("jj", ["jj"], "fallback")}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Version control: Jujutsu"');
   });
 });

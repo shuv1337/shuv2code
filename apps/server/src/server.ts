@@ -291,7 +291,10 @@ const AutomationServiceLayerLive = AutomationService.layer.pipe(
 
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
-  Layer.provide(ServerSettingsLayerLive),
+  // `VcsDriverRegistry` treats settings as optional so it can support small
+  // test/runtime compositions. Merge the live settings service into its
+  // build context so the user's default VCS selection is actually observed.
+  Layer.provideMerge(ServerSettingsLayerLive),
 );
 
 const SourceControlProviderRegistryLayerLive = SourceControlProviderRegistry.layer.pipe(

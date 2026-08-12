@@ -59,7 +59,7 @@ export class VcsDriverRegistry extends Context.Service<
       input: VcsSetProjectPreferenceInput,
     ) => Effect.Effect<VcsSetProjectPreferenceResult, VcsError>;
   }
->()("@shuv2code/vcs/VcsDriverRegistry") {}
+>()("shuv2code/vcs/VcsDriverRegistry") {}
 
 function detectionCacheKey(input: {
   readonly cwd: string;
