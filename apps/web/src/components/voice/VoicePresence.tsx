@@ -2,16 +2,18 @@ import { useEffect, useRef, type RefObject } from "react";
 
 import { VOICE_PHASE_RENDER_STATES, type VoicePresencePhase } from "./voicePresenceTheme";
 import {
-  hasSustainedFramePressure,
+  INITIAL_VOICE_PRESENCE_PERFORMANCE_STATE,
   isConstrainedWebGlRenderer,
-  nextSlowFramePressure,
+  nextVoicePresencePerformanceState,
   voicePresenceFrameInterval,
   voicePresenceRenderPolicy,
+  type VoicePresencePerformanceState,
   type VoicePresenceRenderPolicy,
 } from "./voicePresenceRenderPolicy";
 
 interface VoicePresenceProps {
   readonly phase: VoicePresencePhase;
+  readonly presented?: boolean;
   readonly className?: string | undefined;
   /** Continuously sampled 0..1 audio energy. Kept outside React's render loop. */
   readonly activityLevel?: RefObject<number>;
@@ -214,13 +216,20 @@ function createProgram(gl: WebGLRenderingContext) {
 }
 
 /** A dependency-free, continuously evolving material field rendered in one GPU draw call. */
-export function VoicePresence({ phase, activityLevel, className }: VoicePresenceProps) {
+export function VoicePresence({
+  phase,
+  presented = true,
+  activityLevel,
+  className,
+}: VoicePresenceProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const targetRef = useRef(VOICE_PHASE_RENDER_STATES[phase]);
   const phaseRef = useRef(phase);
+  const presentedRef = useRef(presented);
   const invalidateRef = useRef<(() => void) | null>(null);
   targetRef.current = VOICE_PHASE_RENDER_STATES[phase];
   phaseRef.current = phase;
+  presentedRef.current = presented;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -268,15 +277,14 @@ export function VoicePresence({ phase, activityLevel, className }: VoicePresence
     let elapsedSeconds = 0;
     let displayAspect = 1;
     let documentVisible = document.visibilityState === "visible";
-    let surfaceVisible = true;
     let frameDirty = true;
-    let slowFramePressure = 0;
+    let performanceState: VoicePresencePerformanceState = INITIAL_VOICE_PRESENCE_PERFORMANCE_STATE;
 
     const debugRendererInfo = gl.getExtension("WEBGL_debug_renderer_info");
     const renderer = debugRendererInfo
       ? String(gl.getParameter(debugRendererInfo.UNMASKED_RENDERER_WEBGL))
       : null;
-    let constrainedRenderer = isConstrainedWebGlRenderer(renderer);
+    const softwareRenderer = isConstrainedWebGlRenderer(renderer);
 
     canvas.width = BACKING_WIDTH;
     canvas.height = BACKING_HEIGHT;
@@ -286,14 +294,16 @@ export function VoicePresence({ phase, activityLevel, className }: VoicePresence
       voicePresenceRenderPolicy({
         phase: phaseRef.current,
         documentVisible,
-        surfaceVisible,
+        presented: presentedRef.current,
         reducedMotion: reducedMotion.matches,
-        constrainedRenderer,
+        softwareRenderer,
+        performanceMode: performanceState.mode,
       });
 
     const publishPolicy = (policy: VoicePresenceRenderPolicy) => {
       canvas.dataset.renderPolicy = policy;
-      canvas.dataset.renderer = constrainedRenderer ? "constrained" : "accelerated";
+      canvas.dataset.renderer = softwareRenderer ? "software" : "accelerated";
+      canvas.dataset.performance = performanceState.mode;
     };
 
     const cancelScheduledFrame = () => {
@@ -345,18 +355,18 @@ export function VoicePresence({ phase, activityLevel, className }: VoicePresence
       publishPolicy(policy);
       if (policy === "paused" || (policy === "static" && !frameDirty)) return;
 
-      if (policy === "active") {
+      if (policy === "active" || policy === "degraded") {
         if (lastAnimationTick > 0) {
-          slowFramePressure = nextSlowFramePressure(slowFramePressure, now - lastAnimationTick);
-          if (hasSustainedFramePressure(slowFramePressure)) {
-            constrainedRenderer = true;
-            frameDirty = true;
-          }
+          performanceState = nextVoicePresencePerformanceState(
+            performanceState,
+            now - lastAnimationTick,
+            voicePresenceFrameInterval(policy) ?? 0,
+          );
         }
         lastAnimationTick = now;
       } else {
         lastAnimationTick = 0;
-        slowFramePressure = 0;
+        performanceState = INITIAL_VOICE_PRESENCE_PERFORMANCE_STATE;
       }
 
       const latestPolicy = currentPolicy();
@@ -371,22 +381,11 @@ export function VoicePresence({ phase, activityLevel, className }: VoicePresence
       requestDraw();
     };
 
-    const setSurfaceVisible = (visible: boolean) => {
-      if (surfaceVisible === visible) return;
-      surfaceVisible = visible;
-      previousTime = performance.now();
-      lastAnimationTick = 0;
-      if (visible) invalidate();
-      else {
-        cancelScheduledFrame();
-        publishPolicy("paused");
-      }
-    };
-
     const handleVisibilityChange = () => {
       documentVisible = document.visibilityState === "visible";
       previousTime = performance.now();
       lastAnimationTick = 0;
+      performanceState = INITIAL_VOICE_PRESENCE_PERFORMANCE_STATE;
       if (documentVisible) invalidate();
       else {
         cancelScheduledFrame();
@@ -403,11 +402,7 @@ export function VoicePresence({ phase, activityLevel, className }: VoicePresence
     const resizeObserver = new ResizeObserver(([entry]) => {
       if (entry) measureLayout(entry.contentRect.width, entry.contentRect.height);
     });
-    const intersectionObserver = new IntersectionObserver(([entry]) => {
-      setSurfaceVisible(Boolean(entry?.isIntersecting));
-    });
     resizeObserver.observe(canvas);
-    intersectionObserver.observe(canvas);
     measureLayout(canvas.clientWidth, canvas.clientHeight);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     reducedMotion.addEventListener("change", invalidate);
@@ -418,7 +413,6 @@ export function VoicePresence({ phase, activityLevel, className }: VoicePresence
       invalidateRef.current = null;
       cancelScheduledFrame();
       resizeObserver.disconnect();
-      intersectionObserver.disconnect();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       reducedMotion.removeEventListener("change", invalidate);
       gl.deleteBuffer(buffer);
@@ -428,7 +422,7 @@ export function VoicePresence({ phase, activityLevel, className }: VoicePresence
 
   useEffect(() => {
     invalidateRef.current?.();
-  }, [phase]);
+  }, [phase, presented]);
 
   return (
     <canvas

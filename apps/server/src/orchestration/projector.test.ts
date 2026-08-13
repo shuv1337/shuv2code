@@ -104,6 +104,114 @@ describe("orchestration projector", () => {
     ]);
   });
 
+  it("projects a realtime voice exchange as one completed model turn", async () => {
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const completedAt = "2026-01-01T00:00:02.000Z";
+    const model = createEmptyReadModel(createdAt);
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-voice",
+          occurredAt: createdAt,
+          commandId: "cmd-create-voice",
+          payload: {
+            threadId: "thread-voice",
+            projectId: "project-1",
+            title: "voice",
+            modelSelection: { provider: "codex", model: "gpt-5-codex" },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const next = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.voice-exchange-appended",
+          aggregateKind: "thread",
+          aggregateId: "thread-voice",
+          occurredAt: completedAt,
+          commandId: "cmd-voice-exchange",
+          payload: {
+            threadId: "thread-voice",
+            turnId: "turn-voice-1",
+            userMessage: { messageId: "message-voice-user", text: "Are we nearly done?" },
+            assistantMessage: {
+              messageId: "message-voice-assistant",
+              text: "Yes, nearly.",
+            },
+            createdAt,
+            completedAt,
+          },
+        }),
+      ),
+    );
+
+    expect(next.threads[0]?.messages).toEqual([
+      expect.objectContaining({
+        id: "message-voice-user",
+        role: "user",
+        text: "Are we nearly done?",
+        turnId: "turn-voice-1",
+      }),
+      expect.objectContaining({
+        id: "message-voice-assistant",
+        role: "assistant",
+        text: "Yes, nearly.",
+        turnId: "turn-voice-1",
+      }),
+    ]);
+    expect(next.threads[0]?.latestTurn).toEqual({
+      turnId: "turn-voice-1",
+      state: "completed",
+      requestedAt: createdAt,
+      startedAt: createdAt,
+      completedAt,
+      assistantMessageId: "message-voice-assistant",
+    });
+
+    const withDelegatedSpeech = await Effect.runPromise(
+      projectEvent(
+        next,
+        makeEvent({
+          sequence: 3,
+          type: "thread.voice-speech-appended",
+          aggregateKind: "thread",
+          aggregateId: "thread-voice",
+          occurredAt: completedAt,
+          commandId: "cmd-voice-speech",
+          payload: {
+            threadId: "thread-voice",
+            turnId: "turn-voice-1",
+            messageId: "message-voice-speech",
+            text: "The spoken summary appears here exactly.",
+            createdAt: completedAt,
+          },
+        }),
+      ),
+    );
+    expect(withDelegatedSpeech.threads[0]?.messages.at(-1)).toEqual(
+      expect.objectContaining({
+        id: "message-voice-speech",
+        role: "assistant",
+        text: "The spoken summary appears here exactly.",
+        turnId: "turn-voice-1",
+        streaming: false,
+      }),
+    );
+    expect(withDelegatedSpeech.threads[0]?.latestTurn).toEqual(next.threads[0]?.latestTurn);
+  });
+
   it("fails when event payload cannot be decoded by runtime schema", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);

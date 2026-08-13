@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { boundedCallInitialItems, CALL_REALTIME_PROMPT } from "./VoiceTransportCoordinator.ts";
 import { fenceMatches, publicVoiceSessionId } from "./voiceControllerShared.ts";
 import {
   EnvironmentId,
@@ -10,6 +11,24 @@ import {
 } from "@shuv2code/contracts";
 
 describe("VoiceTransportCoordinator ownership", () => {
+  it("hydrates realtime from bounded completed ordinary-thread messages", () => {
+    const items = boundedCallInitialItems([
+      { role: "user", text: "older", streaming: false },
+      { role: "assistant", text: "partial", streaming: true },
+      { role: "assistant", text: "latest", streaming: false },
+    ]);
+    assert.deepStrictEqual(items, [
+      { role: "user", text: "older" },
+      { role: "assistant", text: "latest" },
+    ]);
+  });
+
+  it("keeps ordinary contextual conversation on the realtime side of a Call", () => {
+    assert.include(CALL_REALTIME_PROMPT, "primary realtime conversational voice");
+    assert.include(CALL_REALTIME_PROMPT, "questions about them do not require a handoff");
+    assert.include(CALL_REALTIME_PROMPT, "A handoff extends this same live call");
+  });
+
   it("keys public session identity by client session id", () => {
     const clientSessionId = VoiceClientSessionId.make("browser-1");
     assert.strictEqual(publicVoiceSessionId({ fence: { clientSessionId } }), clientSessionId);

@@ -99,6 +99,15 @@ const PROJECTORS_BY_ORCHESTRATION_EVENT_TYPE: Readonly<
     ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
     ORCHESTRATION_PROJECTOR_NAMES.threads,
   ],
+  "thread.voice-exchange-appended": [
+    ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+    ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
+    ORCHESTRATION_PROJECTOR_NAMES.threads,
+  ],
+  "thread.voice-speech-appended": [
+    ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+    ORCHESTRATION_PROJECTOR_NAMES.threads,
+  ],
   "thread.turn-start-requested": [ORCHESTRATION_PROJECTOR_NAMES.threadTurns],
   // Provider steering is consumed by the command reactor and intentionally has
   // no materialized projection.
@@ -992,6 +1001,45 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.voice-exchange-appended": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const session = yield* projectionThreadSessionRepository.getByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const providerTurnIsRunning =
+            Option.isSome(session) &&
+            session.value.status === "running" &&
+            session.value.activeTurnId !== null;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            latestTurnId: providerTurnIsRunning
+              ? existingRow.value.latestTurnId
+              : event.payload.turnId,
+            updatedAt: event.payload.completedAt,
+          });
+          yield* refreshThreadShellSummary(event.payload.threadId, event.type);
+          return;
+        }
+
+        case "thread.voice-speech-appended": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            updatedAt: event.payload.createdAt,
+          });
+          return;
+        }
+
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
@@ -1095,6 +1143,47 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadMessagesProjection",
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
+        case "thread.voice-exchange-appended": {
+          yield* projectionThreadMessageRepository.upsert({
+            messageId: event.payload.userMessage.messageId,
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+            role: "user",
+            text: event.payload.userMessage.text,
+            modality: "voice",
+            isStreaming: false,
+            createdAt: event.payload.createdAt,
+            updatedAt: event.payload.completedAt,
+          });
+          yield* projectionThreadMessageRepository.upsert({
+            messageId: event.payload.assistantMessage.messageId,
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+            role: "assistant",
+            text: event.payload.assistantMessage.text,
+            modality: "voice",
+            isStreaming: false,
+            createdAt: event.payload.completedAt,
+            updatedAt: event.payload.completedAt,
+          });
+          return;
+        }
+
+        case "thread.voice-speech-appended": {
+          yield* projectionThreadMessageRepository.upsert({
+            messageId: event.payload.messageId,
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+            role: "assistant",
+            text: event.payload.text,
+            modality: "voice",
+            isStreaming: false,
+            createdAt: event.payload.createdAt,
+            updatedAt: event.payload.createdAt,
+          });
+          return;
+        }
+
         case "thread.message-sent": {
           const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
             messageId: event.payload.messageId,
@@ -1124,6 +1213,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             turnId: event.payload.turnId,
             role: event.payload.role,
             text: nextText,
+            modality: previousMessage?.modality ?? "text",
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
@@ -1295,6 +1385,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadTurnsProjection",
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
+        case "thread.voice-exchange-appended": {
+          yield* projectionTurnRepository.upsertByTurnId({
+            turnId: event.payload.turnId,
+            threadId: event.payload.threadId,
+            pendingMessageId: event.payload.userMessage.messageId,
+            sourceProposedPlanThreadId: null,
+            sourceProposedPlanId: null,
+            assistantMessageId: event.payload.assistantMessage.messageId,
+            state: "completed",
+            requestedAt: event.payload.createdAt,
+            startedAt: event.payload.createdAt,
+            completedAt: event.payload.completedAt,
+            checkpointTurnCount: null,
+            checkpointRef: null,
+            checkpointStatus: null,
+            checkpointFiles: [],
+          });
+          return;
+        }
+
         case "thread.turn-start-requested": {
           yield* projectionTurnRepository.replacePendingTurnStart({
             threadId: event.payload.threadId,

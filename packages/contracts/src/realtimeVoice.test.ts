@@ -70,6 +70,25 @@ describe("realtime voice contracts", () => {
     expect(input.controllerThreadId).toBe("controller-1");
   });
 
+  it("represents a direct Call result without fabricating a Controller identity", () => {
+    const result = Schema.decodeUnknownSync(VoiceSessionStartResult)({
+      environmentId: "environment-1",
+      owner: { kind: "thread-call", threadId: "thread-1" },
+      controller: null,
+      transportThreadId: "transport-1",
+      clientSessionId: "call-session-1",
+      generation: 1,
+      runtimeInstanceId: "runtime-1",
+      realtimeSessionId: "realtime-1",
+      answerSdp: "v=0\r\n",
+      transportType: "webrtc",
+      eventCursor: 0,
+    });
+
+    expect(result.owner).toEqual({ kind: "thread-call", threadId: "thread-1" });
+    expect(result.controller).toBeNull();
+  });
+
   it("accepts a generation-fenced WebRTC offer", () => {
     const input = Schema.decodeUnknownSync(VoiceSessionStartInput)({
       controllerThreadId: "controller-1",
@@ -248,6 +267,15 @@ describe("realtime voice contracts", () => {
         text: "x".repeat(120_001),
       }),
     ).toThrow();
+    expect(
+      Schema.decodeUnknownSync(VoiceTranscriptDoneEvent)({
+        type: "transcript.done",
+        itemId: "thread-speech:1",
+        role: "assistant",
+        text: "A concise result from the durable thread.",
+        source: "thread",
+      }),
+    ).toMatchObject({ source: "thread" });
   });
 
   it("rejects oversized error messages", () => {

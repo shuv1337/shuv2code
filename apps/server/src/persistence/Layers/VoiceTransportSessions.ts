@@ -18,8 +18,8 @@ const ownerKind = (
   owner.kind === "controller"
     ? "controller"
     : owner.kind === "thread-call"
-      ? "thread"
-      : "transcription";
+      ? "thread-call"
+      : "transcription-test";
 
 const ownerId = (
   owner: Parameters<VoiceTransportSessionRepositoryShape["openOrReplay"]>[0]["owner"],
@@ -51,7 +51,7 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
           environment_id AS "environmentId",
           owner_kind AS "ownerKind",
           owner_id AS "ownerId",
-          anchor_thread_id AS "anchorThreadId",
+          provider_anchor_thread_id AS "anchorThreadId",
           controller_thread_id AS "controllerThreadId",
           transport_thread_id AS "transportThreadId",
           runtime_instance_id AS "runtimeInstanceId",
@@ -66,34 +66,6 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
       `,
   });
 
-  const findOpenByController = SqlSchema.findOneOption({
-    Request: VoiceTransportSession.fields.controllerThreadId,
-    Result: VoiceTransportSession,
-    execute: (controllerThreadId) =>
-      sql`
-        SELECT
-          transport_session_id AS "transportSessionId",
-          environment_id AS "environmentId",
-          owner_kind AS "ownerKind",
-          owner_id AS "ownerId",
-          anchor_thread_id AS "anchorThreadId",
-          controller_thread_id AS "controllerThreadId",
-          transport_thread_id AS "transportThreadId",
-          runtime_instance_id AS "runtimeInstanceId",
-          generation,
-          realtime_session_id AS "realtimeSessionId",
-          state,
-          created_at AS "createdAt",
-          updated_at AS "updatedAt",
-          closed_at AS "closedAt"
-        FROM voice_transport_sessions
-        WHERE controller_thread_id = ${controllerThreadId}
-          AND state IN ('negotiating', 'active', 'closing')
-        ORDER BY generation DESC
-        LIMIT 1
-      `,
-  });
-
   const findOpenByEnvironment = SqlSchema.findOneOption({
     Request: VoiceTransportSession.fields.environmentId,
     Result: VoiceTransportSession,
@@ -104,7 +76,7 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
           environment_id AS "environmentId",
           owner_kind AS "ownerKind",
           owner_id AS "ownerId",
-          anchor_thread_id AS "anchorThreadId",
+          provider_anchor_thread_id AS "anchorThreadId",
           controller_thread_id AS "controllerThreadId",
           transport_thread_id AS "transportThreadId",
           runtime_instance_id AS "runtimeInstanceId",
@@ -133,7 +105,7 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
               controller_thread_id,
               owner_kind,
               owner_id,
-              anchor_thread_id,
+              provider_anchor_thread_id,
               transport_thread_id,
               runtime_instance_id,
               generation,
@@ -211,16 +183,6 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
       ),
     );
 
-  const getOpenByControllerThreadId: VoiceTransportSessionRepositoryShape["getOpenByControllerThreadId"] =
-    (controllerThreadId) =>
-      findOpenByController(controllerThreadId).pipe(
-        Effect.mapError(
-          toPersistenceSqlError(
-            "VoiceTransportSessionRepository.getOpenByControllerThreadId:query",
-          ),
-        ),
-      );
-
   const activate: VoiceTransportSessionRepositoryShape["activate"] = (input) =>
     sql`
       UPDATE voice_transport_sessions
@@ -264,7 +226,7 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
         state = 'fenced',
         updated_at = ${input.fencedAt},
         closed_at = ${input.fencedAt}
-      WHERE controller_thread_id = ${input.controllerThreadId}
+      WHERE environment_id = ${input.environmentId}
         AND generation <= ${input.throughGeneration}
         AND state IN ('negotiating', 'active', 'closing')
       RETURNING transport_session_id
@@ -279,7 +241,6 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
     openOrReplay,
     getById,
     getOpenByEnvironmentId,
-    getOpenByControllerThreadId,
     activate,
     compareAndSetState,
     fenceGeneration,

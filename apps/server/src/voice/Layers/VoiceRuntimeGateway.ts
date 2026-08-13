@@ -653,6 +653,11 @@ export const makeVoiceRuntimeGateway = Effect.fn("VoiceRuntimeGateway.make")(fun
             ...(input.offerSdp !== undefined ? { offerSdp: input.offerSdp } : {}),
             ...(input.voiceId !== undefined ? { voiceId: input.voiceId } : {}),
             clientManagedHandoffs: true,
+            ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
+            ...(input.includeStartupContext !== undefined
+              ? { includeStartupContext: input.includeStartupContext }
+              : {}),
+            ...(input.initialItems !== undefined ? { initialItems: input.initialItems } : {}),
           })
           .pipe(
             mapProviderFailure(

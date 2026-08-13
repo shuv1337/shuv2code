@@ -173,6 +173,30 @@ export const VoiceListVoicesResult = Schema.Struct({
 });
 export type VoiceListVoicesResult = typeof VoiceListVoicesResult.Type;
 
+/**
+ * Readiness gate for calling an existing durable thread. Migration approval is
+ * deliberately explicit because Codex rewrites the selected persisted rollout.
+ */
+export const VoicePrepareThreadCallInput = Schema.Struct({
+  threadId: ThreadId,
+  migrationApproval: Schema.Literals(["none", "approved"]),
+});
+export type VoicePrepareThreadCallInput = typeof VoicePrepareThreadCallInput.Type;
+
+export const VoicePrepareThreadCallResult = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("ready"),
+    threadId: ThreadId,
+    historyMode: Schema.Literals(["paginated", "not-applicable"]),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("migration-required"),
+    threadId: ThreadId,
+    bytesToProcess: NonNegativeInt,
+  }),
+]);
+export type VoicePrepareThreadCallResult = typeof VoicePrepareThreadCallResult.Type;
+
 const SessionDescriptionSdp = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(262_144));
 
 /** Hard ceiling for one base64-encoded PCM input chunk (decoded ≤ 64 KiB). */
@@ -249,7 +273,8 @@ export const resolveVoiceSessionStartTransport = (
 export const VoiceSessionStartResult = Schema.Struct({
   environmentId: Schema.optionalKey(EnvironmentId),
   owner: Schema.optionalKey(VoiceSessionOwner),
-  controller: VoiceControllerIdentity,
+  /** Present only for Controller and transcription sessions. */
+  controller: Schema.NullOr(VoiceControllerIdentity),
   transportThreadId: ThreadId,
   clientSessionId: VoiceClientSessionId,
   generation: VoiceGeneration,
@@ -333,6 +358,14 @@ export const VoiceRealtimeHandoffIngressEvent = Schema.Struct({
   handoffId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   itemId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   inputTranscript: TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)),
+  activeTranscript: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        role: Schema.Literals(["user", "assistant"]),
+        text: Schema.String.check(Schema.isMaxLength(16_384)),
+      }),
+    ).check(Schema.isMaxLength(64)),
+  ),
 });
 
 export const VoiceRealtimeIngressEvent = Schema.Union([
@@ -458,6 +491,7 @@ export const VoiceTranscriptDoneEvent = Schema.Struct({
   itemId: VoiceTranscriptItemId,
   role: Schema.Literals(["user", "assistant"]),
   text: Schema.String.check(Schema.isMaxLength(120_000)),
+  source: Schema.optional(Schema.Literals(["realtime", "thread"])),
 });
 
 export const VoiceActionStatusEvent = Schema.Struct({

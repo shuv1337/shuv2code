@@ -23,6 +23,7 @@ import {
   type VoiceSessionEvent,
   type VoiceSessionEventPayload,
   type VoiceSessionFence,
+  type VoiceSessionOwner,
   type VoiceSessionStartInput,
   type VoiceSessionStartResult,
   type VoiceSessionStopInput,
@@ -36,6 +37,7 @@ import {
   initialRealtimeVoiceState,
   reduceRealtimeVoiceState,
   type RealtimeVoiceSessionState,
+  type RealtimeVoiceControllerIdentity,
   type RealtimeVoiceStateEvent,
   type RealtimeVoiceTarget,
 } from "@shuv2code/client-runtime/state/realtime-voice";
@@ -93,6 +95,11 @@ export interface StartVoiceSessionInput {
   readonly environmentId: EnvironmentId;
   readonly hostProjectId: ProjectId;
   readonly targetThreadId?: ThreadId;
+  readonly owner?: {
+    readonly kind: "thread-call";
+    readonly threadId: ThreadId;
+    readonly threadTitle: string;
+  };
   readonly providerInstanceId: ProviderInstanceId;
   readonly modelSelection?: ModelSelection;
   readonly authorizedRuntimeCeiling: RuntimeMode;
@@ -151,6 +158,26 @@ function controllerPresentation(environmentId: EnvironmentId, controller: VoiceC
   } as const;
 }
 
+function threadCallPresentation(
+  environmentId: EnvironmentId,
+  projectId: ProjectId,
+  owner: { readonly threadId: ThreadId; readonly threadTitle: string },
+) {
+  return {
+    environmentId,
+    projectId,
+    threadId: owner.threadId,
+    title: owner.threadTitle,
+  } as const;
+}
+
+function compatibilityAnchor(started: VoiceSessionStartResult): ThreadId {
+  if (started.controller !== null) return started.controller.controllerThreadId;
+  if (started.owner?.kind === "thread-call") return started.owner.threadId;
+  if (started.owner?.kind === "transcription-test") return started.owner.providerAnchorThreadId;
+  throw new VoiceSessionError("protocol-violation", "The voice server omitted its session anchor.");
+}
+
 const SERVER_UNSUPPORTED_CODES: ReadonlySet<string> = new Set([
   "feature_disabled",
   "method_unavailable",
@@ -187,14 +214,23 @@ export function parseRealtimeVoiceDataChannelEvent(
       const itemId =
         isRecord(item) && typeof item.id === "string" && item.id.length > 0
           ? item.id
-          : `live-${role}`;
+          : typeof message.item_id === "string" && message.item_id.length > 0
+            ? message.item_id
+            : typeof message.turn_id === "string" && message.turn_id.length > 0
+              ? message.turn_id
+              : `live-${role}`;
+      const text =
+        typeof message.text === "string"
+          ? message.text
+          : isRecord(item) && typeof item.text === "string"
+            ? item.text
+            : undefined;
       if (
-        !isRecord(item) ||
-        (typeof item.type === "string" && item.type !== expectedItemType) ||
+        (isRecord(item) && typeof item.type === "string" && item.type !== expectedItemType) ||
         itemId.length > 256 ||
-        typeof item.text !== "string" ||
-        item.text.length === 0 ||
-        item.text.length > 16_384
+        typeof text !== "string" ||
+        text.length === 0 ||
+        text.length > 120_000
       ) {
         return undefined;
       }
@@ -202,7 +238,7 @@ export function parseRealtimeVoiceDataChannelEvent(
         type: "transcript.delta",
         itemId: VoiceTranscriptItemId.make(itemId),
         role,
-        textDelta: item.text,
+        textDelta: text,
       };
     }
     const deltaRole =
@@ -320,11 +356,30 @@ export function parseRealtimeVoiceDataChannelEvent(
       .join("\n")
       .trim();
     if (transcript.length === 0 || transcript.length > 120_000) return undefined;
+    const rawActiveTranscript = Array.isArray(item.active_transcript)
+      ? item.active_transcript
+      : message.active_transcript;
+    const activeTranscript: Array<{ readonly role: "user" | "assistant"; readonly text: string }> =
+      Array.isArray(rawActiveTranscript)
+        ? rawActiveTranscript.flatMap((entry) => {
+            if (
+              !isRecord(entry) ||
+              (entry.role !== "user" && entry.role !== "assistant") ||
+              typeof entry.text !== "string" ||
+              entry.text.length > 16_384
+            ) {
+              return [];
+            }
+            return [{ role: entry.role as "user" | "assistant", text: entry.text }];
+          })
+        : [];
+    if (activeTranscript.length > 64) return undefined;
     return {
       type: "handoff",
       handoffId: item.id,
       itemId: item.id,
       inputTranscript: transcript,
+      ...(activeTranscript.length > 0 ? { activeTranscript } : {}),
     };
   } catch {
     return undefined;
@@ -346,7 +401,7 @@ export class VoiceSessionController {
   #unsubscribeEvents: (() => void) | null = null;
   #environmentId: EnvironmentId | null = null;
   #startInput: StartVoiceSessionInput | null = null;
-  #controller: VoiceControllerIdentity | null = null;
+  #presentation: RealtimeVoiceControllerIdentity | null = null;
   #fence: VoiceSessionFence | null = null;
   #release = new RealtimeVoiceLeaseRelease();
   #sessionIdentity: { readonly clientSessionId: string; readonly generation: number } | null = null;
@@ -359,7 +414,6 @@ export class VoiceSessionController {
     "user" | "assistant",
     { readonly id: string; readonly text: string }
   >();
-  #clientTranscriptDraftSequence = 0;
   #clientTranscriptAuthoritative = false;
   #activeAction: {
     readonly actionId: string;
@@ -452,6 +506,7 @@ export class VoiceSessionController {
       clientSessionId: generationIdentity.clientSessionId,
       generation: generationIdentity.generation,
       environmentId: input.environmentId,
+      ...(input.owner === undefined ? {} : { owner: input.owner }),
     });
     if (!support.supported) {
       releaseVoiceMicrophoneStream(microphoneStream);
@@ -470,22 +525,32 @@ export class VoiceSessionController {
     this.#startInput = reconnectInput;
     this.#release = new RealtimeVoiceLeaseRelease();
     try {
-      const ensured = await this.#api.ensureController(input.environmentId, {
-        hostProjectId: input.hostProjectId,
-        providerInstanceId: input.providerInstanceId,
-        ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-        authorizedRuntimeCeiling: input.authorizedRuntimeCeiling,
-      });
+      const threadCallOwner = input.owner?.kind === "thread-call" ? input.owner : null;
+      const isThreadCall = threadCallOwner !== null;
+      const ensured = isThreadCall
+        ? null
+        : await this.#api.ensureController(input.environmentId, {
+            hostProjectId: input.hostProjectId,
+            providerInstanceId: input.providerInstanceId,
+            ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+            authorizedRuntimeCeiling: input.authorizedRuntimeCeiling,
+          });
       if (
         !this.#isCurrentAttempt(generationIdentity.clientSessionId, generationIdentity.generation)
       ) {
         return;
       }
-      this.#controller = ensured.controller;
-      if (input.targetThreadId !== undefined && this.#api.setControllerTarget !== undefined) {
+      this.#presentation = isThreadCall
+        ? threadCallPresentation(input.environmentId, input.hostProjectId, threadCallOwner)
+        : controllerPresentation(input.environmentId, ensured!.controller);
+      if (
+        !isThreadCall &&
+        input.targetThreadId !== undefined &&
+        this.#api.setControllerTarget !== undefined
+      ) {
         await this.#api.setControllerTarget(
           input.environmentId,
-          ensured.controller.controllerThreadId,
+          ensured!.controller.controllerThreadId,
           input.targetThreadId,
         );
       }
@@ -494,27 +559,30 @@ export class VoiceSessionController {
       ) {
         return;
       }
-      const catalog = await this.#api.listVoices(input.environmentId, {
-        controllerThreadId: ensured.controller.controllerThreadId,
-      });
-      if (
-        !this.#isCurrentAttempt(generationIdentity.clientSessionId, generationIdentity.generation)
-      ) {
-        return;
-      }
-      const voiceId = input.voiceId ?? catalog.defaultVoiceId ?? undefined;
-      if (voiceId === undefined) {
-        throw new VoiceSessionError(
-          "incompatible_version",
-          "Codex realtime did not advertise a default v3-compatible voice.",
-        );
-      }
-      if (!catalog.voices.some((voice) => voice.id === voiceId)) {
-        throw new VoiceSessionError(
-          "voice-unavailable",
-          `The selected realtime voice '${voiceId}' is no longer available.`,
-          true,
-        );
+      let voiceId = input.voiceId;
+      if (!isThreadCall) {
+        const catalog = await this.#api.listVoices(input.environmentId, {
+          controllerThreadId: ensured!.controller.controllerThreadId,
+        });
+        if (
+          !this.#isCurrentAttempt(generationIdentity.clientSessionId, generationIdentity.generation)
+        ) {
+          return;
+        }
+        voiceId = voiceId ?? catalog.defaultVoiceId ?? undefined;
+        if (voiceId === undefined) {
+          throw new VoiceSessionError(
+            "incompatible_version",
+            "Codex realtime did not advertise a default v3-compatible voice.",
+          );
+        }
+        if (!catalog.voices.some((voice) => voice.id === voiceId)) {
+          throw new VoiceSessionError(
+            "voice-unavailable",
+            `The selected realtime voice '${voiceId}' is no longer available.`,
+            true,
+          );
+        }
       }
       this.#dispatch({ type: "permission-requested", generation: generationIdentity.generation });
       if (support.webrtc) {
@@ -526,22 +594,26 @@ export class VoiceSessionController {
           {
             exchangeOffer: async (offerSdp) => {
               this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
+              const owner: VoiceSessionOwner = isThreadCall
+                ? { kind: "thread-call", threadId: threadCallOwner.threadId }
+                : input.purpose === "transcription"
+                  ? {
+                      kind: "transcription-test",
+                      requestId: VoiceTranscriptionRequestId.make(
+                        generationIdentity.clientSessionId,
+                      ),
+                      providerAnchorThreadId: ensured!.controller.controllerThreadId,
+                    }
+                  : {
+                      kind: "controller",
+                      controllerThreadId: ensured!.controller.controllerThreadId,
+                    };
               const started = await this.#api.start(input.environmentId, {
                 environmentId: input.environmentId,
-                owner:
-                  input.purpose === "transcription"
-                    ? {
-                        kind: "transcription-test",
-                        requestId: VoiceTranscriptionRequestId.make(
-                          generationIdentity.clientSessionId,
-                        ),
-                        providerAnchorThreadId: ensured.controller.controllerThreadId,
-                      }
-                    : {
-                        kind: "controller",
-                        controllerThreadId: ensured.controller.controllerThreadId,
-                      },
-                controllerThreadId: ensured.controller.controllerThreadId,
+                owner,
+                controllerThreadId: isThreadCall
+                  ? threadCallOwner.threadId
+                  : ensured!.controller.controllerThreadId,
                 clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
                 generation: VoiceGeneration.make(generationIdentity.generation),
                 purpose: input.purpose ?? "conversation",
@@ -601,20 +673,24 @@ export class VoiceSessionController {
         );
       } else if (support.pcm && this.#api.appendAudio !== undefined) {
         this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
+        const owner: VoiceSessionOwner = isThreadCall
+          ? { kind: "thread-call", threadId: threadCallOwner.threadId }
+          : input.purpose === "transcription"
+            ? {
+                kind: "transcription-test",
+                requestId: VoiceTranscriptionRequestId.make(generationIdentity.clientSessionId),
+                providerAnchorThreadId: ensured!.controller.controllerThreadId,
+              }
+            : {
+                kind: "controller",
+                controllerThreadId: ensured!.controller.controllerThreadId,
+              };
         const started = await this.#api.start(input.environmentId, {
           environmentId: input.environmentId,
-          owner:
-            input.purpose === "transcription"
-              ? {
-                  kind: "transcription-test",
-                  requestId: VoiceTranscriptionRequestId.make(generationIdentity.clientSessionId),
-                  providerAnchorThreadId: ensured.controller.controllerThreadId,
-                }
-              : {
-                  kind: "controller",
-                  controllerThreadId: ensured.controller.controllerThreadId,
-                },
-          controllerThreadId: ensured.controller.controllerThreadId,
+          owner,
+          controllerThreadId: isThreadCall
+            ? threadCallOwner.threadId
+            : ensured!.controller.controllerThreadId,
           clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
           generation: VoiceGeneration.make(generationIdentity.generation),
           purpose: input.purpose ?? "conversation",
@@ -691,7 +767,7 @@ export class VoiceSessionController {
           generationIdentity.clientSessionId,
           generationIdentity.generation,
         ) ||
-        !this.#controller
+        !this.#presentation
       ) {
         this.#transport?.close();
         this.#transport = null;
@@ -700,7 +776,8 @@ export class VoiceSessionController {
       this.#dispatch({
         type: "connected",
         generation: generationIdentity.generation,
-        controller: controllerPresentation(input.environmentId, this.#controller),
+        controller: this.#presentation,
+        ...(this.#fence?.owner === undefined ? {} : { owner: this.#fence.owner }),
       });
     } catch (error) {
       if (this.#isStoppingOrIdle()) {
@@ -731,7 +808,7 @@ export class VoiceSessionController {
     const fence: VoiceSessionFence = {
       ...(started.environmentId === undefined ? {} : { environmentId: started.environmentId }),
       ...(started.owner === undefined ? {} : { owner: started.owner }),
-      controllerThreadId: started.controller.controllerThreadId,
+      controllerThreadId: compatibilityAnchor(started),
       transportThreadId: started.transportThreadId,
       clientSessionId: started.clientSessionId,
       generation: started.generation,
@@ -757,7 +834,7 @@ export class VoiceSessionController {
     this.#fence = {
       ...(started.environmentId === undefined ? {} : { environmentId: started.environmentId }),
       ...(started.owner === undefined ? {} : { owner: started.owner }),
-      controllerThreadId: started.controller.controllerThreadId,
+      controllerThreadId: compatibilityAnchor(started),
       transportThreadId: started.transportThreadId,
       clientSessionId: started.clientSessionId,
       generation: started.generation,
@@ -781,11 +858,16 @@ export class VoiceSessionController {
       input,
       (event) => {
         this.#subscriptionRetryAttempt = 0;
-        if (this.#state.phase.type === "reconnecting" && this.#controller && this.#environmentId) {
+        if (
+          this.#state.phase.type === "reconnecting" &&
+          this.#presentation &&
+          this.#environmentId
+        ) {
           this.#dispatch({
             type: "connected",
             generation: this.#state.generation,
-            controller: controllerPresentation(this.#environmentId, this.#controller),
+            controller: this.#presentation,
+            ...(this.#fence?.owner === undefined ? {} : { owner: this.#fence.owner }),
           });
         }
         this.#handleServerEvent(event);
@@ -831,22 +913,45 @@ export class VoiceSessionController {
     ) {
       return;
     }
-    if (event.type === "transcript.delta" || event.type === "transcript.done") {
-      this.#handleClientTranscriptEvent(event, generation);
-      if (event.type === "transcript.delta") {
+    if (
+      this.#startInput?.owner?.kind === "thread-call" &&
+      event.type === "handoff" &&
+      this.#clientTranscriptDrafts.has("user")
+    ) {
+      this.#handleClientTranscriptEvent(
+        {
+          type: "transcript.done",
+          itemId: VoiceTranscriptItemId.make(event.itemId),
+          role: "user",
+          text: event.inputTranscript,
+        },
+        generation,
+      );
+    }
+    const ingressEvent = event;
+    if (ingressEvent.type === "transcript.delta" || ingressEvent.type === "transcript.done") {
+      this.#handleClientTranscriptEvent(ingressEvent, generation);
+      if (ingressEvent.type === "transcript.delta") {
         return;
       }
     }
-    if (!shouldIngestRealtimeVoiceEvent(this.#startInput?.purpose, event)) {
+    if (!shouldIngestRealtimeVoiceEvent(this.#startInput?.purpose, ingressEvent)) {
       return;
     }
     if (this.#api.ingestRealtimeEvent === undefined) {
       return;
     }
     void this.#api
-      .ingestRealtimeEvent(environmentId, { ...fence, event })
-      .catch((error) =>
-        this.#fail(
+      .ingestRealtimeEvent(environmentId, { ...fence, event: ingressEvent })
+      .catch((error) => {
+        const normalized = normalizeVoiceSessionError(error);
+        if (
+          this.#startInput?.owner?.kind === "thread-call" &&
+          normalized.code === "controller_busy"
+        ) {
+          return;
+        }
+        return this.#fail(
           generation,
           new VoiceSessionError(
             "realtime-ingress-failed",
@@ -854,8 +959,8 @@ export class VoiceSessionController {
             true,
             { cause: error },
           ),
-        ),
-      );
+        );
+      });
   }
 
   #handleClientTranscriptEvent(
@@ -868,9 +973,7 @@ export class VoiceSessionController {
     if (event.type === "transcript.delta") {
       const current = this.#clientTranscriptDrafts.get(event.role);
       const next = {
-        id:
-          current?.id ??
-          `client:${event.role}:${(this.#clientTranscriptDraftSequence += 1).toString(36)}`,
+        id: current?.id ?? event.itemId,
         text: `${current?.text ?? ""}${event.textDelta}`,
       };
       this.#clientTranscriptDrafts.set(event.role, next);
@@ -1006,7 +1109,7 @@ export class VoiceSessionController {
         break;
       }
       case "transcript.done":
-        if (this.#clientTranscriptAuthoritative) {
+        if (this.#clientTranscriptAuthoritative && event.payload.source !== "thread") {
           break;
         }
         this.#pendingTranscript.delete(event.payload.itemId);
@@ -1182,10 +1285,9 @@ export class VoiceSessionController {
     this.#releaseBrowserResources();
     this.#pendingTranscript.clear();
     this.#clientTranscriptDrafts.clear();
-    this.#clientTranscriptDraftSequence = 0;
     this.#clientTranscriptAuthoritative = false;
     this.#activeAction = null;
-    this.#controller = null;
+    this.#presentation = null;
     this.#environmentId = null;
     this.#fence = null;
     this.#sessionIdentity = null;
@@ -1255,10 +1357,9 @@ export class VoiceSessionController {
     }
     this.#pendingTranscript.clear();
     this.#clientTranscriptDrafts.clear();
-    this.#clientTranscriptDraftSequence = 0;
     this.#clientTranscriptAuthoritative = false;
     this.#activeAction = null;
-    this.#controller = null;
+    this.#presentation = null;
     this.#environmentId = null;
     if (!preserveSessionIdentity) {
       this.#sessionIdentity = null;

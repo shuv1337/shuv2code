@@ -118,6 +118,7 @@ export type CodexTurnStartParamsWithCollaborationMode =
 
 export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
 type CodexServiceTier = NonNullable<EffectCodexSchema.V2ThreadStartParams["serviceTier"]>;
+type CodexThreadHistoryMode = NonNullable<EffectCodexSchema.V2ThreadStartParams["historyMode"]>;
 type CodexThreadItem =
   | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]["items"][number]
   | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number];
@@ -158,6 +159,7 @@ export interface CodexSessionRuntimeOptions {
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
+  readonly historyMode?: CodexThreadHistoryMode | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
   readonly sharedAppServer?: CodexSessionRuntimeSharedAppServerOptions;
@@ -837,6 +839,7 @@ export const openCodexThread = (input: {
   readonly threadPurpose?: ThreadPurpose;
   readonly threadSource?: string;
   readonly threadConfigOverrides?: CodexThreadConfigOverrides;
+  readonly historyMode?: CodexThreadHistoryMode;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const commonParams = buildThreadStartParams({
@@ -850,6 +853,7 @@ export const openCodexThread = (input: {
   const startParams = {
     ...commonParams,
     ...(input.threadSource ? { threadSource: input.threadSource } : {}),
+    ...(input.historyMode === "paginated" ? { historyMode: input.historyMode } : {}),
   };
 
   if (resumeThreadId === undefined) {
@@ -2288,6 +2292,7 @@ export const makeCodexSessionRuntime = (
               cwd: options.cwd,
               requestedModel,
               serviceTier: options.serviceTier,
+              ...(options.historyMode ? { historyMode: options.historyMode } : {}),
               resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
               ...(options.threadPurpose ? { threadPurpose: options.threadPurpose } : {}),
               ...(options.threadSource ? { threadSource: options.threadSource } : {}),

@@ -54,7 +54,7 @@ export type CompareAndSetVoiceTransportSessionStateInput =
   typeof CompareAndSetVoiceTransportSessionStateInput.Type;
 
 export const FenceVoiceTransportGenerationInput = Schema.Struct({
-  controllerThreadId: ThreadId,
+  environmentId: EnvironmentId,
   throughGeneration: PositiveInt,
   fencedAt: IsoDateTime,
 });
@@ -69,9 +69,6 @@ export interface VoiceTransportSessionRepositoryShape {
   ) => Effect.Effect<Option.Option<VoiceTransportSession>, ProjectionRepositoryError>;
   readonly getOpenByEnvironmentId: (
     environmentId: EnvironmentId,
-  ) => Effect.Effect<Option.Option<VoiceTransportSession>, ProjectionRepositoryError>;
-  readonly getOpenByControllerThreadId: (
-    controllerThreadId: ThreadId,
   ) => Effect.Effect<Option.Option<VoiceTransportSession>, ProjectionRepositoryError>;
   readonly activate: (
     input: ActivateVoiceTransportSessionInput,

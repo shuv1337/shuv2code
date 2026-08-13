@@ -29,6 +29,7 @@ export const RIGHT_PANEL_KINDS = [
   "agents",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
+export type VoiceSurfaceMode = "controller" | "call";
 
 export type RightPanelSurface =
   | { id: "voice"; kind: "voice" }
@@ -82,12 +83,14 @@ export interface ThreadRightPanelState {
 export interface EnvironmentRightPanelState {
   voicePresent: boolean;
   voiceActive: boolean;
+  voiceMode: VoiceSurfaceMode;
 }
 
 interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
   byEnvironmentId: Record<string, EnvironmentRightPanelState>;
   openVoice: (environmentId: EnvironmentId) => void;
+  setVoiceMode: (environmentId: EnvironmentId, mode: VoiceSurfaceMode) => void;
   open: (
     ref: ScopedThreadRef,
     kind: Exclude<RightPanelKind, "voice" | "file" | "terminal" | "pull-request">,
@@ -134,6 +137,7 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
 const EMPTY_ENVIRONMENT_STATE: EnvironmentRightPanelState = {
   voicePresent: false,
   voiceActive: false,
+  voiceMode: "controller",
 };
 
 const VOICE_SURFACE: RightPanelSurface = { id: "voice", kind: "voice" };
@@ -398,7 +402,7 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
             }),
         )
       : {};
-  const byEnvironmentId =
+  const byEnvironmentId: Record<string, EnvironmentRightPanelState> =
     "byEnvironmentId" in persistedState &&
     persistedState.byEnvironmentId &&
     typeof persistedState.byEnvironmentId === "object"
@@ -409,15 +413,12 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
             if (!environmentState || typeof environmentState !== "object") return [];
             const voicePresent = environmentState.voicePresent === true;
             if (!voicePresent) return [];
-            return [
-              [
-                environmentId,
-                {
-                  voicePresent: true,
-                  voiceActive: environmentState.voiceActive === true,
-                },
-              ],
-            ];
+            const migrated: EnvironmentRightPanelState = {
+              voicePresent: true,
+              voiceActive: environmentState.voiceActive === true,
+              voiceMode: environmentState.voiceMode === "call" ? "call" : "controller",
+            };
+            return [[environmentId, migrated] as const];
           }),
         )
       : {};
@@ -431,10 +432,17 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
       byEnvironmentId: {},
       openVoice: (environmentId) =>
         set((state) => ({
-          byEnvironmentId: updateEnvironment(state.byEnvironmentId, environmentId, () => ({
+          byEnvironmentId: updateEnvironment(state.byEnvironmentId, environmentId, (current) => ({
+            ...current,
             voicePresent: true,
             voiceActive: true,
           })),
+        })),
+      setVoiceMode: (environmentId, voiceMode) =>
+        set((state) => ({
+          byEnvironmentId: updateEnvironment(state.byEnvironmentId, environmentId, (current) =>
+            current.voiceMode === voiceMode ? current : { ...current, voiceMode },
+          ),
         })),
       open: (ref, kind) =>
         set((state) => ({
@@ -630,6 +638,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               byEnvironmentId: updateEnvironment(state.byEnvironmentId, ref.environmentId, () => ({
                 voicePresent: true,
                 voiceActive: true,
+                voiceMode: state.byEnvironmentId[ref.environmentId]?.voiceMode ?? "controller",
               })),
               byThreadKey: updateThread(
                 state.byThreadKey,

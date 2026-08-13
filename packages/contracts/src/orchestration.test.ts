@@ -58,6 +58,24 @@ const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPaylo
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 
+it.effect("accepts exact assistant speech as an internal thread event", () =>
+  Effect.gen(function* () {
+    const command = yield* decodeOrchestrationCommand({
+      type: "thread.voice.speech.append",
+      commandId: "command-voice-speech",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      messageId: "message-voice-speech",
+      text: "This exact sentence was spoken.",
+      createdAt: "2026-08-14T03:00:00.000Z",
+    });
+    assert.strictEqual(command.type, "thread.voice.speech.append");
+
+    const eventType = yield* decodeOrchestrationEventType("thread.voice-speech-appended");
+    assert.strictEqual(eventType, "thread.voice-speech-appended");
+  }),
+);
+
 it.effect("accepts PDF uploads in client turn commands", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeClientOrchestrationCommand({

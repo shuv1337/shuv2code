@@ -2,21 +2,24 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  hasSustainedFramePressure,
+  INITIAL_VOICE_PRESENCE_PERFORMANCE_STATE,
   isConstrainedWebGlRenderer,
-  nextSlowFramePressure,
+  nextVoicePresencePerformanceState,
   voicePresenceFrameInterval,
   voicePresenceRenderPolicy,
+  type VoicePresencePerformanceState,
   VOICE_PRESENCE_ACTIVE_FRAME_INTERVAL_MS,
   VOICE_PRESENCE_AMBIENT_FRAME_INTERVAL_MS,
+  VOICE_PRESENCE_DEGRADED_FRAME_INTERVAL_MS,
 } from "./voicePresenceRenderPolicy";
 
 describe("voicePresenceRenderPolicy", () => {
   const visible = {
     documentVisible: true,
-    surfaceVisible: true,
+    presented: true,
     reducedMotion: false,
-    constrainedRenderer: false,
+    softwareRenderer: false,
+    performanceMode: "normal" as const,
   } as const;
 
   it("uses active cadence only for conversational phases", () => {
@@ -32,23 +35,32 @@ describe("voicePresenceRenderPolicy", () => {
     expect(voicePresenceFrameInterval("ambient")).toBe(VOICE_PRESENCE_AMBIENT_FRAME_INTERVAL_MS);
   });
 
+  it("keeps a live cadence under transient performance degradation", () => {
+    expect(
+      voicePresenceRenderPolicy({ ...visible, phase: "speaking", performanceMode: "degraded" }),
+    ).toBe("degraded");
+    expect(voicePresenceFrameInterval("degraded")).toBe(VOICE_PRESENCE_DEGRADED_FRAME_INTERVAL_MS);
+  });
+
   it("renders only invalidated frames for reduced motion and constrained renderers", () => {
     expect(voicePresenceRenderPolicy({ ...visible, phase: "speaking", reducedMotion: true })).toBe(
       "static",
     );
     expect(
-      voicePresenceRenderPolicy({ ...visible, phase: "speaking", constrainedRenderer: true }),
+      voicePresenceRenderPolicy({ ...visible, phase: "speaking", softwareRenderer: true }),
     ).toBe("static");
     expect(voicePresenceFrameInterval("static")).toBeNull();
   });
 
-  it("pauses when the page or presence is not visible", () => {
+  it("pauses off-panel and resumes when the Voice tab is presented again", () => {
     expect(
       voicePresenceRenderPolicy({ ...visible, phase: "speaking", documentVisible: false }),
     ).toBe("paused");
-    expect(
-      voicePresenceRenderPolicy({ ...visible, phase: "speaking", surfaceVisible: false }),
-    ).toBe("paused");
+    const hidden = voicePresenceRenderPolicy({ ...visible, phase: "speaking", presented: false });
+    const restored = voicePresenceRenderPolicy({ ...visible, phase: "speaking", presented: true });
+
+    expect(hidden).toBe("paused");
+    expect(restored).toBe("active");
   });
 });
 
@@ -60,12 +72,57 @@ describe("voice presence renderer safeguards", () => {
     expect(isConstrainedWebGlRenderer(null)).toBe(false);
   });
 
-  it("requires sustained slow frames before degrading to static rendering", () => {
-    let pressure = 0;
-    for (let index = 0; index < 5; index++) pressure = nextSlowFramePressure(pressure, 100);
-    expect(hasSustainedFramePressure(pressure)).toBe(false);
-    pressure = nextSlowFramePressure(pressure, 100);
-    expect(hasSustainedFramePressure(pressure)).toBe(true);
-    expect(nextSlowFramePressure(pressure, 16)).toBeLessThan(pressure);
+  it("requires sustained slow frames before lowering the live cadence", () => {
+    let state = INITIAL_VOICE_PRESENCE_PERFORMANCE_STATE;
+    for (let index = 0; index < 5; index++) {
+      state = nextVoicePresencePerformanceState(
+        state,
+        VOICE_PRESENCE_ACTIVE_FRAME_INTERVAL_MS + 60,
+        VOICE_PRESENCE_ACTIVE_FRAME_INTERVAL_MS,
+      );
+    }
+    expect(state.mode).toBe("normal");
+    state = nextVoicePresencePerformanceState(
+      state,
+      VOICE_PRESENCE_ACTIVE_FRAME_INTERVAL_MS + 60,
+      VOICE_PRESENCE_ACTIVE_FRAME_INTERVAL_MS,
+    );
+    expect(state.mode).toBe("degraded");
+  });
+
+  it("recovers the active cadence after a stable degraded interval", () => {
+    let state: VoicePresencePerformanceState = {
+      mode: "degraded",
+      pressure: 6,
+      healthyFrames: 0,
+    };
+    for (let index = 0; index < 23; index++) {
+      state = nextVoicePresencePerformanceState(
+        state,
+        VOICE_PRESENCE_DEGRADED_FRAME_INTERVAL_MS + 4,
+        VOICE_PRESENCE_DEGRADED_FRAME_INTERVAL_MS,
+      );
+    }
+    expect(state.mode).toBe("degraded");
+    state = nextVoicePresencePerformanceState(
+      state,
+      VOICE_PRESENCE_DEGRADED_FRAME_INTERVAL_MS + 4,
+      VOICE_PRESENCE_DEGRADED_FRAME_INTERVAL_MS,
+    );
+    expect(state).toEqual(INITIAL_VOICE_PRESENCE_PERFORMANCE_STATE);
+  });
+
+  it("does not recover while degraded frames remain unstable", () => {
+    let state: VoicePresencePerformanceState = {
+      mode: "degraded",
+      pressure: 6,
+      healthyFrames: 12,
+    };
+    state = nextVoicePresencePerformanceState(
+      state,
+      VOICE_PRESENCE_DEGRADED_FRAME_INTERVAL_MS + 40,
+      VOICE_PRESENCE_DEGRADED_FRAME_INTERVAL_MS,
+    );
+    expect(state).toEqual({ mode: "degraded", pressure: 6, healthyFrames: 0 });
   });
 });

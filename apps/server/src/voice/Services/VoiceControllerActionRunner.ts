@@ -3,6 +3,7 @@ import type {
   VoiceRealtimeIngressInput,
   VoiceRealtimeIngressResult,
   VoiceControllerError,
+  VoiceTranscriptItemId,
 } from "@shuv2code/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -23,6 +24,15 @@ export interface VoiceControllerActionRunnerShape {
   ) => Effect.Effect<boolean>;
   readonly ingestRealtimeEvent: (
     input: VoiceRealtimeIngressInput,
+  ) => Effect.Effect<VoiceRealtimeIngressResult, VoiceControllerError>;
+  readonly ingestTranscriptDone: (
+    session: ActiveVoiceSession,
+    event: {
+      readonly type: "transcript.done";
+      readonly itemId: VoiceTranscriptItemId;
+      readonly role: "user" | "assistant";
+      readonly text: string;
+    },
   ) => Effect.Effect<VoiceRealtimeIngressResult, VoiceControllerError>;
 }
 

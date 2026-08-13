@@ -48,7 +48,7 @@ export type VoiceTransportSessionState = typeof VoiceTransportSessionState.Type;
 export const VoiceTransportSession = Schema.Struct({
   transportSessionId: TrimmedNonEmptyString,
   environmentId: EnvironmentId,
-  ownerKind: Schema.Literals(["controller", "thread", "transcription"]),
+  ownerKind: Schema.Literals(["controller", "thread-call", "transcription-test"]),
   ownerId: TrimmedNonEmptyString,
   anchorThreadId: Schema.NullOr(ThreadId),
   /** Compatibility anchor for the Controller coordinator until owner routing is authoritative. */

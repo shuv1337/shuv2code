@@ -1,5 +1,6 @@
 import {
   CommandId,
+  MessageId,
   ThreadId,
   VoiceControllerHistoryMessageId,
   VoiceTranscriptItemId,
@@ -73,6 +74,7 @@ const decodeProviderHistoryAgentMessage = Schema.decodeUnknownOption(ProviderHis
 
 export function voiceSessionAcceptsHandoffs(session: {
   readonly purpose: "conversation" | "transcription";
+  readonly fence?: { readonly owner?: import("@shuv2code/contracts").VoiceSessionOwner };
 }): boolean {
   return session.purpose === "conversation";
 }
@@ -591,14 +593,55 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       );
     }
     if (input.owner?.kind === "thread-call") {
-      // Call is schema-valid now so clients can be built against its honest
-      // identity, but remains operationally unavailable until its direct-thread
-      // routing slice lands. Reject before binding lookup or transport effects.
-      return yield* voiceError(
-        "unsupported_owner",
-        "Direct thread calls are not available in this build.",
-        false,
-      );
+      if (input.owner.threadId !== input.controllerThreadId) {
+        return yield* voiceError(
+          "protocol_violation",
+          "The Call owner does not match its compatibility anchor.",
+          false,
+        );
+      }
+      const thread = yield* projection
+        .getThreadDetailById(input.owner.threadId)
+        .pipe(
+          Effect.mapError(mapInternalError("internal_error", "The Call thread could not be read.")),
+        );
+      if (
+        Option.isNone(thread) ||
+        thread.value.purpose !== "standard" ||
+        thread.value.archivedAt !== null ||
+        thread.value.deletedAt !== null
+      ) {
+        return yield* voiceError(
+          "controller_not_found",
+          "The thread is not available for a direct voice call.",
+          false,
+        );
+      }
+      if (thread.value.latestTurn?.state === "running") {
+        return yield* voiceError(
+          "controller_busy",
+          "This thread is already working. Direct calls currently require an idle thread.",
+          false,
+        );
+      }
+      const project = yield* projection
+        .getProjectShellById(thread.value.projectId)
+        .pipe(
+          Effect.mapError(
+            mapInternalError("internal_error", "The Call project could not be read."),
+          ),
+        );
+      if (Option.isNone(project)) {
+        return yield* voiceError("controller_not_found", "The Call project is unavailable.", false);
+      }
+      const providerInstanceId = thread.value.modelSelection.instanceId;
+      return yield* transport.startThreadCallTransport({
+        start: { ...input, owner: input.owner },
+        environmentId,
+        thread: thread.value,
+        providerInstanceId,
+        workspaceRoot: project.value.workspaceRoot,
+      });
     }
     if (
       (input.owner?.kind === "controller" &&
@@ -756,6 +799,45 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const appendAudio: VoiceControllerService["Service"]["appendAudio"] = (input) =>
     transport.appendAudio(input);
 
+  const speakInThreadCall: VoiceControllerService["Service"]["speakInThreadCall"] = Effect.fn(
+    "VoiceControllerService.speakInThreadCall",
+  )(function* (input) {
+    const session = Array.from((yield* transport.getSessions()).values()).find(
+      (candidate) =>
+        candidate.environmentId === input.environmentId &&
+        candidate.fence.owner?.kind === "thread-call" &&
+        candidate.fence.owner.threadId === input.threadId,
+    );
+    if (session === undefined) return false;
+    const text = input.text.trim().slice(0, 2_048);
+    if (text.length === 0) return false;
+    const thread = yield* projection
+      .getThreadDetailById(input.threadId)
+      .pipe(
+        Effect.mapError(mapInternalError("internal_error", "The called thread could not be read.")),
+      );
+    if (Option.isNone(thread)) return false;
+    const createdAt = DateTime.formatIso(yield* DateTime.now);
+    const speechId = yield* randomUuid;
+    yield* engine
+      .dispatch({
+        type: "thread.voice.speech.append",
+        commandId: CommandId.make(`voice-speech:${speechId}:append`),
+        threadId: input.threadId,
+        turnId: thread.value.latestTurn?.turnId ?? null,
+        messageId: MessageId.make(`voice-speech:${speechId}`),
+        text,
+        createdAt,
+      })
+      .pipe(
+        Effect.mapError(
+          mapInternalError("internal_error", "The spoken response could not be saved."),
+        ),
+      );
+    yield* transport.speakExplicitly({ session, text });
+    return true;
+  });
+
   const handleRuntimeEvent = Effect.fn("VoiceControllerService.handleRuntimeEvent")(function* (
     event: VoiceRuntimeGatewayEvent,
   ) {
@@ -890,7 +972,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         });
         return;
       case "transport.transcript.done":
-        yield* transport.emit(sessionId, {
+        yield* actionRunner.ingestTranscriptDone(session, {
           type: "transcript.done",
           itemId: VoiceTranscriptItemId.make(event.itemId),
           role: event.role,
@@ -901,6 +983,13 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         if (!voiceSessionAcceptsHandoffs(session)) return;
         const handoff = yield* parseVoiceHandoffRequest(event.item).pipe(Effect.option);
         if (Option.isNone(handoff)) return;
+        if (session.fence.owner?.kind === "thread-call") {
+          // WebRTC data-channel handoffs are the authoritative client-managed
+          // Call boundary. The app-server may mirror the same delegation with
+          // a different normalized item identity; accepting both can duplicate
+          // one spoken request in the ordinary thread.
+          return;
+        }
         yield* actionRunner.enqueueHandoff(session, handoff.value);
         return;
       }
@@ -1029,6 +1118,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     appendAudio,
     stop,
     subscribe,
+    speakInThreadCall,
   });
 });
 

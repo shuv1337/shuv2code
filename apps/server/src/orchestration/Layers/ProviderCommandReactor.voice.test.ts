@@ -1,0 +1,30 @@
+import { describe, expect, it } from "vite-plus/test";
+
+import { voiceCallProviderInput } from "./ProviderCommandReactor.ts";
+
+describe("voice Call provider input", () => {
+  it("keeps ordinary input unchanged outside a voice handoff", () => {
+    expect(voiceCallProviderInput("Inspect the provider.", undefined)).toBe(
+      "Inspect the provider.",
+    );
+  });
+
+  it("adds bounded hidden call context without changing the durable message", () => {
+    const visible = "Inspect the provider.";
+    const providerInput = voiceCallProviderInput(visible, {
+      actorKind: "voice-call",
+      activeTranscript: [
+        { role: "user", text: visible },
+        { role: "assistant", text: "I'll inspect that now." },
+        { role: "system", text: "ignored" },
+      ],
+    });
+    expect(providerInput).toContain("<voice_call>");
+    expect(providerInput).toContain("MUST call voice_speak");
+    expect(providerInput).toContain("do not return a text-only answer");
+    expect(providerInput).toContain("assistant: I'll inspect that now.");
+    expect(providerInput).not.toContain("system: ignored");
+    expect(providerInput.endsWith(`User request:\n${visible}`)).toBe(true);
+    expect(visible).toBe("Inspect the provider.");
+  });
+});

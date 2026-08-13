@@ -427,7 +427,7 @@ layer("VoiceControlRepositories", (it) => {
       );
       assert.strictEqual(
         yield* transports.fenceGeneration({
-          controllerThreadId,
+          environmentId,
           throughGeneration: 1,
           fencedAt: now,
         }),

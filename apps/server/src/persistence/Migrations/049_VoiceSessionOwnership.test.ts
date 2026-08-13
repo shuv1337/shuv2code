@@ -138,7 +138,7 @@ layer("049_VoiceSessionOwnership", (it) => {
           created_at,
           updated_at
         ) VALUES (
-          'conflict:1', 'environment-1', 'controller-third', 'thread', 'thread-third',
+          'conflict:1', 'environment-1', 'controller-third', 'thread-call', 'thread-third',
           'transport-third', 'runtime-third', 1, 'active',
           '2026-08-13T00:04:00.000Z', '2026-08-13T00:04:00.000Z'
         )
@@ -152,7 +152,7 @@ layer("049_VoiceSessionOwnership", (it) => {
           controller_thread_id,
           owner_kind,
           owner_id,
-          anchor_thread_id,
+          provider_anchor_thread_id,
           transport_thread_id,
           runtime_instance_id,
           generation,
@@ -160,7 +160,7 @@ layer("049_VoiceSessionOwnership", (it) => {
           created_at,
           updated_at
         ) VALUES (
-          'other-environment:1', 'environment-2', 'controller-new', 'transcription',
+          'other-environment:1', 'environment-2', 'controller-new', 'transcription-test',
           'request-1', 'controller-new', 'transport-other', 'runtime-other', 1, 'active',
           '2026-08-13T00:04:00.000Z', '2026-08-13T00:04:00.000Z'
         )

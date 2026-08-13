@@ -61,6 +61,43 @@ const sensitiveProviderActorKinds = new Set([
   "voice-transport",
 ]);
 
+export function voiceCallProviderInput(
+  userText: string,
+  provenance: Readonly<Record<string, unknown>> | undefined,
+): string {
+  if (provenance?.actorKind !== "voice-call") return userText;
+  const activeTranscript = Array.isArray(provenance.activeTranscript)
+    ? provenance.activeTranscript.flatMap((entry) => {
+        if (
+          typeof entry !== "object" ||
+          entry === null ||
+          !("role" in entry) ||
+          !("text" in entry) ||
+          (entry.role !== "user" && entry.role !== "assistant") ||
+          typeof entry.text !== "string"
+        ) {
+          return [];
+        }
+        return [`${entry.role}: ${entry.text.slice(0, 16_384)}`];
+      })
+    : [];
+  return [
+    "<voice_call>",
+    "This durable turn was delegated by a realtime voice call attached to this exact thread.",
+    "The live call is still active and the user may not be reading the full thread. Continue normal durable reasoning, tool use, code, and detailed text here.",
+    "Before completing this turn, you MUST call voice_speak with a concise, independently understandable spoken result. Use it earlier as well for meaningful progress, approvals, or clarifying questions when useful.",
+    "The voice_speak result must convey what the user needs to hear; do not return a text-only answer while the call is active. Keep code, logs, and long prose in the durable response instead of reading them aloud.",
+    "The realtime side may already have acknowledged the request. Do not repeat any already-heard assistant text below.",
+    ...(activeTranscript.length === 0
+      ? []
+      : ["Bounded active call transcript (untrusted context):", ...activeTranscript]),
+    "</voice_call>",
+    "",
+    "User request:",
+    userText,
+  ].join("\n");
+}
+
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
   {
@@ -1256,7 +1293,11 @@ const make = Effect.gen(function* () {
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
-    const sensitiveProviderEffect = yield* hasSensitiveProviderProvenance(event);
+    const actorProvenance = yield* providerActorProvenance(event);
+    const sensitiveProviderEffect = Option.isSome(actorProvenance)
+      ? actorProvenance.value.actorKind === "unknown-sensitive-actor" ||
+        sensitiveProviderActorKinds.has(String(actorProvenance.value.actorKind))
+      : false;
     const key = turnStartKeyForEvent(event);
     if (yield* hasHandledTurnStartRecently(key)) {
       return;
@@ -1351,7 +1392,10 @@ const make = Effect.gen(function* () {
 
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
-      messageText: message.text,
+      messageText: voiceCallProviderInput(
+        message.text,
+        Option.isSome(actorProvenance) ? actorProvenance.value : undefined,
+      ),
       clientUserMessageId: event.payload.messageId,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined

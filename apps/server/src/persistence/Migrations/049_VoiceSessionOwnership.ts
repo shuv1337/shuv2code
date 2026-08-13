@@ -14,9 +14,9 @@ export default Effect.gen(function* () {
       environment_id TEXT NOT NULL,
       controller_thread_id TEXT NOT NULL,
       owner_kind TEXT NOT NULL
-        CHECK (owner_kind IN ('controller', 'thread', 'transcription')),
+        CHECK (owner_kind IN ('controller', 'thread-call', 'transcription-test')),
       owner_id TEXT NOT NULL,
-      anchor_thread_id TEXT,
+      provider_anchor_thread_id TEXT,
       transport_thread_id TEXT NOT NULL,
       runtime_instance_id TEXT NOT NULL,
       generation INTEGER NOT NULL CHECK (generation >= 1),
@@ -27,9 +27,9 @@ export default Effect.gen(function* () {
       updated_at TEXT NOT NULL,
       closed_at TEXT,
       CHECK (
-        (owner_kind = 'transcription' AND anchor_thread_id IS NOT NULL)
+        (owner_kind = 'transcription-test' AND provider_anchor_thread_id IS NOT NULL)
         OR
-        (owner_kind <> 'transcription' AND anchor_thread_id IS NULL)
+        (owner_kind <> 'transcription-test' AND provider_anchor_thread_id IS NULL)
       )
     )
   `;
@@ -40,7 +40,7 @@ export default Effect.gen(function* () {
       controller_thread_id,
       owner_kind,
       owner_id,
-      anchor_thread_id,
+      provider_anchor_thread_id,
       transport_thread_id,
       runtime_instance_id,
       generation,

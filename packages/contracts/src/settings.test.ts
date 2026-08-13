@@ -177,6 +177,29 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   });
 });
 
+describe("Codex thread history mode", () => {
+  it("defaults existing settings to legacy history", () => {
+    expect(decodeServerSettings({}).providers.codex.historyMode).toBe("legacy");
+  });
+
+  it("accepts paginated history in full settings and patches", () => {
+    expect(
+      decodeServerSettings({ providers: { codex: { historyMode: "paginated" } } }).providers.codex
+        .historyMode,
+    ).toBe("paginated");
+    expect(
+      decodeServerSettingsPatch({ providers: { codex: { historyMode: "paginated" } } }).providers
+        ?.codex?.historyMode,
+    ).toBe("paginated");
+  });
+
+  it("rejects unsupported history modes", () => {
+    expect(() =>
+      decodeServerSettingsPatch({ providers: { codex: { historyMode: "automatic" } } }),
+    ).toThrow();
+  });
+});
+
 describe("ServerSettings worktree defaults", () => {
   it("defaults start-from-origin on for legacy configs", () => {
     expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(true);

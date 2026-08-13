@@ -3,6 +3,10 @@ import * as Schema from "effect/Schema";
 
 const HandoffId = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256));
 const HandoffTranscript = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(120_000));
+const ActiveTranscriptEntry = Schema.Struct({
+  role: Schema.Literals(["user", "assistant"]),
+  text: Schema.String.check(Schema.isMaxLength(16_384)),
+});
 
 /**
  * Exact client-managed handoff item emitted by Codex realtime v3.
@@ -20,6 +24,9 @@ export const VoiceHandoffRequest = Schema.Struct({
   handoff_id: HandoffId,
   item_id: HandoffId,
   input_transcript: HandoffTranscript,
+  active_transcript: Schema.optionalKey(
+    Schema.Array(ActiveTranscriptEntry).check(Schema.isMaxLength(64)),
+  ),
 });
 export type VoiceHandoffRequest = typeof VoiceHandoffRequest.Type;
 

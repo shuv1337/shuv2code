@@ -71,6 +71,15 @@ export interface ProviderRealtimeStartInput {
   readonly transportType?: "webrtc" | "websocket";
   readonly voiceId?: string;
   readonly clientManagedHandoffs: true;
+  /** Bounded instructions for the realtime conversational front channel. */
+  readonly prompt?: string;
+  /** Whether Codex should synthesize context from the transport shell. */
+  readonly includeStartupContext?: boolean;
+  /** Explicit context supplied by the owner of the media session. */
+  readonly initialItems?: ReadonlyArray<{
+    readonly role: "user" | "developer" | "assistant";
+    readonly text: string;
+  }>;
 }
 
 export interface ProviderRealtimeAudioInput {

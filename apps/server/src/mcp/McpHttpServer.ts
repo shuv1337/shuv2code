@@ -29,6 +29,8 @@ import {
 } from "./toolkits/preview/handlers.ts";
 import { AutomationToolkitHandlersLive } from "./toolkits/automations/handlers.ts";
 import { AutomationToolkit } from "./toolkits/automations/tools.ts";
+import { VoiceToolkitHandlersLive } from "./toolkits/voice/handlers.ts";
+import { VoiceToolkit } from "./toolkits/voice/tools.ts";
 import {
   PreviewSnapshotTool,
   PreviewSnapshotToolkit,
@@ -315,6 +317,10 @@ export const AutomationToolkitRegistrationLive = McpServer.toolkit(AutomationToo
   Layer.provide(AutomationToolkitHandlersLive),
 );
 
+export const VoiceToolkitRegistrationLive = McpServer.toolkit(VoiceToolkit).pipe(
+  Layer.provide(VoiceToolkitHandlersLive),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "shuv2code",
   version: packageJson.version,
@@ -325,4 +331,5 @@ const McpTransportLive = McpServer.layerHttp({
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   AutomationToolkitRegistrationLive,
+  VoiceToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

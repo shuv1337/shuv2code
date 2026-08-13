@@ -7,6 +7,7 @@ import {
   VoiceGeneration,
   VoiceRealtimeSessionId,
   VoiceRuntimeInstanceId,
+  VoiceTranscriptItemId,
   VoiceTranscriptionRequestId,
   resolveVoiceSessionStartTransport,
   type VoiceSessionEvent,
@@ -25,7 +26,6 @@ import * as Stream from "effect/Stream";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { VoiceControllerActionRepository } from "../../persistence/Services/VoiceControllerActions.ts";
-import { VoiceControllerBindingRepository } from "../../persistence/Services/VoiceControllerBindings.ts";
 import { VoiceTransportSessionRepository } from "../../persistence/Services/VoiceTransportSessions.ts";
 import type { VoiceTransportSession } from "../../persistence/VoiceControlModels.ts";
 import {
@@ -52,12 +52,48 @@ import {
   voiceError,
 } from "./voiceControllerShared.ts";
 
+const CALL_CONTEXT_MAX_ITEMS = 24;
+const CALL_CONTEXT_MAX_CHARS = 24_000;
+export const CALL_REALTIME_PROMPT = [
+  "You are the primary realtime conversational voice for an active call attached to one exact coding thread.",
+  "Stay in the conversation and answer the user aloud yourself whenever the request can be answered from the supplied thread context or ordinary conversation. The supplied thread messages are real context; questions about them do not require a handoff.",
+  "Do not delegate merely to verify, restate, summarize, or discuss the supplied context. Fast spoken response is the priority.",
+  "Create a handoff only when the request genuinely requires tools, repository inspection, code changes, approvals, or a durable detailed artifact that you cannot produce from the supplied context.",
+  "A handoff extends this same live call; it does not replace or end it. Before handing off, give at most one short natural acknowledgement and do not invent work results.",
+  "The backing thread owns durable work while you own the low-latency conversation. Avoid repeating text already present in the call transcript.",
+].join("\n");
+
+export function boundedCallInitialItems(
+  messages: ReadonlyArray<{
+    readonly role: "user" | "assistant" | "system";
+    readonly text: string;
+    readonly streaming: boolean;
+  }>,
+): ReadonlyArray<{ readonly role: "user" | "assistant"; readonly text: string }> {
+  const selected: Array<{ readonly role: "user" | "assistant"; readonly text: string }> = [];
+  let remaining = CALL_CONTEXT_MAX_CHARS;
+  for (const message of messages.slice().toReversed()) {
+    if (
+      selected.length >= CALL_CONTEXT_MAX_ITEMS ||
+      remaining <= 0 ||
+      message.streaming ||
+      message.role === "system"
+    ) {
+      continue;
+    }
+    const text = message.text.trim().slice(-remaining);
+    if (text.length === 0) continue;
+    selected.push({ role: message.role, text });
+    remaining -= text.length;
+  }
+  return selected.toReversed();
+}
+
 export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinator.make")(
   function* () {
     const crypto = yield* Crypto.Crypto;
     const environment = yield* ServerEnvironment;
     const engine = yield* OrchestrationEngineService;
-    const bindings = yield* VoiceControllerBindingRepository;
     const transports = yield* VoiceTransportSessionRepository;
     const actions = yield* VoiceControllerActionRepository;
     const runtime = yield* VoiceRuntimeGateway;
@@ -115,7 +151,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         .pipe(Effect.ignore);
       yield* transports
         .fenceGeneration({
-          controllerThreadId: session.controllerThreadId,
+          environmentId: session.environmentId,
           throughGeneration: session.generation,
           fencedAt: closedAt,
         })
@@ -127,24 +163,17 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
     // this service is constructed belongs to a previous process generation and
     // must be fenced before it can block the next client generation.
     const cleanupStaleStartupLease: VoiceTransportCoordinatorShape["cleanupStaleStartupLease"] =
-      Effect.fn("VoiceTransportCoordinator.cleanupStaleStartupLease")(
-        function* (controllerThreadId) {
-          const staleStartupLease = yield* transports
-            .getOpenByControllerThreadId(controllerThreadId)
-            .pipe(Effect.orElseSucceed(() => Option.none()));
-          if (Option.isSome(staleStartupLease)) {
-            yield* cleanupDurableTransportLease(staleStartupLease.value);
-          }
-        },
-      );
+      Effect.fn("VoiceTransportCoordinator.cleanupStaleStartupLease")(function* (environmentId) {
+        const staleStartupLease = yield* transports
+          .getOpenByEnvironmentId(environmentId)
+          .pipe(Effect.orElseSucceed(() => Option.none()));
+        if (Option.isSome(staleStartupLease)) {
+          yield* cleanupDurableTransportLease(staleStartupLease.value);
+        }
+      });
 
     const startupEnvironmentId = yield* environment.getEnvironmentId;
-    const startupBinding = yield* bindings
-      .getByEnvironmentId(startupEnvironmentId)
-      .pipe(Effect.orElseSucceed(() => Option.none()));
-    if (Option.isSome(startupBinding)) {
-      yield* cleanupStaleStartupLease(startupBinding.value.controllerThreadId);
-    }
+    yield* cleanupStaleStartupLease(startupEnvironmentId);
 
     const stopSession: VoiceTransportCoordinatorShape["stopSession"] = Effect.fn(
       "VoiceTransportCoordinator.stopSession",
@@ -195,9 +224,9 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         environmentId: session.environmentId,
         ownerKind:
           session.fence.owner?.kind === "thread-call"
-            ? "thread"
+            ? "thread-call"
             : session.fence.owner?.kind === "transcription-test"
-              ? "transcription"
+              ? "transcription-test"
               : "controller",
         ownerId:
           session.fence.owner?.kind === "thread-call"
@@ -245,7 +274,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
             } as const)
           : ({ kind: "controller", controllerThreadId: binding.controllerThreadId } as const));
       const existingOpen = yield* transports
-        .getOpenByControllerThreadId(startInput.controllerThreadId)
+        .getOpenByEnvironmentId(environmentId)
         .pipe(
           Effect.mapError(mapInternalError("internal_error", "The voice lease could not be read.")),
         );
@@ -256,7 +285,9 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         if (
           inMemory !== undefined &&
           inMemory.fence.clientSessionId === startInput.clientSessionId &&
-          inMemory.fence.generation === startInput.generation
+          inMemory.fence.generation === startInput.generation &&
+          inMemory.fence.owner !== undefined &&
+          voiceSessionOwnersEqual(inMemory.fence.owner, owner)
         ) {
           yield* input.onActivated(inMemory);
           return {
@@ -476,6 +507,237 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
       };
     });
 
+    const startThreadCallTransport: VoiceTransportCoordinatorShape["startThreadCallTransport"] =
+      Effect.fn("VoiceTransportCoordinator.startThreadCallTransport")(function* (input) {
+        const {
+          start: startInput,
+          environmentId,
+          thread,
+          providerInstanceId,
+          workspaceRoot,
+        } = input;
+        const owner = startInput.owner;
+        const existingOpen = yield* transports
+          .getOpenByEnvironmentId(environmentId)
+          .pipe(
+            Effect.mapError(
+              mapInternalError("internal_error", "The voice lease could not be read."),
+            ),
+          );
+        if (Option.isSome(existingOpen)) {
+          const inMemory = Array.from((yield* Ref.get(sessionsRef)).values()).find(
+            (session) => session.transportSessionId === existingOpen.value.transportSessionId,
+          );
+          if (
+            inMemory !== undefined &&
+            inMemory.fence.clientSessionId === startInput.clientSessionId &&
+            inMemory.fence.generation === startInput.generation &&
+            inMemory.fence.owner !== undefined &&
+            voiceSessionOwnersEqual(inMemory.fence.owner, owner)
+          ) {
+            return {
+              environmentId,
+              owner,
+              controller: null,
+              transportThreadId: inMemory.fence.transportThreadId,
+              clientSessionId: inMemory.fence.clientSessionId,
+              generation: inMemory.fence.generation,
+              runtimeInstanceId: inMemory.fence.runtimeInstanceId,
+              realtimeSessionId: inMemory.fence.realtimeSessionId,
+              answerSdp: inMemory.answerSdp,
+              transportType: inMemory.transportType,
+              ...(inMemory.transportType === "websocket"
+                ? {
+                    inputAudio: {
+                      format: "pcm16" as const,
+                      sampleRateHz: VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ,
+                      channels: VOICE_PCM_DEFAULT_CHANNELS,
+                    },
+                  }
+                : {}),
+              eventCursor: VoiceEventSequence.make(inMemory.eventCursor),
+            };
+          }
+          return yield* voiceError(
+            "generation_conflict",
+            "This environment already has an active voice session.",
+            false,
+          );
+        }
+
+        const startTransportKind = resolveVoiceSessionStartTransport(startInput);
+        const transportSessionId = `${startInput.clientSessionId}:${startInput.generation}`;
+        const transportThreadId = ThreadId.make(
+          `voice-transport:${thread.id}:${startInput.clientSessionId}:${startInput.generation}`,
+        );
+        const runtimeInstanceId = VoiceRuntimeInstanceId.make(yield* randomUuid);
+        const realtimeSessionId = VoiceRealtimeSessionId.make(yield* randomUuid);
+        const now = DateTime.formatIso(yield* DateTime.now);
+        yield* engine
+          .dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(
+              `voice-transport:create:${transportSessionId}:${startInput.generation}`,
+            ),
+            threadId: transportThreadId,
+            projectId: thread.projectId,
+            purpose: "voice-transport",
+            title: "Voice transport",
+            modelSelection: thread.modelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+          })
+          .pipe(
+            Effect.mapError(
+              mapInternalError("internal_error", "The voice transport could not be provisioned."),
+            ),
+          );
+        const opened = yield* transports
+          .openOrReplay({
+            transportSessionId,
+            environmentId,
+            owner,
+            controllerThreadId: thread.id,
+            transportThreadId,
+            runtimeInstanceId,
+            generation: startInput.generation,
+            createdAt: now,
+          })
+          .pipe(
+            Effect.mapError(
+              mapInternalError(
+                "internal_error",
+                "The voice transport lease could not be reserved.",
+              ),
+            ),
+          );
+        if (opened._tag === "conflict") {
+          return yield* voiceError(
+            "generation_conflict",
+            "The voice transport generation conflicts with an existing lease.",
+            false,
+          );
+        }
+        const negotiated = yield* Effect.gen(function* () {
+          const negotiated = yield* runtime
+            .startTransport({
+              transportThreadId,
+              providerInstanceId,
+              cwd: workspaceRoot,
+              modelSelection: thread.modelSelection,
+              runtimeMode: thread.runtimeMode,
+              runtimeInstanceId,
+              generation: startInput.generation,
+              realtimeSessionId,
+              transportType: startTransportKind.type,
+              ...(startTransportKind.type === "webrtc"
+                ? { offerSdp: startTransportKind.offerSdp }
+                : {}),
+              ...(startInput.voiceId !== undefined ? { voiceId: startInput.voiceId } : {}),
+              clientManagedHandoffs: true,
+              prompt: CALL_REALTIME_PROMPT,
+              includeStartupContext: false,
+              initialItems: boundedCallInitialItems(thread.messages),
+            })
+            .pipe(
+              Effect.mapError(
+                mapInternalError(
+                  "negotiation_failed",
+                  "The direct voice call could not be started.",
+                ),
+              ),
+            );
+          if (negotiated.runtimeInstanceId !== runtimeInstanceId) {
+            return yield* voiceError(
+              "protocol_violation",
+              "The voice runtime identity changed during negotiation.",
+              false,
+            );
+          }
+          const activated = yield* transports
+            .activate({
+              transportSessionId,
+              generation: startInput.generation,
+              runtimeInstanceId,
+              realtimeSessionId,
+              updatedAt: DateTime.formatIso(yield* DateTime.now),
+            })
+            .pipe(
+              Effect.mapError(
+                mapInternalError(
+                  "internal_error",
+                  "The voice transport lease could not be activated.",
+                ),
+              ),
+            );
+          if (!activated) {
+            return yield* voiceError(
+              "stale_generation",
+              "The voice transport generation was fenced during negotiation.",
+              true,
+            );
+          }
+          return negotiated;
+        }).pipe(Effect.onError(() => cleanupDurableTransportLease(opened.session)));
+        const fence: VoiceSessionFence = {
+          environmentId,
+          owner,
+          controllerThreadId: thread.id,
+          transportThreadId,
+          clientSessionId: startInput.clientSessionId,
+          generation: startInput.generation,
+          runtimeInstanceId,
+          realtimeSessionId,
+        };
+        const active: ActiveVoiceSession = {
+          transportSessionId,
+          fence,
+          environmentId,
+          hostProjectId: thread.projectId,
+          providerInstanceId,
+          controller: null,
+          controllerRuntime: null,
+          transportType: negotiated.transportType,
+          purpose: "conversation",
+          answerSdp: negotiated.answerSdp,
+          lastAudioSequence: 0,
+          eventCursor: 0,
+          history: [],
+        };
+        yield* Ref.update(sessionsRef, (sessions) => {
+          const next = new Map(sessions);
+          next.set(startInput.clientSessionId, active);
+          return next;
+        });
+        yield* emit(startInput.clientSessionId, { type: "session.state", state: "listening" });
+        const current = (yield* Ref.get(sessionsRef)).get(startInput.clientSessionId) ?? active;
+        return {
+          environmentId,
+          owner,
+          controller: null,
+          transportThreadId,
+          clientSessionId: startInput.clientSessionId,
+          generation: startInput.generation,
+          runtimeInstanceId,
+          realtimeSessionId,
+          answerSdp: negotiated.answerSdp,
+          transportType: negotiated.transportType,
+          ...(negotiated.transportType === "websocket"
+            ? {
+                inputAudio: {
+                  format: "pcm16" as const,
+                  sampleRateHz: VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ,
+                  channels: VOICE_PCM_DEFAULT_CHANNELS,
+                },
+              }
+            : {}),
+          eventCursor: VoiceEventSequence.make(current.eventCursor),
+        };
+      });
+
     const stop: VoiceTransportCoordinatorShape["stop"] = Effect.fn(
       "VoiceTransportCoordinator.stop",
     )(function* (input) {
@@ -556,6 +818,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
             Array.from(sessions.values()).filter(
               (session) =>
                 session.fence.controllerThreadId === match.controllerThreadId &&
+                session.controllerRuntime !== null &&
                 session.controllerRuntime.runtimeInstanceId === match.controllerRuntimeInstanceId,
             ),
           ),
@@ -580,6 +843,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         }),
       cleanupStaleStartupLease,
       startTransport,
+      startThreadCallTransport,
       stop,
       subscribe,
       putControllerRuntime: (controllerThreadId, runtimeState) =>
@@ -690,6 +954,24 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           }
         },
       ),
+      speakExplicitly: Effect.fn("VoiceTransportCoordinator.speakExplicitly")(function* (input) {
+        const text = input.text.trim().slice(0, 2_048);
+        if (text.length === 0) return;
+        yield* emit(input.session.fence.clientSessionId, {
+          type: "transcript.done",
+          itemId: VoiceTranscriptItemId.make(`thread-speech:${input.session.eventCursor + 1}`),
+          role: "assistant",
+          text,
+          source: "thread",
+        });
+        yield* runVoiceTransportFeedback(
+          runtime.appendTransportSpeech({
+            transportThreadId: input.session.fence.transportThreadId,
+            generation: input.session.fence.generation,
+            text,
+          }),
+        );
+      }),
     });
   },
 );

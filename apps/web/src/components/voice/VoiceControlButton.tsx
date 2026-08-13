@@ -77,7 +77,7 @@ export function VoiceControlButton(props: VoiceControlButtonProps) {
   const active =
     voice.state.phase.type !== "idle" &&
     voice.state.phase.type !== "unsupported" &&
-    !bindingConflictError;
+    voice.state.phase.type !== "error";
   const pending =
     voice.state.phase.type === "requesting-permission" ||
     voice.state.phase.type === "negotiating" ||

@@ -909,6 +909,61 @@ describe("openCodexThread", () => {
     }),
   );
 
+  it.effect("sends paginated history only when starting a new thread", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
+      const client = {
+        request: <M extends "thread/start" | "thread/resume">(
+          method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed(
+            makeThreadOpenResponse("history-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+          );
+        },
+      };
+
+      yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-paginated"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        resumeThreadId: undefined,
+        historyMode: "paginated",
+      });
+      yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-resumed"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        resumeThreadId: "history-thread",
+        historyMode: "paginated",
+      });
+      yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-legacy"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        resumeThreadId: undefined,
+        historyMode: "legacy",
+      });
+
+      const paginatedStart = calls[0]?.payload as Record<string, unknown>;
+      const resume = calls[1]?.payload as Record<string, unknown>;
+      const legacyStart = calls[2]?.payload as Record<string, unknown>;
+      NodeAssert.equal(paginatedStart.historyMode, "paginated");
+      NodeAssert.equal("historyMode" in resume, false);
+      NodeAssert.equal("historyMode" in legacyStart, false);
+    }),
+  );
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];

@@ -111,6 +111,20 @@ describe("VoiceSessionController", () => {
     expect(
       parseRealtimeVoiceDataChannelEvent(
         JSON.stringify({
+          type: "input_transcript.added",
+          item_id: "provider-input-1",
+          text: "This is the actual v3 provider shape.",
+        }),
+      ),
+    ).toEqual({
+      type: "transcript.delta",
+      itemId: "provider-input-1",
+      role: "user",
+      textDelta: "This is the actual v3 provider shape.",
+    });
+    expect(
+      parseRealtimeVoiceDataChannelEvent(
+        JSON.stringify({
           type: "response.output_audio_transcript.delta",
           response_id: "response-1",
           item_id: "turn-3",
@@ -194,6 +208,10 @@ describe("VoiceSessionController", () => {
               { type: "input_text", text: "Create a new thread." },
               { type: "input_text", text: "Steer it when it starts." },
             ],
+            active_transcript: [
+              { role: "user", text: "Can you take care of this?" },
+              { role: "assistant", text: "Yes, I'll start now." },
+            ],
           },
         }),
       ),
@@ -202,6 +220,10 @@ describe("VoiceSessionController", () => {
       handoffId: "delegation-1",
       itemId: "delegation-1",
       inputTranscript: "Create a new thread.\nSteer it when it starts.",
+      activeTranscript: [
+        { role: "user", text: "Can you take care of this?" },
+        { role: "assistant", text: "Yes, I'll start now." },
+      ],
     });
     expect(
       parseRealtimeVoiceDataChannelEvent(
@@ -331,7 +353,7 @@ describe("VoiceSessionController", () => {
     expect(onMicrophoneStream).toHaveBeenCalledWith(microphoneStream);
     expect(onRemoteAudioStream).toHaveBeenCalledWith(remoteAudioStream);
     expect(controller.state.transcript).toContainEqual({
-      id: "client:user:1",
+      id: "turn-1",
       speaker: "user",
       text: "Create the thread.",
       final: true,
@@ -362,6 +384,330 @@ describe("VoiceSessionController", () => {
         event: expect.objectContaining({ type: "handoff", handoffId: "delegation-1" }),
       }),
     );
+  });
+
+  it("starts an exact-thread Call without ensuring or retargeting a Controller", async () => {
+    const callThreadId = ThreadId.make("called-thread");
+    let onServerEvent: ((event: VoiceSessionEvent) => void) | null = null;
+    const ensureController = vi.fn(async () => {
+      throw new Error("Call must not ensure a Controller");
+    });
+    const setControllerTarget = vi.fn(async () => callThreadId);
+    const listVoices = vi.fn(async () => voiceCatalog);
+    const ingress = vi.fn(async () => ({ accepted: true }));
+    const stop = vi.fn(async () => ({ stopped: true }));
+    const start = vi.fn(async (_environmentId, input) => ({
+      environmentId,
+      owner: input.owner,
+      controller: null,
+      transportThreadId,
+      clientSessionId: input.clientSessionId,
+      generation: input.generation,
+      runtimeInstanceId: VoiceRuntimeInstanceId.make("call-runtime"),
+      realtimeSessionId: VoiceRealtimeSessionId.make("call-realtime"),
+      answerSdp: "call-answer",
+      transportType: "webrtc" as const,
+      eventCursor: VoiceEventSequence.make(0),
+    }));
+    const controller = new VoiceSessionController({
+      api: {
+        ensureController,
+        setControllerTarget,
+        listVoices,
+        start,
+        ingestRealtimeEvent: ingress,
+        stop,
+        subscribe: (_environmentId, _input, next) => {
+          onServerEvent = next;
+          return () => {};
+        },
+      },
+      createTransport: () =>
+        ({
+          connect: async ({
+            exchangeOffer,
+            onData,
+          }: {
+            exchangeOffer: (offerSdp: string) => Promise<string>;
+            onData: (data: string) => void;
+          }) => {
+            await exchangeOffer("call-offer");
+            onData(
+              JSON.stringify({
+                type: "input_transcript.added",
+                item_id: "call-user-partial",
+                text: "Check",
+              }),
+            );
+            onData(
+              JSON.stringify({
+                type: "input_transcript.added",
+                item_id: "call-user-revised",
+                text: " this thread",
+              }),
+            );
+            onData(
+              JSON.stringify({
+                type: "input_transcript.added",
+                item_id: "call-user-duplicate",
+                text: " completely.",
+              }),
+            );
+            onData(
+              JSON.stringify({
+                type: "output_transcript.added",
+                item_id: "call-assistant-1",
+                text: "I'm checking.",
+              }),
+            );
+            expect(controller.state.transcript).toContainEqual(
+              expect.objectContaining({
+                speaker: "user",
+                text: "Check this thread completely.",
+                final: false,
+              }),
+            );
+            expect(ingress).not.toHaveBeenCalled();
+            onData(
+              JSON.stringify({
+                type: "turn.done",
+                turn: {
+                  id: "call-user-turn",
+                  role: "user",
+                  transcript: "Check this thread completely.",
+                },
+              }),
+            );
+            onData(
+              JSON.stringify({
+                type: "turn.done",
+                turn: {
+                  id: "call-assistant-turn",
+                  role: "assistant",
+                  transcript: "I'm checking.",
+                },
+              }),
+            );
+          },
+          setMuted: vi.fn(),
+          close: vi.fn(),
+        }) as unknown as WebRtcVoiceTransport,
+      createClientSessionId: () => "call-client",
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
+    });
+
+    await controller.start({
+      environmentId,
+      owner: { kind: "thread-call", threadId: callThreadId, threadTitle: "Provider recovery" },
+      hostProjectId: projectId,
+      providerInstanceId,
+      modelSelection: {
+        instanceId: providerInstanceId,
+        model: "gpt-5",
+        options: [],
+      },
+      authorizedRuntimeCeiling: "approval-required",
+    });
+
+    expect(ensureController).not.toHaveBeenCalled();
+    expect(setControllerTarget).not.toHaveBeenCalled();
+    expect(listVoices).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(
+      environmentId,
+      expect.objectContaining({
+        owner: { kind: "thread-call", threadId: callThreadId },
+        controllerThreadId: callThreadId,
+        purpose: "conversation",
+      }),
+    );
+    expect(controller.state.owner).toEqual({ kind: "thread-call", threadId: callThreadId });
+    expect(controller.state.controller).toEqual({
+      environmentId,
+      projectId,
+      threadId: callThreadId,
+      title: "Provider recovery",
+    });
+    expect(controller.state.transcript).toContainEqual(
+      expect.objectContaining({
+        speaker: "user",
+        text: "Check this thread completely.",
+        final: true,
+      }),
+    );
+    expect(controller.state.transcript).not.toContainEqual(
+      expect.objectContaining({ speaker: "user", text: " completely.", final: false }),
+    );
+    expect(controller.state.transcript).toContainEqual(
+      expect.objectContaining({ speaker: "assistant", text: "I'm checking.", final: true }),
+    );
+    expect(onServerEvent).not.toBeNull();
+    (onServerEvent as unknown as (event: VoiceSessionEvent) => void)({
+      clientSessionId: VoiceClientSessionId.make("call-client"),
+      generation: VoiceGeneration.make(1),
+      runtimeInstanceId: VoiceRuntimeInstanceId.make("call-runtime"),
+      sequence: VoiceEventSequence.make(1),
+      occurredAt: "2026-08-14T00:00:03.000Z",
+      payload: {
+        type: "transcript.done",
+        itemId: "thread-speech:1" as never,
+        role: "assistant",
+        text: "The deeper thread work is complete.",
+        source: "thread",
+      },
+    });
+    expect(controller.state.transcript).toContainEqual(
+      expect.objectContaining({
+        speaker: "assistant",
+        text: "The deeper thread work is complete.",
+        final: true,
+      }),
+    );
+    expect(ingress).toHaveBeenCalledTimes(2);
+    expect(ingress).toHaveBeenNthCalledWith(
+      1,
+      environmentId,
+      expect.objectContaining({
+        owner: { kind: "thread-call", threadId: callThreadId },
+        controllerThreadId: callThreadId,
+        event: {
+          type: "transcript.done",
+          itemId: "call-user-turn",
+          role: "user",
+          text: "Check this thread completely.",
+        },
+      }),
+    );
+    expect(ingress).toHaveBeenNthCalledWith(
+      2,
+      environmentId,
+      expect.objectContaining({
+        owner: { kind: "thread-call", threadId: callThreadId },
+        controllerThreadId: callThreadId,
+        event: {
+          type: "transcript.done",
+          itemId: "call-assistant-turn",
+          role: "assistant",
+          text: "I'm checking.",
+        },
+      }),
+    );
+
+    await controller.stop();
+    expect(stop).toHaveBeenCalledWith(
+      environmentId,
+      expect.objectContaining({ owner: { kind: "thread-call", threadId: callThreadId } }),
+    );
+  });
+
+  it("keeps a thread Call connected when its next utterance reaches a busy thread", async () => {
+    const callThreadId = ThreadId.make("called-thread");
+    const stop = vi.fn(async () => ({ stopped: true }));
+    const ingress = vi.fn(async (_environmentId, input) => {
+      if (input.event.type === "handoff" && input.event.inputTranscript === "Second request") {
+        throw {
+          code: "controller_busy",
+          message: "This thread is already working.",
+          retryable: false,
+        };
+      }
+      return { accepted: true };
+    });
+    const controller = new VoiceSessionController({
+      api: {
+        ensureController: vi.fn(async () => {
+          throw new Error("Call must not ensure a Controller");
+        }),
+        listVoices: vi.fn(async () => voiceCatalog),
+        start: async (_environmentId, input) => ({
+          environmentId,
+          ...(input.owner === undefined ? {} : { owner: input.owner }),
+          controller: null,
+          transportThreadId,
+          clientSessionId: input.clientSessionId,
+          generation: input.generation,
+          runtimeInstanceId: VoiceRuntimeInstanceId.make("call-runtime"),
+          realtimeSessionId: VoiceRealtimeSessionId.make("call-realtime"),
+          answerSdp: "call-answer",
+          transportType: "webrtc" as const,
+          eventCursor: VoiceEventSequence.make(0),
+        }),
+        ingestRealtimeEvent: ingress,
+        stop,
+        subscribe: () => () => {},
+      },
+      createTransport: () =>
+        ({
+          connect: async ({
+            exchangeOffer,
+            onData,
+          }: {
+            exchangeOffer: (offerSdp: string) => Promise<string>;
+            onData: (data: string) => void;
+          }) => {
+            await exchangeOffer("call-offer");
+            onData(
+              JSON.stringify({
+                type: "input_transcript.added",
+                item_id: "call-user-1",
+                text: "First request",
+              }),
+            );
+            onData(
+              JSON.stringify({
+                type: "delegation.created",
+                item: {
+                  id: "call-user-1-complete",
+                  type: "delegation",
+                  target: "client",
+                  content: [{ type: "input_text", text: "First request" }],
+                },
+              }),
+            );
+            onData(
+              JSON.stringify({
+                type: "output_transcript.added",
+                item_id: "call-assistant-1",
+                text: "I'm starting that.",
+              }),
+            );
+            onData(
+              JSON.stringify({
+                type: "input_transcript.added",
+                item_id: "call-user-2",
+                text: "Second request",
+              }),
+            );
+            onData(
+              JSON.stringify({
+                type: "delegation.created",
+                item: {
+                  id: "call-user-2-complete",
+                  type: "delegation",
+                  target: "client",
+                  content: [{ type: "input_text", text: "Second request" }],
+                },
+              }),
+            );
+          },
+          setMuted: vi.fn(),
+          close: vi.fn(),
+        }) as unknown as WebRtcVoiceTransport,
+      createClientSessionId: () => "call-client",
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
+    });
+
+    await controller.start({
+      environmentId,
+      owner: { kind: "thread-call", threadId: callThreadId, threadTitle: "Provider recovery" },
+      hostProjectId: projectId,
+      providerInstanceId,
+      modelSelection: { instanceId: providerInstanceId, model: "gpt-5", options: [] },
+      authorizedRuntimeCeiling: "approval-required",
+    });
+    await vi.waitFor(() => expect(ingress).toHaveBeenCalledTimes(2));
+
+    expect(controller.state.phase).toEqual({ type: "connected", activity: "listening" });
+    expect(stop).not.toHaveBeenCalled();
   });
 
   it("shows provider transcription without relaying a handoff or playing agent audio", async () => {

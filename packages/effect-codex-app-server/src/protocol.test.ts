@@ -32,6 +32,7 @@ const decodeConsumeRateLimitResetCreditParams = Schema.decodeUnknownEffect(
 const decodeConsumeRateLimitResetCreditResponse = Schema.decodeUnknownEffect(
   CodexRpc.CLIENT_REQUEST_RESPONSES["account/rateLimitResetCredit/consume"],
 );
+const encodeThreadStartParams = Schema.encodeSync(CodexRpc.CLIENT_REQUEST_PARAMS["thread/start"]);
 
 const REALTIME_REQUEST_METHODS = [
   "thread/realtime/start",
@@ -64,6 +65,19 @@ it("keeps the complete realtime request and notification surface on one upstream
     assert.equal(CodexRpc.SERVER_NOTIFICATION_METHODS[method], method);
     assert.exists(CodexRpc.SERVER_NOTIFICATION_PARAMS[method]);
   }
+});
+
+it("retains experimental history mode while encoding thread/start", () => {
+  assert.deepInclude(
+    encodeThreadStartParams({
+      cwd: "/tmp/project",
+      historyMode: "paginated",
+    }),
+    {
+      cwd: "/tmp/project",
+      historyMode: "paginated",
+    },
+  );
 });
 
 it("redacts realtime, steering, and raw protocol payloads before logger callbacks", () => {

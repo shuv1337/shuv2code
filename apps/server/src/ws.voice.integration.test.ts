@@ -4,6 +4,7 @@ import {
   AuthOrchestrationReadScope,
   AuthSessionId,
   EnvironmentId,
+  type OrchestrationCommand,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -43,10 +44,12 @@ import { VoiceControllerMutationRepository } from "./persistence/Services/VoiceC
 import { VoiceTransportSessionRepository } from "./persistence/Services/VoiceTransportSessions.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import { makeVoiceControllerActionRunner } from "./voice/Layers/VoiceControllerActionRunner.ts";
+import { makeVoiceCallBridge } from "./voice/Layers/VoiceCallBridge.ts";
 import { makeVoiceControllerService } from "./voice/Layers/VoiceControllerService.ts";
 import { makeVoiceTargetMonitor } from "./voice/Layers/VoiceTargetMonitor.ts";
 import { makeVoiceTransportCoordinator } from "./voice/Layers/VoiceTransportCoordinator.ts";
 import { VoiceControllerActionRunner } from "./voice/Services/VoiceControllerActionRunner.ts";
+import { VoiceCallBridge } from "./voice/Services/VoiceCallBridge.ts";
 import { VoiceTargetMonitor } from "./voice/Services/VoiceTargetMonitor.ts";
 import { VoiceTransportCoordinator } from "./voice/Services/VoiceTransportCoordinator.ts";
 import {
@@ -120,6 +123,9 @@ describe("authenticated voice RPC vertical integration", () => {
         > = [];
         const stoppedTransports: Array<Parameters<VoiceRuntimeGatewayShape["stopTransport"]>[0]> =
           [];
+        const transportStarts: Array<Parameters<VoiceRuntimeGatewayShape["startTransport"]>[0]> =
+          [];
+        const dispatchedCommands: Array<OrchestrationCommand> = [];
         let controllerRuntimeGate:
           | {
               readonly entered: Deferred.Deferred<void>;
@@ -171,6 +177,7 @@ describe("authenticated voice RPC vertical integration", () => {
           stopControllerRuntime: () => Effect.void,
           startTransport: (input) =>
             Effect.gen(function* () {
+              transportStarts.push(input);
               const gate = transportStartGate;
               transportStartGate = undefined;
               if (gate !== undefined) {
@@ -266,9 +273,17 @@ describe("authenticated voice RPC vertical integration", () => {
                 title: threadId === targetThreadId ? "Current work" : "Voice controller",
                 modelSelection,
                 runtimeMode: "approval-required",
+                interactionMode: "default",
                 purpose: threadId === targetThreadId ? "standard" : "voice-controller",
                 deletedAt: null,
                 archivedAt: null,
+                messages:
+                  threadId === targetThreadId
+                    ? [
+                        { role: "user", text: "The provider reconnect is the current task." },
+                        { role: "assistant", text: "I am tracing the provider session." },
+                      ]
+                    : [],
               } as never),
             ),
           getShellSnapshot: () =>
@@ -281,7 +296,10 @@ describe("authenticated voice RPC vertical integration", () => {
         });
         const engine = OrchestrationEngineService.of({
           readEvents: () => Stream.empty,
-          dispatch: () => Effect.succeed({ sequence: 1 }),
+          dispatch: (command) => {
+            dispatchedCommands.push(command);
+            return Effect.succeed({ sequence: dispatchedCommands.length });
+          },
           streamDomainEvents: Stream.empty,
           subscribeDomainEvents: Effect.succeed(Stream.empty),
           latestSequence: Effect.succeed(1),
@@ -310,6 +328,11 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(VoiceControllerMutationRepository, mutations),
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
         );
+        const callBridge = yield* makeVoiceCallBridge().pipe(
+          Effect.provideService(ProjectionSnapshotQuery, projection),
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provide(NodeServices.layer),
+        );
         const actionRunner = yield* makeVoiceControllerActionRunner().pipe(
           Effect.provideService(ProjectionSnapshotQuery, projection),
           Effect.provideService(OrchestrationEngineService, engine),
@@ -320,6 +343,7 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(VoiceRuntimeGateway, runtime),
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
           Effect.provideService(VoiceTargetMonitor, targetMonitor),
+          Effect.provideService(VoiceCallBridge, callBridge),
           Effect.provide(NodeServices.layer),
         );
         const voiceController = yield* makeVoiceControllerService().pipe(
@@ -445,24 +469,106 @@ describe("authenticated voice RPC vertical integration", () => {
         if (deniedStart._tag !== "EnvironmentAuthorizationError") return assert.fail();
         assert.strictEqual(deniedStart.requiredScope, AuthOrchestrationOperateScope);
 
-        const unsupportedCall = yield* Effect.flip(
-          fullClient[WS_METHODS.voiceStart]({
-            environmentId,
-            owner: { kind: "thread-call", threadId: targetThreadId },
-            // Temporary compatibility anchor; ignored by the unsupported-owner path.
-            controllerThreadId,
-            clientSessionId: VoiceClientSessionId.make("unsupported-call-session"),
-            generation,
-            transport: { type: "webrtc", offerSdp: "offer-sdp" },
-          }),
-        );
-        assert.strictEqual(unsupportedCall._tag, "VoiceControllerError");
-        if (unsupportedCall._tag !== "VoiceControllerError") return assert.fail();
-        assert.strictEqual(unsupportedCall.code, "unsupported_owner");
+        const callClientSessionId = VoiceClientSessionId.make("direct-call-session");
+        const callStarted = yield* fullClient[WS_METHODS.voiceStart]({
+          environmentId,
+          owner: { kind: "thread-call", threadId: targetThreadId },
+          controllerThreadId: targetThreadId,
+          clientSessionId: callClientSessionId,
+          generation,
+          transport: { type: "webrtc", offerSdp: "offer-sdp" },
+          voiceId: "marin",
+        });
+        assert.strictEqual(callStarted.controller, null);
+        assert.deepStrictEqual(callStarted.owner, {
+          kind: "thread-call",
+          threadId: targetThreadId,
+        });
+        const callOwner = { kind: "thread-call" as const, threadId: targetThreadId };
+        assert.strictEqual(callStarted.answerSdp, "answer-sdp");
+        assert.include(transportStarts[0]?.prompt ?? "", "low-latency conversation");
+        assert.isFalse(transportStarts[0]?.includeStartupContext);
+        assert.deepStrictEqual(transportStarts[0]?.initialItems, [
+          { role: "user", text: "The provider reconnect is the current task." },
+          { role: "assistant", text: "I am tracing the provider session." },
+        ]);
+        assert.lengthOf(controllerRuntimeEnsures, 2);
         assert.strictEqual(
-          yield* transports.getOpenByControllerThreadId(controllerThreadId),
-          Option.none(),
+          Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId)).activeTargetThreadId,
+          targetThreadId,
         );
+        const callFence = {
+          environmentId,
+          owner: callOwner,
+          controllerThreadId: targetThreadId,
+          transportThreadId: callStarted.transportThreadId,
+          clientSessionId: callClientSessionId,
+          generation,
+          runtimeInstanceId: callStarted.runtimeInstanceId,
+          realtimeSessionId: callStarted.realtimeSessionId,
+        };
+        const callTranscript = {
+          ...callFence,
+          event: {
+            type: "transcript.done" as const,
+            itemId: VoiceTranscriptItemId.make("call-utterance-1"),
+            role: "user" as const,
+            text: "Inspect this exact thread.",
+          },
+        };
+        const firstCallIngress =
+          yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent](callTranscript);
+        const replayedCallIngress =
+          yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent](callTranscript);
+        assert.isTrue(firstCallIngress.accepted);
+        assert.deepStrictEqual(replayedCallIngress, firstCallIngress);
+        assert.lengthOf(
+          dispatchedCommands.filter(
+            (command) =>
+              command.type === "thread.turn.start" && command.threadId === targetThreadId,
+          ),
+          1,
+        );
+        const callHandoff = {
+          ...callFence,
+          event: {
+            type: "handoff" as const,
+            handoffId: "call-handoff-1",
+            itemId: "call-handoff-item-1",
+            inputTranscript: "Inspect this exact thread.",
+            activeTranscript: [
+              { role: "user" as const, text: "Inspect this exact thread." },
+              { role: "assistant" as const, text: "I'll take that into the thread." },
+            ],
+          },
+        };
+        assert.isTrue(
+          (yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent](callHandoff)).accepted,
+        );
+        assert.isTrue(
+          (yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent](callHandoff)).accepted,
+        );
+        const callTurns = dispatchedCommands.filter(
+          (command) => command.type === "thread.turn.start" && command.threadId === targetThreadId,
+        );
+        assert.lengthOf(callTurns, 1);
+        if (callTurns[0]?.type !== "thread.turn.start") return assert.fail();
+        assert.strictEqual(callTurns[0].message.text, "Inspect this exact thread.");
+        assert.strictEqual(callTurns[0].expectedTurnId, null);
+        assert.lengthOf(controllerStarts, 0);
+        const callStopped = yield* fullClient[WS_METHODS.voiceStop]({
+          environmentId,
+          owner: callOwner,
+          controllerThreadId: targetThreadId,
+          transportThreadId: callStarted.transportThreadId,
+          clientSessionId: callClientSessionId,
+          generation,
+          runtimeInstanceId: callStarted.runtimeInstanceId,
+          realtimeSessionId: callStarted.realtimeSessionId,
+        });
+        assert.isTrue(callStopped.stopped);
+        assert.strictEqual(yield* transports.getOpenByEnvironmentId(environmentId), Option.none());
+        stoppedTransports.length = 0;
 
         const started = yield* fullClient[WS_METHODS.voiceStart]({
           environmentId,
@@ -475,8 +581,30 @@ describe("authenticated voice RPC vertical integration", () => {
         });
         assert.strictEqual(started.answerSdp, "answer-sdp");
         assert.strictEqual(started.eventCursor, VoiceEventSequence.make(1));
+        assert.strictEqual(started.environmentId, environmentId);
+        assert.deepStrictEqual(started.owner, {
+          kind: "controller",
+          controllerThreadId,
+        });
+        const controllerOwner = { kind: "controller" as const, controllerThreadId };
+
+        const wrongOwnerSubscription = yield* Effect.flip(
+          readClient[WS_METHODS.subscribeVoiceEvents]({
+            environmentId,
+            owner: { kind: "thread-call", threadId: targetThreadId },
+            clientSessionId,
+            generation,
+            runtimeInstanceId: started.runtimeInstanceId,
+            afterSequence: VoiceEventSequence.make(0),
+          }).pipe(Stream.runDrain),
+        );
+        assert.strictEqual(wrongOwnerSubscription._tag, "VoiceControllerError");
+        if (wrongOwnerSubscription._tag !== "VoiceControllerError") return assert.fail();
+        assert.strictEqual(wrongOwnerSubscription.code, "session_not_found");
 
         const eventFiber = yield* readClient[WS_METHODS.subscribeVoiceEvents]({
+          environmentId,
+          owner: controllerOwner,
           clientSessionId,
           generation,
           runtimeInstanceId: started.runtimeInstanceId,
@@ -492,6 +620,8 @@ describe("authenticated voice RPC vertical integration", () => {
         yield* Effect.yieldNow;
 
         const runtimeFence = {
+          environmentId,
+          owner: controllerOwner,
           controllerThreadId,
           transportThreadId: started.transportThreadId,
           clientSessionId,
@@ -609,6 +739,17 @@ describe("authenticated voice RPC vertical integration", () => {
         assert.strictEqual(staleStop._tag, "VoiceControllerError");
         if (staleStop._tag !== "VoiceControllerError") return assert.fail();
         assert.strictEqual(staleStop.code, "stale_generation");
+        assert.lengthOf(stoppedTransports, 0);
+
+        const wrongOwnerStop = yield* Effect.flip(
+          fullClient[WS_METHODS.voiceStop]({
+            ...runtimeFence,
+            owner: { kind: "thread-call", threadId: targetThreadId },
+          }),
+        );
+        assert.strictEqual(wrongOwnerStop._tag, "VoiceControllerError");
+        if (wrongOwnerStop._tag !== "VoiceControllerError") return assert.fail();
+        assert.strictEqual(wrongOwnerStop.code, "stale_generation");
         assert.lengthOf(stoppedTransports, 0);
 
         const deniedStop = yield* Effect.flip(

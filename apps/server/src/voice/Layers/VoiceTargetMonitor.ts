@@ -66,17 +66,18 @@ export const makeVoiceTargetMonitor = Effect.fn("VoiceTargetMonitor.make")(funct
     const session = Array.from(sessions.values()).find(
       (candidate) => candidate.transportSessionId === watch.transportSessionId,
     );
-    if (session === undefined) return;
+    if (session === undefined || session.controller === null) return;
+    const controllerSession = { ...session, controller: session.controller };
     const shell = yield* projection.getShellSnapshot().pipe(Effect.orElseSucceed(() => undefined));
     if (shell === undefined) return;
     const target = shell.threads.find((thread) => thread.id === watch.targetThreadId);
     if (target === undefined) {
-      yield* clearActiveTargetIfMatching(session, watch.targetThreadId);
+      yield* clearActiveTargetIfMatching(controllerSession, watch.targetThreadId);
       return;
     }
     const project = shell.projects.find((candidate) => candidate.id === target.projectId);
     if (project === undefined || target.purpose !== "standard") {
-      yield* clearActiveTargetIfMatching(session, watch.targetThreadId);
+      yield* clearActiveTargetIfMatching(controllerSession, watch.targetThreadId);
       return;
     }
     const phase = targetPhaseOf(target);

@@ -1,6 +1,6 @@
 # Phase 1: Voice Ownership Seam
 
-Status: active — checkpoints 1A and 1C complete; additive 1B/1D compatibility seam implemented
+Status: active — checkpoints 1A, 1C, and owner-aware 1D routing complete; 1B compatibility cleanup remains
 
 ## Overview and motivation
 
@@ -147,9 +147,9 @@ Add strict owner branches across start/result/fence/stop/ingress/append/subscrib
 
 Rebuild the complete foreign-key chain, resolve pre-existing environment conflicts, update transport and controller-action repositories, and prove two-owner/same-environment conflicts plus cross-environment independence.
 
-### 1D. Coordinator and RPC authority
+### 1D. Coordinator and RPC authority — owner routing implemented
 
-Replace controller-keyed coordinator/repository routing with exact owner routing; reject thread-call before side effects until Phase 3; retain exact owner across replay, reconnect, stop, and subscribe. Finish by deleting the named 1B compatibility anchor and legacy top-level `offerSdp`.
+The coordinator and repository now reserve, discover, clean up, and fence leases by environment, while replay, stop, append, ingress, events, and subscription carry and compare exact owner identity. Thread Call remains rejected before effects until Phase 3. The remaining cleanup is deleting the named 1B compatibility anchor and legacy top-level `offerSdp`; that cutover stays separate so mixed-version dev clients are not broken mid-slice.
 
 ### 1E. Browser compatibility proof — implemented for the compatibility seam
 

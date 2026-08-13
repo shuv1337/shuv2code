@@ -239,6 +239,27 @@ describe("rightPanelStore", () => {
     expect(
       selectResolvedRightPanelState(store.byThreadKey, store.byEnvironmentId, refOtherEnvironment),
     ).toEqual({ isOpen: false, activeSurfaceId: null, surfaces: [] });
+    expect(store.byEnvironmentId[refA.environmentId]?.voiceMode).toBe("controller");
+  });
+
+  it("persists Voice mode per environment without changing panel visibility", () => {
+    useRightPanelStore.getState().openVoice(refA.environmentId);
+    useRightPanelStore.getState().setVoiceMode(refA.environmentId, "call");
+
+    const store = useRightPanelStore.getState();
+    expect(store.byEnvironmentId[refA.environmentId]).toEqual({
+      voicePresent: true,
+      voiceActive: true,
+      voiceMode: "call",
+    });
+    expect(store.byEnvironmentId[refOtherEnvironment.environmentId]).toBeUndefined();
+
+    useRightPanelStore.getState().close(refA);
+    expect(useRightPanelStore.getState().byEnvironmentId[refA.environmentId]).toEqual({
+      voicePresent: true,
+      voiceActive: false,
+      voiceMode: "call",
+    });
   });
 
   it("keeps Voice pinned while a thread-local surface takes focus", () => {
@@ -279,6 +300,7 @@ describe("rightPanelStore", () => {
     expect(closed.byEnvironmentId[refA.environmentId]).toEqual({
       voicePresent: true,
       voiceActive: false,
+      voiceMode: "controller",
     });
 
     useRightPanelStore.getState().activateSurface(refA, "voice");

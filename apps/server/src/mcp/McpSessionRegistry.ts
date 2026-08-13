@@ -184,7 +184,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
               "threads.read",
               ...(requestedProfile.controlEnabled ? (["threads.control"] as const) : []),
             ])
-          : new Set(["preview", "automations"]);
+          : new Set(["preview", "automations", "voice.speak"]);
       const scope: McpInvocationContext.McpInvocationScope = {
         credentialId,
         environmentId,

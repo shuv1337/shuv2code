@@ -6,6 +6,7 @@ import {
   type VoiceGetControllerInput,
   type VoiceGetControllerHistoryInput,
   type VoiceListVoicesInput,
+  type VoicePrepareThreadCallInput,
   type VoiceRealtimeIngressInput,
   type VoiceResetControllerInput,
   type VoiceSetControllerTargetInput,
@@ -103,6 +104,9 @@ export const setVoiceControllerTarget = (input: VoiceSetControllerTargetInput) =
 
 export const listRealtimeVoices = (input: VoiceListVoicesInput) =>
   request(WS_METHODS.voiceListVoices, input);
+
+export const prepareRealtimeVoiceThreadCall = (input: VoicePrepareThreadCallInput) =>
+  request(WS_METHODS.voicePrepareThreadCall, input);
 
 export const startRealtimeVoice = (input: VoiceSessionStartInput) =>
   request(WS_METHODS.voiceStart, input);

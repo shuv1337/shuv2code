@@ -1,5 +1,6 @@
 import {
   EventId,
+  type TurnId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -1414,6 +1415,55 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           streaming: true,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.voice.exchange.append": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.completedAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.voice-exchange-appended",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          userMessage: command.userMessage,
+          assistantMessage: command.assistantMessage,
+          createdAt: command.createdAt,
+          completedAt: command.completedAt,
+        },
+      };
+    }
+
+    case "thread.voice.speech.append": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.voice-speech-appended",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          messageId: command.messageId,
+          text: command.text,
+          createdAt: command.createdAt,
         },
       };
     }

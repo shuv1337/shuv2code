@@ -48,6 +48,7 @@ const JsonSchemaDocument = Schema.StructWithRest(
 );
 const decodeGithubContentEntries = Schema.decodeEffect(Schema.fromJsonString(GithubContentEntries));
 const decodeJsonSchemaDocument = Schema.decodeEffect(Schema.fromJsonString(JsonSchemaDocument));
+const decodeJsonObject = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json));
 
 interface GeneratedPaths {
   readonly generatedDir: string;
@@ -817,6 +818,24 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     if (!(name in aggregateSchemas)) {
       aggregateSchemas[name] = stripNullDefaults(normalizeNullableTypes(schema));
     }
+  }
+
+  // `historyMode` is an experimental `thread/start` field. The pinned stable
+  // schema intentionally omits it, so retain the extension until the pinned
+  // upstream protocol exposes experimental fields in its checked-in bundle.
+  const threadStartParams = decodeJsonObject(aggregateSchemas.V2ThreadStartParams);
+  const threadStartProperties = decodeJsonObject(threadStartParams.properties);
+  if (!("historyMode" in threadStartProperties)) {
+    aggregateSchemas.V2ThreadStartParams = {
+      ...threadStartParams,
+      properties: {
+        ...threadStartProperties,
+        historyMode: {
+          anyOf: [{ type: "string", enum: ["legacy", "paginated"] }, { type: "null" }],
+          description: "Persisted thread history contract to use for this new thread.",
+        },
+      },
+    };
   }
 
   const generator = makeJsonSchemaGenerator();

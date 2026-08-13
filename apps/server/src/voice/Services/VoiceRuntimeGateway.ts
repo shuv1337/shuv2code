@@ -83,6 +83,15 @@ export type VoiceRuntimeGatewayEvent =
     };
 
 export interface VoiceRuntimeGatewayShape {
+  readonly prepareThreadCall?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly action: "inspect" | "migrate";
+  }) => Effect.Effect<
+    | { readonly state: "ready"; readonly historyMode: "paginated" | "not-applicable" }
+    | { readonly state: "migration-required"; readonly bytesToProcess: number },
+    VoiceRuntimeGatewayError
+  >;
   readonly recoverCreatedSession?: (
     input: ProviderCreationRecoveryInput,
   ) => Effect.Effect<ProviderCreationRecoveryResult, VoiceRuntimeGatewayError>;
@@ -134,6 +143,12 @@ export interface VoiceRuntimeGatewayShape {
     readonly offerSdp?: string | undefined;
     readonly voiceId?: string | undefined;
     readonly clientManagedHandoffs: true;
+    readonly prompt?: string | undefined;
+    readonly includeStartupContext?: boolean | undefined;
+    readonly initialItems?: ReadonlyArray<{
+      readonly role: "user" | "developer" | "assistant";
+      readonly text: string;
+    }>;
   }) => Effect.Effect<
     VoiceCodexIdentity & {
       readonly answerSdp: string | null;

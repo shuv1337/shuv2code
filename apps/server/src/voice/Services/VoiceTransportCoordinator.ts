@@ -36,8 +36,8 @@ export interface ActiveVoiceSession {
   readonly environmentId: EnvironmentId;
   readonly hostProjectId: ProjectId;
   readonly providerInstanceId: ProviderInstanceId;
-  readonly controller: VoiceControllerIdentity;
-  readonly controllerRuntime: ControllerRuntimeState;
+  readonly controller: VoiceControllerIdentity | null;
+  readonly controllerRuntime: ControllerRuntimeState | null;
   readonly transportType: "webrtc" | "websocket";
   readonly purpose: "conversation" | "transcription";
   readonly answerSdp: string | null;
@@ -66,7 +66,7 @@ export interface VoiceTransportCoordinatorShape {
   readonly stopSession: (session: ActiveVoiceSession) => Effect.Effect<void>;
   readonly stopAll: () => Effect.Effect<void>;
   readonly stopForController: (controllerThreadId: ThreadId) => Effect.Effect<void>;
-  readonly cleanupStaleStartupLease: (controllerThreadId: ThreadId) => Effect.Effect<void>;
+  readonly cleanupStaleStartupLease: (environmentId: EnvironmentId) => Effect.Effect<void>;
   readonly startTransport: (input: {
     readonly start: VoiceSessionStartInput;
     readonly binding: {
@@ -82,6 +82,26 @@ export interface VoiceTransportCoordinatorShape {
     readonly environmentId: EnvironmentId;
     readonly workspaceRoot: string;
     readonly onActivated: (session: ActiveVoiceSession) => Effect.Effect<void>;
+  }) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;
+  readonly startThreadCallTransport: (input: {
+    readonly start: VoiceSessionStartInput & {
+      readonly owner: { readonly kind: "thread-call"; readonly threadId: ThreadId };
+    };
+    readonly environmentId: EnvironmentId;
+    readonly thread: {
+      readonly id: ThreadId;
+      readonly projectId: ProjectId;
+      readonly modelSelection: ModelSelection;
+      readonly runtimeMode: import("@shuv2code/contracts").RuntimeMode;
+      readonly messages: ReadonlyArray<{
+        readonly role: "user" | "assistant" | "system";
+        readonly text: string;
+        readonly streaming: boolean;
+        readonly [key: string]: unknown;
+      }>;
+    };
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly workspaceRoot: string;
   }) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;
   readonly stop: (
     input: VoiceSessionStopInput,
@@ -109,6 +129,10 @@ export interface VoiceTransportCoordinatorShape {
     readonly voiceActionId?: string;
     readonly targetThreadId?: ThreadId;
     readonly phase?: VoiceTargetPhase;
+  }) => Effect.Effect<void>;
+  readonly speakExplicitly: (input: {
+    readonly session: ActiveVoiceSession;
+    readonly text: string;
   }) => Effect.Effect<void>;
   readonly appendAudio: (
     input: VoiceAppendAudioInput,

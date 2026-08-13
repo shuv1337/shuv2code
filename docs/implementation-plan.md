@@ -2,7 +2,7 @@
 
 ## Current initiative: Native Voice
 
-Status: proposed; discussion and review in progress
+Status: in progress
 
 The Voice work is being integrated as a sequence of independently verifiable vertical slices. The source plan is [Native Voice: Vertical-Slice Plan](../.agents/plans/native-voice-vertical-slices.md). The current architecture audit is [Native Voice Integration Audit](project/voice-native-integration-audit.md).
 
@@ -15,16 +15,21 @@ The Voice work is being integrated as a sequence of independently verifiable ver
 
 ## Delivery sequence
 
-| Phase                                            | Deliverable                            | Demonstrable completion condition                                                                 | Status   |
-| ------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------- | -------- |
-| [1](phases/phase-1-voice-ownership-seam.md)      | Voice ownership seam                   | Current Controller remains functional and managed purposes are hidden consistently across clients | Proposed |
-| [2](phases/phase-2-controller-without-ghosts.md) | Controller without ghosts              | Repeated lifecycle and recovery produce one live lease and no visible or leaked transport shells  | Proposed |
-| [3](phases/phase-3-direct-thread-call.md)        | Direct Call on an idle thread          | Mic speech creates a normal turn on the exact thread; response text, audio, and presence agree    | Proposed |
-| [4](phases/phase-4-call-thread-lifecycle.md)     | Call through the real thread lifecycle | Running turns, tools, approvals, interruption, navigation, archive, and reconnect remain coherent | Proposed |
-| [5](phases/phase-5-controller-conversations.md)  | Controller conversation lifecycle      | Users can create, list, resume, and archive controller conversations                              | Proposed |
-| [6](phases/phase-6-native-voice-surface.md)      | Native responsive Voice surface        | Real entry points and collapsed/panel layouts use the polished surface without relayout flicker   | Proposed |
-| [7](phases/phase-7-voice-hardening.md)           | Operational and performance hardening  | Browser and packaged desktop meet lifecycle, permission, recovery, and resource budgets           | Proposed |
-| [8](phases/phase-8-mobile-voice.md)              | Mobile parity                          | One mobile platform proves the same semantics with native media lifecycle; the other follows      | Proposed |
+| Phase                                            | Deliverable                            | Demonstrable completion condition                                                                                              | Status      |
+| ------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------- |
+| [1](phases/phase-1-voice-ownership-seam.md)      | Voice ownership seam                   | Current Controller remains functional and managed purposes are hidden consistently across clients                              | In progress |
+| [2](phases/phase-2-controller-without-ghosts.md) | Controller without ghosts              | Repeated lifecycle and recovery produce one live lease and no visible or leaked transport shells                               | Proposed    |
+| [3](phases/phase-3-direct-thread-call.md)        | Direct Call on an idle thread          | Realtime answers from bounded context while each final utterance drives one exact-thread turn; speech remains model-controlled | In progress |
+| [4](phases/phase-4-call-thread-lifecycle.md)     | Call through the real thread lifecycle | Running turns, tools, approvals, interruption, navigation, archive, and reconnect remain coherent                              | Proposed    |
+| [5](phases/phase-5-controller-conversations.md)  | Controller conversation lifecycle      | Users can create, list, resume, and archive controller conversations                                                           | Proposed    |
+| [6](phases/phase-6-native-voice-surface.md)      | Native responsive Voice surface        | Real entry points and collapsed/panel layouts use the polished surface without relayout flicker                                | In progress |
+| [7](phases/phase-7-voice-hardening.md)           | Operational and performance hardening  | Browser and packaged desktop meet lifecycle, permission, recovery, and resource budgets                                        | Proposed    |
+| [8](phases/phase-8-mobile-voice.md)              | Mobile parity                          | One mobile platform proves the same semantics with native media lifecycle; the other follows                                   | Proposed    |
+
+## Open investigation ledger
+
+- **Instruction/context isolation:** reproduce whether realtime Call instructions, bounded Call transcript, hidden delegated-work context, ordinary thread instructions, or Controller context are being duplicated or mixed across owners. Audit provenance and role boundaries before changing prompts or context assembly. Keep this investigation separate from lifecycle and animation work.
+- **Panel/presence lifecycle:** keep the media analyser, activity sampling, and active Call identity alive when Voice presentation unmounts during panel hide/show, route navigation, or responsive inline/sheet transitions.
 
 ## Dependency flow
 

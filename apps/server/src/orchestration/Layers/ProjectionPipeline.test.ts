@@ -86,6 +86,15 @@ it("classifies every orchestration event by interested projector", () => {
       ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
       ORCHESTRATION_PROJECTOR_NAMES.threads,
     ],
+    "thread.voice-exchange-appended": [
+      ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+      ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
+      ORCHESTRATION_PROJECTOR_NAMES.threads,
+    ],
+    "thread.voice-speech-appended": [
+      ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+      ORCHESTRATION_PROJECTOR_NAMES.threads,
+    ],
     "thread.turn-start-requested": [ORCHESTRATION_PROJECTOR_NAMES.threadTurns],
     // Provider steering and effect outcomes are consumed by reactors and do not
     // update a materialized read model, but every projector cursor must advance.
@@ -135,6 +144,158 @@ it("classifies every orchestration event by interested projector", () => {
     );
   }
 });
+
+it.effect("persists a realtime voice exchange as one completed thread turn", () =>
+  Effect.gen(function* () {
+    const projectionPipeline = yield* OrchestrationProjectionPipeline;
+    const eventStore = yield* OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const projectId = ProjectId.make("project-voice-exchange");
+    const threadId = ThreadId.make("thread-voice-exchange");
+    const turnId = TurnId.make("turn-voice-exchange");
+    const createdAt = "2026-08-14T02:00:00.000Z";
+    const completedAt = "2026-08-14T02:00:03.000Z";
+    const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+      eventStore
+        .append(event)
+        .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+    yield* appendAndProject({
+      type: "project.created",
+      eventId: EventId.make("evt-voice-exchange-project"),
+      aggregateKind: "project",
+      aggregateId: projectId,
+      occurredAt: createdAt,
+      commandId: CommandId.make("cmd-voice-exchange-project"),
+      causationEventId: null,
+      correlationId: CorrelationId.make("cmd-voice-exchange-project"),
+      metadata: {},
+      payload: {
+        projectId,
+        title: "Voice exchange",
+        workspaceRoot: "/tmp/voice-exchange",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt,
+        updatedAt: createdAt,
+      },
+    });
+    yield* appendAndProject({
+      type: "thread.created",
+      eventId: EventId.make("evt-voice-exchange-thread"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: createdAt,
+      commandId: CommandId.make("cmd-voice-exchange-thread"),
+      causationEventId: null,
+      correlationId: CorrelationId.make("cmd-voice-exchange-thread"),
+      metadata: {},
+      payload: {
+        threadId,
+        projectId,
+        title: "Voice exchange thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.6-luna",
+        },
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    });
+    yield* appendAndProject({
+      type: "thread.voice-exchange-appended",
+      eventId: EventId.make("evt-voice-exchange"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: completedAt,
+      commandId: CommandId.make("cmd-voice-exchange"),
+      causationEventId: null,
+      correlationId: CorrelationId.make("cmd-voice-exchange"),
+      metadata: {},
+      payload: {
+        threadId,
+        turnId,
+        userMessage: {
+          messageId: MessageId.make("message-voice-user"),
+          text: "Can you explain that?",
+        },
+        assistantMessage: {
+          messageId: MessageId.make("message-voice-assistant"),
+          text: "Yes. Realtime answers first and remains in the call.",
+        },
+        createdAt,
+        completedAt,
+      },
+    });
+    yield* appendAndProject({
+      type: "thread.voice-speech-appended",
+      eventId: EventId.make("evt-voice-speech"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: completedAt,
+      commandId: CommandId.make("cmd-voice-speech"),
+      causationEventId: null,
+      correlationId: CorrelationId.make("cmd-voice-speech"),
+      metadata: {},
+      payload: {
+        threadId,
+        turnId,
+        messageId: MessageId.make("message-voice-speech"),
+        text: "The exact spoken summary remains visible in the thread.",
+        createdAt: completedAt,
+      },
+    });
+
+    const messages = yield* sql<{
+      readonly role: string;
+      readonly text: string;
+      readonly turnId: string | null;
+      readonly modality: string;
+    }>`
+      SELECT role, text, turn_id AS "turnId", modality
+      FROM projection_thread_messages
+      WHERE thread_id = ${threadId}
+      ORDER BY created_at ASC, message_id ASC
+    `;
+    assert.deepEqual(messages, [
+      { role: "user", text: "Can you explain that?", turnId: String(turnId), modality: "voice" },
+      {
+        role: "assistant",
+        text: "Yes. Realtime answers first and remains in the call.",
+        turnId: String(turnId),
+        modality: "voice",
+      },
+      {
+        role: "assistant",
+        text: "The exact spoken summary remains visible in the thread.",
+        turnId: String(turnId),
+        modality: "voice",
+      },
+    ]);
+
+    const turns = yield* sql<{
+      readonly state: string;
+      readonly assistantMessageId: string | null;
+    }>`
+      SELECT state, assistant_message_id AS "assistantMessageId"
+      FROM projection_turns
+      WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+    `;
+    assert.deepEqual(turns, [
+      { state: "completed", assistantMessageId: "message-voice-assistant" },
+    ]);
+
+    const threads = yield* sql<{ readonly latestTurnId: string | null }>`
+      SELECT latest_turn_id AS "latestTurnId"
+      FROM projection_threads
+      WHERE thread_id = ${threadId}
+    `;
+    assert.deepEqual(threads, [{ latestTurnId: String(turnId) }]);
+  }).pipe(Effect.provide(BaseTestLayer)),
+);
 
 it.effect("batches cursor-only work while preserving every independent cursor", () => {
   const observedOperations: Array<ProjectionPipelineLogicalOperation> = [];

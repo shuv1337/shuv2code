@@ -400,6 +400,10 @@ function deriveTurnFolds(input: {
       if (entry.kind === "work" && entry.entry.agentSpawn !== undefined) {
         continue;
       }
+      const isVoiceTranscript = entry.kind === "message" && entry.message.modality === "voice";
+      if (isVoiceTranscript) {
+        continue;
+      }
       hiddenEntryIds.add(entry.id);
     }
     if (hiddenEntryIds.size === 0) {
@@ -408,7 +412,8 @@ function deriveTurnFolds(input: {
 
     const firstEntry = group.entries[0];
     const lastEntry = group.entries.at(-1);
-    if (!firstEntry || !lastEntry) {
+    const anchorEntry = group.entries.find((entry) => hiddenEntryIds.has(entry.id));
+    if (!firstEntry || !lastEntry || !anchorEntry) {
       continue;
     }
 
@@ -440,10 +445,10 @@ function deriveTurnFolds(input: {
       entry.kind === "work" ? (entry.entry.images ?? []) : [],
     );
 
-    foldsByAnchorEntryId.set(firstEntry.id, {
+    foldsByAnchorEntryId.set(anchorEntry.id, {
       turnId,
-      anchorEntryId: firstEntry.id,
-      createdAt: firstEntry.createdAt,
+      anchorEntryId: anchorEntry.id,
+      createdAt: anchorEntry.createdAt,
       hiddenEntryIds,
       label,
       images,

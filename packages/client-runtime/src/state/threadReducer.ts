@@ -281,11 +281,73 @@ export function applyThreadDetailEvent(
     }
 
     // ── Messages ────────────────────────────────────────────────────
+    case "thread.voice-exchange-appended": {
+      const voiceMessages: ReadonlyArray<OrchestrationMessage> = [
+        {
+          id: event.payload.userMessage.messageId,
+          role: "user",
+          text: event.payload.userMessage.text,
+          modality: "voice",
+          turnId: event.payload.turnId,
+          streaming: false,
+          createdAt: event.payload.createdAt,
+          updatedAt: event.payload.completedAt,
+        },
+        {
+          id: event.payload.assistantMessage.messageId,
+          role: "assistant",
+          text: event.payload.assistantMessage.text,
+          modality: "voice",
+          turnId: event.payload.turnId,
+          streaming: false,
+          createdAt: event.payload.completedAt,
+          updatedAt: event.payload.completedAt,
+        },
+      ];
+      const voiceMessageIds = new Set(voiceMessages.map((message) => message.id));
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          messages: [
+            ...thread.messages.filter((message) => !voiceMessageIds.has(message.id)),
+            ...voiceMessages,
+          ],
+          updatedAt: event.payload.completedAt,
+        },
+      };
+    }
+
+    case "thread.voice-speech-appended": {
+      const voiceMessage: OrchestrationMessage = {
+        id: event.payload.messageId,
+        role: "assistant",
+        text: event.payload.text,
+        modality: "voice",
+        turnId: event.payload.turnId,
+        streaming: false,
+        createdAt: event.payload.createdAt,
+        updatedAt: event.payload.createdAt,
+      };
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          messages: [
+            ...thread.messages.filter((message) => message.id !== voiceMessage.id),
+            voiceMessage,
+          ],
+          updatedAt: event.payload.createdAt,
+        },
+      };
+    }
+
     case "thread.message-sent": {
       const message: OrchestrationMessage = {
         id: event.payload.messageId,
         role: event.payload.role,
         text: event.payload.text,
+        modality: "text",
         ...(event.payload.attachments !== undefined
           ? { attachments: event.payload.attachments }
           : {}),

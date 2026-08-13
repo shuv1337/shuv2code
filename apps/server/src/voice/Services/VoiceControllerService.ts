@@ -62,6 +62,12 @@ export interface VoiceControllerServiceShape {
   readonly subscribe: (
     input: VoiceSubscribeEventsInput,
   ) => Stream.Stream<VoiceSessionEvent, VoiceControllerError>;
+  /** Queue an explicitly model-authored spoken segment on an active direct Call. */
+  readonly speakInThreadCall: (input: {
+    readonly environmentId: import("@shuv2code/contracts").EnvironmentId;
+    readonly threadId: import("@shuv2code/contracts").ThreadId;
+    readonly text: string;
+  }) => Effect.Effect<boolean, VoiceControllerError>;
 }
 
 export class VoiceControllerService extends Context.Service<

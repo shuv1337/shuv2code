@@ -20,6 +20,7 @@ import {
   useState,
   useSyncExternalStore,
   type PropsWithChildren,
+  type RefObject,
 } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -29,6 +30,7 @@ import {
   type StartVoiceSessionInput,
   type VoiceSessionControllerApi,
 } from "./VoiceSessionController";
+import { VoiceActivityMonitor, type VoiceMediaActivity } from "./VoiceActivityMonitor";
 
 const realtimeVoiceEnvironment = createRealtimeVoiceEnvironmentAtoms(connectionAtomRuntime);
 
@@ -88,6 +90,8 @@ const browserVoiceApi: VoiceSessionControllerApi = {
 
 interface VoiceSessionContextValue {
   readonly state: RealtimeVoiceSessionState;
+  readonly mediaActivity: VoiceMediaActivity;
+  readonly activityLevel: RefObject<number>;
   readonly getController: (environmentId: EnvironmentId) => Promise<VoiceControllerIdentity | null>;
   readonly getControllerHistory: (
     environmentId: EnvironmentId,
@@ -112,11 +116,13 @@ const VoiceSessionContext = createContext<VoiceSessionContextValue | null>(null)
 
 export interface VoiceSessionProviderProps extends PropsWithChildren {
   readonly controller?: VoiceSessionController;
+  readonly activityMonitor?: VoiceActivityMonitor;
 }
 
 export function VoiceSessionProvider({
   children,
   controller: supplied,
+  activityMonitor: suppliedActivityMonitor,
 }: VoiceSessionProviderProps) {
   const [controller] = useState(
     () => supplied ?? new VoiceSessionController({ api: browserVoiceApi }),
@@ -127,6 +133,17 @@ export function VoiceSessionProvider({
   );
   const getSnapshot = useCallback(() => controller.state, [controller]);
   const state = useSyncExternalStore(subscribe, getSnapshot, () => initialRealtimeVoiceState);
+  const [activityMonitor] = useState(() => suppliedActivityMonitor ?? new VoiceActivityMonitor());
+  const subscribeActivity = useCallback(
+    (listener: () => void) => activityMonitor.subscribe(listener),
+    [activityMonitor],
+  );
+  const getActivitySnapshot = useCallback(() => activityMonitor.activity, [activityMonitor]);
+  const mediaActivity = useSyncExternalStore(
+    subscribeActivity,
+    getActivitySnapshot,
+    getActivitySnapshot,
+  );
   const getController = useCallback(
     async (environmentId: EnvironmentId) =>
       (await runVoiceCommand(realtimeVoiceEnvironment.getController, environmentId, {})).controller,
@@ -167,25 +184,59 @@ export function VoiceSessionProvider({
       ).targetThreadId,
     [],
   );
+  const start = useCallback(
+    (input: StartVoiceSessionInput) =>
+      controller.start({
+        ...input,
+        onMicrophoneStream: async (stream) => {
+          await activityMonitor.attachMicrophone(stream);
+          await input.onMicrophoneStream?.(stream);
+        },
+        onRemoteAudioStream: (stream) => {
+          activityMonitor.attachRemoteAudio(stream);
+          input.onRemoteAudioStream?.(stream);
+        },
+      }),
+    [activityMonitor, controller],
+  );
   const value = useMemo<VoiceSessionContextValue>(
     () => ({
       state,
+      mediaActivity,
+      activityLevel: activityMonitor.activityLevel,
       getController,
       getControllerHistory,
       setControllerTarget,
       resetController,
-      start: (input) => controller.start(input),
+      start,
       stop: () => controller.stop(),
       reconnect: () => controller.reconnect(),
       setMuted: (muted) => controller.setMuted(muted),
     }),
-    [controller, getController, getControllerHistory, resetController, setControllerTarget, state],
+    [
+      activityMonitor,
+      controller,
+      getController,
+      getControllerHistory,
+      mediaActivity,
+      resetController,
+      setControllerTarget,
+      start,
+      state,
+    ],
   );
+  useEffect(() => {
+    const phase = state.phase.type;
+    activityMonitor.setEnabled(
+      phase !== "idle" && phase !== "stopping" && phase !== "error" && phase !== "unsupported",
+    );
+  }, [activityMonitor, state.phase.type]);
   useEffect(
     () => () => {
+      activityMonitor.dispose();
       void controller.stop();
     },
-    [controller],
+    [activityMonitor, controller],
   );
 
   return <VoiceSessionContext value={value}>{children}</VoiceSessionContext>;
