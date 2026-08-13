@@ -8,6 +8,7 @@ import {
   VoiceGeneration,
   VoiceRealtimeIngressInput,
   VoiceSessionEvent,
+  VoiceSessionOwner,
   VoiceTranscriptDeltaEvent,
   VoiceTranscriptDoneEvent,
   VoiceSessionStartInput,
@@ -21,6 +22,54 @@ const decodeVoiceGetControllerHistoryResult = Schema.decodeUnknownSync(
 );
 
 describe("realtime voice contracts", () => {
+  it("models controller, exact-thread Call, and transcription as distinct owners", () => {
+    const decodeOwner = Schema.decodeUnknownSync(VoiceSessionOwner);
+
+    expect(decodeOwner({ kind: "controller", controllerThreadId: "controller-1" })).toEqual({
+      kind: "controller",
+      controllerThreadId: "controller-1",
+    });
+    expect(decodeOwner({ kind: "thread-call", threadId: "thread-1" })).toEqual({
+      kind: "thread-call",
+      threadId: "thread-1",
+    });
+    expect(
+      decodeOwner({
+        kind: "transcription-test",
+        requestId: "request-1",
+        providerAnchorThreadId: "anchor-1",
+      }),
+    ).toEqual({
+      kind: "transcription-test",
+      requestId: "request-1",
+      providerAnchorThreadId: "anchor-1",
+    });
+  });
+
+  it("rejects owner payloads that mix controller and Call identities", () => {
+    expect(() =>
+      Schema.decodeUnknownSync(VoiceSessionOwner)({
+        kind: "controller",
+        controllerThreadId: "controller-1",
+        threadId: "thread-1",
+      }),
+    ).toThrow();
+  });
+
+  it("accepts the owner seam without changing the current controller wire", () => {
+    const input = Schema.decodeUnknownSync(VoiceSessionStartInput)({
+      environmentId: "environment-1",
+      owner: { kind: "controller", controllerThreadId: "controller-1" },
+      controllerThreadId: "controller-1",
+      clientSessionId: "client-session-1",
+      generation: 1,
+      transport: { type: "webrtc", offerSdp: "v=0\r\n" },
+    });
+
+    expect(input.owner).toEqual({ kind: "controller", controllerThreadId: "controller-1" });
+    expect(input.controllerThreadId).toBe("controller-1");
+  });
+
   it("accepts a generation-fenced WebRTC offer", () => {
     const input = Schema.decodeUnknownSync(VoiceSessionStartInput)({
       controllerThreadId: "controller-1",

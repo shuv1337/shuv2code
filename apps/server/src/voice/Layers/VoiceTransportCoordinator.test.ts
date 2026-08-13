@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { fenceMatches, publicVoiceSessionId } from "./voiceControllerShared.ts";
 import {
+  EnvironmentId,
   ThreadId,
   VoiceClientSessionId,
   VoiceGeneration,
@@ -16,6 +17,11 @@ describe("VoiceTransportCoordinator ownership", () => {
 
   it("requires full fence equality before transport mutation", () => {
     const fence = {
+      environmentId: EnvironmentId.make("env"),
+      owner: {
+        kind: "controller" as const,
+        controllerThreadId: ThreadId.make("controller"),
+      },
       controllerThreadId: ThreadId.make("controller"),
       transportThreadId: ThreadId.make("transport"),
       clientSessionId: VoiceClientSessionId.make("client"),
@@ -41,6 +47,17 @@ describe("VoiceTransportCoordinator ownership", () => {
     assert.strictEqual(fenceMatches(session, fence), true);
     assert.strictEqual(
       fenceMatches(session, { ...fence, generation: VoiceGeneration.make(2) }),
+      false,
+    );
+    assert.strictEqual(
+      fenceMatches(session, {
+        ...fence,
+        owner: { kind: "controller", controllerThreadId: ThreadId.make("other-controller") },
+      }),
+      false,
+    );
+    assert.strictEqual(
+      fenceMatches(session, { ...fence, environmentId: EnvironmentId.make("other-env") }),
       false,
     );
   });

@@ -7,6 +7,7 @@ import {
   VoiceGeneration,
   VoiceRealtimeSessionId,
   VoiceRuntimeInstanceId,
+  VoiceTranscriptionRequestId,
   resolveVoiceSessionStartTransport,
   type VoiceSessionEvent,
   type VoiceSessionFence,
@@ -47,6 +48,7 @@ import {
   fenceMatches,
   mapInternalError,
   publicVoiceSessionId,
+  voiceSessionOwnersEqual,
   voiceError,
 } from "./voiceControllerShared.ts";
 
@@ -217,6 +219,15 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
     )(function* (input) {
       const { start: startInput, binding, controllerRuntime, environmentId, workspaceRoot } = input;
       const purpose = startInput.purpose ?? "conversation";
+      const owner =
+        startInput.owner ??
+        (purpose === "transcription"
+          ? ({
+              kind: "transcription-test",
+              requestId: VoiceTranscriptionRequestId.make(startInput.clientSessionId),
+              providerAnchorThreadId: binding.controllerThreadId,
+            } as const)
+          : ({ kind: "controller", controllerThreadId: binding.controllerThreadId } as const));
       const existingOpen = yield* transports
         .getOpenByControllerThreadId(startInput.controllerThreadId)
         .pipe(
@@ -233,6 +244,8 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         ) {
           yield* input.onActivated(inMemory);
           return {
+            environmentId,
+            owner,
             controller: inMemory.controller,
             transportThreadId: inMemory.fence.transportThreadId,
             clientSessionId: inMemory.fence.clientSessionId,
@@ -389,6 +402,8 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         return negotiated;
       }).pipe(Effect.onError(() => cleanupDurableTransportLease(opened.session)));
       const fence: VoiceSessionFence = {
+        environmentId,
+        owner,
         controllerThreadId: binding.controllerThreadId,
         transportThreadId,
         clientSessionId: startInput.clientSessionId,
@@ -421,6 +436,8 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
       yield* input.onActivated(active);
       const current = (yield* Ref.get(sessionsRef)).get(publicSessionId) ?? active;
       return {
+        environmentId,
+        owner,
         controller: current.controller,
         transportThreadId,
         clientSessionId: startInput.clientSessionId,
@@ -471,6 +488,10 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           const session = snapshot.session;
           if (
             session === undefined ||
+            (input.environmentId !== undefined && input.environmentId !== session.environmentId) ||
+            (input.owner !== undefined &&
+              (session.fence.owner === undefined ||
+                !voiceSessionOwnersEqual(input.owner, session.fence.owner))) ||
             session.fence.generation !== input.generation ||
             session.fence.runtimeInstanceId !== input.runtimeInstanceId
           ) {

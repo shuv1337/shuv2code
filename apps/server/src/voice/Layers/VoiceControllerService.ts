@@ -582,6 +582,36 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     if (!policy.realtime || !policy.read) {
       return yield* voiceError("feature_disabled", "Realtime voice is disabled.", false);
     }
+    const environmentId = yield* environment.getEnvironmentId;
+    if (input.environmentId !== undefined && input.environmentId !== environmentId) {
+      return yield* voiceError(
+        "protocol_violation",
+        "The voice session belongs to another environment.",
+        false,
+      );
+    }
+    if (input.owner?.kind === "thread-call") {
+      // Call is schema-valid now so clients can be built against its honest
+      // identity, but remains operationally unavailable until its direct-thread
+      // routing slice lands. Reject before binding lookup or transport effects.
+      return yield* voiceError(
+        "unsupported_owner",
+        "Direct thread calls are not available in this build.",
+        false,
+      );
+    }
+    if (
+      (input.owner?.kind === "controller" &&
+        input.owner.controllerThreadId !== input.controllerThreadId) ||
+      (input.owner?.kind === "transcription-test" &&
+        input.owner.providerAnchorThreadId !== input.controllerThreadId)
+    ) {
+      return yield* voiceError(
+        "protocol_violation",
+        "The voice owner does not match its compatibility anchor.",
+        false,
+      );
+    }
     const bindingOption = yield* bindings
       .getByControllerThreadId(input.controllerThreadId)
       .pipe(
@@ -620,7 +650,6 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         false,
       );
     }
-    const environmentId = yield* environment.getEnvironmentId;
     const started = yield* transport
       .startTransport({
         start: input,

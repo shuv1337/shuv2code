@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import {
+  EnvironmentId,
   IsoDateTime,
   NonNegativeInt,
   PositiveInt,
@@ -29,6 +30,38 @@ export type VoiceRealtimeSessionId = typeof VoiceRealtimeSessionId.Type;
 
 export const VoiceTranscriptItemId = makeVoiceId("VoiceTranscriptItemId");
 export type VoiceTranscriptItemId = typeof VoiceTranscriptItemId.Type;
+
+export const VoiceTranscriptionRequestId = makeVoiceId("VoiceTranscriptionRequestId");
+export type VoiceTranscriptionRequestId = typeof VoiceTranscriptionRequestId.Type;
+
+/**
+ * Durable semantic owner of a media session. This is deliberately separate
+ * from the surface currently selected in the right panel.
+ */
+export const VoiceSessionOwner = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("controller"),
+    controllerThreadId: ThreadId,
+    threadId: Schema.optionalKey(Schema.Never),
+    requestId: Schema.optionalKey(Schema.Never),
+    providerAnchorThreadId: Schema.optionalKey(Schema.Never),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("thread-call"),
+    threadId: ThreadId,
+    controllerThreadId: Schema.optionalKey(Schema.Never),
+    requestId: Schema.optionalKey(Schema.Never),
+    providerAnchorThreadId: Schema.optionalKey(Schema.Never),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("transcription-test"),
+    requestId: VoiceTranscriptionRequestId,
+    providerAnchorThreadId: ThreadId,
+    controllerThreadId: Schema.optionalKey(Schema.Never),
+    threadId: Schema.optionalKey(Schema.Never),
+  }),
+]);
+export type VoiceSessionOwner = typeof VoiceSessionOwner.Type;
 
 export const VoiceGeneration = PositiveInt.pipe(Schema.brand("VoiceGeneration"));
 export type VoiceGeneration = typeof VoiceGeneration.Type;
@@ -182,6 +215,10 @@ export type VoiceSessionStartTransport = typeof VoiceSessionStartTransport.Type;
  * the negotiated fallback. Legacy clients may still send top-level `offerSdp`.
  */
 export const VoiceSessionStartInput = Schema.Struct({
+  /** Compatibility seam for owner-aware servers; required after the cutover checkpoint. */
+  environmentId: Schema.optionalKey(EnvironmentId),
+  /** Compatibility seam for owner-aware servers; required after the cutover checkpoint. */
+  owner: Schema.optionalKey(VoiceSessionOwner),
   controllerThreadId: ThreadId,
   clientSessionId: VoiceClientSessionId,
   generation: VoiceGeneration,
@@ -210,6 +247,8 @@ export const resolveVoiceSessionStartTransport = (
 };
 
 export const VoiceSessionStartResult = Schema.Struct({
+  environmentId: Schema.optionalKey(EnvironmentId),
+  owner: Schema.optionalKey(VoiceSessionOwner),
   controller: VoiceControllerIdentity,
   transportThreadId: ThreadId,
   clientSessionId: VoiceClientSessionId,
@@ -230,6 +269,8 @@ export const VoiceSessionStartResult = Schema.Struct({
 export type VoiceSessionStartResult = typeof VoiceSessionStartResult.Type;
 
 export const VoiceSessionFence = Schema.Struct({
+  environmentId: Schema.optionalKey(EnvironmentId),
+  owner: Schema.optionalKey(VoiceSessionOwner),
   controllerThreadId: ThreadId,
   transportThreadId: ThreadId,
   clientSessionId: VoiceClientSessionId,
@@ -316,6 +357,8 @@ export const VoiceRealtimeIngressResult = Schema.Struct({
 export type VoiceRealtimeIngressResult = typeof VoiceRealtimeIngressResult.Type;
 
 export const VoiceSubscribeEventsInput = Schema.Struct({
+  environmentId: Schema.optionalKey(EnvironmentId),
+  owner: Schema.optionalKey(VoiceSessionOwner),
   clientSessionId: VoiceClientSessionId,
   generation: VoiceGeneration,
   runtimeInstanceId: VoiceRuntimeInstanceId,
@@ -369,6 +412,7 @@ export const VoiceUnsupportedCode = Schema.Literals([
   "incompatible_version",
   "empty_voice_catalog",
   "webrtc_unavailable",
+  "unsupported_owner",
 ]);
 export type VoiceUnsupportedCode = typeof VoiceUnsupportedCode.Type;
 
@@ -477,6 +521,8 @@ export const VoiceSessionEventPayload = Schema.Union([
 export type VoiceSessionEventPayload = typeof VoiceSessionEventPayload.Type;
 
 export const VoiceSessionEvent = Schema.Struct({
+  environmentId: Schema.optionalKey(EnvironmentId),
+  owner: Schema.optionalKey(VoiceSessionOwner),
   clientSessionId: VoiceClientSessionId,
   generation: VoiceGeneration,
   runtimeInstanceId: VoiceRuntimeInstanceId,

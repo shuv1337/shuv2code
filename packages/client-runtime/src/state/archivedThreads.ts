@@ -5,6 +5,8 @@ import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
+import { isUserFacingThreadShell } from "./threadVisibility.ts";
+
 export interface ArchivedSnapshotEntry {
   readonly environmentId: EnvironmentId;
   readonly snapshot: OrchestrationShellSnapshot;
@@ -55,7 +57,13 @@ export function createArchivedThreadSnapshotsAtomFamily<E>(options: {
 
         const snapshot = Option.getOrNull(AsyncResult.value(result));
         if (snapshot !== null) {
-          snapshots.push({ environmentId, snapshot });
+          snapshots.push({
+            environmentId,
+            snapshot: {
+              ...snapshot,
+              threads: snapshot.threads.filter(isUserFacingThreadShell),
+            },
+          });
         }
 
         if (error === null && result._tag === "Failure") {

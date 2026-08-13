@@ -10,6 +10,7 @@ import type { SnoozePreset } from "@shuv2code/client-runtime/state/thread-settle
 import type { EnvironmentThreadShell } from "@shuv2code/client-runtime/state/shell";
 import { threadSearchMatchKey } from "@shuv2code/client-runtime/state/thread-search";
 import { sortPinnedThreadsByOrderKey } from "@shuv2code/client-runtime/state/thread-sort";
+import { isUserFacingThreadShell } from "@shuv2code/client-runtime/state/thread-visibility";
 import type { EnvironmentId, ProjectId } from "@shuv2code/contracts";
 
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
@@ -361,6 +362,7 @@ export function buildThreadListV2Items(input: {
   const snoozed: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
   for (const thread of input.threads) {
+    if (!isUserFacingThreadShell(thread)) continue;
     // Callers pass live (unarchived) shells; settled threads are among them
     // and partition into the tail via effectiveSettled.
     if (input.environmentId !== null && thread.environmentId !== input.environmentId) continue;

@@ -3,6 +3,7 @@ import {
   VoiceEventSequence,
   VoiceGeneration,
   VoiceTranscriptItemId,
+  VoiceTranscriptionRequestId,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
@@ -526,6 +527,20 @@ export class VoiceSessionController {
             exchangeOffer: async (offerSdp) => {
               this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
               const started = await this.#api.start(input.environmentId, {
+                environmentId: input.environmentId,
+                owner:
+                  input.purpose === "transcription"
+                    ? {
+                        kind: "transcription-test",
+                        requestId: VoiceTranscriptionRequestId.make(
+                          generationIdentity.clientSessionId,
+                        ),
+                        providerAnchorThreadId: ensured.controller.controllerThreadId,
+                      }
+                    : {
+                        kind: "controller",
+                        controllerThreadId: ensured.controller.controllerThreadId,
+                      },
                 controllerThreadId: ensured.controller.controllerThreadId,
                 clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
                 generation: VoiceGeneration.make(generationIdentity.generation),
@@ -587,6 +602,18 @@ export class VoiceSessionController {
       } else if (support.pcm && this.#api.appendAudio !== undefined) {
         this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
         const started = await this.#api.start(input.environmentId, {
+          environmentId: input.environmentId,
+          owner:
+            input.purpose === "transcription"
+              ? {
+                  kind: "transcription-test",
+                  requestId: VoiceTranscriptionRequestId.make(generationIdentity.clientSessionId),
+                  providerAnchorThreadId: ensured.controller.controllerThreadId,
+                }
+              : {
+                  kind: "controller",
+                  controllerThreadId: ensured.controller.controllerThreadId,
+                },
           controllerThreadId: ensured.controller.controllerThreadId,
           clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
           generation: VoiceGeneration.make(generationIdentity.generation),
@@ -702,6 +729,8 @@ export class VoiceSessionController {
     generation: number,
   ): Promise<void> {
     const fence: VoiceSessionFence = {
+      ...(started.environmentId === undefined ? {} : { environmentId: started.environmentId }),
+      ...(started.owner === undefined ? {} : { owner: started.owner }),
       controllerThreadId: started.controller.controllerThreadId,
       transportThreadId: started.transportThreadId,
       clientSessionId: started.clientSessionId,
@@ -726,6 +755,8 @@ export class VoiceSessionController {
       throw new VoiceSessionError("stale-generation", "The voice server returned a stale session.");
     }
     this.#fence = {
+      ...(started.environmentId === undefined ? {} : { environmentId: started.environmentId }),
+      ...(started.owner === undefined ? {} : { owner: started.owner }),
       controllerThreadId: started.controller.controllerThreadId,
       transportThreadId: started.transportThreadId,
       clientSessionId: started.clientSessionId,
@@ -734,6 +765,8 @@ export class VoiceSessionController {
       realtimeSessionId: started.realtimeSessionId,
     };
     this.#subscribeToEvents(environmentId, {
+      ...(started.environmentId === undefined ? {} : { environmentId: started.environmentId }),
+      ...(started.owner === undefined ? {} : { owner: started.owner }),
       clientSessionId: started.clientSessionId,
       generation: started.generation,
       runtimeInstanceId: started.runtimeInstanceId,

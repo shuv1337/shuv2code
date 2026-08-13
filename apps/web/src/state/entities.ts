@@ -8,6 +8,7 @@ import {
   type EnvironmentThreadStatus,
   mergeEnvironmentThread,
 } from "@shuv2code/client-runtime/state/threads";
+import { isUserFacingThreadShell } from "@shuv2code/client-runtime/state/thread-visibility";
 import type {
   OrchestrationMessage,
   OrchestrationProposedPlan,
@@ -132,9 +133,7 @@ export function useThreadShellsForProjectRefs(
   return useMemo(() => threads.filter(isUserFacingThreadShell), [threads]);
 }
 
-export function isUserFacingThreadShell(thread: Pick<EnvironmentThreadShell, "purpose">): boolean {
-  return thread.purpose === undefined || thread.purpose === "standard";
-}
+export { isUserFacingThreadShell };
 
 export function useProject(ref: ScopedProjectRef | null): EnvironmentProject | null {
   return useAtomValue(ref === null ? EMPTY_PROJECT_ATOM : environmentProjects.projectAtom(ref));

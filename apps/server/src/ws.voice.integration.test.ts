@@ -445,7 +445,28 @@ describe("authenticated voice RPC vertical integration", () => {
         if (deniedStart._tag !== "EnvironmentAuthorizationError") return assert.fail();
         assert.strictEqual(deniedStart.requiredScope, AuthOrchestrationOperateScope);
 
+        const unsupportedCall = yield* Effect.flip(
+          fullClient[WS_METHODS.voiceStart]({
+            environmentId,
+            owner: { kind: "thread-call", threadId: targetThreadId },
+            // Temporary compatibility anchor; ignored by the unsupported-owner path.
+            controllerThreadId,
+            clientSessionId: VoiceClientSessionId.make("unsupported-call-session"),
+            generation,
+            transport: { type: "webrtc", offerSdp: "offer-sdp" },
+          }),
+        );
+        assert.strictEqual(unsupportedCall._tag, "VoiceControllerError");
+        if (unsupportedCall._tag !== "VoiceControllerError") return assert.fail();
+        assert.strictEqual(unsupportedCall.code, "unsupported_owner");
+        assert.strictEqual(
+          yield* transports.getOpenByControllerThreadId(controllerThreadId),
+          Option.none(),
+        );
+
         const started = yield* fullClient[WS_METHODS.voiceStart]({
+          environmentId,
+          owner: { kind: "controller", controllerThreadId },
           controllerThreadId,
           clientSessionId,
           generation,

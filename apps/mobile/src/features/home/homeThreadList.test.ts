@@ -72,6 +72,41 @@ function buildGroups(
 }
 
 describe("buildHomeThreadGroups", () => {
+  it("hides managed Voice threads", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const project = makeProject({
+      environmentId,
+      id: ProjectId.make("project-1"),
+      title: "shuv2code",
+    });
+    const standard = makeThread({
+      environmentId,
+      id: ThreadId.make("thread-standard"),
+      projectId: project.id,
+      title: "Standard",
+      purpose: "standard",
+    });
+    const controller = makeThread({
+      environmentId,
+      id: ThreadId.make("thread-controller"),
+      projectId: project.id,
+      title: "Controller",
+      purpose: "voice-controller",
+    });
+    const transport = makeThread({
+      environmentId,
+      id: ThreadId.make("thread-transport"),
+      projectId: project.id,
+      title: "Transport",
+      purpose: "voice-transport",
+    });
+
+    const groups = buildGroups([project], [standard, controller, transport]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.threads.map((thread) => thread.id)).toEqual([standard.id]);
+  });
+
   it("builds one v2 scope for the same repository across environments", () => {
     const localEnvironmentId = EnvironmentId.make("environment-local");
     const remoteEnvironmentId = EnvironmentId.make("environment-remote");

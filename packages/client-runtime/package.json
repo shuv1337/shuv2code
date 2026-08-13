@@ -159,6 +159,10 @@
       "types": "./src/state/threadSearch.ts",
       "default": "./src/state/threadSearch.ts"
     },
+    "./state/thread-visibility": {
+      "types": "./src/state/threadVisibility.ts",
+      "default": "./src/state/threadVisibility.ts"
+    },
     "./state/vcs": {
       "types": "./src/state/vcs.ts",
       "default": "./src/state/vcs.ts"
