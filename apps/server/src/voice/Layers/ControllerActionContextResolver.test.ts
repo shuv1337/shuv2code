@@ -83,6 +83,7 @@ const openControllerScope = Effect.gen(function* () {
   const opened = yield* transports.openOrReplay({
     transportSessionId,
     environmentId,
+    owner: { kind: "controller", controllerThreadId },
     controllerThreadId,
     transportThreadId: ThreadId.make("transport-thread-1"),
     runtimeInstanceId: transportRuntimeInstanceId,

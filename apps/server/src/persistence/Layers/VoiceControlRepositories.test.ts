@@ -76,6 +76,7 @@ const openTransport = Effect.gen(function* () {
   const opened = yield* transports.openOrReplay({
     transportSessionId: "transport-1",
     environmentId,
+    owner: { kind: "controller", controllerThreadId },
     controllerThreadId,
     transportThreadId: ThreadId.make("transport-thread-1"),
     runtimeInstanceId: "transport-runtime-1",
@@ -121,6 +122,105 @@ const createBoundAction = (voiceActionId: string, handoffId: string, turnId: str
   });
 
 layer("VoiceControlRepositories", (it) => {
+  it.effect("does not create controller actions for non-controller-owned transports", () =>
+    Effect.gen(function* () {
+      const transports = yield* VoiceTransportSessionRepository;
+      const actions = yield* VoiceControllerActionRepository;
+      yield* resetVoiceRows;
+      yield* reserveBinding;
+
+      const opened = yield* transports.openOrReplay({
+        transportSessionId: "transcription-transport",
+        environmentId,
+        owner: {
+          kind: "transcription-test",
+          requestId: "transcription-request" as never,
+          providerAnchorThreadId: controllerThreadId,
+        },
+        controllerThreadId,
+        transportThreadId: ThreadId.make("transcription-thread"),
+        runtimeInstanceId: "transcription-runtime",
+        generation: 1,
+        createdAt: now,
+      });
+      assert.strictEqual(opened._tag, "created");
+      assert.isTrue(
+        yield* transports.activate({
+          transportSessionId: "transcription-transport",
+          generation: 1,
+          runtimeInstanceId: "transcription-runtime",
+          realtimeSessionId: "transcription-realtime",
+          updatedAt: now,
+        }),
+      );
+
+      const action = yield* actions.createOrReplay({
+        voiceActionId: "forbidden-action",
+        environmentId,
+        controllerThreadId,
+        transportSessionId: "transcription-transport",
+        transportRuntimeInstanceId: "transcription-runtime",
+        transportGeneration: 1,
+        handoffId: "forbidden-handoff",
+        handoffItemId: "forbidden-item",
+        clientUserMessageId: "forbidden-action",
+        controllerRuntimeInstanceId: "controller-runtime",
+        createdAt: now,
+      });
+      assert.deepStrictEqual(action, { _tag: "conflict", action: null });
+    }),
+  );
+
+  it.effect("enforces one open media lease per environment across different owners", () =>
+    Effect.gen(function* () {
+      const transports = yield* VoiceTransportSessionRepository;
+      yield* resetVoiceRows;
+      yield* reserveBinding;
+
+      const first = yield* transports.openOrReplay({
+        transportSessionId: "controller-lease",
+        environmentId,
+        owner: { kind: "controller", controllerThreadId },
+        controllerThreadId,
+        transportThreadId: ThreadId.make("controller-transport"),
+        runtimeInstanceId: "controller-runtime",
+        generation: 1,
+        createdAt: now,
+      });
+      assert.strictEqual(first._tag, "created");
+
+      const conflict = yield* transports.openOrReplay({
+        transportSessionId: "call-lease",
+        environmentId,
+        owner: { kind: "thread-call", threadId: ThreadId.make("ordinary-thread") },
+        controllerThreadId: ThreadId.make("call-provider-anchor"),
+        transportThreadId: ThreadId.make("call-transport"),
+        runtimeInstanceId: "call-runtime",
+        generation: 1,
+        createdAt: now,
+      });
+      assert.strictEqual(conflict._tag, "conflict");
+      assert.strictEqual(conflict.session?.transportSessionId, "controller-lease");
+      assert.strictEqual(
+        Option.getOrThrow(yield* transports.getOpenByEnvironmentId(environmentId))
+          .transportSessionId,
+        "controller-lease",
+      );
+
+      const otherEnvironment = yield* transports.openOrReplay({
+        transportSessionId: "other-environment-lease",
+        environmentId: EnvironmentId.make("environment-2"),
+        owner: { kind: "controller", controllerThreadId },
+        controllerThreadId,
+        transportThreadId: ThreadId.make("other-environment-transport"),
+        runtimeInstanceId: "other-environment-runtime",
+        generation: 1,
+        createdAt: now,
+      });
+      assert.strictEqual(otherEnvironment._tag, "created");
+    }),
+  );
+
   it.effect("reserves one controller and rotates the control epoch atomically", () =>
     Effect.gen(function* () {
       const bindings = yield* VoiceControllerBindingRepository;
@@ -336,6 +436,7 @@ layer("VoiceControlRepositories", (it) => {
       const replacementTransport = yield* transports.openOrReplay({
         transportSessionId: "different-client:1",
         environmentId,
+        owner: { kind: "controller", controllerThreadId },
         controllerThreadId,
         transportThreadId: ThreadId.make("transport-thread-2"),
         runtimeInstanceId: "transport-runtime-2",

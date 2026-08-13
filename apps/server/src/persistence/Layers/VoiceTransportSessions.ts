@@ -12,6 +12,28 @@ import {
 } from "../Services/VoiceTransportSessions.ts";
 import { VoiceTransportSession } from "../VoiceControlModels.ts";
 
+const ownerKind = (
+  owner: Parameters<VoiceTransportSessionRepositoryShape["openOrReplay"]>[0]["owner"],
+) =>
+  owner.kind === "controller"
+    ? "controller"
+    : owner.kind === "thread-call"
+      ? "thread"
+      : "transcription";
+
+const ownerId = (
+  owner: Parameters<VoiceTransportSessionRepositoryShape["openOrReplay"]>[0]["owner"],
+) =>
+  owner.kind === "controller"
+    ? owner.controllerThreadId
+    : owner.kind === "thread-call"
+      ? owner.threadId
+      : owner.requestId;
+
+const ownerAnchor = (
+  owner: Parameters<VoiceTransportSessionRepositoryShape["openOrReplay"]>[0]["owner"],
+) => (owner.kind === "transcription-test" ? owner.providerAnchorThreadId : null);
+
 const TransportSessionIdRequest = Schema.Struct({
   transportSessionId: Schema.String,
 });
@@ -27,6 +49,9 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
         SELECT
           transport_session_id AS "transportSessionId",
           environment_id AS "environmentId",
+          owner_kind AS "ownerKind",
+          owner_id AS "ownerId",
+          anchor_thread_id AS "anchorThreadId",
           controller_thread_id AS "controllerThreadId",
           transport_thread_id AS "transportThreadId",
           runtime_instance_id AS "runtimeInstanceId",
@@ -49,6 +74,9 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
         SELECT
           transport_session_id AS "transportSessionId",
           environment_id AS "environmentId",
+          owner_kind AS "ownerKind",
+          owner_id AS "ownerId",
+          anchor_thread_id AS "anchorThreadId",
           controller_thread_id AS "controllerThreadId",
           transport_thread_id AS "transportThreadId",
           runtime_instance_id AS "runtimeInstanceId",
@@ -66,6 +94,34 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
       `,
   });
 
+  const findOpenByEnvironment = SqlSchema.findOneOption({
+    Request: VoiceTransportSession.fields.environmentId,
+    Result: VoiceTransportSession,
+    execute: (environmentId) =>
+      sql`
+        SELECT
+          transport_session_id AS "transportSessionId",
+          environment_id AS "environmentId",
+          owner_kind AS "ownerKind",
+          owner_id AS "ownerId",
+          anchor_thread_id AS "anchorThreadId",
+          controller_thread_id AS "controllerThreadId",
+          transport_thread_id AS "transportThreadId",
+          runtime_instance_id AS "runtimeInstanceId",
+          generation,
+          realtime_session_id AS "realtimeSessionId",
+          state,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          closed_at AS "closedAt"
+        FROM voice_transport_sessions
+        WHERE environment_id = ${environmentId}
+          AND state IN ('negotiating', 'active', 'closing')
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1
+      `,
+  });
+
   const openOrReplay: VoiceTransportSessionRepositoryShape["openOrReplay"] = (input) =>
     sql
       .withTransaction(
@@ -75,6 +131,9 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
               transport_session_id,
               environment_id,
               controller_thread_id,
+              owner_kind,
+              owner_id,
+              anchor_thread_id,
               transport_thread_id,
               runtime_instance_id,
               generation,
@@ -88,6 +147,13 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
               ${input.transportSessionId},
               ${input.environmentId},
               ${input.controllerThreadId},
+              ${ownerKind(input.owner)},
+              ${ownerId(input.owner)},
+              ${
+                input.owner.kind === "transcription-test"
+                  ? input.owner.providerAnchorThreadId
+                  : null
+              },
               ${input.transportThreadId},
               ${input.runtimeInstanceId},
               ${input.generation},
@@ -105,6 +171,9 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
             const session = byId.value;
             const exact =
               session.environmentId === input.environmentId &&
+              session.ownerKind === ownerKind(input.owner) &&
+              session.ownerId === ownerId(input.owner) &&
+              session.anchorThreadId === ownerAnchor(input.owner) &&
               session.controllerThreadId === input.controllerThreadId &&
               session.transportThreadId === input.transportThreadId &&
               session.runtimeInstanceId === input.runtimeInstanceId &&
@@ -115,7 +184,7 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
               : ({ _tag: "existing", session } as const);
           }
 
-          const open = yield* findOpenByController(input.controllerThreadId);
+          const open = yield* findOpenByEnvironment(input.environmentId);
           return {
             _tag: "conflict",
             session: Option.getOrNull(open),
@@ -131,6 +200,15 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
   const getById: VoiceTransportSessionRepositoryShape["getById"] = (transportSessionId) =>
     findById({ transportSessionId }).pipe(
       Effect.mapError(toPersistenceSqlError("VoiceTransportSessionRepository.getById:query")),
+    );
+
+  const getOpenByEnvironmentId: VoiceTransportSessionRepositoryShape["getOpenByEnvironmentId"] = (
+    environmentId,
+  ) =>
+    findOpenByEnvironment(environmentId).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("VoiceTransportSessionRepository.getOpenByEnvironmentId:query"),
+      ),
     );
 
   const getOpenByControllerThreadId: VoiceTransportSessionRepositoryShape["getOpenByControllerThreadId"] =
@@ -200,6 +278,7 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
   return VoiceTransportSessionRepository.of({
     openOrReplay,
     getById,
+    getOpenByEnvironmentId,
     getOpenByControllerThreadId,
     activate,
     compareAndSetState,

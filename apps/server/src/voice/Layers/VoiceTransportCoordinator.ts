@@ -193,6 +193,22 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
       yield* archiveTransportThread({
         transportSessionId: session.transportSessionId,
         environmentId: session.environmentId,
+        ownerKind:
+          session.fence.owner?.kind === "thread-call"
+            ? "thread"
+            : session.fence.owner?.kind === "transcription-test"
+              ? "transcription"
+              : "controller",
+        ownerId:
+          session.fence.owner?.kind === "thread-call"
+            ? session.fence.owner.threadId
+            : session.fence.owner?.kind === "transcription-test"
+              ? session.fence.owner.requestId
+              : session.fence.controllerThreadId,
+        anchorThreadId:
+          session.fence.owner?.kind === "transcription-test"
+            ? session.fence.owner.providerAnchorThreadId
+            : null,
         controllerThreadId: session.fence.controllerThreadId,
         transportThreadId: session.fence.transportThreadId,
         runtimeInstanceId: session.fence.runtimeInstanceId,
@@ -323,6 +339,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         .openOrReplay({
           transportSessionId,
           environmentId,
+          owner,
           controllerThreadId: binding.controllerThreadId,
           transportThreadId,
           runtimeInstanceId,

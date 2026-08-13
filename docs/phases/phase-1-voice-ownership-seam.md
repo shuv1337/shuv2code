@@ -1,6 +1,6 @@
 # Phase 1: Voice Ownership Seam
 
-Status: active — checkpoint 1A complete; additive 1B/1D compatibility seam implemented
+Status: active — checkpoints 1A and 1C complete; additive 1B/1D compatibility seam implemented
 
 ## Overview and motivation
 
@@ -23,7 +23,7 @@ This is the plan's only deliberately enabling slice. It introduces the smallest 
 | ID  | Feature                   | Layer                     | Actions                                                                         | Status             |
 | --- | ------------------------- | ------------------------- | ------------------------------------------------------------------------------- | ------------------ |
 | 1.1 | Session-owner schema      | Contracts                 | Add owner union; reject mixed identities; update result/fence/event schemas     | Compatibility seam |
-| 1.2 | Environment media lease   | Server persistence        | Migrate lease ownership and enforce one open lease per environment              | Proposed           |
+| 1.2 | Environment media lease   | Server persistence        | Migrate lease ownership and enforce one open lease per environment              | Complete           |
 | 1.3 | Owner-aware session state | Client runtime/web        | Carry owner through reducer and controller without changing Controller UX       | Wire seam          |
 | 1.4 | Shared thread visibility  | Client runtime/web/mobile | Export one predicate and remove client-local policy                             | Complete           |
 | 1.5 | Compatibility proof       | Tests/web                 | Prove current Controller startup, transcript, stop, and reconnect are unchanged | Complete           |
@@ -143,7 +143,7 @@ Move the predicate and consume it in web/mobile active, search, and archived sel
 
 Add strict owner branches across start/result/fence/stop/ingress/append/subscribe/events. During this named compatibility seam, owner and environment are optional and the existing controller anchor remains required; first-party web sends both identities. Mixed-field owners are rejected, owner/anchor mismatches are rejected server-side, and schema-valid thread Call returns `unsupported_owner` before a transport lease exists. Remove the compatibility anchor and legacy top-level `offerSdp` only when checkpoint 1D makes owner routing authoritative.
 
-### 1C. Migration and environment lease
+### 1C. Migration and environment lease — implemented
 
 Rebuild the complete foreign-key chain, resolve pre-existing environment conflicts, update transport and controller-action repositories, and prove two-owner/same-environment conflicts plus cross-environment independence.
 

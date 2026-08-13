@@ -64,6 +64,7 @@ import Migration0046 from "./Migrations/046_ProjectionProjectFaviconPath.ts";
 // Migration 47 is reserved for the independently reviewable thread-control
 // grants change. Voice migrations start at 48 so either PR can land first.
 import Migration0048 from "./Migrations/048_VoiceTransportLeaseIdentity.ts";
+import Migration0049 from "./Migrations/049_VoiceSessionOwnership.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -123,6 +124,7 @@ export const migrationEntries = [
   [45, "ProjectionProjectsDefaultThreadEnvMode", Migration0045],
   [46, "ProjectionProjectFaviconPath", Migration0046],
   [48, "VoiceTransportLeaseIdentity", Migration0048],
+  [49, "VoiceSessionOwnership", Migration0049],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
