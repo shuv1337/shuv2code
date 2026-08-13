@@ -157,7 +157,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
     }),
   );
 
-  it.effect("accepts OpenCode V2 channel prerelease builds without the V1 version floor", () =>
+  it.effect("fails closed when the configured binary speaks OpenCode v2", () =>
     Effect.gen(function* () {
       runtimeMock.state.versionStdout = "opencode v0.0.0-next-202607220047\n";
       runtimeMock.state.inventory = {
@@ -183,12 +183,12 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
 
       const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
 
-      NodeAssert.equal(snapshot.status, "ready");
+      NodeAssert.equal(snapshot.status, "error");
       NodeAssert.equal(snapshot.installed, true);
       NodeAssert.equal(snapshot.version, "0.0.0-next-202607220047");
-      NodeAssert.equal(
-        snapshot.models.some((model) => model.slug === "openai/gpt-5.4"),
-        true,
+      NodeAssert.match(
+        snapshot.message ?? "",
+        /this binary speaks OpenCode v2; use the opencode2 provider/,
       );
       NodeAssert.equal(
         detectOpenCodeProtocolFromVersionOutput(runtimeMock.state.versionStdout),

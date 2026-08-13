@@ -56,6 +56,7 @@ import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "../builtInDrivers.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
 import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistryLive.ts";
+import { OpenCodeV2BindingReady } from "./OpenCodeV2Binding.ts";
 
 /**
  * Synthesize a `ProviderInstanceConfigMap` from a `ServerSettings` snapshot.
@@ -149,12 +150,13 @@ const SettingsWatcherLive = Layer.effectDiscard(
  * The mutator tag is technically also exposed; only this module imports
  * it, so the visibility leak is harmless in practice.
  */
-export const ProviderInstanceRegistryHydrationLive: Layer.Layer<
+export const ProviderInstanceRegistryHydrationAfterBindingLive: Layer.Layer<
   ProviderInstanceRegistry,
   never,
-  BuiltInDriversEnv | ServerSettingsService
+  BuiltInDriversEnv | ServerSettingsService | OpenCodeV2BindingReady
 > = Layer.unwrap(
   Effect.gen(function* () {
+    yield* OpenCodeV2BindingReady;
     const serverSettings = yield* ServerSettingsService;
     const initialSettings: ServerSettings | undefined = yield* serverSettings.getSettings.pipe(
       Effect.orElseSucceed(() => undefined),
@@ -171,4 +173,9 @@ export const ProviderInstanceRegistryHydrationLive: Layer.Layer<
 
     return SettingsWatcherLive.pipe(Layer.provideMerge(mutableLayer));
   }),
-) as Layer.Layer<ProviderInstanceRegistry, never, BuiltInDriversEnv | ServerSettingsService>;
+);
+
+export const ProviderInstanceRegistryHydrationLive =
+  ProviderInstanceRegistryHydrationAfterBindingLive.pipe(
+    Layer.provide(Layer.succeed(OpenCodeV2BindingReady, undefined)),
+  );

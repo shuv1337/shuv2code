@@ -265,6 +265,46 @@ describe("derivePendingUserInputs", () => {
     ]);
   });
 
+  it("keeps zero-option custom-only questions", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-custom-only",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-custom",
+          questions: [
+            {
+              id: "q0",
+              header: "Custom",
+              question: "Type your own answer",
+              options: [],
+              multiSelect: false,
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities)).toEqual([
+      {
+        requestId: "req-user-input-custom",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        questions: [
+          {
+            id: "q0",
+            header: "Custom",
+            question: "Type your own answer",
+            options: [],
+            multiSelect: false,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("clears stale pending user-input prompts when the provider reports an orphaned request", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

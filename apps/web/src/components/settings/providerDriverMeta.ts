@@ -4,6 +4,7 @@ import {
   CursorSettings,
   GrokSettings,
   OpenCodeSettings,
+  OpenCodeV2Settings,
   ProviderDriverKind,
 } from "@shuv2code/contracts";
 import type * as Schema from "effect/Schema";
@@ -66,6 +67,12 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "OpenCode",
     icon: OpenCodeIcon,
     settingsSchema: OpenCodeSettings,
+  },
+  {
+    value: ProviderDriverKind.make("opencodeV2"),
+    label: "opencode2",
+    icon: OpenCodeIcon,
+    settingsSchema: OpenCodeV2Settings,
   },
 ];
 

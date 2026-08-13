@@ -40,6 +40,14 @@ const multiSelectQuestion = {
   multiSelect: true,
 } as const;
 
+const customOnlyQuestion = {
+  id: "q0",
+  header: "Custom",
+  question: "Type your own answer",
+  options: [],
+  multiSelect: false,
+} as const;
+
 describe("resolvePendingUserInputAnswer", () => {
   it("prefers a custom answer over selected options", () => {
     expect(
@@ -147,6 +155,18 @@ describe("buildPendingUserInputAnswers", () => {
       }),
     ).toEqual({
       areas: ["Server", "Web"],
+    });
+  });
+
+  it("accepts a custom-only zero-option answer", () => {
+    expect(
+      buildPendingUserInputAnswers([customOnlyQuestion], {
+        q0: {
+          customAnswer: "ship the native v2 adapter",
+        },
+      }),
+    ).toEqual({
+      q0: "ship the native v2 adapter",
     });
   });
 

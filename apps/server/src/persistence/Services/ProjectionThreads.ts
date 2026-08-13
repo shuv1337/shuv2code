@@ -101,6 +101,11 @@ export interface ProjectionThreadRepositoryShape {
   readonly deleteById: (
     input: DeleteProjectionThreadInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  readonly remapOpenCodeV2ModelSelection: (input: {
+    readonly fromInstanceId: string;
+    readonly toInstanceId: string;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
 /**

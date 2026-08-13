@@ -329,6 +329,22 @@ describe("ServerSettingsPatch.providerInstances", () => {
     const ollamaId = ProviderInstanceId.make("ollama_local");
     expect(patch.providerInstances?.[ollamaId]?.driver).toBe("ollama");
   });
+
+  it("decodes an optional opencodeV2 provider settings patch", () => {
+    const patch = decodeServerSettingsPatch({
+      providers: {
+        opencodeV2: {
+          binaryPath: "  /opt/shuvcode  ",
+          serverUrl: "  http://127.0.0.1:4096  ",
+        },
+      },
+    });
+
+    expect(patch.providers?.opencodeV2).toEqual({
+      binaryPath: "/opt/shuvcode",
+      serverUrl: "http://127.0.0.1:4096",
+    });
+  });
 });
 
 describe("ServerSettingsPatch string normalization", () => {
@@ -361,6 +377,7 @@ describe("ServerSettingsPatch string normalization", () => {
     expect(patch.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(patch.providers?.codex?.homePath).toBe("~/.codex");
     expect(patch.providers?.codex?.launchArgs).toBe("--strict-config --enable foo");
+    expect(patch.providers?.opencodeV2).toBeUndefined();
     expect(patch.providerInstances?.[ProviderInstanceId.make("codex_personal")]?.driver).toBe(
       "codex",
     );

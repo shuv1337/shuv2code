@@ -99,10 +99,27 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
       ),
     );
 
+  const remapOpenCodeV2Identity: ProjectionThreadSessionRepositoryShape["remapOpenCodeV2Identity"] =
+    (input) =>
+      sql`
+        UPDATE projection_thread_sessions
+        SET
+          provider_name = ${input.toProviderName},
+          provider_instance_id = ${input.toInstanceId}
+        WHERE provider_instance_id = ${input.fromInstanceId}
+           OR (provider_instance_id IS NULL AND provider_name = 'opencode')
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionThreadSessionRepository.remapOpenCodeV2Identity:query"),
+        ),
+      );
+
   return {
     upsert,
     getByThreadId,
     deleteByThreadId,
+    remapOpenCodeV2Identity,
   } satisfies ProjectionThreadSessionRepositoryShape;
 });
 

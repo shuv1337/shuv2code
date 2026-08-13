@@ -21,6 +21,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceId,
   type ScopedThreadRef,
+  OpenCodeV2Settings,
   type SidebarProjectGroupingMode,
 } from "@shuv2code/contracts";
 import { scopeThreadRef } from "@shuv2code/client-runtime/environment";
@@ -47,6 +48,7 @@ import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
 import {
   canCheckForUpdate,
@@ -1719,11 +1721,17 @@ export function ProviderSettingsPanel() {
   );
   const visibleProviderSettings = PROVIDER_SETTINGS.filter(
     (providerSettings) =>
-      providerSettings.provider !== "cursor" ||
-      serverProviders.some(
-        (provider) =>
-          provider.instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("cursor")),
-      ),
+      (providerSettings.provider !== "cursor" ||
+        serverProviders.some(
+          (provider) =>
+            provider.instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("cursor")),
+        )) &&
+      (providerSettings.provider !== "opencodeV2" ||
+        settings.providers.opencodeV2 !== undefined ||
+        Object.values(settings.providerInstances ?? {}).some(
+          (instance) => instance.driver === providerSettings.provider,
+        ) ||
+        serverProviders.some((provider) => provider.driver === providerSettings.provider)),
   );
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
   const textGenInstanceId = textGenerationModelSelection.instanceId;
@@ -1855,11 +1863,13 @@ export function ProviderSettingsPanel() {
       string,
       LegacyProviderSettings
     >;
+    const defaultOpenCodeV2Config = Schema.decodeSync(OpenCodeV2Settings)({});
     const driver = providerSettings.provider;
     const defaultInstanceId = defaultInstanceIdForDriver(driver);
     const explicitInstance = settings.providerInstances?.[defaultInstanceId];
-    const legacyConfig = legacyProviders[providerSettings.provider]!;
-    const defaultLegacyConfig = defaultLegacyProviders[providerSettings.provider]!;
+    const defaultLegacyConfig =
+      defaultLegacyProviders[providerSettings.provider] ?? defaultOpenCodeV2Config;
+    const legacyConfig = legacyProviders[providerSettings.provider] ?? defaultLegacyConfig;
     const effectiveInstance: ProviderInstanceConfig =
       explicitInstance ??
       ({

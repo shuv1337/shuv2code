@@ -373,6 +373,21 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     }
     const protocol = detectOpenCodeProtocolFromVersionOutput(versionExit.value.stdout);
     version = parseOpenCodeCliVersion(versionExit.value.stdout);
+    if (protocol === "v2") {
+      return buildServerProvider({
+        presentation: OPENCODE_PRESENTATION,
+        enabled: openCodeSettings.enabled,
+        checkedAt,
+        models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE_MODEL_CAPABILITIES),
+        probe: {
+          installed: true,
+          version,
+          status: "error",
+          auth: { status: "unknown" },
+          message: "this binary speaks OpenCode v2; use the opencode2 provider.",
+        },
+      });
+    }
 
     if (!version) {
       return fallback(
@@ -405,6 +420,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
           Effect.gen(function* () {
             const server = yield* openCodeRuntime.connectToOpenCodeServer({
               binaryPath: openCodeSettings.binaryPath,
+              requiredProtocol: "v1",
               serverUrl: openCodeSettings.serverUrl,
               ...(openCodeSettings.serverPassword
                 ? { serverPassword: openCodeSettings.serverPassword }

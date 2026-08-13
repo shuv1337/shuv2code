@@ -99,6 +99,12 @@ export class ProviderSessionRuntimeRepository extends Context.Service<
     readonly deleteByThreadId: (
       input: DeleteProviderSessionRuntimeInput,
     ) => Effect.Effect<void, ProviderSessionRuntimeRepositoryError>;
+
+    readonly remapOpenCodeV2Identity: (input: {
+      readonly fromInstanceId: ProviderInstanceId;
+      readonly toInstanceId: ProviderInstanceId;
+      readonly toProviderName: string;
+    }) => Effect.Effect<void, ProviderSessionRuntimeRepositoryError>;
   }
 >()("@shuv2code/persistence/ProviderSessionRuntime/ProviderSessionRuntimeRepository") {}
 
@@ -322,11 +328,45 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  const remapOpenCodeV2Identity: ProviderSessionRuntimeRepository["Service"]["remapOpenCodeV2Identity"] =
+    (input) =>
+      sql`
+        UPDATE provider_session_runtime
+        SET
+          provider_name = ${input.toProviderName},
+          provider_instance_id = ${input.toInstanceId},
+          adapter_key = ${input.toProviderName},
+          resume_cursor_json = json_patch(
+            json_object(
+              'kind', 'opencode-v2',
+              'schemaVersion', 1,
+              'sessionId', json_extract(resume_cursor_json, '$.sessionId')
+            ),
+            CASE
+              WHEN json_type(resume_cursor_json, '$.activeTurnId') = 'text'
+              THEN json_object('activeTurnId', json_extract(resume_cursor_json, '$.activeTurnId'))
+              ELSE json('{}')
+            END
+          )
+        WHERE provider_instance_id = ${input.fromInstanceId}
+          AND json_type(resume_cursor_json, '$.sessionId') = 'text'
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          (cause) =>
+            new PersistenceSqlError({
+              operation: "ProviderSessionRuntimeRepository.remapOpenCodeV2Identity:query",
+              cause,
+            }),
+        ),
+      );
+
   return {
     upsert,
     getByThreadId,
     list,
     deleteByThreadId,
+    remapOpenCodeV2Identity,
   } satisfies ProviderSessionRuntimeRepository["Service"];
 });
 

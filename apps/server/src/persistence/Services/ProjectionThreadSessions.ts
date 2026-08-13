@@ -67,6 +67,12 @@ export interface ProjectionThreadSessionRepositoryShape {
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadSessionInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  readonly remapOpenCodeV2Identity: (input: {
+    readonly fromInstanceId: ProviderInstanceId;
+    readonly toInstanceId: ProviderInstanceId;
+    readonly toProviderName: string;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
 /**

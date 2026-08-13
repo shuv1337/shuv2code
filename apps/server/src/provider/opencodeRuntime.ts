@@ -39,7 +39,6 @@ import { collectStreamAsString } from "./providerSnapshot.ts";
 import * as NetService from "@shuv2code/shared/Net";
 import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 import { resolveSpawnCommand } from "@shuv2code/shared/shell";
-import { createOpenCodeV2CompatibilityClient } from "./opencodeV2Compatibility.ts";
 import { detectOpenCodeServerProtocol, requireOpenCodeV2Service } from "./opencodeV2Service.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
@@ -202,6 +201,7 @@ export interface OpenCodeRuntimeShape {
     readonly port?: number;
     readonly hostname?: string;
     readonly timeoutMs?: number;
+    readonly requiredProtocol?: OpenCodeProtocol;
   }) => Effect.Effect<OpenCodeServerConnection, OpenCodeRuntimeError, Scope.Scope>;
   readonly runOpenCodeCommand: (input: {
     readonly binaryPath: string;
@@ -715,6 +715,22 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       } satisfies OpenCodeServerProcess;
     });
 
+  const requireProtocol = (
+    connection: OpenCodeServerConnection,
+    requiredProtocol: OpenCodeProtocol | undefined,
+  ): Effect.Effect<OpenCodeServerConnection, OpenCodeRuntimeError> => {
+    if (requiredProtocol === undefined || connection.protocol === requiredProtocol) {
+      return Effect.succeed(connection);
+    }
+    return new OpenCodeRuntimeError({
+      operation: "connectToOpenCodeServer",
+      detail:
+        requiredProtocol === "v1"
+          ? "this binary/server speaks OpenCode v2; use the opencode2 provider."
+          : "this binary/server speaks OpenCode v1; use the OpenCode provider.",
+    });
+  };
+
   const connectToOpenCodeServer: OpenCodeRuntimeShape["connectToOpenCodeServer"] = (input) => {
     const serverUrl = input.serverUrl?.trim();
     if (serverUrl) {
@@ -732,14 +748,17 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
               cause,
             }),
         });
-        return {
-          url: serverUrl,
-          exitCode: null,
-          external: true,
-          sharedService: true,
-          protocol,
-          ...(input.serverPassword ? { serverPassword: input.serverPassword } : {}),
-        } satisfies OpenCodeServerConnection;
+        return yield* requireProtocol(
+          {
+            url: serverUrl,
+            exitCode: null,
+            external: true,
+            sharedService: true,
+            protocol,
+            ...(input.serverPassword ? { serverPassword: input.serverPassword } : {}),
+          } satisfies OpenCodeServerConnection,
+          input.requiredProtocol,
+        );
       });
     }
 
@@ -769,16 +788,19 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
               cause,
             }),
         });
-        return {
-          url: endpoint.url,
-          exitCode: null,
-          // Treat the user-managed background service like an external server
-          // for lifecycle (do not kill) while still allowing shuv2code MCP registration.
-          external: false,
-          sharedService: true,
-          protocol: "v2" as const,
-          ...(endpoint.password ? { serverPassword: endpoint.password } : {}),
-        } satisfies OpenCodeServerConnection;
+        return yield* requireProtocol(
+          {
+            url: endpoint.url,
+            exitCode: null,
+            // Treat the user-managed background service like an external server
+            // for lifecycle (do not kill) while still allowing shuv2code MCP registration.
+            external: false,
+            sharedService: true,
+            protocol: "v2" as const,
+            ...(endpoint.password ? { serverPassword: endpoint.password } : {}),
+          } satisfies OpenCodeServerConnection,
+          input.requiredProtocol,
+        );
       }
 
       const server = yield* startOpenCodeServerProcess({
@@ -788,32 +810,37 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         ...(input.hostname !== undefined ? { hostname: input.hostname } : {}),
         ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
       });
-      return {
-        url: server.url,
-        exitCode: server.exitCode,
-        external: false,
-        sharedService: false,
-        protocol: server.protocol,
-        ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
-      } satisfies OpenCodeServerConnection;
+      return yield* requireProtocol(
+        {
+          url: server.url,
+          exitCode: server.exitCode,
+          external: false,
+          sharedService: false,
+          protocol: server.protocol,
+          ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
+        } satisfies OpenCodeServerConnection,
+        input.requiredProtocol,
+      );
     });
   };
 
-  const createOpenCodeSdkClient: OpenCodeRuntimeShape["createOpenCodeSdkClient"] = (input) =>
-    input.protocol === "v2"
-      ? createOpenCodeV2CompatibilityClient(input)
-      : createOpencodeClient({
-          baseUrl: input.baseUrl,
-          directory: input.directory,
-          ...(input.serverPassword
-            ? {
-                headers: {
-                  Authorization: `Basic ${Buffer.from(`opencode:${input.serverPassword}`, "utf8").toString("base64")}`,
-                },
-              }
-            : {}),
-          throwOnError: true,
-        });
+  const createOpenCodeSdkClient: OpenCodeRuntimeShape["createOpenCodeSdkClient"] = (input) => {
+    if (input.protocol === "v2") {
+      throw new Error("OpenCode v2 must use the native opencode2 client.");
+    }
+    return createOpencodeClient({
+      baseUrl: input.baseUrl,
+      directory: input.directory,
+      ...(input.serverPassword
+        ? {
+            headers: {
+              Authorization: `Basic ${Buffer.from(`opencode:${input.serverPassword}`, "utf8").toString("base64")}`,
+            },
+          }
+        : {}),
+      throwOnError: true,
+    });
+  };
 
   const loadProviders = (client: OpencodeClient) =>
     runOpenCodeSdk("provider.list", () => client.provider.list()).pipe(
