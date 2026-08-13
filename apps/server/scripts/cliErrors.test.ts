@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  ServerCliBuildAssetMissingError,
   ServerCliCommandExitError,
   ServerCliDevelopmentIconTargetMissingError,
 } from "./cliErrors.ts";
@@ -32,5 +33,14 @@ describe("server CLI errors", () => {
       error.message,
       "Missing development icon target: /repo/dist/client/favicon.ico. Build web first.",
     );
+  });
+
+  it("preserves a missing build asset path", () => {
+    const error = new ServerCliBuildAssetMissingError({
+      assetPath: "/repo/dist/service-launcher.mjs",
+    });
+
+    assert.equal(error.assetPath, "/repo/dist/service-launcher.mjs");
+    assert.equal(error.message, "Missing server build asset: /repo/dist/service-launcher.mjs");
   });
 });
