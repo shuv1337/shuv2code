@@ -73,6 +73,20 @@ describe("realtime voice contracts", () => {
     expect(result.answerSdp).toBeNull();
   });
 
+  it("accepts an explicit provider-backed transcription session", () => {
+    const input = Schema.decodeUnknownSync(VoiceSessionStartInput)({
+      controllerThreadId: "controller-1",
+      clientSessionId: "transcription-1",
+      generation: 1,
+      purpose: "transcription",
+      transport: {
+        type: "websocket",
+        inputAudio: { format: "pcm16", sampleRateHz: 24_000, channels: 1 },
+      },
+    });
+    expect(input.purpose).toBe("transcription");
+  });
+
   it("bounds fenced PCM append payloads", () => {
     const input = Schema.decodeUnknownSync(VoiceAppendAudioInput)({
       controllerThreadId: "controller-1",

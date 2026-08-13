@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   parseRealtimeVoiceDataChannelEvent,
+  shouldIngestRealtimeVoiceEvent,
   VoiceSessionController,
   type VoiceSessionControllerApi,
 } from "./VoiceSessionController";
@@ -40,6 +41,25 @@ const voiceCatalog = {
 } as const;
 
 describe("VoiceSessionController", () => {
+  it("keeps provider transcription events but drops transcription-only handoffs", () => {
+    expect(
+      shouldIngestRealtimeVoiceEvent("transcription", {
+        type: "transcript.done",
+        itemId: "turn-1" as never,
+        role: "user",
+        text: "Provider transcript",
+      }),
+    ).toBe(true);
+    expect(
+      shouldIngestRealtimeVoiceEvent("transcription", {
+        type: "handoff",
+        handoffId: "handoff-1",
+        itemId: "item-1",
+        inputTranscript: "Do not invoke the controller",
+      }),
+    ).toBe(false);
+  });
+
   it("normalizes only bounded final transcripts and client handoffs from the provider channel", () => {
     expect(
       parseRealtimeVoiceDataChannelEvent(
@@ -78,6 +98,63 @@ describe("VoiceSessionController", () => {
     expect(
       parseRealtimeVoiceDataChannelEvent(
         JSON.stringify({
+          type: "output_transcript.added",
+          item: { text: "This wire shape has no item identity." },
+        }),
+      ),
+    ).toEqual({
+      type: "transcript.delta",
+      itemId: "live-assistant",
+      role: "assistant",
+      textDelta: "This wire shape has no item identity.",
+    });
+    expect(
+      parseRealtimeVoiceDataChannelEvent(
+        JSON.stringify({
+          type: "response.output_audio_transcript.delta",
+          response_id: "response-1",
+          item_id: "turn-3",
+          delta: "I'm checking",
+        }),
+      ),
+    ).toEqual({
+      type: "transcript.delta",
+      itemId: "turn-3",
+      role: "assistant",
+      textDelta: "I'm checking",
+    });
+    expect(
+      parseRealtimeVoiceDataChannelEvent(
+        JSON.stringify({
+          type: "response.output_audio_transcript.done",
+          response_id: "response-1",
+          item_id: "turn-3",
+          transcript: "I'm checking the thread now.",
+        }),
+      ),
+    ).toEqual({
+      type: "transcript.done",
+      itemId: "turn-3",
+      role: "assistant",
+      text: "I'm checking the thread now.",
+    });
+    expect(
+      parseRealtimeVoiceDataChannelEvent(
+        JSON.stringify({
+          type: "conversation.item.input_audio_transcription.delta",
+          item_id: "turn-4",
+          delta: "Please inspect it",
+        }),
+      ),
+    ).toEqual({
+      type: "transcript.delta",
+      itemId: "turn-4",
+      role: "user",
+      textDelta: "Please inspect it",
+    });
+    expect(
+      parseRealtimeVoiceDataChannelEvent(
+        JSON.stringify({
           type: "turn.done",
           turn: {
             id: "turn-1",
@@ -91,6 +168,19 @@ describe("VoiceSessionController", () => {
       itemId: "turn-1",
       role: "user",
       text: "Create a thread and inspect its status.",
+    });
+    expect(
+      parseRealtimeVoiceDataChannelEvent(
+        JSON.stringify({
+          type: "turn.done",
+          turn: { role: "assistant", transcript: "The live response is complete." },
+        }),
+      ),
+    ).toEqual({
+      type: "transcript.done",
+      itemId: "live-assistant",
+      role: "assistant",
+      text: "The live response is complete.",
     });
     expect(
       parseRealtimeVoiceDataChannelEvent(
@@ -142,8 +232,19 @@ describe("VoiceSessionController", () => {
   });
 
   it("relays normalized provider events with the complete server-issued fence", async () => {
-    const ingress = vi.fn(async () => ({ accepted: true }));
+    const ingress = vi.fn(
+      async (
+        _environmentId: EnvironmentId,
+        _input: Parameters<NonNullable<VoiceSessionControllerApi["ingestRealtimeEvent"]>>[1],
+      ) => ({
+        accepted: true,
+      }),
+    );
     const setControllerTarget = vi.fn(async () => ThreadId.make("current-thread"));
+    const onMicrophoneStream = vi.fn();
+    const onRemoteAudioStream = vi.fn();
+    const microphoneStream = {} as MediaStream;
+    const remoteAudioStream = {} as MediaStream;
     const api: VoiceSessionControllerApi = {
       ensureController: async () => ({ controller: controllerIdentity }),
       setControllerTarget,
@@ -170,11 +271,17 @@ describe("VoiceSessionController", () => {
           connect: async ({
             exchangeOffer,
             onData,
+            onMicrophoneStream: connectedMicrophone,
+            onRemoteAudioStream: connectedRemoteAudio,
           }: {
             exchangeOffer: (offer: string) => Promise<string>;
             onData: (data: string) => void;
+            onMicrophoneStream?: (stream: MediaStream) => void | Promise<void>;
+            onRemoteAudioStream?: (stream: MediaStream) => void;
           }) => {
             await exchangeOffer("offer");
+            await connectedMicrophone?.(microphoneStream);
+            connectedRemoteAudio?.(remoteAudioStream);
             onData(
               JSON.stringify({
                 type: "input_transcript.added",
@@ -212,6 +319,8 @@ describe("VoiceSessionController", () => {
       targetThreadId: ThreadId.make("current-thread"),
       providerInstanceId,
       authorizedRuntimeCeiling: "approval-required",
+      onMicrophoneStream,
+      onRemoteAudioStream,
     });
     await vi.waitFor(() => expect(ingress).toHaveBeenCalledTimes(2));
     expect(setControllerTarget).toHaveBeenCalledWith(
@@ -219,6 +328,8 @@ describe("VoiceSessionController", () => {
       controllerThreadId,
       ThreadId.make("current-thread"),
     );
+    expect(onMicrophoneStream).toHaveBeenCalledWith(microphoneStream);
+    expect(onRemoteAudioStream).toHaveBeenCalledWith(remoteAudioStream);
     expect(controller.state.transcript).toContainEqual({
       id: "client:user:1",
       speaker: "user",
@@ -250,6 +361,90 @@ describe("VoiceSessionController", () => {
         ...expectedFence,
         event: expect.objectContaining({ type: "handoff", handoffId: "delegation-1" }),
       }),
+    );
+  });
+
+  it("shows provider transcription without relaying a handoff or playing agent audio", async () => {
+    const ingress = vi.fn(
+      async (
+        _environmentId: EnvironmentId,
+        _input: Parameters<NonNullable<VoiceSessionControllerApi["ingestRealtimeEvent"]>>[1],
+      ) => ({ accepted: true }),
+    );
+    const start = vi.fn(async (_environmentId, input) => ({
+      controller: controllerIdentity,
+      transportThreadId,
+      clientSessionId: input.clientSessionId,
+      generation: input.generation,
+      runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
+      realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
+      answerSdp: "answer",
+      transportType: "webrtc" as const,
+      eventCursor: VoiceEventSequence.make(0),
+    }));
+    const connect = vi.fn(async ({ exchangeOffer, onData, playRemoteAudio }) => {
+      expect(playRemoteAudio).toBe(false);
+      await exchangeOffer("offer");
+      onData(
+        JSON.stringify({
+          type: "turn.done",
+          turn: { id: "turn-1", role: "user", transcript: "This is provider transcription." },
+        }),
+      );
+      onData(
+        JSON.stringify({
+          type: "output_transcript.added",
+          item: { id: "reply-1", type: "output_transcript", text: "This must stay hidden." },
+        }),
+      );
+      onData(
+        JSON.stringify({
+          type: "delegation.created",
+          item: {
+            id: "delegation-1",
+            type: "delegation",
+            target: "client",
+            content: [{ type: "input_text", text: "Do not run this." }],
+          },
+        }),
+      );
+    });
+    const controller = new VoiceSessionController({
+      api: {
+        ensureController: async () => ({ controller: controllerIdentity }),
+        listVoices: async () => voiceCatalog,
+        start,
+        ingestRealtimeEvent: ingress,
+        stop: async () => ({ stopped: true }),
+        subscribe: () => () => {},
+      },
+      createTransport: () =>
+        ({ connect, setMuted: vi.fn(), close: vi.fn() }) as unknown as WebRtcVoiceTransport,
+      createClientSessionId: () => "client",
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
+    });
+
+    await controller.start({
+      environmentId,
+      hostProjectId: projectId,
+      providerInstanceId,
+      authorizedRuntimeCeiling: "approval-required",
+      purpose: "transcription",
+    });
+
+    expect(start).toHaveBeenCalledWith(
+      environmentId,
+      expect.objectContaining({ purpose: "transcription", voiceId: "marin" }),
+    );
+    expect(controller.state.transcript).toContainEqual(
+      expect.objectContaining({ speaker: "user", text: "This is provider transcription." }),
+    );
+    expect(controller.state.transcript).not.toContainEqual(
+      expect.objectContaining({ speaker: "assistant" }),
+    );
+    expect(ingress).toHaveBeenCalledTimes(1);
+    expect(ingress.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ event: expect.objectContaining({ type: "transcript.done" }) }),
     );
   });
 

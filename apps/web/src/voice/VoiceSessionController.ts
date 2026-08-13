@@ -96,7 +96,17 @@ export interface StartVoiceSessionInput {
   readonly modelSelection?: ModelSelection;
   readonly authorizedRuntimeCeiling: RuntimeMode;
   readonly voiceId?: string;
+  readonly purpose?: "conversation" | "transcription";
   readonly microphoneStream?: MediaStream;
+  readonly onMicrophoneStream?: (stream: MediaStream) => void | Promise<void>;
+  readonly onRemoteAudioStream?: (stream: MediaStream) => void;
+}
+
+export function shouldIngestRealtimeVoiceEvent(
+  purpose: StartVoiceSessionInput["purpose"],
+  event: VoiceRealtimeIngressInput["event"],
+): boolean {
+  return purpose !== "transcription" || event.type !== "handoff";
 }
 
 export interface VoiceSessionControllerDependencies {
@@ -158,9 +168,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Normalize only the bounded provider events needed by v1. The direct WebRTC
- * data channel is the authoritative source for client-managed v3 handoffs;
- * all other provider payloads stay in the browser and are discarded.
+ * Normalize only the bounded transcript and handoff events used by the
+ * provider's realtime protocols. The direct WebRTC data channel is the
+ * authoritative source for client-managed handoffs; all other provider
+ * payloads stay in the browser and are discarded.
  */
 export function parseRealtimeVoiceDataChannelEvent(
   data: string,
@@ -172,12 +183,14 @@ export function parseRealtimeVoiceDataChannelEvent(
       const item = message.item;
       const role = message.type === "input_transcript.added" ? "user" : "assistant";
       const expectedItemType = role === "user" ? "input_transcript" : "output_transcript";
+      const itemId =
+        isRecord(item) && typeof item.id === "string" && item.id.length > 0
+          ? item.id
+          : `live-${role}`;
       if (
         !isRecord(item) ||
-        item.type !== expectedItemType ||
-        typeof item.id !== "string" ||
-        item.id.length === 0 ||
-        item.id.length > 256 ||
+        (typeof item.type === "string" && item.type !== expectedItemType) ||
+        itemId.length > 256 ||
         typeof item.text !== "string" ||
         item.text.length === 0 ||
         item.text.length > 16_384
@@ -186,19 +199,92 @@ export function parseRealtimeVoiceDataChannelEvent(
       }
       return {
         type: "transcript.delta",
-        itemId: VoiceTranscriptItemId.make(item.id),
+        itemId: VoiceTranscriptItemId.make(itemId),
         role,
         textDelta: item.text,
       };
     }
+    const deltaRole =
+      message.type === "conversation.input_transcript.delta" ||
+      message.type === "conversation.item.input_audio_transcription.delta"
+        ? "user"
+        : message.type === "conversation.output_transcript.delta" ||
+            message.type === "response.output_text.delta" ||
+            message.type === "response.output_audio_transcript.delta" ||
+            message.type === "response.audio.transcript.delta"
+          ? "assistant"
+          : undefined;
+    if (deltaRole !== undefined) {
+      const itemId =
+        typeof message.item_id === "string" && message.item_id.length > 0
+          ? message.item_id
+          : typeof message.response_id === "string" && message.response_id.length > 0
+            ? message.response_id
+            : `live-${deltaRole}`;
+      if (
+        itemId.length > 256 ||
+        typeof message.delta !== "string" ||
+        message.delta.length === 0 ||
+        message.delta.length > 16_384
+      ) {
+        return undefined;
+      }
+      return {
+        type: "transcript.delta",
+        itemId: VoiceTranscriptItemId.make(itemId),
+        role: deltaRole,
+        textDelta: message.delta,
+      };
+    }
+    const done =
+      message.type === "conversation.input_transcript.turn_marked" ||
+      message.type === "conversation.item.input_audio_transcription.completed"
+        ? { role: "user" as const, textField: "transcript" }
+        : message.type === "response.output_audio_transcript.done" ||
+            message.type === "conversation.output_transcript.done"
+          ? { role: "assistant" as const, textField: "transcript" }
+          : message.type === "response.output_text.done"
+            ? { role: "assistant" as const, textField: "text" }
+            : undefined;
+    if (done !== undefined) {
+      const itemId =
+        typeof message.item_id === "string" && message.item_id.length > 0
+          ? message.item_id
+          : typeof message.turn_id === "string" && message.turn_id.length > 0
+            ? message.turn_id
+            : typeof message.response_id === "string" && message.response_id.length > 0
+              ? message.response_id
+              : `live-${done.role}`;
+      const text = message[done.textField];
+      if (
+        itemId.length > 256 ||
+        typeof text !== "string" ||
+        text.length === 0 ||
+        text.length > 120_000
+      ) {
+        return undefined;
+      }
+      return {
+        type: "transcript.done",
+        itemId: VoiceTranscriptItemId.make(itemId),
+        role: done.role,
+        text,
+      };
+    }
     if (message.type === "turn.done") {
       const turn = message.turn;
+      const role = isRecord(turn) ? turn.role : undefined;
+      const turnId =
+        isRecord(turn) && typeof turn.id === "string" && turn.id.length > 0
+          ? turn.id
+          : role === "user" || role === "assistant"
+            ? `live-${role}`
+            : "";
       if (
         !isRecord(turn) ||
-        typeof turn.id !== "string" ||
-        turn.id.length === 0 ||
-        turn.id.length > 256 ||
-        (turn.role !== "user" && turn.role !== "assistant") ||
+        turnId.length === 0 ||
+        turnId.length > 256 ||
+        (role !== "user" && role !== "assistant") ||
         typeof turn.transcript !== "string" ||
         turn.transcript.length > 120_000
       ) {
@@ -206,8 +292,8 @@ export function parseRealtimeVoiceDataChannelEvent(
       }
       return {
         type: "transcript.done",
-        itemId: VoiceTranscriptItemId.make(turn.id),
-        role: turn.role,
+        itemId: VoiceTranscriptItemId.make(turnId),
+        role,
         text: turn.transcript,
       } as VoiceRealtimeIngressEvent;
     }
@@ -415,8 +501,8 @@ export class VoiceSessionController {
       ) {
         return;
       }
-      const voiceId = input.voiceId ?? catalog.defaultVoiceId;
-      if (voiceId === null) {
+      const voiceId = input.voiceId ?? catalog.defaultVoiceId ?? undefined;
+      if (voiceId === undefined) {
         throw new VoiceSessionError(
           "incompatible_version",
           "Codex realtime did not advertise a default v3-compatible voice.",
@@ -443,8 +529,9 @@ export class VoiceSessionController {
                 controllerThreadId: ensured.controller.controllerThreadId,
                 clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
                 generation: VoiceGeneration.make(generationIdentity.generation),
+                purpose: input.purpose ?? "conversation",
                 transport: { type: "webrtc", offerSdp },
-                voiceId,
+                ...(voiceId === undefined ? {} : { voiceId }),
               });
               if (
                 started.clientSessionId !== generationIdentity.clientSessionId ||
@@ -472,6 +559,13 @@ export class VoiceSessionController {
               return started.answerSdp ?? "";
             },
             onData: (data) => this.#handleDataChannelMessage(data, generationIdentity.generation),
+            playRemoteAudio: input.purpose !== "transcription",
+            ...(input.onMicrophoneStream === undefined
+              ? {}
+              : { onMicrophoneStream: input.onMicrophoneStream }),
+            ...(input.onRemoteAudioStream === undefined
+              ? {}
+              : { onRemoteAudioStream: input.onRemoteAudioStream }),
             onMicrophoneEnded: () => {
               void this.#fail(
                 generationIdentity.generation,
@@ -496,6 +590,7 @@ export class VoiceSessionController {
           controllerThreadId: ensured.controller.controllerThreadId,
           clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
           generation: VoiceGeneration.make(generationIdentity.generation),
+          purpose: input.purpose ?? "conversation",
           transport: {
             type: "websocket",
             inputAudio: {
@@ -504,7 +599,7 @@ export class VoiceSessionController {
               channels: VOICE_PCM_DEFAULT_CHANNELS,
             },
           },
-          voiceId,
+          ...(voiceId === undefined ? {} : { voiceId }),
         });
         if (
           started.clientSessionId !== generationIdentity.clientSessionId ||
@@ -696,11 +791,21 @@ export class VoiceSessionController {
     ) {
       return;
     }
+    if (
+      this.#startInput?.purpose === "transcription" &&
+      (event.type === "transcript.delta" || event.type === "transcript.done") &&
+      event.role !== "user"
+    ) {
+      return;
+    }
     if (event.type === "transcript.delta" || event.type === "transcript.done") {
       this.#handleClientTranscriptEvent(event, generation);
       if (event.type === "transcript.delta") {
         return;
       }
+    }
+    if (!shouldIngestRealtimeVoiceEvent(this.#startInput?.purpose, event)) {
+      return;
     }
     if (this.#api.ingestRealtimeEvent === undefined) {
       return;

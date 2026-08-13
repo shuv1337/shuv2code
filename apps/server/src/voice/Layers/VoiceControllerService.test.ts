@@ -31,10 +31,16 @@ import {
   runSerializedVoiceActions,
   targetThreadIdFromVoiceMutation,
   targetPhaseOf,
+  voiceSessionAcceptsHandoffs,
   voiceTargetStatusText,
 } from "./VoiceControllerService.ts";
 
 describe("VoiceControllerService coordination invariants", () => {
+  it("never hands a transcription-only provider turn to the controller", () => {
+    assert.strictEqual(voiceSessionAcceptsHandoffs({ purpose: "transcription" }), false);
+    assert.strictEqual(voiceSessionAcceptsHandoffs({ purpose: "conversation" }), true);
+  });
+
   it.effect(
     "deduplicates a handoff tuple and binds the exact action id to one no-recovery turn",
     () =>

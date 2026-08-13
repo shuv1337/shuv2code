@@ -185,6 +185,22 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           closedAt: now,
         })
         .pipe(Effect.ignore);
+      // Voice transport threads are runtime plumbing, not user conversations.
+      // Archive the projection as part of every normal stop so a completed
+      // call cannot leak a ghost row into thread surfaces.
+      yield* archiveTransportThread({
+        transportSessionId: session.transportSessionId,
+        environmentId: session.environmentId,
+        controllerThreadId: session.fence.controllerThreadId,
+        transportThreadId: session.fence.transportThreadId,
+        runtimeInstanceId: session.fence.runtimeInstanceId,
+        generation: session.fence.generation,
+        realtimeSessionId: session.fence.realtimeSessionId,
+        state: "closed",
+        createdAt: now,
+        updatedAt: now,
+        closedAt: now,
+      });
       yield* emit(session.fence.clientSessionId, {
         type: "session.state",
         state: "stopped",
@@ -200,6 +216,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
       "VoiceTransportCoordinator.startTransport",
     )(function* (input) {
       const { start: startInput, binding, controllerRuntime, environmentId, workspaceRoot } = input;
+      const purpose = startInput.purpose ?? "conversation";
       const existingOpen = yield* transports
         .getOpenByControllerThreadId(startInput.controllerThreadId)
         .pipe(
@@ -236,11 +253,26 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
             eventCursor: VoiceEventSequence.make(inMemory.eventCursor),
           };
         }
-        return yield* voiceError(
-          "generation_conflict",
-          "This controller already has an active voice transport.",
-          false,
-        );
+        if (
+          purpose === "transcription" &&
+          (inMemory === undefined || inMemory.purpose === "transcription")
+        ) {
+          // A browser reload can strand the previous lab transport while the
+          // provider still considers its lease active. An explicit
+          // transcription test replaces that stale transcription transport so the
+          // button remains repeatable across reloads and HMR.
+          if (inMemory !== undefined) {
+            yield* stopSession(inMemory);
+          } else {
+            yield* cleanupDurableTransportLease(existingOpen.value);
+          }
+        } else {
+          return yield* voiceError(
+            "generation_conflict",
+            "This controller already has an active voice transport.",
+            false,
+          );
+        }
       }
       const startTransportKind = resolveVoiceSessionStartTransport(startInput);
       // A browser client session may start multiple fenced generations over its
@@ -373,6 +405,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         controller: controllerIdentity(binding),
         controllerRuntime,
         transportType: negotiated.transportType,
+        purpose,
         answerSdp: negotiated.answerSdp,
         lastAudioSequence: 0,
         eventCursor: 0,

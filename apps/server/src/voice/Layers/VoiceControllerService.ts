@@ -71,6 +71,12 @@ const decodeProviderHistoryTextInput = Schema.decodeUnknownOption(ProviderHistor
 const decodeProviderHistoryUserMessage = Schema.decodeUnknownOption(ProviderHistoryUserMessage);
 const decodeProviderHistoryAgentMessage = Schema.decodeUnknownOption(ProviderHistoryAgentMessage);
 
+export function voiceSessionAcceptsHandoffs(session: {
+  readonly purpose: "conversation" | "transcription";
+}): boolean {
+  return session.purpose === "conversation";
+}
+
 export function controllerHistoryDisplayText(text: string): string {
   const trimmed = text.trim();
   if (!trimmed.startsWith(CONTROLLER_CONTEXT_PREFIX)) return trimmed;
@@ -863,6 +869,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         });
         return;
       case "transport.item-added": {
+        if (!voiceSessionAcceptsHandoffs(session)) return;
         const handoff = yield* parseVoiceHandoffRequest(event.item).pipe(Effect.option);
         if (Option.isNone(handoff)) return;
         yield* actionRunner.enqueueHandoff(session, handoff.value);

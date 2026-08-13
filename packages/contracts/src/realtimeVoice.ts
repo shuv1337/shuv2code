@@ -185,6 +185,7 @@ export const VoiceSessionStartInput = Schema.Struct({
   controllerThreadId: ThreadId,
   clientSessionId: VoiceClientSessionId,
   generation: VoiceGeneration,
+  purpose: Schema.optionalKey(Schema.Literals(["conversation", "transcription"])),
   /** @deprecated Prefer `transport: { type: "webrtc", offerSdp }`. */
   offerSdp: Schema.optionalKey(SessionDescriptionSdp),
   transport: Schema.optionalKey(VoiceSessionStartTransport),

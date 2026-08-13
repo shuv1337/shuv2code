@@ -77,11 +77,19 @@ describe("BrowserSession", () => {
       assert.isFunction(requestHandler);
       assert.isFunction(checkHandler);
 
-      const requestAllows = (permission: string): boolean => {
+      const requestAllows = (
+        permission: string,
+        details: Record<string, unknown> = {},
+      ): boolean => {
         let granted: boolean | undefined;
-        requestHandler(null, permission, (value: boolean) => {
-          granted = value;
-        });
+        requestHandler(
+          null,
+          permission,
+          (value: boolean) => {
+            granted = value;
+          },
+          details,
+        );
         assert.isDefined(granted);
         return granted;
       };
@@ -94,10 +102,48 @@ describe("BrowserSession", () => {
       ]) {
         assert.isTrue(requestAllows(permission), `request handler should allow ${permission}`);
         assert.isTrue(
-          checkHandler(null, permission) as boolean,
+          checkHandler(null, permission, "https://example.com", {}) as boolean,
           `check handler should allow ${permission}`,
         );
       }
+
+      assert.isTrue(
+        requestAllows("media", {
+          mediaTypes: ["audio"],
+          securityOrigin: "http://localhost:5733",
+        }),
+      );
+      assert.isTrue(
+        checkHandler(null, "media", "http://127.0.0.1:5733", { mediaType: "audio" }) as boolean,
+      );
+      assert.isTrue(
+        checkHandler(null, "media", "http://localhost:5733", { mediaType: "unknown" }) as boolean,
+      );
+      assert.isTrue(
+        checkHandler(null, "media", "", {
+          mediaType: "audio",
+          securityOrigin: "http://localhost:5733",
+        }) as boolean,
+      );
+
+      assert.isFalse(
+        requestAllows("media", {
+          mediaTypes: ["video"],
+          securityOrigin: "http://localhost:5733",
+        }),
+      );
+      assert.isFalse(
+        requestAllows("media", {
+          mediaTypes: ["audio"],
+          securityOrigin: "https://example.com",
+        }),
+      );
+      assert.isFalse(
+        checkHandler(null, "media", "https://example.com", { mediaType: "audio" }) as boolean,
+      );
+      assert.isFalse(
+        checkHandler(null, "media", "http://localhost:5733", { mediaType: "video" }) as boolean,
+      );
 
       // `clipboard-write` is not a real Electron permission — the async write API
       // uses `clipboard-sanitized-write` — so the stale name must not be granted,

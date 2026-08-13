@@ -39,6 +39,7 @@ export interface ActiveVoiceSession {
   readonly controller: VoiceControllerIdentity;
   readonly controllerRuntime: ControllerRuntimeState;
   readonly transportType: "webrtc" | "websocket";
+  readonly purpose: "conversation" | "transcription";
   readonly answerSdp: string | null;
   readonly lastAudioSequence: number;
   readonly eventCursor: number;

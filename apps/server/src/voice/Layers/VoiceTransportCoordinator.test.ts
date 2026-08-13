@@ -32,6 +32,7 @@ describe("VoiceTransportCoordinator ownership", () => {
       controller: {} as never,
       controllerRuntime: {} as never,
       transportType: "webrtc" as const,
+      purpose: "conversation" as const,
       answerSdp: "sdp",
       lastAudioSequence: 0,
       eventCursor: 0,

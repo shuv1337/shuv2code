@@ -117,7 +117,8 @@ export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {
 }
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
-  return useAtomValue(environmentThreadShells.threadShellsAtom);
+  const threads = useAtomValue(environmentThreadShells.threadShellsAtom);
+  return useMemo(() => threads.filter(isUserFacingThreadShell), [threads]);
 }
 
 export function useAllEnvironmentShellsBootstrapped(): boolean {
@@ -127,7 +128,12 @@ export function useAllEnvironmentShellsBootstrapped(): boolean {
 export function useThreadShellsForProjectRefs(
   refs: ReadonlyArray<ScopedProjectRef>,
 ): ReadonlyArray<EnvironmentThreadShell> {
-  return useAtomValue(environmentThreadShells.threadShellsForProjectRefsAtom(refs));
+  const threads = useAtomValue(environmentThreadShells.threadShellsForProjectRefsAtom(refs));
+  return useMemo(() => threads.filter(isUserFacingThreadShell), [threads]);
+}
+
+export function isUserFacingThreadShell(thread: Pick<EnvironmentThreadShell, "purpose">): boolean {
+  return thread.purpose === undefined || thread.purpose === "standard";
 }
 
 export function useProject(ref: ScopedProjectRef | null): EnvironmentProject | null {

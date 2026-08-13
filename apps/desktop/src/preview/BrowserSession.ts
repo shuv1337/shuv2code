@@ -29,6 +29,39 @@ const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   // picker runs in the main window session, which is unaffected by this list.
 ]);
 
+const isLoopbackOrigin = (value: string | undefined): boolean => {
+  if (!value) return false;
+  try {
+    const hostname = new URL(value).hostname;
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+  } catch {
+    return false;
+  }
+};
+
+const isLocalAudioRequest = (
+  permission: string,
+  securityOrigin: string | undefined,
+  mediaTypes: ReadonlyArray<string> | undefined,
+): boolean =>
+  permission === "media" &&
+  isLoopbackOrigin(securityOrigin) &&
+  mediaTypes?.length === 1 &&
+  mediaTypes[0] === "audio";
+
+const isLocalAudioPermissionCheck = (
+  permission: string,
+  requestingOrigin: string,
+  details: Electron.PermissionCheckHandlerHandlerDetails | undefined,
+): boolean => {
+  const origin = details?.securityOrigin ?? requestingOrigin;
+  return (
+    permission === "media" &&
+    isLoopbackOrigin(origin) &&
+    (details?.mediaType === "audio" || details?.mediaType === "unknown")
+  );
+};
+
 export class BrowserSessionPartitionDerivationError extends Schema.TaggedErrorClass<BrowserSessionPartitionDerivationError>()(
   "BrowserSessionPartitionDerivationError",
   {
@@ -137,11 +170,21 @@ export const make = Effect.gen(function* BrowserSessionMake() {
             .replace(/Electron\/[\d.]+ /, "")
             .replace(/\s*shuv2code\/[\d.]+/, "");
           browserSession.setUserAgent(userAgent);
-          browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-            callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
-          });
-          browserSession.setPermissionCheckHandler((_webContents, permission) =>
-            ALLOWED_PREVIEW_PERMISSIONS.has(permission),
+          browserSession.setPermissionRequestHandler(
+            (_webContents, permission, callback, details) => {
+              const mediaTypes = "mediaTypes" in details ? details.mediaTypes : undefined;
+              const securityOrigin =
+                "securityOrigin" in details ? details.securityOrigin : undefined;
+              callback(
+                ALLOWED_PREVIEW_PERMISSIONS.has(permission) ||
+                  isLocalAudioRequest(permission, securityOrigin, mediaTypes),
+              );
+            },
+          );
+          browserSession.setPermissionCheckHandler(
+            (_webContents, permission, requestingOrigin, details) =>
+              ALLOWED_PREVIEW_PERMISSIONS.has(permission) ||
+              isLocalAudioPermissionCheck(permission, requestingOrigin, details),
           );
           const next = new Map(sessions);
           next.set(partition, browserSession);
