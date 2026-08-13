@@ -668,6 +668,74 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
 
 const routing = makeProviderServiceLayer();
 
+const terminalPersistence = makeProviderServiceLayer();
+terminalPersistence.layer("ProviderServiceLive terminal persistence", (it) => {
+  it.effect("clears a completed Codex turn before the next idle send", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-codex-terminal-persistence");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const first = yield* provider.sendTurn({
+        threadId,
+        input: "first",
+        attachments: [],
+        expectedTurnId: null,
+      });
+
+      terminalPersistence.codex.updateSession(threadId, (current) => ({
+        ...current,
+        status: "ready",
+        activeTurnId: undefined,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      }));
+      yield* advanceTestClock(50);
+      terminalPersistence.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-codex-terminal-persistence"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: first.turnId,
+        status: "completed",
+      });
+      yield* advanceTestClock(50);
+
+      const settledRuntime = yield* runtimeRepository.getByThreadId({ threadId });
+      assert.equal(Option.isSome(settledRuntime), true);
+      if (Option.isSome(settledRuntime)) {
+        const payload = settledRuntime.value.runtimePayload;
+        assert.equal(
+          payload !== null && typeof payload === "object" && !Array.isArray(payload),
+          true,
+        );
+        if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+          assert.equal("activeTurnId" in payload ? payload.activeTurnId : undefined, null);
+          assert.equal(
+            "lastRuntimeEvent" in payload ? payload.lastRuntimeEvent : undefined,
+            "provider.turn.completed",
+          );
+        }
+      }
+
+      terminalPersistence.codex.readThread.mockClear();
+      yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "second",
+        attachments: [],
+        expectedTurnId: null,
+      });
+
+      assert.equal(terminalPersistence.codex.readThread.mock.calls.length, 0);
+    }),
+  );
+});
+
 it.effect("ProviderServiceLive writes canonical events to the emitting thread segment", () =>
   Effect.gen(function* () {
     const codex = makeFakeCodexAdapter();
