@@ -213,7 +213,101 @@ describe("DesktopServerExposure", () => {
   );
 
   it.effect("persists tailscale serve preferences atomically and reports no-op updates", () =>
-    withHarness(
+    Effect.gen(function* () {
+      const commands: Array<{ readonly command: string; readonly args: readonly string[] }> = [];
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          const childProcess = command as unknown as {
+            readonly command: string;
+            readonly args: readonly string[];
+          };
+          commands.push({ command: childProcess.command, args: [...childProcess.args] });
+          return Effect.succeed(
+            ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.empty,
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            }),
+          );
+        }),
+      );
+
+      yield* withHarness(
+        emptyNetworkInterfaces,
+        Effect.gen(function* () {
+          const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+          const settings = yield* DesktopAppSettings.DesktopAppSettings;
+
+          yield* settings.load;
+          yield* serverExposure.configureFromSettings({ port: 4173 });
+
+          const changed = yield* serverExposure.setTailscaleServeEnabled({
+            enabled: true,
+            port: 8443,
+          });
+          assert.equal(changed.requiresRelaunch, true);
+          assert.equal(changed.state.tailscaleServeEnabled, true);
+          assert.equal(changed.state.tailscaleServePort, 8443);
+
+          const unchanged = yield* serverExposure.setTailscaleServeEnabled({
+            enabled: true,
+            port: 8443,
+          });
+          assert.equal(unchanged.requiresRelaunch, false);
+
+          const persisted = yield* settings.get;
+          assert.equal(persisted.tailscaleServeEnabled, true);
+          assert.equal(persisted.tailscaleServePort, 8443);
+        }),
+        {},
+        spawnerLayer,
+      );
+
+      assert.deepEqual(commands, [
+        {
+          command: "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+          args: ["serve", "--bg", "--https=8443", "http://127.0.0.1:4173"],
+        },
+        {
+          command: "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+          args: ["serve", "--bg", "--https=8443", "http://127.0.0.1:4173"],
+        },
+      ]);
+    }),
+  );
+
+  it.effect("keeps tailscale serve disabled when configuration fails", () => {
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make(() =>
+        Effect.succeed(
+          ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(1),
+            exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+            isRunning: Effect.succeed(false),
+            kill: () => Effect.void,
+            unref: Effect.succeed(Effect.void),
+            stdin: Sink.drain,
+            stdout: Stream.empty,
+            stderr: Stream.make(encoder.encode("permission denied")),
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+          }),
+        ),
+      ),
+    );
+
+    return withHarness(
       emptyNetworkInterfaces,
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
@@ -222,26 +316,21 @@ describe("DesktopServerExposure", () => {
         yield* settings.load;
         yield* serverExposure.configureFromSettings({ port: 4173 });
 
-        const changed = yield* serverExposure.setTailscaleServeEnabled({
-          enabled: true,
-          port: 8443,
-        });
-        assert.equal(changed.requiresRelaunch, true);
-        assert.equal(changed.state.tailscaleServeEnabled, true);
-        assert.equal(changed.state.tailscaleServePort, 8443);
+        const error = yield* serverExposure
+          .setTailscaleServeEnabled({ enabled: true, port: 8443 })
+          .pipe(Effect.flip);
 
-        const unchanged = yield* serverExposure.setTailscaleServeEnabled({
-          enabled: true,
-          port: 8443,
-        });
-        assert.equal(unchanged.requiresRelaunch, false);
-
-        const persisted = yield* settings.get;
-        assert.equal(persisted.tailscaleServeEnabled, true);
-        assert.equal(persisted.tailscaleServePort, 8443);
+        assert.instanceOf(error, DesktopServerExposure.DesktopTailscaleServeConfigurationError);
+        assert.equal(error.enabled, true);
+        assert.equal(error.port, 8443);
+        assert.equal(error.cause._tag, "TailscaleCommandExitError");
+        assert.equal((yield* settings.get).tailscaleServeEnabled, false);
+        assert.equal((yield* serverExposure.getState).tailscaleServeEnabled, false);
       }),
-    ),
-  );
+      {},
+      spawnerLayer,
+    );
+  });
 
   it.effect("preserves persistence request context and the settings failure chain", () => {
     const diskFailure = new Error("disk exploded");

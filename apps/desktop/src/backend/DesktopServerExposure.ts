@@ -1,3 +1,5 @@
+import * as NodeDnsPromises from "node:dns/promises";
+
 import {
   createAdvertisedEndpoint,
   type CreateAdvertisedEndpointInput,
@@ -9,7 +11,11 @@ import {
   type DesktopServerExposureMode,
   type DesktopServerExposureState,
 } from "@shuv2code/contracts";
-import { readTailscaleStatus } from "@shuv2code/tailscale";
+import {
+  ensureTailscaleServe,
+  readTailscaleStatus,
+  TailscaleCommandError,
+} from "@shuv2code/tailscale";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -239,6 +245,19 @@ export class DesktopTailscaleServePersistenceError extends Schema.TaggedErrorCla
   }
 }
 
+export class DesktopTailscaleServeConfigurationError extends Schema.TaggedErrorClass<DesktopTailscaleServeConfigurationError>()(
+  "DesktopTailscaleServeConfigurationError",
+  {
+    enabled: Schema.Boolean,
+    port: Schema.Number,
+    cause: TailscaleCommandError,
+  },
+) {
+  override get message(): string {
+    return `Failed to ${this.enabled ? "configure" : "disable"} Tailscale Serve on port ${this.port}.`;
+  }
+}
+
 export const DesktopServerExposureSetModeError = Schema.Union([
   DesktopServerExposureNoNetworkAddressError,
   DesktopServerExposureModePersistenceError,
@@ -250,6 +269,7 @@ export const DesktopServerExposureError = Schema.Union([
   DesktopServerExposureNoNetworkAddressError,
   DesktopServerExposureModePersistenceError,
   DesktopTailscaleServePersistenceError,
+  DesktopTailscaleServeConfigurationError,
 ]);
 export type DesktopServerExposureError = typeof DesktopServerExposureError.Type;
 export const isDesktopServerExposureError = Schema.is(DesktopServerExposureError);
@@ -281,7 +301,10 @@ export class DesktopServerExposure extends Context.Service<
     readonly setTailscaleServeEnabled: (input: {
       readonly enabled: boolean;
       readonly port?: number;
-    }) => Effect.Effect<DesktopServerExposureChange, DesktopTailscaleServePersistenceError>;
+    }) => Effect.Effect<
+      DesktopServerExposureChange,
+      DesktopTailscaleServePersistenceError | DesktopTailscaleServeConfigurationError
+    >;
     readonly getAdvertisedEndpoints: Effect.Effect<readonly AdvertisedEndpoint[]>;
   }
 >()("@shuv2code/desktop/backend/DesktopServerExposure") {}
@@ -492,6 +515,37 @@ export const make = Effect.gen(function* () {
         enabled: input.enabled,
         ...(input.port === undefined ? {} : { port: input.port }),
       });
+      const current = yield* Ref.get(stateRef);
+      const servePort = input.port ?? current.tailscaleServePort;
+      if (
+        !input.enabled &&
+        current.tailscaleServeEnabled === input.enabled &&
+        current.tailscaleServePort === servePort
+      ) {
+        return {
+          state: toContractState(current),
+          requiresRelaunch: false,
+        };
+      }
+
+      if (input.enabled) {
+        yield* ensureTailscaleServe({
+          localPort: current.port,
+          servePort,
+          localHost: DESKTOP_LOOPBACK_HOST,
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new DesktopTailscaleServeConfigurationError({
+                enabled: true,
+                port: servePort,
+                cause,
+              }),
+          ),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        );
+      }
+
       const result = yield* desktopSettings
         .setTailscaleServe({
           enabled: input.enabled,
@@ -543,6 +597,10 @@ export const make = Effect.gen(function* () {
       servePort: state.tailscaleServePort,
       networkInterfaces: currentNetworkInterfaces,
       readMagicDnsName: cachedReadMagicDnsName,
+      reverseDnsLookup: (address) =>
+        Effect.tryPromise(() => NodeDnsPromises.reverse(address)).pipe(
+          Effect.orElseSucceed(() => [] as readonly string[]),
+        ),
     }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
       Effect.provideService(HttpClient.HttpClient, httpClient),

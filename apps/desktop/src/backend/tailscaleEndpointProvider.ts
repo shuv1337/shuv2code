@@ -27,10 +27,31 @@ function resolveTailscaleIpAdvertisedEndpoints(input: {
   readonly port: number;
   readonly networkInterfaces: NetworkInterfaces;
 }): readonly AdvertisedEndpoint[] {
-  const seen = new Set<string>();
   const endpoints: AdvertisedEndpoint[] = [];
 
-  for (const interfaceAddresses of Object.values(input.networkInterfaces)) {
+  for (const address of resolveTailscaleIpv4Addresses(input.networkInterfaces)) {
+    endpoints.push(
+      createAdvertisedEndpoint({
+        provider: TAILSCALE_ENDPOINT_PROVIDER,
+        source: "desktop-addon",
+        id: `tailscale-ip:http://${address}:${input.port}`,
+        label: "Tailscale IP",
+        httpBaseUrl: `http://${address}:${input.port}`,
+        reachability: "private-network",
+        status: "available",
+        description: "Reachable from devices on the same Tailnet.",
+      }),
+    );
+  }
+
+  return endpoints;
+}
+
+function resolveTailscaleIpv4Addresses(networkInterfaces: NetworkInterfaces): readonly string[] {
+  const seen = new Set<string>();
+  const addresses: string[] = [];
+
+  for (const interfaceAddresses of Object.values(networkInterfaces)) {
     if (!interfaceAddresses) continue;
 
     for (const address of interfaceAddresses) {
@@ -39,24 +60,33 @@ function resolveTailscaleIpAdvertisedEndpoints(input: {
       if (!isTailscaleIpv4Address(address.address)) continue;
       if (seen.has(address.address)) continue;
       seen.add(address.address);
-
-      endpoints.push(
-        createAdvertisedEndpoint({
-          provider: TAILSCALE_ENDPOINT_PROVIDER,
-          source: "desktop-addon",
-          id: `tailscale-ip:http://${address.address}:${input.port}`,
-          label: "Tailscale IP",
-          httpBaseUrl: `http://${address.address}:${input.port}`,
-          reachability: "private-network",
-          status: "available",
-          description: "Reachable from devices on the same Tailnet.",
-        }),
-      );
+      addresses.push(address.address);
     }
   }
 
-  return endpoints;
+  return addresses;
 }
+
+const normalizeTailscalePtrName = (hostname: string): string | null => {
+  const normalized = hostname.trim().toLowerCase().replace(/\.$/u, "");
+  return normalized.endsWith(".ts.net") ? normalized : null;
+};
+
+const resolveMagicDnsNameFromReverseDns = Effect.fn("resolveMagicDnsNameFromReverseDns")(
+  function* (input: {
+    readonly networkInterfaces: NetworkInterfaces;
+    readonly reverseDnsLookup: (address: string) => Effect.Effect<readonly string[], never>;
+  }) {
+    for (const address of resolveTailscaleIpv4Addresses(input.networkInterfaces)) {
+      const hostnames = yield* input.reverseDnsLookup(address);
+      for (const hostname of hostnames) {
+        const normalized = normalizeTailscalePtrName(hostname);
+        if (normalized) return normalized;
+      }
+    }
+    return null;
+  },
+);
 
 const resolveTailscaleMagicDnsAdvertisedEndpoint = Effect.fn(
   "resolveTailscaleMagicDnsAdvertisedEndpoint",
@@ -110,6 +140,7 @@ export const resolveTailscaleAdvertisedEndpoints = Effect.fn("resolveTailscaleAd
       never,
       ChildProcessSpawner.ChildProcessSpawner
     >;
+    readonly reverseDnsLookup?: (address: string) => Effect.Effect<readonly string[], never>;
     readonly probe?: (baseUrl: string) => Effect.Effect<boolean, never, HttpClient.HttpClient>;
   }): Effect.fn.Return<
     readonly AdvertisedEndpoint[],
@@ -123,7 +154,7 @@ export const resolveTailscaleAdvertisedEndpoints = Effect.fn("resolveTailscaleAd
         Effect.map((status) => status.magicDnsName),
         Effect.orElseSucceed(() => null),
       );
-    const dnsName =
+    const commandDnsName =
       input.statusJson === undefined
         ? yield* readDnsName
         : input.statusJson
@@ -131,6 +162,14 @@ export const resolveTailscaleAdvertisedEndpoints = Effect.fn("resolveTailscaleAd
               Effect.orElseSucceed(() => null),
             )
           : null;
+    const dnsName =
+      commandDnsName ??
+      (input.reverseDnsLookup
+        ? yield* resolveMagicDnsNameFromReverseDns({
+            networkInterfaces: input.networkInterfaces,
+            reverseDnsLookup: input.reverseDnsLookup,
+          })
+        : null);
     const magicDnsEndpoint = yield* resolveTailscaleMagicDnsAdvertisedEndpoint({
       dnsName,
       serveEnabled: input.serveEnabled === true,

@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -65,6 +66,12 @@ function assertCarriesNoSecret(error: object, secret: string): void {
 }
 const tailscaleStatusJson = `{"Self":{"DNSName":"desktop.tail.ts.net.","TailscaleIPs":["100.100.100.100","fd7a:115c:a1e0::1","192.168.1.20"]}}`;
 const tailscaleStatusWithSingleIpJson = `{"Self":{"DNSName":"desktop.tail.ts.net.","TailscaleIPs":["100.90.1.2"]}}`;
+// Tests that are not specifically exercising executable discovery pin
+// themselves to a platform whose only candidate is the PATH executable, so the
+// assertions stay deterministic regardless of the host they run on. The macOS
+// bundle-preference cases provide "darwin" explicitly instead.
+const PATH_TEST_PLATFORM = "linux" as const;
+const pathTailscaleExecutable = "tailscale";
 
 function mockHandle(result: { stdout?: string; stderr?: string; code?: number }) {
   return ChildProcessSpawner.makeHandle({
@@ -170,7 +177,7 @@ describe("tailscale", () => {
 
   it.effect("reads tailscale status through the process spawner service", () => {
     const layer = mockSpawnerLayer((command, args) => {
-      assert.equal(command, "tailscale");
+      assert.equal(command, pathTailscaleExecutable);
       assert.deepEqual(args, ["status", "--json"]);
       return {
         stdout: tailscaleStatusWithSingleIpJson,
@@ -183,7 +190,32 @@ describe("tailscale", () => {
         magicDnsName: "desktop.tail.ts.net",
         tailnetIpv4Addresses: ["100.90.1.2"],
       });
-    });
+    }).pipe(Effect.provideService(HostProcessPlatform, PATH_TEST_PLATFORM));
+  });
+
+  it.effect("prefers the macOS app bundle for status", () => {
+    const commands: string[] = [];
+    const layer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const childProcess = command as unknown as {
+          readonly command: string;
+          readonly options: { readonly env?: Readonly<Record<string, string>> };
+        };
+        commands.push(childProcess.command);
+        assert.equal(childProcess.options.env?.TAILSCALE_BE_CLI, "1");
+        return Effect.succeed(mockHandle({ stdout: tailscaleStatusWithSingleIpJson }));
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const status = yield* readTailscaleStatus.pipe(Effect.provide(layer));
+      assert.deepEqual(status, {
+        magicDnsName: "desktop.tail.ts.net",
+        tailnetIpv4Addresses: ["100.90.1.2"],
+      });
+      assert.deepEqual(commands, ["/Applications/Tailscale.app/Contents/MacOS/Tailscale"]);
+    }).pipe(Effect.provideService(HostProcessPlatform, "darwin"));
   });
 
   it.effect("preserves tailscale spawn failures as causes", () => {
@@ -209,7 +241,7 @@ describe("tailscale", () => {
       assert.strictEqual(error.cause, cause);
       assert.equal(error.message, "Failed to spawn tailscale status.");
       assert.notInclude(error.message, systemCause.message);
-    });
+    }).pipe(Effect.provideService(HostProcessPlatform, "linux"));
   });
 
   it.effect("keeps nonzero exit diagnostics structured", () => {
@@ -222,7 +254,7 @@ describe("tailscale", () => {
       const error = yield* readTailscaleStatus.pipe(Effect.flip, Effect.provide(layer));
 
       assert.instanceOf(error, TailscaleCommandExitError);
-      assert.equal(error.executable, "tailscale");
+      assert.equal(error.executable, pathTailscaleExecutable);
       assert.equal(error.subcommand, "status");
       assert.equal(error.argumentCount, 2);
       assert.equal(error.exitCode, 7);
@@ -234,7 +266,7 @@ describe("tailscale", () => {
       assert.equal(error.message, "tailscale status exited with code 7.");
       assert.equal(error.stderrDiagnostic, "not-logged-in");
       assertCarriesNoSecret(error, "tskey-auth-secret-token-value");
-    });
+    }).pipe(Effect.provideService(HostProcessPlatform, PATH_TEST_PLATFORM));
   });
 
   it.effect("classifies unrecognized stderr without quoting it", () => {
@@ -271,23 +303,59 @@ describe("tailscale", () => {
       const error = yield* Fiber.join(fiber);
 
       assert.instanceOf(error, TailscaleCommandTimeoutError);
-      assert.equal(error.executable, "tailscale");
+      assert.equal(error.executable, pathTailscaleExecutable);
       assert.equal(error.subcommand, "status");
       assert.equal(error.argumentCount, 2);
       assert.equal(error.timeoutMs, 1_500);
       assert.isTrue(Cause.isTimeoutError(error.cause));
       assert.equal(error.message, "tailscale status timed out after 1500ms.");
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(layer), Effect.provideService(HostProcessPlatform, PATH_TEST_PLATFORM));
   });
 
   it.effect("configures tailscale serve through the process spawner service", () => {
     const layer = mockSpawnerLayer((command, args) => {
-      assert.equal(command, "tailscale");
+      assert.equal(command, pathTailscaleExecutable);
       assert.deepEqual(args, ["serve", "--bg", "--https=8443", "http://127.0.0.1:13773"]);
       return {};
     });
 
-    return ensureTailscaleServe({ localPort: 13773, servePort: 8443 }).pipe(Effect.provide(layer));
+    return ensureTailscaleServe({ localPort: 13773, servePort: 8443 }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(HostProcessPlatform, PATH_TEST_PLATFORM),
+    );
+  });
+
+  it.effect("configures serve through the macOS app bundle", () => {
+    const commands: string[] = [];
+    const layer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const childProcess = command as unknown as {
+          readonly command: string;
+          readonly args: ReadonlyArray<string>;
+          readonly options: { readonly env?: Readonly<Record<string, string>> };
+        };
+        commands.push(childProcess.command);
+        assert.equal(childProcess.options.env?.TAILSCALE_BE_CLI, "1");
+        assert.deepEqual(childProcess.args, [
+          "serve",
+          "--bg",
+          "--https=8443",
+          "http://127.0.0.1:13773",
+        ]);
+        return Effect.succeed(mockHandle({}));
+      }),
+    );
+
+    return ensureTailscaleServe({ localPort: 13773, servePort: 8443 }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(HostProcessPlatform, "darwin"),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          assert.deepEqual(commands, ["/Applications/Tailscale.app/Contents/MacOS/Tailscale"]);
+        }),
+      ),
+    );
   });
 
   it.effect("retains tailscale serve exit diagnostics", () => {
@@ -303,7 +371,7 @@ describe("tailscale", () => {
       );
 
       assert.instanceOf(error, TailscaleCommandExitError);
-      assert.equal(error.executable, "tailscale");
+      assert.equal(error.executable, pathTailscaleExecutable);
       assert.equal(error.subcommand, "serve");
       assert.equal(error.argumentCount, 4);
       assert.equal(error.exitCode, 1);
@@ -315,7 +383,7 @@ describe("tailscale", () => {
       // key cannot reach a log through it either.
       assert.equal(error.stderrDiagnostic, "permission-denied");
       assertCarriesNoSecret(error, "tskey-auth-secret-token-value");
-    });
+    }).pipe(Effect.provideService(HostProcessPlatform, PATH_TEST_PLATFORM));
   });
 
   it.effect("disables tailscale serve through the process spawner service", () => {
@@ -325,7 +393,7 @@ describe("tailscale", () => {
     }[] = [];
     const layer = mockSpawnerLayer((command, args) => {
       commands.push({ command, args });
-      assert.equal(command, "tailscale");
+      assert.equal(command, pathTailscaleExecutable);
       assert.deepEqual(args, ["serve", "--https=8443", "off"]);
       return {};
     });
@@ -333,8 +401,8 @@ describe("tailscale", () => {
     return Effect.gen(function* () {
       yield* disableTailscaleServe({ servePort: 8443 }).pipe(Effect.provide(layer));
       assert.deepEqual(commands, [
-        { command: "tailscale", args: ["serve", "--https=8443", "off"] },
+        { command: pathTailscaleExecutable, args: ["serve", "--https=8443", "off"] },
       ]);
-    });
+    }).pipe(Effect.provideService(HostProcessPlatform, PATH_TEST_PLATFORM));
   });
 });

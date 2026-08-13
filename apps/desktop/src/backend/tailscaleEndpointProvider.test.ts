@@ -123,6 +123,39 @@ describe("tailscale endpoint provider", () => {
     }).pipe(Effect.provide(unusedTailscaleExternalServicesLayer)),
   );
 
+  it.effect("falls back to reverse DNS when the macOS Tailscale CLI is unavailable", () =>
+    Effect.gen(function* () {
+      const lookedUpAddresses: string[] = [];
+      const endpoints = yield* resolveTailscaleAdvertisedEndpoints({
+        port: 3773,
+        networkInterfaces: {
+          utun14: [
+            {
+              address: "100.65.80.15",
+              family: "IPv4",
+              internal: false,
+              netmask: "255.192.0.0",
+              cidr: "100.65.80.15/10",
+              mac: "00:00:00:00:00:00",
+            },
+          ],
+        },
+        readMagicDnsName: Effect.succeed(null),
+        reverseDnsLookup: (address) =>
+          Effect.sync(() => {
+            lookedUpAddresses.push(address);
+            return ["shuvbot.tail586a6d.ts.net."];
+          }),
+      });
+
+      assert.deepEqual(lookedUpAddresses, ["100.65.80.15"]);
+      assert.deepEqual(
+        endpoints.map((endpoint) => endpoint.httpBaseUrl),
+        ["http://100.65.80.15:3773/", "https://shuvbot.tail586a6d.ts.net/"],
+      );
+    }).pipe(Effect.provide(unusedTailscaleExternalServicesLayer)),
+  );
+
   it.effect(
     "marks the Tailscale HTTPS endpoint available after Serve is enabled and reachable",
     () =>

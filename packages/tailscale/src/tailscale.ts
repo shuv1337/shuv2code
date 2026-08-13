@@ -2,6 +2,7 @@ import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -12,13 +13,22 @@ export const TAILSCALE_STATUS_TIMEOUT = Duration.millis(1_500);
 export const TAILSCALE_SERVE_TIMEOUT = Duration.seconds(10);
 export const TAILSCALE_PROBE_TIMEOUT = Duration.millis(2_500);
 
-// tailscale is a real executable everywhere (`tailscale.exe` on Windows), so
-// it is always spawned directly rather than through cmd.exe shell mode.
-const tailscaleCommandForPlatform = (platform: NodeJS.Platform): "tailscale" | "tailscale.exe" =>
-  platform === "win32" ? "tailscale.exe" : "tailscale";
+const MACOS_TAILSCALE_APP_EXECUTABLE = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+
+// The macOS App Store build exposes its CLI through the app bundle but does
+// not install `tailscale` on PATH. Prefer that known-good executable, then
+// fall back to PATH for standalone/Homebrew installs.
+const tailscaleCommandsForPlatform = (
+  platform: NodeJS.Platform,
+): ReadonlyArray<"tailscale" | "tailscale.exe" | typeof MACOS_TAILSCALE_APP_EXECUTABLE> =>
+  platform === "win32"
+    ? ["tailscale.exe"]
+    : platform === "darwin"
+      ? [MACOS_TAILSCALE_APP_EXECUTABLE, "tailscale"]
+      : ["tailscale"];
 
 const TailscaleCommandContext = {
-  executable: Schema.Literals(["tailscale", "tailscale.exe"]),
+  executable: Schema.Literals(["tailscale", "tailscale.exe", MACOS_TAILSCALE_APP_EXECUTABLE]),
   subcommand: Schema.Literals(["status", "serve"]),
   argumentCount: Schema.Number,
 };
@@ -156,6 +166,38 @@ const collectStdout = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<s
 
 const collectStderr = collectStdout;
 
+const spawnTailscaleCommand = (
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  platform: NodeJS.Platform,
+  args: readonly string[],
+  subcommand: "status" | "serve",
+) =>
+  Effect.gen(function* () {
+    const executables = tailscaleCommandsForPlatform(platform);
+    let lastCause: unknown;
+
+    for (const executable of executables) {
+      const command = ChildProcess.make(executable, args).pipe(
+        executable === MACOS_TAILSCALE_APP_EXECUTABLE
+          ? ChildProcess.setEnv({ TAILSCALE_BE_CLI: "1" })
+          : (value) => value,
+      );
+      const attempt = yield* spawner.spawn(command).pipe(Effect.result);
+      if (Result.isSuccess(attempt)) {
+        return { child: attempt.success, executable } as const;
+      }
+      lastCause = attempt.failure;
+    }
+
+    const executable = executables.at(-1) ?? "tailscale";
+    return yield* new TailscaleCommandSpawnError({
+      executable,
+      subcommand,
+      argumentCount: args.length,
+      cause: lastCause,
+    });
+  });
+
 const decodeTailscaleStatusJson = Schema.decodeEffect(Schema.fromJsonString(TailscaleStatusJson));
 
 function normalizeMagicDnsName(status: TailscaleStatusJson): string | null {
@@ -221,18 +263,14 @@ export const readTailscaleStatus = Effect.gen(function* () {
   const args = ["status", "--json"];
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const hostPlatform = yield* HostProcessPlatform;
-  const executable = tailscaleCommandForPlatform(hostPlatform);
+  const spawned = yield* spawnTailscaleCommand(spawner, hostPlatform, args, "status");
   const commandContext = {
-    executable,
+    executable: spawned.executable,
     subcommand: "status" as const,
     argumentCount: args.length,
   };
   return yield* Effect.gen(function* () {
-    const child = yield* spawner
-      .spawn(ChildProcess.make(executable, args))
-      .pipe(
-        Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
-      );
+    const child = spawned.child;
     const [stdout, stderr, exitCode] = yield* Effect.all(
       [
         collectStdout(child.stdout),
@@ -256,7 +294,6 @@ export const readTailscaleStatus = Effect.gen(function* () {
     }
     return yield* parseTailscaleStatus(stdout);
   }).pipe(
-    Effect.scoped,
     Effect.timeout(TAILSCALE_STATUS_TIMEOUT),
     Effect.catchTags({
       TimeoutError: (cause) =>
@@ -269,7 +306,7 @@ export const readTailscaleStatus = Effect.gen(function* () {
         ),
     }),
   );
-});
+}).pipe(Effect.scoped);
 
 export function buildTailscaleHttpsBaseUrl(input: {
   readonly magicDnsName: string;
@@ -291,19 +328,15 @@ const runTailscaleCommand = (
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const hostPlatform = yield* HostProcessPlatform;
-    const executable = tailscaleCommandForPlatform(hostPlatform);
+    const spawned = yield* spawnTailscaleCommand(spawner, hostPlatform, args, "serve");
     const commandContext = {
-      executable,
+      executable: spawned.executable,
       subcommand: "serve" as const,
       argumentCount: args.length,
     };
     const timeout = Duration.fromInputUnsafe(timeoutInput);
     return yield* Effect.gen(function* () {
-      const child = yield* spawner
-        .spawn(ChildProcess.make(executable, args))
-        .pipe(
-          Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
-        );
+      const child = spawned.child;
       const [stderr, exitCode] = yield* Effect.all(
         [collectStderr(child.stderr), child.exitCode.pipe(Effect.map(Number))],
         { concurrency: "unbounded" },
@@ -321,7 +354,6 @@ const runTailscaleCommand = (
         });
       }
     }).pipe(
-      Effect.scoped,
       Effect.timeout(timeout),
       Effect.catchTags({
         TimeoutError: (cause) =>
@@ -334,7 +366,7 @@ const runTailscaleCommand = (
           ),
       }),
     );
-  });
+  }).pipe(Effect.scoped);
 
 export const ensureTailscaleServe = (input: {
   readonly localPort: number;
