@@ -5,17 +5,19 @@ import * as NodeHttp from "node:http";
 
 import { OpenCodeV2Settings, ProviderInstanceId } from "@shuv2code/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { describe, it } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import { OpenCodeRuntime, type OpenCodeRuntimeShape } from "../provider/opencodeRuntime.ts";
 import { makeOpenCodeV2TextGeneration } from "./OpenCodeV2TextGeneration.ts";
 
+const decodeOpenCodeV2Settings = Schema.decodeSync(OpenCodeV2Settings);
+
 describe("OpenCodeV2TextGeneration", () => {
-  it("keeps a locally managed server scoped through SSE completion", async () => {
+  it.effect("keeps a locally managed server scoped through SSE completion", () => {
     let events: NodeHttp.ServerResponse | undefined;
     let connectionClosed = false;
     const server = NodeHttp.createServer(async (request, response) => {
@@ -59,53 +61,60 @@ describe("OpenCodeV2TextGeneration", () => {
       response.statusCode = 404;
       response.end();
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    NodeAssert.ok(address && typeof address !== "string");
-    const baseUrl = `http://127.0.0.1:${address.port}`;
 
-    const runtime = {
-      connectToOpenCodeServer: () =>
-        Effect.gen(function* () {
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              connectionClosed = true;
-            }),
-          );
-          return {
-            url: baseUrl,
-            exitCode: Effect.never,
-            external: false,
-            sharedService: false,
-            protocol: "v2" as const,
-          };
-        }),
-    } as unknown as OpenCodeRuntimeShape;
-    const settings = Schema.decodeSync(OpenCodeV2Settings)({ binaryPath: "fake-opencode2" });
-    const layer = Layer.succeed(OpenCodeRuntime, runtime).pipe(
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "opencode2-text-test-" })),
-      Layer.provideMerge(NodeServices.layer),
-    );
-
-    try {
-      const result = await Effect.runPromise(
-        Effect.gen(function* () {
-          const textGeneration = yield* makeOpenCodeV2TextGeneration(settings);
-          return yield* textGeneration.generateThreadTitle({
-            cwd: process.cwd(),
-            message: "Name this thread",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("opencodeV2"),
-              model: "openai/gpt-5",
-            },
-          });
-        }).pipe(Effect.provide(layer)),
+    return Effect.gen(function* () {
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)),
       );
+      const address = server.address();
+      NodeAssert.ok(address && typeof address !== "string");
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      const runtime = {
+        connectToOpenCodeServer: () =>
+          Effect.gen(function* () {
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                connectionClosed = true;
+              }),
+            );
+            return {
+              url: baseUrl,
+              exitCode: Effect.never,
+              external: false,
+              sharedService: false,
+              protocol: "v2" as const,
+            };
+          }),
+      } as unknown as OpenCodeRuntimeShape;
+      const settings = decodeOpenCodeV2Settings({ binaryPath: "fake-opencode2" });
+      const layer = Layer.succeed(OpenCodeRuntime, runtime).pipe(
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "opencode2-text-test-" }),
+        ),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      const result = yield* Effect.gen(function* () {
+        const textGeneration = yield* makeOpenCodeV2TextGeneration(settings);
+        return yield* textGeneration.generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Name this thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("opencodeV2"),
+            model: "openai/gpt-5",
+          },
+        });
+      }).pipe(Effect.provide(layer));
       NodeAssert.deepEqual(result, { title: "Native v2" });
       NodeAssert.equal(connectionClosed, true);
-    } finally {
-      events?.end();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          events?.end();
+          yield* Effect.promise(() => new Promise<void>((resolve) => server.close(resolve)));
+        }),
+      ),
+    );
   });
 });
