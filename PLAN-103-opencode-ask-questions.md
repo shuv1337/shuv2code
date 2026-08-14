@@ -367,9 +367,9 @@ Legacy hydration copies `settings.providers.opencode` onto instance `opencode` a
    - `provider_session_runtime.provider_name` / `provider_instance_id`
    - projected thread session `providerName` / `providerInstanceId`
    - persisted thread `modelSelection.instanceId`
-   Prefer an orchestration event that projectors already understand over a raw SQL patch
-   of projections alone. Leave true v1 rows alone. Keep the old `opencode`
-   instance visible and unavailable.
+     Prefer an orchestration event that projectors already understand over a raw SQL patch
+     of projections alone. Leave true v1 rows alone. Keep the old `opencode`
+     instance visible and unavailable.
 5. If v1, leave `opencode` alone; do not create `opencodeV2` unless the user adds one.
 
 Do not delete `settings.providers.opencode`.
