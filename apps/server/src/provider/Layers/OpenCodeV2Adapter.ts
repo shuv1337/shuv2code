@@ -1163,6 +1163,15 @@ export function makeOpenCodeV2Adapter(
       interruptTurn: Effect.fn("interruptTurn")(function* (threadId, turnId) {
         const context = yield* ensureSession(threadId);
         const interruptedTurnId = turnId ?? context.activeTurnId;
+        const pendingFormIds = [...context.pendingForms.keys()];
+        yield* Effect.forEach(
+          pendingFormIds,
+          (formId) =>
+            Effect.tryPromise(() =>
+              context.client.form.cancel(context.openCodeSessionId, formId),
+            ).pipe(Effect.ignore),
+          { concurrency: "unbounded" },
+        );
         yield* Effect.tryPromise({
           try: () => context.client.session.interrupt(context.openCodeSessionId),
           catch: (cause) =>
@@ -1174,7 +1183,10 @@ export function makeOpenCodeV2Adapter(
             }),
         });
         context.activeTurnId = undefined;
+        const { activeTurnId: _, ...settledSession } = context.session;
+        context.session = { ...settledSession, status: "ready" };
         writeResume(context, true);
+        yield* Effect.forEach(pendingFormIds, (formId) => emitFormResolved(context, formId, {}));
         if (interruptedTurnId) {
           yield* emit({
             ...(yield* buildEventBase({ threadId, turnId: interruptedTurnId })),

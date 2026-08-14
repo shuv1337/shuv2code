@@ -7,7 +7,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
-import { ProviderDriverKind, ThreadId } from "@shuv2code/contracts";
+import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@shuv2code/contracts";
 import { ServerConfig } from "../../config.ts";
 import { OpenCodeRuntime, type OpenCodeRuntimeShape } from "../opencodeRuntime.ts";
 import type { OpenCodeV2Client, OpenCodeV2Event } from "../opencodeV2Client.ts";
@@ -35,7 +35,17 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
   createOpenCodeSdkClient: () =>
     ({}) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
+  loadOpenCodeInventory: () => Effect.die("not used"),
+  loadInventoryFromCli: () => Effect.die("not used"),
 };
+
+const OPEN_CODE_V2_SETTINGS = {
+  enabled: true,
+  binaryPath: "opencode",
+  serverUrl: "http://127.0.0.1:4301",
+  serverPassword: "",
+  customModels: [],
+} as const;
 
 function makeAdoptionClient(input: {
   readonly messages: () => Promise<unknown>;
@@ -74,10 +84,9 @@ function runAdoptedToolCompletion(input: {
         data: { sessionID: "ses_adopted", id: "call_1" },
       },
     });
-    const adapter = yield* makeOpenCodeV2Adapter(
-      { binaryPath: "opencode", serverUrl: "http://127.0.0.1:4301" },
-      { clientFactory: () => client },
-    );
+    const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+      clientFactory: () => client,
+    });
     const eventsFiber = yield* adapter.streamEvents.pipe(
       Stream.filter((event) => event.threadId === threadId && event.type.startsWith("item.")),
       Stream.take(input.expectedEventCount),
@@ -111,6 +120,84 @@ function runAdoptedToolCompletion(input: {
 }
 
 const OpenCodeRuntimeTestDoubleLayer = Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble);
+
+describe("OpenCodeV2Adapter interruption", () => {
+  it.effect("cancels pending forms and accepts a new turn after interruption", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-interrupt-form");
+      const promptCalls: string[] = [];
+      const cancelledForms: string[] = [];
+      const client = {
+        event: {
+          subscribe: () => ({
+            async *[Symbol.asyncIterator]() {
+              yield { type: "server.connected" };
+              await new Promise<never>(() => undefined);
+            },
+          }),
+        },
+        session: {
+          create: async () => ({ id: "ses_interrupt_form" }),
+          prompt: async (_sessionID: string, input: { readonly text: string }) => {
+            promptCalls.push(input.text);
+          },
+          interrupt: async () => undefined,
+        },
+        form: {
+          list: async () => [
+            {
+              id: "frm_interrupt_form",
+              sessionID: "ses_interrupt_form",
+              fields: [{ key: "q0", type: "string", title: "Question" }],
+            },
+          ],
+          cancel: async (_sessionID: string, formID: string) => {
+            cancelledForms.push(formID);
+          },
+        },
+        permission: { list: async () => [] },
+      } as unknown as OpenCodeV2Client;
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("opencodeV2"),
+        model: "openai/gpt-5.6-sol",
+        options: [],
+      };
+      const firstTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "first",
+        attachments: [],
+        modelSelection,
+      });
+      yield* adapter.interruptTurn(threadId, firstTurn.turnId);
+
+      const session = (yield* adapter.listSessions())[0];
+      NodeAssert.equal(session?.status, "ready");
+      NodeAssert.equal(session?.activeTurnId, undefined);
+      NodeAssert.deepEqual(cancelledForms, ["frm_interrupt_form"]);
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "second",
+        attachments: [],
+        modelSelection,
+      });
+      NodeAssert.deepEqual(promptCalls, ["first", "second"]);
+    }).pipe(
+      Effect.provide(OpenCodeRuntimeTestDoubleLayer),
+      Effect.provide(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+});
 
 describe("OpenCodeV2Adapter adopted tool names", () => {
   it.effect("recovers a projected tool name before mapping a terminal event", () =>
