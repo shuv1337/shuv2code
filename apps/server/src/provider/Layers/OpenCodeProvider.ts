@@ -23,6 +23,7 @@ import {
   openCodeRuntimeErrorDetail,
   type OpenCodeInventory,
 } from "../opencodeRuntime.ts";
+import { titleCaseSlug } from "../opencodeShared.ts";
 import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
 
 const OPENCODE_PRESENTATION = {
@@ -140,16 +141,6 @@ function formatOpenCodeProbeError(input: {
       ? `Failed to execute OpenCode CLI health check: ${detail}`
       : "Failed to execute OpenCode CLI health check.",
   };
-}
-
-function titleCaseSlug(value: string): string {
-  const segments: Array<string> = [];
-  for (const segment of value.split(/[-_/]+/)) {
-    if (segment.length > 0) {
-      segments.push(segment.charAt(0).toUpperCase() + segment.slice(1));
-    }
-  }
-  return segments.join(" ");
 }
 
 function inferDefaultVariant(
@@ -373,6 +364,21 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     }
     const protocol = detectOpenCodeProtocolFromVersionOutput(versionExit.value.stdout);
     version = parseOpenCodeCliVersion(versionExit.value.stdout);
+    if (protocol === "v2") {
+      return buildServerProvider({
+        presentation: OPENCODE_PRESENTATION,
+        enabled: openCodeSettings.enabled,
+        checkedAt,
+        models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE_MODEL_CAPABILITIES),
+        probe: {
+          installed: true,
+          version,
+          status: "error",
+          auth: { status: "unknown" },
+          message: "this binary speaks OpenCode v2; use the opencode2 provider.",
+        },
+      });
+    }
 
     if (!version) {
       return fallback(
@@ -405,6 +411,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
           Effect.gen(function* () {
             const server = yield* openCodeRuntime.connectToOpenCodeServer({
               binaryPath: openCodeSettings.binaryPath,
+              requiredProtocol: "v1",
               serverUrl: openCodeSettings.serverUrl,
               ...(openCodeSettings.serverPassword
                 ? { serverPassword: openCodeSettings.serverPassword }

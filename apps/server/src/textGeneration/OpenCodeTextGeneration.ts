@@ -301,6 +301,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
                 openCodeRuntime
                   .connectToOpenCodeServer({
                     binaryPath: input.binaryPath,
+                    requiredProtocol: "v1",
                     environment: resolvedEnvironment,
                   })
                   .pipe(
@@ -516,6 +517,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
               const server = yield* openCodeRuntime
                 .connectToOpenCodeServer({
                   binaryPath: openCodeSettings.binaryPath,
+                  requiredProtocol: "v1",
                   serverUrl: openCodeSettings.serverUrl,
                   ...(openCodeSettings.serverPassword
                     ? { serverPassword: openCodeSettings.serverPassword }

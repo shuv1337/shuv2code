@@ -391,9 +391,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           // Keep the durable OpenCode/shuvcode resume cursor in sync when a
           // turn settles so a later restart does not re-open a finished turn.
           Effect.andThen(
-            canonicalEvent.provider === ProviderDriverKind.make("opencode") &&
-              (canonicalEvent.type === "turn.completed" ||
-                canonicalEvent.type === "turn.aborted") &&
+            (canonicalEvent.type === "turn.completed" || canonicalEvent.type === "turn.aborted") &&
               canonicalEvent.threadId !== undefined
               ? Effect.gen(function* () {
                   const adapterOption = yield* registry
@@ -1658,8 +1656,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         // OpenCode/shuvcode shared services detach on stopAll instead of
         // aborting. Keep their resume bindings alive so startup recovery can
         // reattach to durable in-flight work after a shuv2code restart.
+        const durableResumeCheck = yield* registry.getByInstance(providerInstanceId).pipe(
+          Effect.flatMap((adapter) =>
+            adapter.capabilities.hasDurableSessionRecovery === undefined
+              ? Effect.succeed(false)
+              : adapter.capabilities.hasDurableSessionRecovery(binding.resumeCursor),
+          ),
+          Effect.orElseSucceed(() => false),
+        );
         const durableResume =
-          binding.provider === ProviderDriverKind.make("opencode") &&
+          durableResumeCheck &&
           binding.resumeCursor !== null &&
           binding.resumeCursor !== undefined &&
           binding.status !== "stopped";
@@ -1708,7 +1714,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     Effect.gen(function* () {
       const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
       for (const binding of bindings) {
-        if (binding.provider !== ProviderDriverKind.make("opencode")) {
+        const canRecover = yield* registry
+          .getByInstance(dieOnMissingBindingInstanceId("ProviderService.startupRecover", binding))
+          .pipe(
+            Effect.flatMap((adapter) =>
+              adapter.capabilities.hasDurableSessionRecovery === undefined
+                ? Effect.succeed(false)
+                : adapter.capabilities.hasDurableSessionRecovery(binding.resumeCursor),
+            ),
+            Effect.orElseSucceed(() => false),
+          );
+        if (!canRecover) {
           continue;
         }
         if (binding.status === "stopped") {

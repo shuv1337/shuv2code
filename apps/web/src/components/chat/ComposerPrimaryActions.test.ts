@@ -1,6 +1,23 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatPendingPrimaryActionLabel, runningComposerActions } from "./ComposerPrimaryActions";
+import {
+  formatPendingPrimaryActionLabel,
+  pendingComposerActions,
+  runningComposerActions,
+} from "./ComposerPrimaryActions";
+
+describe("pendingComposerActions", () => {
+  it("always offers cancellation and only offers Previous after the first question", () => {
+    expect(pendingComposerActions({ questionIndex: 0 })).toEqual({
+      showCancel: true,
+      showPrevious: false,
+    });
+    expect(pendingComposerActions({ questionIndex: 2 })).toEqual({
+      showCancel: true,
+      showPrevious: true,
+    });
+  });
+});
 
 describe("runningComposerActions", () => {
   it("shows Stop and Send while running with draft content", () => {

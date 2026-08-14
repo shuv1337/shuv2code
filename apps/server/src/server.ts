@@ -40,7 +40,10 @@ import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
 import * as GitLabCli from "./sourceControl/GitLabCli.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
-import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
+import { ProviderInstanceRegistryHydrationAfterBindingLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
+import { OpenCodeV2BindingLive } from "./provider/Layers/OpenCodeV2Binding.ts";
+import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionThreads.ts";
+import { ProjectionThreadSessionRepositoryLive } from "./persistence/Layers/ProjectionThreadSessions.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
@@ -237,6 +240,12 @@ const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
   Layer.provide(ProviderSessionRuntime.layer),
 );
 
+const OpenCodeV2BindingLayerLive = OpenCodeV2BindingLive.pipe(
+  Layer.provideMerge(ProviderSessionRuntime.layer),
+  Layer.provideMerge(ProjectionThreadRepositoryLive),
+  Layer.provideMerge(ProjectionThreadSessionRepositoryLive),
+);
+
 // `ProviderAdapterRegistryLive` is now a facade that resolves kind → adapter
 // by looking up the default `ProviderInstance` per driver in the instance
 // registry. Adapter construction itself moved inside each driver's
@@ -418,7 +427,11 @@ const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
   // through this layer. Built-in drivers come from `BUILT_IN_DRIVERS`;
   // `providerInstances` hydration merges `settings.providers.<kind>`
   // with explicit `providerInstances` entries on boot.
-  Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
+  Layer.provideMerge(
+    ProviderInstanceRegistryHydrationAfterBindingLive.pipe(
+      Layer.provideMerge(OpenCodeV2BindingLayerLive),
+    ),
+  ),
   // Shared native/canonical NDJSON writers used by both the per-instance
   // drivers (native stream, written from inside each `<X>Adapter`) and
   // `ProviderService` (canonical stream, written after event normalization).

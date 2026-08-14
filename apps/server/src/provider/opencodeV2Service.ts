@@ -6,6 +6,8 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { basicAuthHeader } from "./opencodeShared.ts";
+
 /**
  * Minimal local reimplementation of `@opencode-ai/client/service` discover/ensure.
  * The published client package's Node ESM entry is currently broken
@@ -165,10 +167,6 @@ export function parseOpenCodeV2ServiceRegistration(
   } catch {
     return null;
   }
-}
-
-function basicAuthHeader(password: string): string {
-  return `Basic ${Buffer.from(`opencode:${password}`, "utf8").toString("base64")}`;
 }
 
 async function readRegistrationFile(path: string): Promise<OpenCodeV2ServiceRegistration | null> {

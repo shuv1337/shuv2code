@@ -59,6 +59,11 @@ export const runningComposerActions = (input: {
   showStop: input.isRunning,
 });
 
+export const pendingComposerActions = (input: { questionIndex: number }) => ({
+  showCancel: true,
+  showPrevious: input.questionIndex > 0,
+});
+
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
@@ -90,9 +95,23 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   );
 
   if (pendingAction) {
+    const actions = pendingComposerActions(pendingAction);
     return (
       <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
-        {pendingAction.questionIndex > 0 ? (
+        {actions.showCancel ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className={cn("rounded-full", compact && "px-3")}
+            {...pointerFocusProps}
+            onClick={onInterrupt}
+            disabled={pendingAction.isResponding || isEnvironmentUnavailable}
+          >
+            Cancel
+          </Button>
+        ) : null}
+        {actions.showPrevious ? (
           compact ? (
             <Button
               size="icon-sm"

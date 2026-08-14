@@ -210,11 +210,29 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.deleteById:query")),
     );
 
+  const remapOpenCodeV2ModelSelection: ProjectionThreadRepositoryShape["remapOpenCodeV2ModelSelection"] =
+    (input) =>
+      sql`
+        UPDATE projection_threads
+        SET model_selection_json = json_set(
+          model_selection_json,
+          '$.instanceId',
+          ${input.toInstanceId}
+        )
+        WHERE json_extract(model_selection_json, '$.instanceId') = ${input.fromInstanceId}
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionThreadRepository.remapOpenCodeV2ModelSelection:query"),
+        ),
+      );
+
   return {
     upsert,
     getById,
     listByProjectId,
     deleteById,
+    remapOpenCodeV2ModelSelection,
   } satisfies ProjectionThreadRepositoryShape;
 });
 

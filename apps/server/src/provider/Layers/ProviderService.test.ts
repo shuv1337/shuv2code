@@ -2600,3 +2600,128 @@ validation.layer("ProviderServiceLive validation", (it) => {
     }),
   );
 });
+
+it.effect("ProviderServiceLive re-adopts a migrated OpenCode V2 session after a cold restart", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "shuv2code-provider-service-opencode-v2-restart-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const opencodeV2Driver = ProviderDriverKind.make("opencodeV2");
+    const opencodeV2InstanceId = ProviderInstanceId.make("opencodeV2");
+    const legacyInstanceId = ProviderInstanceId.make("opencode");
+    const threadId = asThreadId("thread-opencode-v2-cold-restart");
+    const convertedResumeCursor = {
+      kind: "opencode-v2",
+      schemaVersion: 1,
+      sessionId: "ses_opencode_v2_restart",
+      activeTurnId: "turn_opencode_v2_restart",
+    };
+
+    const makeDurableOpenCodeV2 = (recovered?: Deferred.Deferred<void>) => {
+      const fake = makeFakeCodexAdapter(opencodeV2Driver);
+      const startSession = fake.adapter.startSession;
+      return {
+        ...fake,
+        adapter: {
+          ...fake.adapter,
+          startSession: (input) =>
+            startSession(input).pipe(
+              Effect.tap(() => (recovered ? Deferred.succeed(recovered, undefined) : Effect.void)),
+            ),
+          capabilities: {
+            ...fake.adapter.capabilities,
+            hasDurableSessionRecovery: (resumeCursor: unknown) =>
+              Effect.succeed(
+                typeof resumeCursor === "object" &&
+                  resumeCursor !== null &&
+                  "kind" in resumeCursor &&
+                  resumeCursor.kind === "opencode-v2",
+              ),
+          },
+        } satisfies ProviderAdapterShape<ProviderAdapterError>,
+      };
+    };
+    const makeServiceLayer = (fake: ReturnType<typeof makeDurableOpenCodeV2>) =>
+      makeProviderServiceLive().pipe(
+        Layer.provide(
+          Layer.succeed(
+            ProviderAdapterRegistry.ProviderAdapterRegistry,
+            makeAdapterRegistryMock({ [opencodeV2Driver]: fake.adapter }),
+          ),
+        ),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+    const firstOpenCodeV2 = makeDurableOpenCodeV2();
+    const firstScope = yield* Scope.make();
+    yield* Layer.build(makeServiceLayer(firstOpenCodeV2)).pipe(Scope.provide(firstScope));
+
+    yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      yield* repository.upsert({
+        threadId,
+        providerName: "opencode",
+        providerInstanceId: legacyInstanceId,
+        adapterKey: "opencode",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-08-14T00:00:00.000Z",
+        resumeCursor: {
+          sessionId: convertedResumeCursor.sessionId,
+          activeTurnId: convertedResumeCursor.activeTurnId,
+        },
+        runtimePayload: { cwd: "/tmp/project-opencode-v2-restart" },
+      });
+      yield* repository.remapOpenCodeV2Identity({
+        fromInstanceId: legacyInstanceId,
+        toInstanceId: opencodeV2InstanceId,
+        toProviderName: opencodeV2Driver,
+      });
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+
+    yield* Scope.close(firstScope, Exit.void);
+    assert.equal(firstOpenCodeV2.startSession.mock.calls.length, 0);
+
+    const persistedAfterShutdown = yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      return yield* repository.getByThreadId({ threadId });
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+    assert.equal(Option.isSome(persistedAfterShutdown), true);
+    if (Option.isSome(persistedAfterShutdown)) {
+      assert.equal(persistedAfterShutdown.value.providerName, opencodeV2Driver);
+      assert.equal(persistedAfterShutdown.value.providerInstanceId, opencodeV2InstanceId);
+      assert.equal(persistedAfterShutdown.value.status, "running");
+      assert.deepEqual(persistedAfterShutdown.value.resumeCursor, convertedResumeCursor);
+    }
+
+    const startupRecovered = yield* Deferred.make<void>();
+    const secondOpenCodeV2 = makeDurableOpenCodeV2(startupRecovered);
+    const secondScope = yield* Scope.make();
+    yield* Layer.build(makeServiceLayer(secondOpenCodeV2)).pipe(Scope.provide(secondScope));
+    yield* Deferred.await(startupRecovered);
+
+    assert.equal(secondOpenCodeV2.startSession.mock.calls.length, 1);
+    const recoveredInput = secondOpenCodeV2.startSession.mock.calls[0]?.[0];
+    assert.equal(recoveredInput?.provider, opencodeV2Driver);
+    assert.equal(recoveredInput?.providerInstanceId, opencodeV2InstanceId);
+    assert.equal(recoveredInput?.threadId, threadId);
+    assert.equal(recoveredInput?.cwd, "/tmp/project-opencode-v2-restart");
+    assert.deepEqual(recoveredInput?.resumeCursor, convertedResumeCursor);
+
+    yield* Scope.close(secondScope, Exit.void);
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

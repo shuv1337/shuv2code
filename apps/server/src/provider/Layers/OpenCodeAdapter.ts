@@ -8,7 +8,6 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   ThreadId,
-  type ToolLifecycleItemType,
   TurnId,
   type UserInputQuestion,
 } from "@shuv2code/contracts";
@@ -30,6 +29,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { toToolLifecycleItemType } from "./toolLifecycleItemType.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -352,38 +352,6 @@ type EventBaseInput = {
   readonly createdAt?: string | undefined;
   readonly raw?: unknown;
 };
-
-function toToolLifecycleItemType(toolName: string): ToolLifecycleItemType {
-  const normalized = toolName.toLowerCase();
-  if (normalized.includes("bash") || normalized.includes("command")) {
-    return "command_execution";
-  }
-  if (
-    normalized.includes("edit") ||
-    normalized.includes("write") ||
-    normalized.includes("patch") ||
-    normalized.includes("multiedit")
-  ) {
-    return "file_change";
-  }
-  if (normalized.includes("web")) {
-    return "web_search";
-  }
-  if (normalized.includes("mcp")) {
-    return "mcp_tool_call";
-  }
-  if (normalized.includes("image")) {
-    return "image_view";
-  }
-  if (
-    normalized.includes("task") ||
-    normalized.includes("agent") ||
-    normalized.includes("subtask")
-  ) {
-    return "collab_agent_tool_call";
-  }
-  return "dynamic_tool_call";
-}
 
 function mapPermissionToRequestType(
   permission: string,
@@ -1466,6 +1434,7 @@ export function makeOpenCodeAdapter(
               const server = yield* openCodeRuntime.connectToOpenCodeServer({
                 binaryPath,
                 serverUrl,
+                requiredProtocol: "v1",
                 ...(serverPassword ? { serverPassword } : {}),
                 ...(options?.environment ? { environment: options.environment } : {}),
               });
