@@ -4,6 +4,7 @@
 
 - Keep local verification focused on the files and packages changed. Run the smallest relevant test set; do not run the full workspace test suite as a routine completion step.
   - Use `vp test run <test-files>` for focused built-in Vite+ tests. Use `vp run test` only when the affected package specifically requires its `test` script.
+  - If the global `vp` command is not on `PATH`, use the repository-local `./node_modules/.bin/vp` with the same arguments after dependencies are installed.
   - Backend changes must include and run focused tests for the changed behavior.
   - Run targeted formatting, lint, and type checks for the affected scope when available.
 - Do not run repo-wide `vp check`, `vp run typecheck`, `vp run test`, or equivalent full-suite commands locally unless the user explicitly requests them. PR/`main` CI is a lean personal-project gate (brand/schema/icons + `vp check` only). Deeper monorepo verification (typecheck, full tests, release-smoke, resource-monitor cargo checks) runs on the manual release workflow `verify` job, not on every PR.
