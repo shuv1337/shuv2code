@@ -87,7 +87,7 @@ Completed on 2026-08-14:
 - Done when: only explicitly bound rows are rewritten in both remap sites; test proves the
   NULL-instance row is preserved.
 
-### T3: Single `toToolLifecycleItemType` shared by both adapters
+### Task 3: Single `toToolLifecycleItemType` shared by both adapters
 
 - Bug: near-duplicate copies with silent drift — `OpenCodeAdapter.ts:356` handles
   `image`/`task` branches, `OpenCodeV2Adapter.ts:212` does not.
@@ -124,7 +124,7 @@ Completed on 2026-08-14:
 
 - Duplicated verbatim: `OpenCodeProvider.ts:145`, `OpenCodeV2Provider.ts:47`.
 - Create: put it next to other provider-layer helpers (proposed:
-  `apps/server/src/provider/Layers/slug.ts`, or fold into the T3 helper module if a
+  `apps/server/src/provider/Layers/slug.ts`, or fold into the Task 3 helper module if a
   combined `openCodeShared.ts` reads better — executor's choice, one module either way).
 - Modify both providers to import it. Existing provider tests stay green.
 - Command: `vp test run apps/server/src/provider/Layers/OpenCodeV2Provider.test.ts apps/server/src/provider/Layers/OpenCodeProvider.test.ts`
@@ -236,7 +236,7 @@ Completed on 2026-08-14:
 ## Rollback
 
 - Every task is an independent, small commit (jj). Revert any single change with
-  `jj backout` of that commit; no task depends on another except T3 before T5 if the
+  `jj backout` of that commit; no task depends on another except Task 3 before T5 if the
   executor merges them into one shared-helpers module, and T13 before T14.
 
 ## Open decisions
