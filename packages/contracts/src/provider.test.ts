@@ -7,6 +7,8 @@ import {
   ProviderSteerTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderThreadHistoryPreparationInput,
+  ProviderThreadHistoryPreparationResult,
 } from "./provider.ts";
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
@@ -14,6 +16,12 @@ const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInp
 const decodeProviderSteerTurnInput = Schema.decodeUnknownSync(ProviderSteerTurnInput);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
+const decodeThreadHistoryPreparationInput = Schema.decodeUnknownSync(
+  ProviderThreadHistoryPreparationInput,
+);
+const decodeThreadHistoryPreparationResult = Schema.decodeUnknownSync(
+  ProviderThreadHistoryPreparationResult,
+);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -21,6 +29,34 @@ function getOptionValue(
 ): unknown {
   return options?.find((option) => option.id === id)?.value;
 }
+
+describe("ProviderThreadHistoryPreparation", () => {
+  it("accepts exact-thread inspect and migration results", () => {
+    expect(
+      decodeThreadHistoryPreparationInput({ threadId: "thread-1", action: "inspect" }),
+    ).toEqual({ threadId: "thread-1", action: "inspect" });
+    expect(
+      decodeThreadHistoryPreparationResult({
+        threadId: "thread-1",
+        state: "migration-required",
+        bytesToProcess: 902_000_000,
+      }),
+    ).toEqual({
+      threadId: "thread-1",
+      state: "migration-required",
+      bytesToProcess: 902_000_000,
+    });
+  });
+
+  it("rejects implicit migration and failures without a user-facing reason", () => {
+    expect(() =>
+      decodeThreadHistoryPreparationInput({ threadId: "thread-1", action: "auto" }),
+    ).toThrow();
+    expect(() =>
+      decodeThreadHistoryPreparationResult({ threadId: "thread-1", state: "failed" }),
+    ).toThrow();
+  });
+});
 
 describe("ProviderSessionStartInput", () => {
   it("accepts codex-compatible payloads", () => {

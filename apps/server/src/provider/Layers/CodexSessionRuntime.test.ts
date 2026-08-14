@@ -583,6 +583,8 @@ describe("openCodexThread", () => {
         CODEX_VOICE_CONTROLLER_DEVELOPER_INSTRUCTIONS,
       );
       NodeAssert.equal(startPayload.threadSource, "voice-controller:creation-1");
+      NodeAssert.equal(startPayload.historyMode, "paginated");
+      NodeAssert.equal("historyMode" in resumePayload, false);
       NodeAssert.equal("threadSource" in resumePayload, false);
       for (const requiredRule of [
         "exact project, thread, and turn IDs",

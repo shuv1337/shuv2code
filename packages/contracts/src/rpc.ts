@@ -187,6 +187,10 @@ import {
   SourceControlRepositoryInfo,
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
+import {
+  ProviderThreadHistoryPreparationInput,
+  ProviderThreadHistoryPreparationResult,
+} from "./provider.ts";
 import { VcsError, VcsSetProjectPreferenceInput, VcsSetProjectPreferenceResult } from "./vcs.ts";
 import {
   VoiceControllerError,
@@ -304,6 +308,7 @@ export const WS_METHODS = {
   serverReportClientActivity: "server.reportClientActivity",
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
+  providerPrepareThreadHistory: "provider.prepareThreadHistory",
 
   // Realtime voice controller
   voiceGetController: "voice.getController",
@@ -532,6 +537,12 @@ export const WsServerReportHostPowerStateRpc = Rpc.make(WS_METHODS.serverReportH
 export const WsServerGetBackgroundPolicyRpc = Rpc.make(WS_METHODS.serverGetBackgroundPolicy, {
   payload: Schema.Struct({}),
   success: BackgroundPolicySnapshot,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsProviderPrepareThreadHistoryRpc = Rpc.make(WS_METHODS.providerPrepareThreadHistory, {
+  payload: ProviderThreadHistoryPreparationInput,
+  success: ProviderThreadHistoryPreparationResult,
   error: EnvironmentAuthorizationError,
 });
 
@@ -1026,6 +1037,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,
+  WsProviderPrepareThreadHistoryRpc,
   WsVoiceGetControllerRpc,
   WsVoiceEnsureControllerRpc,
   WsVoiceListVoicesRpc,

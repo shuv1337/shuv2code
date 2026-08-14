@@ -33,6 +33,7 @@ import {
 } from "../../state/use-remote-environment-registry";
 import { useKnownTerminalSessions } from "../../state/use-terminal-session";
 import { useSelectedThreadDetailState } from "../../state/use-thread-detail";
+import { useThreadHistoryPreparation } from "../../state/use-thread-history-preparation";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { GitActionProgressOverlay } from "./GitActionProgressOverlay";
 import {
@@ -126,6 +127,36 @@ function ThreadUnavailableScreen() {
   );
 }
 
+function ThreadHistoryPreparationScreen(props: ReturnType<typeof useThreadHistoryPreparation>) {
+  if (props.type === "checking" || props.type === "migrating") {
+    return (
+      <LoadingScreen
+        message={
+          props.type === "migrating" ? "Updating thread history…" : "Checking thread history…"
+        }
+        messagePlacement="above-spinner"
+      />
+    );
+  }
+  if (props.type === "ready") return null;
+
+  return (
+    <View className="flex-1 items-center justify-center bg-screen px-6">
+      <EmptyState
+        variant="plain"
+        title={
+          props.type === "cancelled" ? "Thread update cancelled" : "Thread could not be prepared"
+        }
+        detail={
+          props.type === "cancelled" ? "The original thread was left unchanged." : props.message
+        }
+        actionLabel="Try again"
+        onAction={props.retry}
+      />
+    </View>
+  );
+}
+
 export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   const { state: workspaceState } = useWorkspaceState();
   const { connectionState } = useRemoteConnectionStatus();
@@ -146,6 +177,15 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
       ? null
       : scopedThreadKey(selectedThread.environmentId, selectedThread.id);
   const selectedThreadDetailState = useSelectedThreadDetailState();
+  const historyPreparation = useThreadHistoryPreparation(
+    selectedThread === null
+      ? null
+      : {
+          environmentId: selectedThread.environmentId,
+          threadId: selectedThread.id,
+          threadTitle: selectedThread.title,
+        },
+  );
 
   if (environmentId === null || threadIdRaw === null) {
     return <OpeningThreadLoadingScreen />;
@@ -156,6 +196,9 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   // loading placeholder while messages fetch, and the composer's connection
   // pill reports connecting/reconnecting/syncing status.
   if (selectedThread !== null && selectedThreadKey === routeThreadKey) {
+    if (historyPreparation.type !== "ready") {
+      return <ThreadHistoryPreparationScreen {...historyPreparation} />;
+    }
     return <ThreadRouteContent {...props} selectedThreadDetailState={selectedThreadDetailState} />;
   }
 

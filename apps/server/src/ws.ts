@@ -88,6 +88,7 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -533,6 +534,7 @@ export const makeWsRpcLayer = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const providerServiceOption = yield* Effect.serviceOption(ProviderService.ProviderService);
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
@@ -1141,6 +1143,32 @@ export const makeWsRpcLayer = (
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
       return WsRpcGroup.of({
+        [WS_METHODS.providerPrepareThreadHistory]: (input) => {
+          const unavailable = {
+            threadId: input.threadId,
+            state: "failed" as const,
+            message: "Thread history preparation is unavailable in this server runtime.",
+          };
+          if (
+            Option.isNone(providerServiceOption) ||
+            providerServiceOption.value.prepareThreadHistory === undefined
+          ) {
+            return Effect.succeed(unavailable);
+          }
+          return providerServiceOption.value.prepareThreadHistory(input).pipe(
+            Effect.map((result) => ({ ...result, threadId: input.threadId })),
+            Effect.catch((error) =>
+              Effect.succeed({
+                threadId: input.threadId,
+                state: "failed" as const,
+                message:
+                  error instanceof Error && error.message.trim().length > 0
+                    ? error.message.slice(0, 512)
+                    : "The selected provider thread could not be prepared.",
+              }),
+            ),
+          );
+        },
         [WS_METHODS.automationsList]: (input) =>
           observeRpcEffect(WS_METHODS.automationsList, automationService.list(input), {
             "rpc.aggregate": "automation",

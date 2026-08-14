@@ -1,7 +1,9 @@
 import {
   CommandId,
   ORCHESTRATION_WS_METHODS,
+  WS_METHODS,
   type ClientOrchestrationCommand,
+  type ProviderThreadHistoryPreparationInput,
 } from "@shuv2code/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -49,6 +51,10 @@ export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
 export type StopThreadSessionInput = CommandInput<"thread.session.stop">;
+export type PrepareThreadHistoryInput = ProviderThreadHistoryPreparationInput;
+
+export const prepareThreadHistory = (input: PrepareThreadHistoryInput) =>
+  request(WS_METHODS.providerPrepareThreadHistory, input);
 
 type DispatchTag = typeof ORCHESTRATION_WS_METHODS.dispatchCommand;
 type CommandEffect = Effect.Effect<

@@ -42,6 +42,7 @@ import type {
   ProviderRealtimeTextInput,
   ProviderRealtimeVoicesResult,
   ProviderThreadSnapshot,
+  ProviderThreadHistoryPreparationResult,
 } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
@@ -157,6 +158,11 @@ export interface ProviderServiceShape {
   readonly readThread?: (
     threadId: ThreadId,
   ) => Effect.Effect<ProviderThreadSnapshot, ProviderServiceError>;
+
+  readonly prepareThreadHistory?: (input: {
+    readonly threadId: ThreadId;
+    readonly action: "inspect" | "migrate";
+  }) => Effect.Effect<ProviderThreadHistoryPreparationResult, ProviderServiceError>;
 
   /**
    * Roll back provider conversation state by a number of turns.

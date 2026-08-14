@@ -7,6 +7,8 @@ import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../comp
 import { resolveThreadRouteRef, resolveThreadRouteRenderState } from "../threadRoutes";
 import { resolveThreadSyncPhase } from "../threadSync";
 import { SidebarInset } from "~/components/ui/sidebar";
+import { Button } from "../components/ui/button";
+import { useThreadHistoryPreparation } from "../hooks/useThreadHistoryPreparation";
 import {
   useEnvironmentThreadRefs,
   useThreadDetail,
@@ -56,6 +58,15 @@ function ChatThreadRouteView() {
   });
   const serverThreadStarted = threadHasStarted(serverThreadDetail);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
+  const preparation = useThreadHistoryPreparation(
+    threadRef === null
+      ? null
+      : {
+          environmentId: threadRef.environmentId,
+          threadId: threadRef.threadId,
+          threadTitle: serverThreadShell?.title ?? serverThreadDetail?.title ?? "Thread",
+        },
+  );
 
   useEffect(() => {
     if (!threadRef || !bootstrapComplete) {
@@ -76,6 +87,39 @@ function ChatThreadRouteView() {
 
   if (!threadRef) {
     return null;
+  }
+
+  if (preparation.type !== "ready") {
+    const waiting = preparation.type === "checking" || preparation.type === "migrating";
+    return (
+      <SidebarInset className="h-svh min-h-0 overflow-hidden bg-background text-foreground md:h-dvh">
+        <div className="flex h-full items-center justify-center px-6">
+          <div className="max-w-md text-center">
+            <p className="font-medium text-sm">
+              {preparation.type === "migrating"
+                ? "Updating thread history…"
+                : preparation.type === "checking"
+                  ? "Checking thread history…"
+                  : preparation.type === "cancelled"
+                    ? "Thread update cancelled"
+                    : "Thread could not be prepared"}
+            </p>
+            {!waiting ? (
+              <>
+                <p className="mt-2 text-muted-foreground text-sm">
+                  {preparation.type === "error"
+                    ? preparation.message
+                    : "The original thread was left unchanged."}
+                </p>
+                <Button className="mt-4" variant="outline" onClick={preparation.retry}>
+                  Try again
+                </Button>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </SidebarInset>
+    );
   }
 
   return (

@@ -478,6 +478,41 @@ function stripNullDefaults(value: Schema.Json): Schema.Json {
   ) as Schema.Json;
 }
 
+/**
+ * `historyMode` is an upstream experimental thread/start field. Codex emits
+ * the enum definitions in its JSON schemas but omits the field itself from
+ * the stable generated params documents, so keep this narrow augmentation in
+ * the generator rather than hand-editing generated output.
+ */
+function addThreadStartHistoryModeSchemas(schemas: Record<string, Schema.Json>): void {
+  const targets = [
+    ["ClientRequest__ThreadStartParams", "ClientRequest__ThreadHistoryMode"],
+    ["V2ThreadStartParams", "V2ThreadStartParams__ThreadHistoryMode"],
+  ] as const;
+
+  for (const [schemaName, historyModeName] of targets) {
+    const schema = schemas[schemaName];
+    if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
+      throw new Error(`Missing object schema for experimental ${schemaName}.historyMode`);
+    }
+    const schemaObject = schema as Record<string, Schema.Json>;
+    const properties = schemaObject.properties;
+    if (properties === null || typeof properties !== "object" || Array.isArray(properties)) {
+      throw new Error(`Missing properties for experimental ${schemaName}.historyMode`);
+    }
+    schemas[schemaName] = {
+      ...schemaObject,
+      properties: {
+        ...properties,
+        historyMode: {
+          anyOf: [{ $ref: `#/definitions/${historyModeName}` }, { type: "null" }],
+          description: "Persisted thread history contract to use for this new thread.",
+        },
+      },
+    };
+  }
+}
+
 function toPascalCaseMethod(method: string) {
   return method
     .split("/")
@@ -818,6 +853,7 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
       aggregateSchemas[name] = stripNullDefaults(normalizeNullableTypes(schema));
     }
   }
+  addThreadStartHistoryModeSchemas(aggregateSchemas);
 
   const generator = makeJsonSchemaGenerator();
   for (const [name, schema] of Object.entries(aggregateSchemas).toSorted(([left], [right]) =>

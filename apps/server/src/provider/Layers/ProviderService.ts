@@ -1550,6 +1550,48 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const getCapabilities: ProviderServiceMethod<"getCapabilities"> = (instanceId) =>
     registry.getByInstance(instanceId).pipe(Effect.map((adapter) => adapter.capabilities));
 
+  const prepareThreadHistory: NonNullable<ProviderServiceMethod<"prepareThreadHistory">> =
+    Effect.fn("ProviderService.prepareThreadHistory")(function* (input) {
+      const bindingOption = yield* directory.getBinding(input.threadId);
+      if (Option.isNone(bindingOption)) {
+        return {
+          state: "ready" as const,
+          historyMode: "not-applicable" as const,
+        };
+      }
+      const binding = bindingOption.value;
+      const instanceId = dieOnMissingBindingInstanceId(
+        "ProviderService.prepareThreadHistory",
+        binding,
+      );
+      const adapter = yield* registry.getByInstance(instanceId);
+      if (adapter.provider !== ProviderDriverKind.make("codex")) {
+        return { state: "ready" as const, historyMode: "not-applicable" as const };
+      }
+      if (adapter.prepareThreadHistory === undefined) {
+        return {
+          state: "unsupported" as const,
+          message: "Update Codex before loading this legacy thread.",
+        };
+      }
+      const cursor = binding.resumeCursor;
+      const providerThreadId =
+        typeof cursor === "object" &&
+        cursor !== null &&
+        !Array.isArray(cursor) &&
+        typeof Reflect.get(cursor, "threadId") === "string"
+          ? (Reflect.get(cursor, "threadId") as string)
+          : undefined;
+      if (providerThreadId === undefined) {
+        return { state: "ready" as const, historyMode: "not-applicable" as const };
+      }
+      return yield* adapter.prepareThreadHistory({
+        threadId: input.threadId,
+        providerThreadId,
+        action: input.action,
+      });
+    });
+
   const hasDurableSessionRecovery: ProviderServiceMethod<"hasDurableSessionRecovery"> = (
     threadId,
     instanceId,
@@ -1799,6 +1841,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     hasDurableSessionRecovery,
     getInstanceInfo,
     readThread,
+    prepareThreadHistory,
     rollbackConversation,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each

@@ -6,6 +6,7 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
+  WS_METHODS,
   type ClientOrchestrationCommand,
 } from "@shuv2code/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -26,6 +27,7 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import {
   archiveThread,
   createProject,
+  prepareThreadHistory,
   settleThread,
   startThreadTurn,
   steerThreadTurn,
@@ -77,6 +79,51 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("environment commands", () => {
+  it.effect("prepares only the explicitly selected thread history", () =>
+    Effect.gen(function* () {
+      const requested: unknown[] = [];
+      const client = {
+        [WS_METHODS.providerPrepareThreadHistory]: (input: unknown) =>
+          Effect.sync(() => {
+            requested.push(input);
+            return {
+              threadId: ThreadId.make("thread-1"),
+              state: "migration-required" as const,
+              bytesToProcess: 902_000_000,
+            };
+          }),
+      } as unknown as WsRpcProtocolClient;
+      const session: RpcSession.RpcSession = {
+        client,
+        initialConfig: Effect.never,
+        ready: Effect.void,
+        probe: Effect.void,
+        closed: Effect.never,
+      };
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make(Option.some(session)),
+        prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+
+      const result = yield* prepareThreadHistory({
+        threadId: ThreadId.make("thread-1"),
+        action: "inspect",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(requested).toEqual([{ threadId: "thread-1", action: "inspect" }]);
+      expect(result).toEqual({
+        threadId: "thread-1",
+        state: "migration-required",
+        bytesToProcess: 902_000_000,
+      });
+    }),
+  );
+
   it.effect("adds generated command metadata", () =>
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];

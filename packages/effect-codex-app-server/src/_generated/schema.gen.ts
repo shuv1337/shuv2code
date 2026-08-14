@@ -16903,6 +16903,7 @@ export type ClientRequest__ThreadStartParams = {
   readonly serviceTier?: string | null;
   readonly sessionStartSource?: ClientRequest__ThreadStartSource | null;
   readonly threadSource?: ClientRequest__ThreadSource | null;
+  readonly historyMode?: ClientRequest__ThreadHistoryMode | null;
 };
 export const ClientRequest__ThreadStartParams = Schema.Struct({
   approvalPolicy: Schema.optionalKey(Schema.Union([ClientRequest__AskForApproval, Schema.Null])),
@@ -16934,6 +16935,11 @@ export const ClientRequest__ThreadStartParams = Schema.Struct({
   threadSource: Schema.optionalKey(
     Schema.Union([ClientRequest__ThreadSource, Schema.Null]).annotate({
       description: "Optional client-supplied analytics source classification for this thread.",
+    }),
+  ),
+  historyMode: Schema.optionalKey(
+    Schema.Union([ClientRequest__ThreadHistoryMode, Schema.Null]).annotate({
+      description: "Persisted thread history contract to use for this new thread.",
     }),
   ),
 }).annotate({ identifier: "ClientRequest__ThreadStartParams" });
@@ -25067,6 +25073,7 @@ export type V2ThreadStartParams = {
   readonly serviceTier?: string | null;
   readonly sessionStartSource?: V2ThreadStartParams__ThreadStartSource | null;
   readonly threadSource?: V2ThreadStartParams__ThreadSource | null;
+  readonly historyMode?: V2ThreadStartParams__ThreadHistoryMode | null;
 };
 export const V2ThreadStartParams = Schema.Struct({
   approvalPolicy: Schema.optionalKey(
@@ -25100,6 +25107,11 @@ export const V2ThreadStartParams = Schema.Struct({
   threadSource: Schema.optionalKey(
     Schema.Union([V2ThreadStartParams__ThreadSource, Schema.Null]).annotate({
       description: "Optional client-supplied analytics source classification for this thread.",
+    }),
+  ),
+  historyMode: Schema.optionalKey(
+    Schema.Union([V2ThreadStartParams__ThreadHistoryMode, Schema.Null]).annotate({
+      description: "Persisted thread history contract to use for this new thread.",
     }),
   ),
 }).annotate({ title: "ThreadStartParams", identifier: "V2ThreadStartParams" });

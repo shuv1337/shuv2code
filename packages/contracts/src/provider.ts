@@ -145,6 +145,33 @@ export const ProviderStopSessionInput = Schema.Struct({
 });
 export type ProviderStopSessionInput = typeof ProviderStopSessionInput.Type;
 
+export const ProviderThreadHistoryPreparationInput = Schema.Struct({
+  threadId: ThreadId,
+  action: Schema.Literals(["inspect", "migrate"]),
+});
+export type ProviderThreadHistoryPreparationInput =
+  typeof ProviderThreadHistoryPreparationInput.Type;
+
+export const ProviderThreadHistoryPreparationResult = Schema.Union([
+  Schema.Struct({
+    threadId: ThreadId,
+    state: Schema.Literal("ready"),
+    historyMode: Schema.Literals(["paginated", "not-applicable"]),
+  }),
+  Schema.Struct({
+    threadId: ThreadId,
+    state: Schema.Literal("migration-required"),
+    bytesToProcess: NonNegativeInt,
+  }),
+  Schema.Struct({
+    threadId: ThreadId,
+    state: Schema.Literals(["busy", "unsupported", "not-found", "failed"]),
+    message: TrimmedNonEmptyString,
+  }),
+]);
+export type ProviderThreadHistoryPreparationResult =
+  typeof ProviderThreadHistoryPreparationResult.Type;
+
 export const ProviderRespondToRequestInput = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
