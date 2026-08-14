@@ -3675,4 +3675,66 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.steerTurn.mock.calls.length === 1);
     await harness.drain();
   });
+
+  it("routes a migrated OpenCode thread to the OpenCode V2 provider instance", async () => {
+    const openCodeV2InstanceId = ProviderInstanceId.make("opencodeV2");
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: openCodeV2InstanceId,
+        model: "anthropic/claude-sonnet-4-5",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-migrated-opencode-v2"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "stopped",
+          providerName: "opencodeV2",
+          providerInstanceId: openCodeV2InstanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-migrated-opencode-v2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-migrated-opencode-v2"),
+          role: "user",
+          text: "continue on the migrated provider",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: ProviderDriverKind.make("opencodeV2"),
+      providerInstanceId: openCodeV2InstanceId,
+      modelSelection: {
+        instanceId: openCodeV2InstanceId,
+        model: "anthropic/claude-sonnet-4-5",
+      },
+    });
+    expect(harness.startSession.mock.calls[0]?.[1]).not.toMatchObject({
+      provider: ProviderDriverKind.make("opencode"),
+      providerInstanceId: ProviderInstanceId.make("opencode"),
+    });
+  });
 });

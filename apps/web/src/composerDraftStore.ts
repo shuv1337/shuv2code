@@ -55,6 +55,13 @@ import { ReviewCommentContextSchema, type ReviewCommentContext } from "./reviewC
 const isRuntimeMode = Schema.is(RuntimeMode);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isReviewCommentContext = Schema.is(ReviewCommentContextSchema);
+const LEGACY_COMPOSER_PROVIDER_KEYS = [
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "opencode",
+  "opencodeV2",
+] as const;
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "shuv2code:composer-drafts:v1";
 const COMPOSER_DRAFT_STORAGE_VERSION = 8;
@@ -778,7 +785,7 @@ function normalizeProviderModelOptions(
 ): ProviderOptionSelectionsByProvider | null {
   const candidate = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
   const result: ProviderOptionSelectionsByProvider = {};
-  for (const providerKey of ["codex", "claudeAgent", "cursor", "opencode", "opencodeV2"] as const) {
+  for (const providerKey of LEGACY_COMPOSER_PROVIDER_KEYS) {
     const selections = coerceProviderOptionSelections(candidate?.[providerKey]);
     if (selections) {
       result[providerKey] = selections;
@@ -937,7 +944,7 @@ function legacyToModelSelectionByProvider(
 ): Partial<Record<ProviderInstanceId, ModelSelection>> {
   const result: Partial<Record<ProviderInstanceId, ModelSelection>> = {};
   if (modelOptions) {
-    for (const provider of ["codex", "claudeAgent", "cursor", "opencode", "opencodeV2"] as const) {
+    for (const provider of LEGACY_COMPOSER_PROVIDER_KEYS) {
       const options = modelOptions[provider];
       if (options && options.length > 0) {
         const driverKind = ProviderDriverKind.make(provider);

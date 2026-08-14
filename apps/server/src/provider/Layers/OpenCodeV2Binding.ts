@@ -26,14 +26,14 @@ import {
   resolveOpenCodeV2ServiceRegistrationPath,
 } from "../opencodeV2Service.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { OPENCODE_V2_UNAVAILABLE_REASON } from "../opencodeShared.ts";
 
 const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
 const OPENCODE_V2_DRIVER = ProviderDriverKind.make("opencodeV2");
 const OPENCODE_INSTANCE_ID = defaultInstanceIdForDriver(OPENCODE_DRIVER);
 const OPENCODE_V2_INSTANCE_ID = defaultInstanceIdForDriver(OPENCODE_V2_DRIVER);
 
-export const OPENCODE_V2_UNAVAILABLE_REASON =
-  "this binary/server speaks OpenCode v2; use the opencode2 provider.";
+export { OPENCODE_V2_UNAVAILABLE_REASON };
 
 export class OpenCodeV2BindingReady extends Context.Service<OpenCodeV2BindingReady, void>()(
   "shuv2code/provider/Layers/OpenCodeV2Binding/OpenCodeV2BindingReady",

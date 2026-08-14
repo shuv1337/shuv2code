@@ -23,6 +23,7 @@ import {
   openCodeRuntimeErrorDetail,
   type OpenCodeInventory,
 } from "../opencodeRuntime.ts";
+import { titleCaseSlug } from "../opencodeShared.ts";
 import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
 
 const OPENCODE_PRESENTATION = {
@@ -140,16 +141,6 @@ function formatOpenCodeProbeError(input: {
       ? `Failed to execute OpenCode CLI health check: ${detail}`
       : "Failed to execute OpenCode CLI health check.",
   };
-}
-
-function titleCaseSlug(value: string): string {
-  const segments: Array<string> = [];
-  for (const segment of value.split(/[-_/]+/)) {
-    if (segment.length > 0) {
-      segments.push(segment.charAt(0).toUpperCase() + segment.slice(1));
-    }
-  }
-  return segments.join(" ");
 }
 
 function inferDefaultVariant(

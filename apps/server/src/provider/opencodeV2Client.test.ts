@@ -136,6 +136,42 @@ describe("createOpenCodeV2Client", () => {
     ]);
   });
 
+  it("gets the default projected-message page with auth and directory context", async () => {
+    const seenUrls: string[] = [];
+    const baseUrl = await listen((req, res) => {
+      NodeAssert.equal(req.method, "GET");
+      seenUrls.push(req.url ?? "");
+      NodeAssert.equal(req.headers.authorization, `Basic ${btoa("opencode:secret")}`);
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          data: [
+            {
+              type: "assistant",
+              content: [{ type: "tool", id: "call_1", name: "bash" }],
+            },
+          ],
+          cursor: { next: "next-page" },
+        }),
+      );
+    });
+
+    const client = createOpenCodeV2Client({
+      baseUrl,
+      directory: "/tmp/project",
+      serverPassword: "secret",
+    });
+    const messages = await client.session.messages("ses/1");
+    await client.session.messages("ses/1", { cursor: "next-page" });
+
+    NodeAssert.equal(messages.cursor?.next, "next-page");
+    NodeAssert.equal(messages.data?.length, 1);
+    NodeAssert.deepEqual(seenUrls, [
+      "/api/session/ses%2F1/message?directory=%2Ftmp%2Fproject",
+      "/api/session/ses%2F1/message?directory=%2Ftmp%2Fproject&cursor=next-page",
+    ]);
+  });
+
   it("creates, prompts, interrupts, waits, and forks with live payloads", async () => {
     const seen: Array<{ method?: string; path: string; body?: unknown }> = [];
     const baseUrl = await listen(async (req, res) => {

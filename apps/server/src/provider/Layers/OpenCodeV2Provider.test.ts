@@ -40,4 +40,31 @@ describe("openCodeV2ModelsFromInventory", () => {
       ["variant", "agent"],
     );
   });
+
+  it("drops malformed model and agent inventory entries", () => {
+    const models = openCodeV2ModelsFromInventory({
+      models: [
+        null,
+        { id: 42, providerID: "openai", name: "Wrong id type" },
+        { id: "bad-variants", providerID: "openai", name: "Bad variants", variants: [null] },
+        { id: "valid", providerID: "openai", name: "Valid" },
+      ],
+      agents: [null, { id: 42, mode: "primary" }, { id: "build", mode: "primary", hidden: false }],
+      customModels: [],
+    });
+
+    NodeAssert.deepEqual(
+      models.map((model) => model.slug),
+      ["openai/valid"],
+    );
+    const agentDescriptor = models[0]?.capabilities?.optionDescriptors?.find(
+      (descriptor) => descriptor.id === "agent",
+    );
+    NodeAssert.equal(agentDescriptor?.type, "select");
+    if (agentDescriptor?.type !== "select") return;
+    NodeAssert.deepEqual(
+      agentDescriptor?.options?.map((option) => option.id),
+      ["build"],
+    );
+  });
 });

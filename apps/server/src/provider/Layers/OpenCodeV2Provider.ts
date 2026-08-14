@@ -8,9 +8,12 @@ import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { createOpenCodeV2Client } from "../opencodeV2Client.ts";
 import { OpenCodeRuntime, openCodeRuntimeErrorDetail } from "../opencodeRuntime.ts";
+import { titleCaseSlug } from "../opencodeShared.ts";
 import {
   buildServerProvider,
   nonEmptyTrimmed,
@@ -29,41 +32,43 @@ class OpenCodeV2InventoryError extends Data.TaggedError("OpenCodeV2InventoryErro
   readonly cause: unknown;
 }> {}
 
-interface V2Model {
-  readonly id?: string;
-  readonly providerID?: string;
-  readonly name?: string;
-  readonly enabled?: boolean;
-  readonly status?: string;
-  readonly variants?: ReadonlyArray<{ readonly id?: string }>;
-}
-
-interface V2Agent {
-  readonly id?: string;
-  readonly mode?: string;
-  readonly hidden?: boolean;
-}
-
-function titleCaseSlug(value: string): string {
-  return value
-    .split(/[-_/]+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(" ");
-}
+const V2VariantSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+});
+const V2ModelSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  providerID: Schema.optionalKey(Schema.String),
+  name: Schema.optionalKey(Schema.String),
+  enabled: Schema.optionalKey(Schema.Boolean),
+  status: Schema.optionalKey(Schema.String),
+  variants: Schema.optionalKey(Schema.Array(V2VariantSchema)),
+});
+const V2AgentSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  mode: Schema.optionalKey(Schema.String),
+  hidden: Schema.optionalKey(Schema.Boolean),
+});
+const decodeV2Model = Schema.decodeUnknownOption(V2ModelSchema);
+const decodeV2Agent = Schema.decodeUnknownOption(V2AgentSchema);
 
 export function openCodeV2ModelsFromInventory(input: {
   readonly models: ReadonlyArray<unknown>;
   readonly agents: ReadonlyArray<unknown>;
   readonly customModels: ReadonlyArray<string>;
 }): ReadonlyArray<ServerProviderModel> {
-  const agents = input.agents as ReadonlyArray<V2Agent>;
+  const agents = input.agents.flatMap((agent) => {
+    const decoded = decodeV2Agent(agent);
+    return Option.isSome(decoded) ? [decoded.value] : [];
+  });
   const primaryAgents = agents.filter(
     (agent) => !agent.hidden && (agent.mode === "primary" || agent.mode === "all"),
   );
   const defaultAgent =
     primaryAgents.find((agent) => agent.id === "build")?.id ?? primaryAgents[0]?.id;
-  const liveModels = (input.models as ReadonlyArray<V2Model>).flatMap((model) => {
+  const liveModels = input.models.flatMap((entry) => {
+    const decoded = decodeV2Model(entry);
+    if (Option.isNone(decoded)) return [];
+    const model = decoded.value;
     const id = nonEmptyTrimmed(model.id);
     const providerID = nonEmptyTrimmed(model.providerID);
     const name = nonEmptyTrimmed(model.name);

@@ -40,6 +40,7 @@ import * as NetService from "@shuv2code/shared/Net";
 import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 import { resolveSpawnCommand } from "@shuv2code/shared/shell";
 import { detectOpenCodeServerProtocol, requireOpenCodeV2Service } from "./opencodeV2Service.ts";
+import { basicAuthHeader, OPENCODE_V2_UNAVAILABLE_REASON } from "./opencodeShared.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
@@ -726,7 +727,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       operation: "connectToOpenCodeServer",
       detail:
         requiredProtocol === "v1"
-          ? "this binary/server speaks OpenCode v2; use the opencode2 provider."
+          ? OPENCODE_V2_UNAVAILABLE_REASON
           : "this binary/server speaks OpenCode v1; use the OpenCode provider.",
     });
   };
@@ -834,7 +835,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ...(input.serverPassword
         ? {
             headers: {
-              Authorization: `Basic ${Buffer.from(`opencode:${input.serverPassword}`, "utf8").toString("base64")}`,
+              Authorization: basicAuthHeader(input.serverPassword),
             },
           }
         : {}),

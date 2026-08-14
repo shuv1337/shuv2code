@@ -7,6 +7,14 @@ import {
 } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import chatViewSource from "./components/ChatView.tsx?raw";
+import chatComposerSource from "./components/chat/ChatComposer.tsx?raw";
+import {
+  buildPendingUserInputAnswers,
+  derivePendingUserInputProgress,
+  setPendingUserInputCustomAnswer,
+  type PendingUserInputDraftAnswer,
+} from "./pendingUserInput";
 import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
@@ -301,6 +309,95 @@ describe("derivePendingUserInputs", () => {
             multiSelect: false,
           },
         ],
+      },
+    ]);
+  });
+
+  it("carries typed custom-only text from a pending session prompt into the submit payload", () => {
+    const composerPromptChangePath = chatComposerSource.slice(
+      chatComposerSource.indexOf("const onPromptChange"),
+      chatComposerSource.indexOf("// Callbacks: prompt replacement / menu"),
+    );
+    expect(composerPromptChangePath).toContain("activePendingProgress?.activeQuestion");
+    expect(composerPromptChangePath).toContain("onChangeActivePendingUserInputCustomAnswer(");
+    expect(composerPromptChangePath).toContain("nextPrompt");
+
+    const composerSubmitPath = chatComposerSource.slice(
+      chatComposerSource.indexOf("const submitComposer"),
+      chatComposerSource.indexOf("const expandMobileComposer"),
+    );
+    expect(composerSubmitPath).toContain("onSend(event)");
+
+    const chatViewSubmitPath = chatViewSource.slice(
+      chatViewSource.indexOf("const onSend = async"),
+      chatViewSource.indexOf("const onInterrupt"),
+    );
+    expect(chatViewSubmitPath).toContain("if (activePendingProgress)");
+    expect(chatViewSubmitPath).toContain("onAdvanceActivePendingUserInput()");
+
+    const pendingAnswerSubmitPath = chatViewSource.slice(
+      chatViewSource.indexOf("const onRespondToUserInput"),
+      chatViewSource.indexOf("const onPreviousActivePendingUserInputQuestion"),
+    );
+    expect(pendingAnswerSubmitPath).toContain("setPendingUserInputCustomAnswer(");
+    expect(pendingAnswerSubmitPath).toContain("activePendingResolvedAnswers");
+    expect(pendingAnswerSubmitPath).toContain("onRespondToUserInput(");
+    expect(pendingAnswerSubmitPath).toContain("answers,");
+
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-custom-only-submit",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-custom-submit",
+          questions: [
+            {
+              id: "q0",
+              header: "Custom",
+              question: "Type your own answer",
+              options: [],
+              multiSelect: false,
+            },
+          ],
+        },
+      }),
+    ];
+    const [pendingPrompt] = derivePendingUserInputs(activities);
+    expect(pendingPrompt).toBeDefined();
+
+    const typedText = "ship the native v2 adapter";
+    const draftAnswers: Record<string, PendingUserInputDraftAnswer> = {
+      q0: setPendingUserInputCustomAnswer(undefined, typedText),
+    };
+    const progress = derivePendingUserInputProgress(pendingPrompt!.questions, draftAnswers, 0);
+    const resolvedAnswers = buildPendingUserInputAnswers(pendingPrompt!.questions, draftAnswers);
+    expect(progress).toMatchObject({ canAdvance: true, isComplete: true, isLastQuestion: true });
+    expect(resolvedAnswers).not.toBeNull();
+
+    const submittedPayloads: unknown[] = [];
+    const respondToUserInput = (requestId: string, answers: Record<string, unknown>) => {
+      submittedPayloads.push({
+        environmentId: "environment-1",
+        input: {
+          threadId: "thread-1",
+          requestId,
+          answers,
+        },
+      });
+    };
+    respondToUserInput(pendingPrompt!.requestId, resolvedAnswers!);
+
+    expect(submittedPayloads).toEqual([
+      {
+        environmentId: "environment-1",
+        input: {
+          threadId: "thread-1",
+          requestId: "req-user-input-custom-submit",
+          answers: { q0: typedText },
+        },
       },
     ]);
   });

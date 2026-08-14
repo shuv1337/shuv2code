@@ -4,6 +4,8 @@ import * as NodeHttp from "node:http";
 import * as NodeHttps from "node:https";
 import * as NodeStringDecoder from "node:string_decoder";
 
+import { basicAuthHeader } from "./opencodeShared.ts";
+
 export interface OpenCodeV2BufferLimits {
   readonly responseBodyBytes: number;
   readonly sseEventBytes: number;
@@ -66,6 +68,15 @@ export interface OpenCodeV2SessionInfo {
   readonly location?: { readonly directory?: string };
 }
 
+export interface OpenCodeV2ProjectedMessages {
+  readonly data?: ReadonlyArray<unknown>;
+  readonly items?: ReadonlyArray<unknown>;
+  readonly cursor?: {
+    readonly previous?: string;
+    readonly next?: string;
+  };
+}
+
 export interface OpenCodeV2ClientInput {
   readonly baseUrl: string;
   readonly directory: string;
@@ -87,10 +98,6 @@ function resolveBufferLimits(
     responseBodyBytes: resolve("responseBodyBytes"),
     sseEventBytes: resolve("sseEventBytes"),
   };
-}
-
-function basicAuthHeader(password: string): string {
-  return `Basic ${Buffer.from(`opencode:${password}`, "utf8").toString("base64")}`;
 }
 
 function appendQuery(params: URLSearchParams, key: string, value: unknown): void {
@@ -333,6 +340,13 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
           },
         }),
       get: (sessionID: string) => data<OpenCodeV2SessionInfo>("GET", sessionPath(sessionID)),
+      messages: (sessionID: string, options?: { readonly cursor?: string }) =>
+        request<OpenCodeV2ProjectedMessages>("GET", sessionPath(sessionID, "/message"), {
+          query: {
+            directory: input.directory,
+            ...(options?.cursor ? { cursor: options.cursor } : {}),
+          },
+        }),
       fork: (
         sessionID: string,
         body: {

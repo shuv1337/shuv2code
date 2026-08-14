@@ -11,7 +11,6 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   ThreadId,
-  type ToolLifecycleItemType,
   TurnId,
   type UserInputQuestion,
 } from "@shuv2code/contracts";
@@ -19,9 +18,11 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { getModelSelectionStringOptionValue } from "@shuv2code/shared/model";
 
@@ -40,6 +41,7 @@ import {
   type OpenCodeV2SessionInfo,
 } from "../opencodeV2Client.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import { toToolLifecycleItemType } from "./toolLifecycleItemType.ts";
 
 const PROVIDER = ProviderDriverKind.make("opencodeV2");
 const OPENCODE_V2_RESUME_KIND = "opencode-v2" as const;
@@ -51,42 +53,81 @@ export type OpenCodeV2AdapterError =
   | ProviderAdapterSessionNotFoundError
   | ProviderAdapterValidationError;
 
-interface OpenCodeV2ResumeCursor {
-  readonly kind: typeof OPENCODE_V2_RESUME_KIND;
-  readonly schemaVersion: typeof OPENCODE_V2_RESUME_VERSION;
-  readonly sessionId: string;
-  readonly activeTurnId?: string;
-}
+const NonEmptyString = Schema.Trim.check(Schema.isNonEmpty());
 
-interface OpenCodeV2FormField {
-  readonly key: string;
-  readonly type?: string;
-  readonly title?: string;
-  readonly description?: string;
-  readonly custom?: boolean;
-  readonly when?: unknown;
-  readonly options?: ReadonlyArray<{
-    readonly value?: string;
-    readonly label?: string;
-    readonly description?: string;
-  }>;
-}
+const OpenCodeV2ResumeCursorSchema = Schema.Struct({
+  kind: Schema.Literal(OPENCODE_V2_RESUME_KIND),
+  schemaVersion: Schema.Literal(OPENCODE_V2_RESUME_VERSION),
+  sessionId: NonEmptyString,
+  activeTurnId: Schema.optional(NonEmptyString),
+});
 
-interface OpenCodeV2Form {
-  readonly id: string;
-  readonly sessionID: string;
-  readonly title?: string;
-  readonly metadata?: { readonly kind?: string };
-  readonly fields?: ReadonlyArray<OpenCodeV2FormField>;
-}
+const OpenCodeV2FormOptionSchema = Schema.Struct({
+  value: Schema.optional(Schema.String),
+  label: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+});
 
-interface OpenCodeV2Permission {
-  readonly id: string;
-  readonly sessionID?: string;
-  readonly action?: string;
-  readonly resources?: ReadonlyArray<string>;
-  readonly metadata?: unknown;
-}
+const OpenCodeV2FormFieldSchema = Schema.Struct({
+  key: NonEmptyString,
+  type: Schema.optional(Schema.String),
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  custom: Schema.optional(Schema.Boolean),
+  when: Schema.optional(Schema.Unknown),
+  options: Schema.optional(Schema.Array(OpenCodeV2FormOptionSchema)),
+});
+
+const OpenCodeV2FormSchema = Schema.Struct({
+  id: NonEmptyString,
+  sessionID: NonEmptyString,
+  title: Schema.optional(Schema.String),
+  metadata: Schema.optional(
+    Schema.Struct({
+      kind: Schema.optional(Schema.String),
+    }),
+  ),
+  fields: Schema.optional(Schema.Array(OpenCodeV2FormFieldSchema)),
+});
+
+const OpenCodeV2PermissionSchema = Schema.Struct({
+  id: NonEmptyString,
+  sessionID: Schema.optional(NonEmptyString),
+  action: Schema.optional(NonEmptyString),
+  resources: Schema.optional(Schema.Array(Schema.String)),
+  metadata: Schema.optional(Schema.Unknown),
+});
+
+const OpenCodeV2PermissionReplySchema = Schema.Struct({
+  requestID: NonEmptyString,
+  reply: Schema.Literals(["once", "always", "reject"]),
+});
+
+const OpenCodeV2FormReplySchema = Schema.Struct({
+  id: NonEmptyString,
+  answer: Schema.Record(Schema.String, Schema.Unknown),
+});
+
+const OpenCodeV2FormCancelledSchema = Schema.Struct({
+  id: NonEmptyString,
+});
+
+type OpenCodeV2ResumeCursor = typeof OpenCodeV2ResumeCursorSchema.Type;
+type OpenCodeV2FormField = typeof OpenCodeV2FormFieldSchema.Type;
+type OpenCodeV2Form = typeof OpenCodeV2FormSchema.Type;
+type OpenCodeV2Permission = typeof OpenCodeV2PermissionSchema.Type;
+
+export const decodeOpenCodeV2ResumeCursor = Schema.decodeUnknownEffect(
+  OpenCodeV2ResumeCursorSchema,
+);
+const decodeOpenCodeV2ResumeCursorOption = Schema.decodeUnknownOption(OpenCodeV2ResumeCursorSchema);
+export const decodeOpenCodeV2Form = Schema.decodeUnknownEffect(OpenCodeV2FormSchema);
+export const decodeOpenCodeV2Permission = Schema.decodeUnknownEffect(OpenCodeV2PermissionSchema);
+export const decodeOpenCodeV2PermissionReply = Schema.decodeUnknownEffect(
+  OpenCodeV2PermissionReplySchema,
+);
+export const decodeOpenCodeV2FormReply = Schema.decodeUnknownEffect(OpenCodeV2FormReplySchema);
+const decodeOpenCodeV2FormCancelled = Schema.decodeUnknownEffect(OpenCodeV2FormCancelledSchema);
 
 interface OpenCodeV2SessionContext {
   session: ProviderSession;
@@ -114,6 +155,52 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+function recoverProjectedToolNames(payload: unknown): Map<string, string> {
+  const names = new Map<string, string>();
+  const response = asRecord(payload);
+  const messages = Array.isArray(response?.data)
+    ? response.data
+    : Array.isArray(response?.items)
+      ? response.items
+      : [];
+  for (const message of messages) {
+    const projected = asRecord(message);
+    const entries = Array.isArray(projected?.content)
+      ? projected.content
+      : Array.isArray(projected?.parts)
+        ? projected.parts
+        : [];
+    for (const entry of entries) {
+      const tool = asRecord(entry);
+      if (tool?.type !== "tool") continue;
+      const id = asString(tool.id) ?? asString(tool.callID);
+      const name = asString(tool.name) ?? asString(tool.tool);
+      if (id && name) names.set(id, name);
+    }
+  }
+  return names;
+}
+
+async function recoverAllProjectedToolNames(
+  client: OpenCodeV2Client,
+  sessionID: string,
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  const visitedCursors = new Set<string>();
+  let cursor: string | undefined;
+  for (let pageCount = 0; pageCount < 1_000; pageCount++) {
+    const page = await client.session.messages(sessionID, cursor ? { cursor } : undefined);
+    for (const [id, name] of recoverProjectedToolNames(page)) {
+      if (!names.has(id)) names.set(id, name);
+    }
+    const next = asString(page.cursor?.next);
+    if (!next || visitedCursors.has(next)) break;
+    visitedCursors.add(next);
+    cursor = next;
+  }
+  return names;
+}
+
 function isoFromEpochMs(value: unknown): string | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return undefined;
@@ -122,19 +209,7 @@ function isoFromEpochMs(value: unknown): string | undefined {
 }
 
 function parseResumeCursor(raw: unknown): OpenCodeV2ResumeCursor | undefined {
-  const record = asRecord(raw);
-  if (!record) return undefined;
-  if (record.kind !== OPENCODE_V2_RESUME_KIND) return undefined;
-  if (record.schemaVersion !== OPENCODE_V2_RESUME_VERSION) return undefined;
-  const sessionId = asString(record.sessionId);
-  if (!sessionId) return undefined;
-  const activeTurnId = asString(record.activeTurnId);
-  return {
-    kind: OPENCODE_V2_RESUME_KIND,
-    schemaVersion: OPENCODE_V2_RESUME_VERSION,
-    sessionId,
-    ...(activeTurnId ? { activeTurnId } : {}),
-  };
+  return decodeOpenCodeV2ResumeCursorOption(raw).pipe(Option.getOrUndefined);
 }
 
 function makeResumeCursor(input: {
@@ -204,31 +279,21 @@ export function toOpenCodeV2FormAnswer(
   for (const field of form.fields ?? []) {
     const raw = answers[field.key];
     if (raw === undefined) continue;
-    out[field.key] = raw;
+    const valuesByLabel = new Map(
+      (field.options ?? []).flatMap((option) => {
+        const label = option.label?.trim();
+        if (!label) return [];
+        return [[label, option.value ?? label] as const];
+      }),
+    );
+    const toValue = (value: string) => valuesByLabel.get(value) ?? value;
+    out[field.key] = Array.isArray(raw)
+      ? raw.map((value) => (typeof value === "string" ? toValue(value) : value))
+      : typeof raw === "string"
+        ? toValue(raw)
+        : raw;
   }
   return out;
-}
-
-function toToolLifecycleItemType(toolName: string): ToolLifecycleItemType {
-  const normalized = toolName.toLowerCase();
-  if (normalized.includes("bash") || normalized.includes("command") || normalized === "shell") {
-    return "command_execution";
-  }
-  if (
-    normalized.includes("edit") ||
-    normalized.includes("write") ||
-    normalized.includes("patch") ||
-    normalized.includes("multiedit")
-  ) {
-    return "file_change";
-  }
-  if (normalized.includes("web")) {
-    return "web_search";
-  }
-  if (normalized.includes("mcp")) {
-    return "mcp_tool_call";
-  }
-  return "dynamic_tool_call";
 }
 
 function mapPermissionToRequestType(action: string | undefined): CanonicalRequestType {
@@ -260,45 +325,6 @@ function toPermissionReply(decision: ProviderApprovalDecision): "once" | "always
 function sessionErrorMessage(error: unknown): string {
   const record = asRecord(error);
   return asString(record?.message) ?? "OpenCode v2 session failed.";
-}
-
-function asForm(value: unknown): OpenCodeV2Form | undefined {
-  const record = asRecord(value);
-  if (!record) return undefined;
-  const id = asString(record?.id);
-  const sessionID = asString(record?.sessionID);
-  if (!id || !sessionID) return undefined;
-  const title = asString(record.title);
-  const metadata = asRecord(record.metadata) as OpenCodeV2Form["metadata"];
-  const fields = Array.isArray(record.fields)
-    ? (record.fields as ReadonlyArray<OpenCodeV2FormField>)
-    : [];
-  return {
-    id,
-    sessionID,
-    ...(title ? { title } : {}),
-    ...(metadata ? { metadata } : {}),
-    fields,
-  };
-}
-
-function asPermission(value: unknown): OpenCodeV2Permission | undefined {
-  const record = asRecord(value);
-  if (!record) return undefined;
-  const id = asString(record?.id);
-  if (!id) return undefined;
-  const sessionID = asString(record.sessionID);
-  const action = asString(record.action);
-  const resources = Array.isArray(record.resources)
-    ? record.resources.filter((entry): entry is string => typeof entry === "string")
-    : undefined;
-  return {
-    id,
-    ...(sessionID ? { sessionID } : {}),
-    ...(action ? { action } : {}),
-    ...(resources ? { resources } : {}),
-    ...(record.metadata !== undefined ? { metadata: record.metadata } : {}),
-  };
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -343,6 +369,15 @@ export function makeOpenCodeV2Adapter(
 
     const emit = (event: ProviderRuntimeEvent) =>
       Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
+
+    const invalidEventPayload =
+      (context: OpenCodeV2SessionContext, event: OpenCodeV2Event) => (cause: unknown) =>
+        new ProviderAdapterProcessError({
+          provider: PROVIDER,
+          threadId: context.session.threadId,
+          detail: `Invalid ${event.type} payload.`,
+          cause,
+        });
 
     const buildEventBase = (input: {
       readonly threadId: ThreadId;
@@ -728,15 +763,16 @@ export function makeOpenCodeV2Adapter(
           break;
         }
         case "permission.asked": {
-          const permission = asPermission({ ...data, id: asString(data.id) });
-          if (permission) {
-            yield* emitPermissionOpened(context, permission, event);
-          }
+          const permission = yield* decodeOpenCodeV2Permission(data).pipe(
+            Effect.mapError(invalidEventPayload(context, event)),
+          );
+          yield* emitPermissionOpened(context, permission, event);
           break;
         }
         case "permission.replied": {
-          const requestID = asString(data.requestID);
-          if (!requestID) break;
+          const { requestID, reply } = yield* decodeOpenCodeV2PermissionReply(data).pipe(
+            Effect.mapError(invalidEventPayload(context, event)),
+          );
           if (context.resolvedRequestIds.has(requestID)) break;
           context.resolvedRequestIds.add(requestID);
           const existing = context.pendingPermissions.get(requestID);
@@ -754,27 +790,30 @@ export function makeOpenCodeV2Adapter(
             payload: {
               requestType: mapPermissionToRequestType(existing?.action),
               decision:
-                asString(data.reply) === "always"
-                  ? "acceptForSession"
-                  : asString(data.reply) === "once"
-                    ? "accept"
-                    : "decline",
+                reply === "always" ? "acceptForSession" : reply === "once" ? "accept" : "decline",
             },
           });
           break;
         }
         case "form.created": {
-          const form = asForm(asRecord(data.form) ?? data);
-          if (form) {
-            yield* emitFormRequested(context, form, event);
-          }
+          const form = yield* decodeOpenCodeV2Form(asRecord(data.form) ?? data).pipe(
+            Effect.mapError(invalidEventPayload(context, event)),
+          );
+          yield* emitFormRequested(context, form, event);
           break;
         }
-        case "form.replied":
+        case "form.replied": {
+          const { id, answer } = yield* decodeOpenCodeV2FormReply(data).pipe(
+            Effect.mapError(invalidEventPayload(context, event)),
+          );
+          yield* emitFormResolved(context, id, answer, event);
+          break;
+        }
         case "form.cancelled": {
-          const formId = asString(data.id);
-          if (!formId) break;
-          yield* emitFormResolved(context, formId, asRecord(data.answer) ?? {}, event);
+          const { id } = yield* decodeOpenCodeV2FormCancelled(data).pipe(
+            Effect.mapError(invalidEventPayload(context, event)),
+          );
+          yield* emitFormResolved(context, id, {}, event);
           break;
         }
         default:
@@ -811,12 +850,32 @@ export function makeOpenCodeV2Adapter(
         { concurrency: "unbounded" },
       );
       for (const form of forms) {
-        const mapped = asForm(form);
-        if (mapped) yield* emitFormRequested(context, mapped);
+        const mapped = yield* decodeOpenCodeV2Form(form).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: context.session.threadId,
+                detail: "Invalid form.list payload.",
+                cause,
+              }),
+          ),
+        );
+        yield* emitFormRequested(context, mapped);
       }
       for (const permission of permissions) {
-        const mapped = asPermission(permission);
-        if (mapped) yield* emitPermissionOpened(context, mapped);
+        const mapped = yield* decodeOpenCodeV2Permission(permission).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: context.session.threadId,
+                detail: "Invalid permission.list payload.",
+                cause,
+              }),
+          ),
+        );
+        yield* emitPermissionOpened(context, mapped);
       }
     });
 
@@ -870,6 +929,13 @@ export function makeOpenCodeV2Adapter(
     )(function* (input) {
       const directory = input.cwd ?? serverConfig.cwd;
       const resume = parseResumeCursor(input.resumeCursor);
+      if (asRecord(input.resumeCursor)?.kind === OPENCODE_V2_RESUME_KIND && !resume) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "OpenCode v2 resume cursor is invalid.",
+        });
+      }
       const existing = sessions.get(input.threadId);
       if (existing) {
         yield* Scope.close(existing.sessionScope, Exit.void).pipe(Effect.ignore);
@@ -896,9 +962,8 @@ export function makeOpenCodeV2Adapter(
             sessionScope,
             Effect.sync(() => controller.abort()),
           );
-          const iterator = client.event
-            .subscribe({ signal: controller.signal })
-            [Symbol.asyncIterator]();
+          const subscription = client.event.subscribe({ signal: controller.signal });
+          const iterator = subscription[Symbol.asyncIterator]();
           const first = yield* Effect.tryPromise({
             try: () => iterator.next(),
             catch: (cause) =>
@@ -928,6 +993,12 @@ export function makeOpenCodeV2Adapter(
                   }),
               }).pipe(Effect.option)
             : undefined;
+          const toolNameById =
+            adopted?._tag === "Some"
+              ? yield* Effect.tryPromise(() =>
+                  recoverAllProjectedToolNames(client, adopted.value.id),
+                ).pipe(Effect.orElseSucceed(() => new Map<string, string>()))
+              : new Map<string, string>();
           const sessionInfo: OpenCodeV2SessionInfo =
             adopted && adopted._tag === "Some"
               ? adopted.value
@@ -941,7 +1012,7 @@ export function makeOpenCodeV2Adapter(
                       cause,
                     }),
                 });
-          return { client, iterator, sessionInfo };
+          return { client, iterator, sessionInfo, toolNameById };
         }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
       );
       if (Exit.isFailure(startedExit)) {
@@ -981,7 +1052,7 @@ export function makeOpenCodeV2Adapter(
         pendingForms: new Map(),
         seenRequestIds: new Set(),
         resolvedRequestIds: new Set(),
-        toolNameById: new Map(),
+        toolNameById: startedExit.value.toolNameById,
         emittedTextByItemId: new Map(),
         activeTurnId: adoptedTurnId,
         stopped: yield* Ref.make(false),
