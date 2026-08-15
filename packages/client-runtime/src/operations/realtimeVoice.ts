@@ -3,6 +3,7 @@ import {
   type EnvironmentId,
   type VoiceAppendAudioInput,
   type VoiceEnsureControllerInput,
+  type VoiceGetActiveCallInput,
   type VoiceGetControllerInput,
   type VoiceGetControllerHistoryInput,
   type VoiceListVoicesInput,
@@ -92,6 +93,9 @@ export class RealtimeVoiceLeaseRelease {
 
 export const ensureVoiceController = (input: VoiceEnsureControllerInput) =>
   request(WS_METHODS.voiceEnsureController, input);
+
+export const getActiveRealtimeVoiceCall = (input: VoiceGetActiveCallInput) =>
+  request(WS_METHODS.voiceGetActiveCall, input);
 
 export const getVoiceController = (input: VoiceGetControllerInput) =>
   request(WS_METHODS.voiceGetController, input);

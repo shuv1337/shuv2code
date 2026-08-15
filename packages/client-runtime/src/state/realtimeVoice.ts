@@ -10,6 +10,7 @@ import type {
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
   ensureVoiceController,
+  getActiveRealtimeVoiceCall,
   getVoiceController,
   getVoiceControllerHistory,
   ingestRealtimeVoiceEvent,
@@ -357,6 +358,11 @@ export function createRealtimeVoiceEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
   return {
+    getActiveCall: createEnvironmentCommand(runtime, {
+      label: "environment-data:voice:get-active-call",
+      execute: getActiveRealtimeVoiceCall,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
     getController: createEnvironmentCommand(runtime, {
       label: "environment-data:voice:get-controller",
       execute: getVoiceController,

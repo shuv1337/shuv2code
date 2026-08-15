@@ -6,6 +6,7 @@ import {
   type ModelSelection,
   type OrchestrationThread,
   type ProviderRuntimeEvent,
+  type VoiceCallPresence,
   type VoiceControllerHistoryMessage,
   type VoiceSessionStartInput,
 } from "@shuv2code/contracts";
@@ -26,6 +27,8 @@ import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VoiceControllerBindingRepository } from "../../persistence/Services/VoiceControllerBindings.ts";
 import { VoiceCallEventRepository } from "../../persistence/Services/VoiceCallEvents.ts";
+import { VoiceCallRepository } from "../../persistence/Services/VoiceCalls.ts";
+import type { VoiceCall } from "../../persistence/VoiceControlModels.ts";
 import { VoiceControllerMutationRepository } from "../../persistence/Services/VoiceControllerMutations.ts";
 import { resolveVoiceControlPolicy, ServerSettingsService } from "../../serverSettings.ts";
 import { parseVoiceHandoffRequest } from "../VoiceHandoffRequest.ts";
@@ -75,6 +78,29 @@ const CONTROLLER_HISTORY_MAX_MESSAGE_CHARS = 120_000;
 const CONTROLLER_CONTEXT_PREFIX =
   "Bounded controller state (resolution hint only; server authorization still applies):";
 const CONTROLLER_USER_REQUEST_MARKER = "\n\nUser request:\n";
+
+function callPresence(call: VoiceCall): VoiceCallPresence {
+  const activeDevice =
+    call.activeDeviceId !== null &&
+    call.activeDeviceLabel !== null &&
+    call.activeDeviceKind !== null
+      ? {
+          deviceId: call.activeDeviceId,
+          label: call.activeDeviceLabel,
+          kind: call.activeDeviceKind,
+        }
+      : null;
+  return {
+    callId: call.callId,
+    environmentId: call.environmentId,
+    threadId: call.threadId,
+    state: call.state,
+    activeDevice,
+    activeTransportSessionId: call.activeTransportSessionId,
+    revision: call.revision,
+    updatedAt: call.updatedAt,
+  };
+}
 
 const ProviderHistoryTextInput = Schema.Struct({
   type: Schema.Literal("text"),
@@ -235,6 +261,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const bindings = yield* VoiceControllerBindingRepository;
   const mutations = yield* VoiceControllerMutationRepository;
   const callEvents = yield* VoiceCallEventRepository;
+  const calls = yield* VoiceCallRepository;
   const settings = yield* ServerSettingsService;
   const provider = yield* Effect.serviceOption(ProviderService);
   const runtime = yield* VoiceRuntimeGateway;
@@ -253,6 +280,18 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     Effect.mapError(mapInternalError("internal_error", "The live voice policy could not be read.")),
   );
   const previousPolicyRef = yield* Ref.make(yield* currentPolicy);
+
+  const getActiveCall: VoiceControllerService["Service"]["getActiveCall"] = Effect.fn(
+    "VoiceControllerService.getActiveCall",
+  )(function* () {
+    const environmentId = yield* environment.getEnvironmentId;
+    const call = yield* calls
+      .getActiveByEnvironmentId(environmentId)
+      .pipe(
+        Effect.mapError(mapInternalError("internal_error", "The active Call could not be read.")),
+      );
+    return { call: Option.map(call, callPresence).pipe(Option.getOrNull) };
+  });
 
   const getController: VoiceControllerService["Service"]["getController"] = Effect.fn(
     "VoiceControllerService.getController",
@@ -1439,6 +1478,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   );
 
   return VoiceControllerService.of({
+    getActiveCall,
     getController,
     getControllerHistory,
     setControllerTarget,

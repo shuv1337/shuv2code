@@ -3,6 +3,8 @@ import type {
   VoiceAppendAudioResult,
   VoiceEnsureControllerInput,
   VoiceEnsureControllerResult,
+  VoiceGetActiveCallInput,
+  VoiceGetActiveCallResult,
   VoiceGetControllerInput,
   VoiceGetControllerResult,
   VoiceGetControllerHistoryInput,
@@ -29,6 +31,9 @@ import type * as Stream from "effect/Stream";
 import type { VoiceControllerError } from "@shuv2code/contracts";
 
 export interface VoiceControllerServiceShape {
+  readonly getActiveCall: (
+    input: VoiceGetActiveCallInput,
+  ) => Effect.Effect<VoiceGetActiveCallResult, VoiceControllerError>;
   readonly getController: (
     input: VoiceGetControllerInput,
   ) => Effect.Effect<VoiceGetControllerResult, VoiceControllerError>;

@@ -202,6 +202,12 @@ const makeVoiceRpcHandlers = (
 ) => {
   const { observeRpcEffect, observeRpcStream } = makeAuthorizedRpcObservers(currentSession);
   return {
+    [WS_METHODS.voiceGetActiveCall]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["getActiveCall"]>[0],
+    ) =>
+      observeRpcEffect(WS_METHODS.voiceGetActiveCall, voiceController.getActiveCall(input), {
+        "rpc.aggregate": "voice",
+      }),
     [WS_METHODS.voiceGetController]: (
       input: Parameters<VoiceController.VoiceControllerService["Service"]["getController"]>[0],
     ) =>
