@@ -105,8 +105,6 @@ export const voiceNarrationCheckpoint = (
     return null;
   }
   if (!isToolLifecycleItemType(event.payload.itemType)) return null;
-  const title = event.payload.title?.toLowerCase() ?? "";
-  if (title.includes("voice_speak") || title.includes("voice speak")) return null;
   return {
     key: `${event.itemId ?? event.eventId}:${event.type}`,
     text: toolProgressText(event),

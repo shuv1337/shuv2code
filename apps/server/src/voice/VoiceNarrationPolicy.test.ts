@@ -85,12 +85,6 @@ describe("VoiceNarrationPolicy", () => {
     assert.strictEqual(checkpoint.text, "I’m running the next check now.");
   });
 
-  it("does not feed narration speech back into narration", () => {
-    expect(
-      voiceNarrationCheckpoint(toolEvent("item.started", { title: "shuv2code voice_speak" })),
-    ).toBeNull();
-  });
-
   it("waits for the configured silence interval and deduplicates unchanged checkpoints", () => {
     const policy = resolveVoiceNarrationPolicy("balanced");
     const pending = voiceNarrationCheckpoint(toolEvent("item.started"));

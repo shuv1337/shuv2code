@@ -91,7 +91,6 @@ export function voiceCallProviderInput(
     "The live call is still active and the user may not be reading the full thread. Continue normal durable reasoning, tool use, code, and detailed text here.",
     ...narrationPolicy.prompt,
     "Your ordinary assistant commentary and final response are relayed to the live Call through a provider-neutral bounded sentence channel.",
-    "If the voice_speak tool is available, you MAY use it when exact spoken phrasing matters, but do not depend on that tool for Call support and do not repeat commentary already sent normally.",
     "Keep code, logs, and long prose in the durable response instead of reading them aloud.",
     "The realtime side may already have acknowledged the request. Do not repeat any already-heard assistant text below.",
     ...(activeTranscript.length === 0

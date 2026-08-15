@@ -21,8 +21,7 @@ describe("voice Call provider input", () => {
     });
     expect(providerInput).toContain("<voice_call>");
     expect(providerInput).toContain("provider-neutral bounded sentence channel");
-    expect(providerInput).toContain("MAY use it");
-    expect(providerInput).toContain("do not depend on that tool");
+    expect(providerInput).not.toContain("voice_speak");
     expect(providerInput).toContain("Maintain conversational presence");
     expect(providerInput).toContain("commentary updates");
     expect(providerInput).toContain("roughly thirty seconds");

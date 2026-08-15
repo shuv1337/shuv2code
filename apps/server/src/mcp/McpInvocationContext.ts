@@ -11,9 +11,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 export type StandardMcpCapability = "preview" | "automations";
-export type VoiceMcpCapability = "voice.speak";
 export type ControllerMcpCapability = "threads.read" | "threads.control";
-export type McpCapability = StandardMcpCapability | VoiceMcpCapability | ControllerMcpCapability;
+export type McpCapability = StandardMcpCapability | ControllerMcpCapability;
 
 export interface StandardProviderMcpProfile {
   readonly kind: "standard-provider";

@@ -16,7 +16,7 @@ A user can keep a Call active while the thread works, answer or inspect ordinary
 
 1. Confirm the active-turn utterance default. Recommendation: consume the same effective steering preference as typed chat.
 2. Confirm archive/delete behavior. Recommendation: prevent new input, end safely, and explain; require confirmation if the action originates while a Call is active.
-3. Confirm fallback when a delegated turn never calls `voice_speak`. Recommendation: show durable progress/activity in the surface but do not automatically read the full final response aloud.
+3. Confirm ambient narration fallback behavior. Recommendation: relay bounded, speech-safe assistant sentences while keeping the full durable response in the thread.
 
 ## Deliverables
 
@@ -24,7 +24,7 @@ A user can keep a Call active while the thread works, answer or inspect ordinary
 | --- | ----------------------------- | --------------------- | ----------------------------------------------------------------------------- | -------- |
 | 4.1 | Active-turn dispatch          | Client runtime/server | Share typed-chat start/steer decision; preserve deterministic command IDs     | Proposed |
 | 4.2 | Activity projection           | Client runtime        | Derive bounded thinking/acting/waiting summaries from ordinary thread state   | Proposed |
-| 4.3 | Speech-channel continuity     | Server/client runtime | Correlate `voice_speak` segments with ordinary turn activity and reconnect    | Proposed |
+| 4.3 | Speech-channel continuity     | Server/client runtime | Correlate ambient narration with ordinary turn activity and reconnect         | Proposed |
 | 4.4 | Barge-in                      | Transport/web         | Stop speech playback; do not implicitly interrupt thread tools/turn           | Proposed |
 | 4.5 | Approval and input continuity | Web                   | Surface concise waiting state and route user to existing controls             | Proposed |
 | 4.6 | Navigation pinning            | Web shell             | Keep exact owner; collapse globally away from owner; navigate back explicitly | Proposed |
@@ -47,7 +47,7 @@ The Voice call bridge validates the chosen command against current server state.
 
 ## Spoken response channel
 
-Phase 3 already establishes the response contract: a delegated ordinary turn receives authenticated hidden voice-mode context and may call `voice_speak` with concise segments. The tool emits one payload to both temporal call text and provider speech; the detailed ordinary response remains durable thread content. Phase 4 extends correlation, reconnect, and activity behavior around that channel rather than adding a second persisted `spokenText` schema or automatically reading long final responses.
+Phase 3 already establishes the response contract: a delegated ordinary turn receives hidden voice-mode context, and its canonical assistant stream feeds a bounded, speech-safe narration relay. Spoken chunks drive temporal Call text and provider speech while the detailed ordinary response remains durable thread content. Phase 4 extends correlation, reconnect, and activity behavior around that channel rather than adding a second persisted `spokenText` schema or reading long final responses verbatim.
 
 Raw partial transcripts, audio levels, and realtime-only conversation remain ephemeral. Explicitly delegated user text and normal assistant output remain durable messages.
 
@@ -122,7 +122,7 @@ The projector does not parse rendered Markdown or infer tools from DOM state. It
 
 1. Ratify the three review-gate decisions.
 2. Extract and test shared utterance dispatch policy.
-3. Extend `voice_speak` correlation and fail-closed reconnect behavior without a new persistent message stream.
+3. Extend ambient narration correlation and fail-closed reconnect behavior without a new persistent message stream.
 4. Expand Call bridge correlation and activity selection.
 5. Add pure activity projection and wire existing thread entities.
 6. Implement barge-in and navigation pinning.
@@ -135,7 +135,7 @@ The projector does not parse rendered Markdown or infer tools from DOM state. It
 - Barge-in halts audio quickly but emits no `thread.turn.interrupt` by itself.
 - Tool work continues while speech is stopped.
 - Waiting approval/input is reflected in Voice and resolved through existing controls.
-- Each `voice_speak` segment is spoken/displayed once; a missing segment never causes long final text to be read implicitly.
+- Each ambient narration chunk is spoken/displayed once; reconnect never causes long final text to be replayed or read verbatim.
 - Navigating away never changes owner; Return opens the exact thread.
 - Reconnect creates a new transport generation without replaying final transcript or assistant speech.
 - Archive/delete transitions to a terminal explanation and releases media exactly once.

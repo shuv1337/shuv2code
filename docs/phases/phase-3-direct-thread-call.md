@@ -11,11 +11,11 @@ Status: in progress
 - Integrated web verification proved `Start call` -> Listening -> End call on an ordinary thread and confirmed the resulting transport lease was closed and its hidden transport projection archived.
 - Call starts the realtime model with a bounded projection of the exact ordinary thread and a mode prompt. Realtime owns the low-latency conversational front channel and can answer directly from that context.
 - Realtime transport selection is independent of the ordinary thread's durable model selection. Today the transport is a compatible Codex Realtime instance, while delegated work remains on the exact thread's selected provider and harness (for example OpenCode, Grok, or another configured adapter).
-- Durable harness output reaches Call through the canonical provider-runtime stream: Voice forms bounded, speech-safe sentence chunks, queues them behind authored speech, and never reads fenced code or long prose verbatim. Quiet mode buffers until assistant completion; balanced and conversational modes can relay useful commentary while work continues. `voice_speak` remains an optional authored override for harnesses that expose the MCP tool, not a compatibility requirement.
+- Durable harness output reaches Call through the canonical provider-runtime stream: Voice forms bounded, speech-safe sentence chunks, queues them behind controller-owned speech, and never reads fenced code or long prose verbatim. Quiet mode buffers until assistant completion; balanced and conversational modes can relay useful commentary while work continues.
 - Realtime has priority inside Call. A completed conversational user/assistant exchange is appended to the exact ordinary thread as one completed model turn without starting a second model response. Only an explicit realtime delegation starts or steers deeper thread-model work for tools or substantial text, and that work never stops the live Call.
 - Voice-call provenance carries the bounded active call transcript as hidden, untrusted provider context. The ordinary thread model is told that it is serving an active voice call and avoids repeating an acknowledgement the user already heard.
-- The authenticated `voice_speak` MCP tool lets that ordinary thread model select concise progress or result segments for live speech while keeping code, logs, and detailed prose in the durable thread. One tool call drives provider playback, the temporal assistant transcript, and an exact durable assistant message in the active ordinary turn.
-- Realtime is explicitly instructed not to delegate questions it can answer from the supplied exact-thread context. Delegated turns return their compact spoken result through the provider-neutral assistant relay; a capable harness may use `voice_speak` when it needs exact authored phrasing. Durable work therefore extends the live Call instead of replacing it with a text-only answer.
+- Provider sessions do not receive a speech tool. Ordinary assistant messages are the single model-authored source for both durable text and ambient Call narration; controller-owned urgent speech can still use the internal arbiter without becoming a harness capability.
+- Realtime is explicitly instructed not to delegate questions it can answer from the supplied exact-thread context. Delegated turns return their compact spoken result through the provider-neutral assistant relay. Durable work therefore extends the live Call instead of replacing it with a text-only answer.
 - Thread-originated spoken transcripts carry an explicit source marker. The web client accepts those events even after provider data-channel transcription becomes authoritative, keeping the heard result, temporal Call text, and presence response coherent.
 - Production Call now feeds live microphone and remote WebRTC energy into the persistent presence shader. Provider V3 `input_transcript.added` chunks accumulate into one temporal utterance even when each chunk has a different item identity. Provider transcript completion closes a conversational exchange; `delegation.created` is authoritative only when realtime explicitly requests deeper thread work. Silence, item changes, individual chunks, and speaker transitions never create thread turns.
 
@@ -42,7 +42,7 @@ mic -> existing WebRTC transport -> temporal user transcript
 explicit delegation -> VoiceCallBridge -> thread.turn.start or thread.turn.steer
     -> existing orchestration/provider pipeline with hidden voice-mode context
     -> canonical assistant stream -> bounded sentence relay -> provider audio + temporal text
-    -> optional voice_speak(chosen segment) -> exact durable speech message + prioritized audio
+    -> controller-owned urgent speech -> prioritized internal arbiter queue
     -> normal detailed assistant output -> durable ordinary thread
     -> Call remains connected throughout
 ```
@@ -101,9 +101,9 @@ The UI may explain these states early, but server authorization remains decisive
 
 ## Response behavior
 
-Realtime speech uses the provider's native low-latency response path and owns ordinary conversation. Questions answerable from supplied exact-thread context remain on this path; checking or discussing that context is not by itself a reason to delegate. Once both sides are final, that exchange is appended as the durable model turn. Delegated work receives hidden voice-mode instructions that ask for concise ordinary commentary while the canonical provider-runtime stream feeds the bounded narration relay. Harnesses exposing the authenticated `voice_speak` tool may additionally choose exact spoken phrasing; ordinary responses remain free to contain code, logs, and detailed prose because the relay sanitizes and bounds what is spoken.
+Realtime speech uses the provider's native low-latency response path and owns ordinary conversation. Questions answerable from supplied exact-thread context remain on this path; checking or discussing that context is not by itself a reason to delegate. Once both sides are final, that exchange is appended as the durable model turn. Delegated work receives hidden voice-mode instructions that ask for concise ordinary commentary while the canonical provider-runtime stream feeds the bounded narration relay. Ordinary responses remain free to contain code, logs, and detailed prose because the relay sanitizes and bounds what is spoken.
 
-`voice_speak` resolves the active session by authenticated environment plus exact thread owner and fails closed when no matching Call exists. Its single normalized payload is projected as a distinct assistant message in the active ordinary turn, emitted as a thread-originated temporal assistant transcript, and appended to provider speech. The text in the thread, the visible Call transcript, and the heard text therefore share one source. The additive `thread.voice-speech-appended` event deliberately does not settle the turn or replace its detailed assistant message. Provider data-channel transcription remains authoritative for realtime utterances, while the explicit source marker prevents it from suppressing later thread-originated speech. The tool does not create another turn engine or a second persistent conversation.
+The ambient relay resolves an active session by environment plus exact thread owner and fails closed when no matching Call exists. Sentence chunks enter one bounded arbiter queue, become temporal assistant transcripts when the realtime provider confirms delivery, and remain supporting Call history rather than replacing the detailed durable answer. Provider data-channel transcription remains authoritative for realtime utterances. The relay does not create another turn engine or a second persistent conversation.
 
 Durable Call messages carry an explicit `voice` modality through the projection table, thread snapshot, live thread subscription, and client reducer. In a delegated turn, spoken narration is supporting Call history and remains available inside `Worked for…` with the other activity; the provider's formatted durable text is the sole visible terminal result. A delayed Voice projection must never replace that durable answer or push it into the work fold, and the canonical answer renders after all supporting activity even when its streaming message was created earlier. A voice-only realtime exchange still renders its spoken assistant message as the terminal result because no separate durable text answer exists. This is semantic metadata rather than message-id inference. The projection migration backfills the namespaced prototype rows once, and the web thread-cache schema version advances with it because a projection-only migration does not advance the orchestration event cursor.
 
@@ -114,10 +114,9 @@ Durable Call messages carry an explicit `voice` modality through the projection 
 - `apps/server/src/voice/Services/VoiceCallBridge.ts`
 - `apps/server/src/voice/Layers/VoiceCallBridge.ts`
 - `apps/server/src/voice/Layers/VoiceCallBridge.test.ts`
-- `apps/server/src/mcp/toolkits/voice/tools.ts`
-- `apps/server/src/mcp/toolkits/voice/handlers.ts`
-- `apps/server/src/mcp/toolkits/voice/handlers.test.ts`
 - `apps/server/src/orchestration/Layers/ProviderCommandReactor.voice.test.ts`
+- `apps/server/src/voice/VoiceStreamNarration.ts`
+- `apps/server/src/voice/VoiceStreamNarration.test.ts`
 - `apps/web/src/components/voice/useVoiceActivity.ts`
 
 ### Modified
@@ -141,9 +140,11 @@ Durable Call messages carry an explicit `voice` modality through the projection 
 - `apps/server/src/provider/Services/ProviderAdapter.ts`
 - `apps/server/src/voice/Services/VoiceTransportCoordinator.ts`
 - `apps/server/src/voice/Services/VoiceControllerService.ts`
+- `apps/server/src/voice/Services/VoiceSpeechArbiter.ts`
 - `apps/server/src/voice/Services/VoiceRuntimeGateway.ts`
 - `apps/server/src/voice/Layers/VoiceTransportCoordinator.ts`
 - `apps/server/src/voice/Layers/VoiceControllerService.ts`
+- `apps/server/src/voice/Layers/VoiceSpeechArbiter.ts`
 - `apps/server/src/voice/Layers/VoiceControllerActionRunner.ts`
 - `apps/server/src/voice/Layers/VoiceRuntimeGateway.ts`
 - `apps/server/src/voice/VoiceHandoffRequest.ts`
@@ -186,7 +187,7 @@ Durable Call messages carry an explicit `voice` modality through the projection 
 - The command targets the exact owner thread.
 - No controller binding, action, mutation, or target changes.
 - Finalized user text and realtime response are durable messages in one completed turn; no second provider response is started.
-- One `voice_speak` payload drives temporary display, provider speech, and one exact durable assistant message without changing turn completion.
+- Streamed assistant chunks remain ordered, bounded, and interruptible without changing turn completion or replacing the durable final answer.
 - Input amplitude drives listening/user-speaking presence; speech playback drives assistant-speaking presence.
 - Ending the Call releases media once and leaves the ordinary thread intact.
 
