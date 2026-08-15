@@ -24,6 +24,8 @@ import * as Stream from "effect/Stream";
 
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { VoiceCallEventRepository } from "../../persistence/Services/VoiceCallEvents.ts";
 import { VoiceControllerActionRepository } from "../../persistence/Services/VoiceControllerActions.ts";
 import { VoiceTransportSessionRepository } from "../../persistence/Services/VoiceTransportSessions.ts";
 import type { VoiceTransportSession } from "../../persistence/VoiceControlModels.ts";
@@ -95,6 +97,8 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
     const crypto = yield* Crypto.Crypto;
     const environment = yield* ServerEnvironment;
     const engine = yield* OrchestrationEngineService;
+    const projection = yield* ProjectionSnapshotQuery;
+    const callEvents = yield* VoiceCallEventRepository;
     const transports = yield* VoiceTransportSessionRepository;
     const actions = yield* VoiceControllerActionRepository;
     const runtime = yield* VoiceRuntimeGateway;
@@ -181,6 +185,26 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
       "VoiceTransportCoordinator.stopSession",
     )(function* (session) {
       const now = DateTime.formatIso(yield* DateTime.now);
+      const owner = session.fence.owner;
+      if (owner?.kind === "thread-call") {
+        const snapshotSequence = yield* projection.getSnapshotSequence().pipe(
+          Effect.map((snapshot) => snapshot.snapshotSequence),
+          Effect.orElseSucceed(() => null),
+        );
+        yield* callEvents
+          .append({
+            environmentId: session.environmentId,
+            threadId: owner.threadId,
+            transportSessionId: session.transportSessionId,
+            generation: session.fence.generation,
+            kind: "listener.detached",
+            correlationId: null,
+            threadSnapshotSequence: snapshotSequence,
+            payload: {},
+            occurredAt: now,
+          })
+          .pipe(Effect.ignore);
+      }
       yield* transports
         .compareAndSetState({
           transportSessionId: session.transportSessionId,
@@ -714,6 +738,23 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           next.set(startInput.clientSessionId, active);
           return next;
         });
+        yield* callEvents
+          .append({
+            environmentId,
+            threadId: owner.threadId,
+            transportSessionId,
+            generation: startInput.generation,
+            kind: "listener.attached",
+            correlationId: null,
+            threadSnapshotSequence: input.threadSnapshotSequence,
+            payload: {},
+            occurredAt: DateTime.formatIso(yield* DateTime.now),
+          })
+          .pipe(
+            Effect.mapError(
+              mapInternalError("internal_error", "The Call listener could not be attached."),
+            ),
+          );
         yield* emit(startInput.clientSessionId, { type: "session.state", state: "listening" });
         const current = (yield* Ref.get(sessionsRef)).get(startInput.clientSessionId) ?? active;
         return {

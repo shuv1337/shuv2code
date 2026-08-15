@@ -4,7 +4,7 @@ import type * as Effect from "effect/Effect";
 
 import type { ActiveVoiceSession } from "./VoiceTransportCoordinator.ts";
 
-export type VoiceSpeechSource = "authored" | "controller" | "commentary" | "ambient";
+export type VoiceSpeechSource = "authored" | "controller" | "catch-up" | "commentary" | "ambient";
 
 export interface VoiceSpeechAttempt {
   readonly attemptId: string;

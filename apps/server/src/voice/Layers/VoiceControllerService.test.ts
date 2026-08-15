@@ -25,6 +25,7 @@ import {
   controllerHistoryDisplayText,
   controllerHistoryMessages,
   controllerTranscriptWithActiveTarget,
+  callCatchUpText,
   controllerActionStartRequest,
   deriveVoiceActionId,
   planVoicePolicyTransition,
@@ -38,6 +39,68 @@ import {
 } from "./VoiceControllerService.ts";
 
 describe("VoiceControllerService coordination invariants", () => {
+  it("builds a bounded catch-up from durable assistant output and activity only", () => {
+    const catchUp = callCatchUpText(
+      {
+        latestTurn: {
+          turnId: "turn-1",
+          state: "running",
+          requestedAt: "2026-08-15T20:00:00.000Z",
+          startedAt: "2026-08-15T20:00:00.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        },
+        messages: [
+          {
+            id: "user-1",
+            role: "user",
+            text: "Do the work",
+            turnId: "turn-1",
+            streaming: false,
+            createdAt: "2026-08-15T20:01:00.000Z",
+            updatedAt: "2026-08-15T20:01:00.000Z",
+          },
+          {
+            id: "assistant-1",
+            role: "assistant",
+            text: "I found the lifecycle boundary.",
+            turnId: "turn-1",
+            streaming: false,
+            createdAt: "2026-08-15T20:02:00.000Z",
+            updatedAt: "2026-08-15T20:02:00.000Z",
+          },
+          {
+            id: "voice-1",
+            role: "assistant",
+            text: "Already spoken before detach.",
+            modality: "voice",
+            turnId: "turn-1",
+            streaming: false,
+            createdAt: "2026-08-15T20:03:00.000Z",
+            updatedAt: "2026-08-15T20:03:00.000Z",
+          },
+        ],
+        activities: [
+          {
+            id: "activity-1",
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "The focused check completed.",
+            payload: {},
+            turnId: "turn-1",
+            createdAt: "2026-08-15T20:04:00.000Z",
+          },
+        ],
+      } as never,
+      "2026-08-15T20:00:30.000Z",
+    );
+
+    assert.include(catchUp, "I found the lifecycle boundary.");
+    assert.include(catchUp, "The focused check completed.");
+    assert.notInclude(catchUp, "Do the work");
+    assert.notInclude(catchUp, "Already spoken before detach.");
+  });
+
   it("keeps direct Call transport selection independent from durable work", () => {
     const durableSelection = {
       instanceId: ProviderInstanceId.make("opencode-local"),

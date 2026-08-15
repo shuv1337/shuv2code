@@ -102,6 +102,7 @@ export interface VoiceTransportCoordinatorShape {
     };
     readonly transportModelSelection: ModelSelection;
     readonly workspaceRoot: string;
+    readonly threadSnapshotSequence: number;
   }) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;
   readonly stop: (
     input: VoiceSessionStopInput,

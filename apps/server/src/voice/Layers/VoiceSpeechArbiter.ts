@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
@@ -11,6 +12,7 @@ import {
 } from "../Services/VoiceSpeechArbiter.ts";
 import type { ActiveVoiceSession } from "../Services/VoiceTransportCoordinator.ts";
 import { VoiceRuntimeGateway } from "../Services/VoiceRuntimeGateway.ts";
+import { VoiceCallEventRepository } from "../../persistence/Services/VoiceCallEvents.ts";
 import { VOICE_TRANSPORT_FEEDBACK_TIMEOUT } from "../VoiceTransportFeedback.ts";
 
 interface ActiveAttempt {
@@ -69,6 +71,17 @@ const completionFrom = (
 
 export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(function* (
   sendSpeech: (attempt: VoiceSpeechAttempt) => Effect.Effect<void, object>,
+  observeLifecycle: (event: {
+    readonly kind:
+      | "speech.queued"
+      | "speech.started"
+      | "speech.completed"
+      | "speech.interrupted"
+      | "speech.failed";
+    readonly attempt: VoiceSpeechAttempt;
+    readonly occurredAt: string;
+    readonly deliveredText?: string;
+  }) => Effect.Effect<void> = () => Effect.void,
 ) {
   const statesRef = yield* Ref.make(new Map<string, CallSpeechState>());
   const stateMutex = yield* Semaphore.make(1);
@@ -134,6 +147,11 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
   )(function* (session) {
     const selected = yield* selectNext(session);
     if (selected === undefined) return;
+    yield* observeLifecycle({
+      kind: "speech.started",
+      attempt: selected,
+      occurredAt: DateTime.formatIso(yield* DateTime.now),
+    });
     const sent = yield* sendSpeech(selected).pipe(
       Effect.timeoutOption(VOICE_TRANSPORT_FEEDBACK_TIMEOUT),
       Effect.exit,
@@ -146,6 +164,11 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
       );
       return;
     }
+    yield* observeLifecycle({
+      kind: "speech.failed",
+      attempt: selected,
+      occurredAt: DateTime.formatIso(yield* DateTime.now),
+    });
     yield* clearFailedAttempt(selected);
     yield* startNext(session);
   });
@@ -164,7 +187,11 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
             return [false, states] as const;
           }
           const next = new Map(states);
-          if (attempt.source === "authored" || attempt.source === "controller") {
+          if (
+            attempt.source === "authored" ||
+            attempt.source === "controller" ||
+            attempt.source === "catch-up"
+          ) {
             next.set(key, {
               ...current,
               authoredQueue: [...current.authoredQueue, attempt],
@@ -194,6 +221,11 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
         }),
       );
       if (!accepted) return false;
+      yield* observeLifecycle({
+        kind: "speech.queued",
+        attempt,
+        occurredAt: attempt.requestedAt,
+      });
       yield* startNext(attempt.session);
       return true;
     },
@@ -230,6 +262,14 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
         return [completion, next] as const;
       }),
     );
+    if (completion !== undefined) {
+      yield* observeLifecycle({
+        kind: "speech.completed",
+        attempt: completion,
+        occurredAt: completion.completedAt,
+        deliveredText: completion.deliveredText,
+      });
+    }
     yield* startNext(session);
     return completion;
   });
@@ -285,6 +325,14 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
         },
       ),
     );
+    if (observed.completion !== undefined) {
+      yield* observeLifecycle({
+        kind: "speech.completed",
+        attempt: observed.completion,
+        occurredAt: observed.completion.completedAt,
+        deliveredText: observed.completion.deliveredText,
+      });
+    }
     if (input.outputDone) yield* startNext(input.session);
     return observed;
   });
@@ -292,20 +340,28 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
   const observeUserSpeech: VoiceSpeechArbiterShape["observeUserSpeech"] = Effect.fn(
     "VoiceSpeechArbiter.observeUserSpeech",
   )(function* (session) {
-    yield* stateMutex.withPermits(1)(
-      Ref.update(statesRef, (states) => {
+    const interrupted = yield* stateMutex.withPermits(1)(
+      Ref.modify(statesRef, (states) => {
         const current = stateFor(states, session);
         const next = new Map(states);
         next.set(sessionKey(session), {
           ...current,
           providerBusy: true,
           active: current.active === null ? null : { ...current.active, interrupted: true },
+          authoredQueue: current.authoredQueue.filter((attempt) => attempt.source !== "catch-up"),
           commentaryQueue: [],
           pendingAmbient: null,
         });
-        return next;
+        return [current.active?.attempt, next] as const;
       }),
     );
+    if (interrupted !== undefined) {
+      yield* observeLifecycle({
+        kind: "speech.interrupted",
+        attempt: interrupted,
+        occurredAt: DateTime.formatIso(yield* DateTime.now),
+      });
+    }
   });
 
   const cancelAmbient: VoiceSpeechArbiterShape["cancelAmbient"] = Effect.fn(
@@ -349,12 +405,35 @@ export const VoiceSpeechArbiterLive = Layer.effect(
   VoiceSpeechArbiter,
   Effect.gen(function* () {
     const runtime = yield* VoiceRuntimeGateway;
-    return yield* makeVoiceSpeechArbiter((attempt) =>
-      runtime.appendTransportSpeech({
-        transportThreadId: attempt.session.fence.transportThreadId,
-        generation: attempt.session.fence.generation,
-        text: attempt.requestedText,
-      }),
+    const callEvents = yield* VoiceCallEventRepository;
+    return yield* makeVoiceSpeechArbiter(
+      (attempt) =>
+        runtime.appendTransportSpeech({
+          transportThreadId: attempt.session.fence.transportThreadId,
+          generation: attempt.session.fence.generation,
+          text: attempt.requestedText,
+        }),
+      (event) => {
+        const owner = event.attempt.session.fence.owner;
+        if (owner?.kind !== "thread-call") return Effect.void;
+        return callEvents
+          .append({
+            environmentId: event.attempt.session.environmentId,
+            threadId: owner.threadId,
+            transportSessionId: event.attempt.session.transportSessionId,
+            generation: event.attempt.session.fence.generation,
+            kind: event.kind,
+            correlationId: event.attempt.attemptId,
+            threadSnapshotSequence: null,
+            payload: {
+              source: event.attempt.source,
+              requestedText: event.attempt.requestedText,
+              ...(event.deliveredText === undefined ? {} : { deliveredText: event.deliveredText }),
+            },
+            occurredAt: event.occurredAt,
+          })
+          .pipe(Effect.ignore);
+      },
     );
   }),
 );

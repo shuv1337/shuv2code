@@ -187,6 +187,31 @@ describe("VoiceSpeechArbiter", () => {
     }),
   );
 
+  it.effect("does not replay a queued rejoin catch-up after user barge-in", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const arbiter = yield* makeVoiceSpeechArbiter((speech) =>
+        Ref.update(sent, (all) => [...all, speech.requestedText]),
+      );
+      const activeSession = session();
+
+      yield* arbiter.enqueue(attempt(activeSession, "authored-1", "authored", "Live update."));
+      yield* arbiter.enqueue(
+        attempt(activeSession, "catch-up-1", "catch-up", "While you were away."),
+      );
+      yield* arbiter.observeUserSpeech(activeSession);
+      yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-live"),
+        text: "Live upd—",
+        occurredAt: "2026-08-15T00:00:01.000Z",
+        outputDone: true,
+      });
+
+      assert.deepStrictEqual(yield* Ref.get(sent), ["Live update."]);
+    }),
+  );
+
   it.effect("waits for output completion after receiving an early provider transcript", () =>
     Effect.gen(function* () {
       const sent = yield* Ref.make<Array<string>>([]);

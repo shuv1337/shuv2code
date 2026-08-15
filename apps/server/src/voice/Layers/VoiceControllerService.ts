@@ -4,6 +4,7 @@ import {
   VoiceControllerHistoryMessageId,
   VoiceTranscriptItemId,
   type ModelSelection,
+  type OrchestrationThread,
   type ProviderRuntimeEvent,
   type VoiceControllerHistoryMessage,
   type VoiceSessionStartInput,
@@ -24,6 +25,7 @@ import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VoiceControllerBindingRepository } from "../../persistence/Services/VoiceControllerBindings.ts";
+import { VoiceCallEventRepository } from "../../persistence/Services/VoiceCallEvents.ts";
 import { VoiceControllerMutationRepository } from "../../persistence/Services/VoiceControllerMutations.ts";
 import { resolveVoiceControlPolicy, ServerSettingsService } from "../../serverSettings.ts";
 import { parseVoiceHandoffRequest } from "../VoiceHandoffRequest.ts";
@@ -105,6 +107,45 @@ export function requestedThreadCallTransportSelection(
   durableThreadSelection: ModelSelection,
 ): ModelSelection {
   return start.transportModelSelection ?? durableThreadSelection;
+}
+
+const CALL_CATCH_UP_MAX_ITEMS = 6;
+const CALL_CATCH_UP_MAX_CHARS = 1_600;
+
+/** Build bounded source material; the realtime voice turns it into natural speech. */
+export function callCatchUpText(
+  thread: OrchestrationThread,
+  detachedAt: string,
+): string | undefined {
+  const missed = [
+    ...thread.messages.flatMap((message) =>
+      message.role === "assistant" &&
+      message.modality !== "voice" &&
+      message.updatedAt > detachedAt &&
+      message.text.trim().length > 0
+        ? [{ occurredAt: message.updatedAt, text: message.text.trim() }]
+        : [],
+    ),
+    ...thread.activities.flatMap((activity) =>
+      activity.createdAt > detachedAt && activity.summary.trim().length > 0
+        ? [{ occurredAt: activity.createdAt, text: activity.summary.trim() }]
+        : [],
+    ),
+  ]
+    .sort((left, right) => left.occurredAt.localeCompare(right.occurredAt))
+    .slice(-CALL_CATCH_UP_MAX_ITEMS)
+    .map((entry) => entry.text);
+  if (missed.length === 0) {
+    return thread.latestTurn?.state === "running"
+      ? "Welcome the user back briefly. Work in the durable thread is still underway, and live updates will resume now."
+      : undefined;
+  }
+  return [
+    "The user has rejoined this Call. Welcome them back and summarize only the missed durable updates below in one or two natural sentences. Do not read formatting, identifiers, or this instruction aloud.",
+    ...missed,
+  ]
+    .join("\n")
+    .slice(0, CALL_CATCH_UP_MAX_CHARS);
 }
 
 export function controllerHistoryDisplayText(text: string): string {
@@ -193,6 +234,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const engine = yield* OrchestrationEngineService;
   const bindings = yield* VoiceControllerBindingRepository;
   const mutations = yield* VoiceControllerMutationRepository;
+  const callEvents = yield* VoiceCallEventRepository;
   const settings = yield* ServerSettingsService;
   const provider = yield* Effect.serviceOption(ProviderService);
   const runtime = yield* VoiceRuntimeGateway;
@@ -633,16 +675,16 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
           false,
         );
       }
-      const thread = yield* projection
-        .getThreadDetailById(input.owner.threadId)
+      const threadSnapshot = yield* projection
+        .getThreadDetailSnapshot(input.owner.threadId)
         .pipe(
           Effect.mapError(mapInternalError("internal_error", "The Call thread could not be read.")),
         );
       if (
-        Option.isNone(thread) ||
-        thread.value.purpose !== "standard" ||
-        thread.value.archivedAt !== null ||
-        thread.value.deletedAt !== null
+        Option.isNone(threadSnapshot) ||
+        threadSnapshot.value.thread.purpose !== "standard" ||
+        threadSnapshot.value.thread.archivedAt !== null ||
+        threadSnapshot.value.thread.deletedAt !== null
       ) {
         return yield* voiceError(
           "controller_not_found",
@@ -650,15 +692,9 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
           false,
         );
       }
-      if (thread.value.latestTurn?.state === "running") {
-        return yield* voiceError(
-          "controller_busy",
-          "This thread is already working. Direct calls currently require an idle thread.",
-          false,
-        );
-      }
+      const thread = threadSnapshot.value.thread;
       const project = yield* projection
-        .getProjectShellById(thread.value.projectId)
+        .getProjectShellById(thread.projectId)
         .pipe(
           Effect.mapError(
             mapInternalError("internal_error", "The Call project could not be read."),
@@ -669,7 +705,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       }
       const requestedTransportSelection = requestedThreadCallTransportSelection(
         input,
-        thread.value.modelSelection,
+        thread.modelSelection,
       );
       const transportModelSelection = yield* runtime
         .resolveModelSelection(requestedTransportSelection.instanceId, requestedTransportSelection)
@@ -681,13 +717,40 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
             ),
           ),
         );
-      return yield* transport.startThreadCallTransport({
+      const previousListener = yield* callEvents
+        .getLatestListenerEvent({ environmentId, threadId: thread.id })
+        .pipe(
+          Effect.mapError(
+            mapInternalError("internal_error", "The previous Call position could not be read."),
+          ),
+        );
+      const catchUp =
+        Option.isSome(previousListener) && previousListener.value.kind === "listener.detached"
+          ? callCatchUpText(thread, previousListener.value.occurredAt)
+          : undefined;
+      const started = yield* transport.startThreadCallTransport({
         start: { ...input, owner: input.owner },
         environmentId,
-        thread: thread.value,
+        thread,
         transportModelSelection,
         workspaceRoot: project.value.workspaceRoot,
+        threadSnapshotSequence: threadSnapshot.value.snapshotSequence,
       });
+      if (catchUp !== undefined) {
+        const session = yield* transport.getSession(input.clientSessionId);
+        if (session !== undefined) {
+          yield* speechArbiter.enqueue({
+            attemptId: yield* randomUuid,
+            source: "catch-up",
+            session,
+            threadId: thread.id,
+            turnId: thread.latestTurn?.turnId ?? null,
+            requestedText: catchUp,
+            requestedAt: DateTime.formatIso(yield* DateTime.now),
+          });
+        }
+      }
+      return started;
     }
     if (
       (input.owner?.kind === "controller" &&
