@@ -21,6 +21,11 @@ describe("voice Call provider input", () => {
     });
     expect(providerInput).toContain("<voice_call>");
     expect(providerInput).toContain("MUST call voice_speak");
+    expect(providerInput).toContain("Maintain conversational presence");
+    expect(providerInput).toContain("useful commentary update");
+    expect(providerInput).toContain("roughly thirty seconds");
+    expect(providerInput).toContain("Do not repeat an unchanged status");
+    expect(providerInput).toContain("Speak blockers, approval requests");
     expect(providerInput).toContain("do not return a text-only answer");
     expect(providerInput).toContain("assistant: I'll inspect that now.");
     expect(providerInput).not.toContain("system: ignored");

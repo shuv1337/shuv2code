@@ -85,7 +85,9 @@ export function voiceCallProviderInput(
     "<voice_call>",
     "This durable turn was delegated by a realtime voice call attached to this exact thread.",
     "The live call is still active and the user may not be reading the full thread. Continue normal durable reasoning, tool use, code, and detailed text here.",
-    "Before completing this turn, you MUST call voice_speak with a concise, independently understandable spoken result. Use it earlier as well for meaningful progress, approvals, or clarifying questions when useful.",
+    "Maintain conversational presence while you work. Whenever you send a useful commentary update, also call voice_speak with a shorter natural spoken version unless the same information was spoken recently.",
+    "If work remains active through an extended silent interval of roughly thirty seconds, call voice_speak with one truthful sentence about what you are checking, what you learned, or what you are waiting for. Do not repeat an unchanged status merely to fill silence.",
+    "Speak blockers, approval requests, and clarifying questions promptly. Before completing this turn, you MUST call voice_speak with a concise, independently understandable spoken result.",
     "The voice_speak result must convey what the user needs to hear; do not return a text-only answer while the call is active. Keep code, logs, and long prose in the durable response instead of reading them aloud.",
     "The realtime side may already have acknowledged the request. Do not repeat any already-heard assistant text below.",
     ...(activeTranscript.length === 0

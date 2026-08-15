@@ -26,6 +26,9 @@ describe("VoiceTransportCoordinator ownership", () => {
   it("keeps ordinary contextual conversation on the realtime side of a Call", () => {
     assert.include(CALL_REALTIME_PROMPT, "primary realtime conversational voice");
     assert.include(CALL_REALTIME_PROMPT, "questions about them do not require a handoff");
+    assert.include(CALL_REALTIME_PROMPT, "short, incomplete, or trailing utterance");
+    assert.include(CALL_REALTIME_PROMPT, "Ask one brief spoken clarification");
+    assert.include(CALL_REALTIME_PROMPT, "do not hand off a fragment");
     assert.include(CALL_REALTIME_PROMPT, "A handoff extends this same live call");
   });
 
