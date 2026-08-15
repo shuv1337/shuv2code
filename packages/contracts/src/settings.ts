@@ -593,6 +593,10 @@ export const TextToSpeechSettings = Schema.Struct({
 });
 export type TextToSpeechSettings = typeof TextToSpeechSettings.Type;
 
+export const VoiceNarrationLevel = Schema.Literals(["quiet", "balanced", "conversational"]);
+export type VoiceNarrationLevel = typeof VoiceNarrationLevel.Type;
+export const DEFAULT_VOICE_NARRATION_LEVEL: VoiceNarrationLevel = "balanced";
+
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(30);
 export const DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL = Duration.minutes(5);
 
@@ -646,6 +650,9 @@ export const ServerSettings = Schema.Struct({
   enableRealtimeVoice: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   enableVoiceThreadRead: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   enableVoiceThreadControl: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  voiceNarrationLevel: VoiceNarrationLevel.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_VOICE_NARRATION_LEVEL)),
+  ),
   /**
    * Codex app-server process topology. `per-session` spawns one child per
    * shuv2code provider session (legacy). `shared` uses one supervised process
@@ -834,6 +841,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableRealtimeVoice: Schema.optionalKey(Schema.Boolean),
   enableVoiceThreadRead: Schema.optionalKey(Schema.Boolean),
   enableVoiceThreadControl: Schema.optionalKey(Schema.Boolean),
+  voiceNarrationLevel: Schema.optionalKey(VoiceNarrationLevel),
   codexAppServerTopology: Schema.optionalKey(Schema.Literals(["per-session", "shared"])),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({

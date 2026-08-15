@@ -105,6 +105,9 @@ describe("searchSettings", () => {
     expect(searchSettings("speech")).toContainEqual(
       expect.objectContaining({ id: "speech", to: "/settings/speech" }),
     );
+    expect(searchSettings("call narration")).toContainEqual(
+      expect.objectContaining({ id: "call-narration", to: "/settings/speech" }),
+    );
   });
 
   it("keeps recovered settings search results anchored in their panels", () => {

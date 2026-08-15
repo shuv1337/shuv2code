@@ -1,8 +1,13 @@
-import type { VoiceControllerIdentity } from "@shuv2code/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type VoiceControllerIdentity,
+  type VoiceNarrationLevel,
+} from "@shuv2code/contracts";
 import { MicIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { usePrimaryEnvironment } from "../../state/environments";
+import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
 import {
   AlertDialog,
@@ -14,8 +19,28 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { VoiceControllerConfigurationDetails } from "../voice/VoiceControllerDetails";
-import { SettingsRow, SettingsSection } from "./settingsLayout";
+import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
+import { searchableSetting } from "./settingsSearch";
+
+const NARRATION_LEVEL_OPTIONS: Readonly<
+  Record<VoiceNarrationLevel, { readonly label: string; readonly description: string }>
+> = {
+  quiet: {
+    label: "Quiet",
+    description: "Only blockers, questions, and the final result are spoken.",
+  },
+  balanced: {
+    label: "Balanced",
+    description: "Useful milestones are spoken, with an update after roughly 30 silent seconds.",
+  },
+  conversational: {
+    label: "Conversational",
+    description:
+      "Meaningful tool transitions are spoken, with an update after roughly 15 silent seconds.",
+  },
+};
 
 type ControllerStatus =
   | { readonly type: "loading" }
@@ -28,6 +53,8 @@ function errorMessage(error: unknown): string {
 
 export function VoiceControllerSettings() {
   const primaryEnvironment = usePrimaryEnvironment();
+  const narrationLevel = usePrimarySettings((settings) => settings.voiceNarrationLevel);
+  const updateSettings = useUpdatePrimarySettings();
   const voice = useVoiceSession();
   const getController = voice.getController;
   const resetController = voice.resetController;
@@ -83,6 +110,43 @@ export function VoiceControllerSettings() {
   return (
     <>
       <SettingsSection title="Voice control" icon={<MicIcon className="size-5" />}>
+        <SettingsRow
+          id={searchableSetting("call-narration").id}
+          title={searchableSetting("call-narration").title}
+          description={NARRATION_LEVEL_OPTIONS[narrationLevel].description}
+          resetAction={
+            narrationLevel !== DEFAULT_SERVER_SETTINGS.voiceNarrationLevel ? (
+              <SettingResetButton
+                label="call narration"
+                onClick={() =>
+                  updateSettings({
+                    voiceNarrationLevel: DEFAULT_SERVER_SETTINGS.voiceNarrationLevel,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={narrationLevel}
+              onValueChange={(value) =>
+                updateSettings({ voiceNarrationLevel: value as VoiceNarrationLevel })
+              }
+            >
+              <SelectTrigger className="w-full sm:w-48" aria-label="Call narration">
+                <SelectValue>{NARRATION_LEVEL_OPTIONS[narrationLevel].label}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {(Object.keys(NARRATION_LEVEL_OPTIONS) as VoiceNarrationLevel[]).map((level) => (
+                  <SelectItem key={level} hideIndicator value={level}>
+                    {NARRATION_LEVEL_OPTIONS[level].label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+
         <SettingsRow
           title="Environment controller"
           description="One controller is securely bound to this environment. Reset it before changing its host project, provider, or authority ceiling."

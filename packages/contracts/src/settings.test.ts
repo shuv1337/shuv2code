@@ -258,6 +258,7 @@ describe("ServerSettings voice control policy", () => {
     expect(settings.enableRealtimeVoice).toBe(true);
     expect(settings.enableVoiceThreadRead).toBe(true);
     expect(settings.enableVoiceThreadControl).toBe(true);
+    expect(settings.voiceNarrationLevel).toBe("balanced");
   });
 
   it("accepts independent voice capability patches", () => {
@@ -266,12 +267,27 @@ describe("ServerSettings voice control policy", () => {
         enableRealtimeVoice: true,
         enableVoiceThreadRead: true,
         enableVoiceThreadControl: true,
+        voiceNarrationLevel: "conversational",
       }),
     ).toMatchObject({
       enableRealtimeVoice: true,
       enableVoiceThreadRead: true,
       enableVoiceThreadControl: true,
+      voiceNarrationLevel: "conversational",
     });
+  });
+
+  it.each(["quiet", "balanced", "conversational"] as const)(
+    "accepts the %s narration level",
+    (voiceNarrationLevel) => {
+      expect(decodeServerSettingsPatch({ voiceNarrationLevel }).voiceNarrationLevel).toBe(
+        voiceNarrationLevel,
+      );
+    },
+  );
+
+  it("rejects unknown narration levels", () => {
+    expect(() => decodeServerSettingsPatch({ voiceNarrationLevel: "constant" })).toThrow();
   });
 });
 

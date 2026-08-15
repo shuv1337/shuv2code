@@ -4,8 +4,10 @@ import {
   ThreadId,
   VoiceControllerHistoryMessageId,
   VoiceTranscriptItemId,
+  type ProviderRuntimeEvent,
   type VoiceControllerHistoryMessage,
 } from "@shuv2code/contracts";
+import type { Cause } from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -27,12 +29,23 @@ import { parseVoiceHandoffRequest } from "../VoiceHandoffRequest.ts";
 import { VoiceControllerService } from "../Services/VoiceControllerService.ts";
 import { VoiceControllerActionRunner } from "../Services/VoiceControllerActionRunner.ts";
 import { VoiceTargetMonitor } from "../Services/VoiceTargetMonitor.ts";
-import { VoiceTransportCoordinator } from "../Services/VoiceTransportCoordinator.ts";
+import {
+  type ActiveVoiceSession,
+  VoiceTransportCoordinator,
+} from "../Services/VoiceTransportCoordinator.ts";
 import {
   VoiceRuntimeGateway,
   type VoiceRuntimeGatewayEvent,
 } from "../Services/VoiceRuntimeGateway.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import {
+  decideVoiceNarration,
+  initialVoiceNarrationRuntimeState,
+  resolveVoiceNarrationPolicy,
+  voiceNarrationCheckpoint,
+  type VoiceNarrationRuntimeState,
+} from "../VoiceNarrationPolicy.ts";
 import {
   controllerIdentity,
   mapInternalError,
@@ -166,12 +179,15 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const bindings = yield* VoiceControllerBindingRepository;
   const mutations = yield* VoiceControllerMutationRepository;
   const settings = yield* ServerSettingsService;
+  const provider = yield* Effect.serviceOption(ProviderService);
   const runtime = yield* VoiceRuntimeGateway;
   const transport = yield* VoiceTransportCoordinator;
   const targets = yield* VoiceTargetMonitor;
   const actionRunner = yield* VoiceControllerActionRunner;
   const randomUuid = crypto.randomUUIDv4.pipe(Effect.orDie);
   const controllerLifecycle = yield* Semaphore.make(1);
+  const narrationLifecycle = yield* Semaphore.make(1);
+  const narrationStatesRef = yield* Ref.make(new Map<string, VoiceNarrationRuntimeState>());
 
   const currentPolicy = settings.getSettings.pipe(
     Effect.map(resolveVoiceControlPolicy),
@@ -837,6 +853,155 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     yield* transport.speakExplicitly({ session, text });
     return true;
   });
+
+  const activeThreadCallSessions = Effect.fn("VoiceControllerService.activeThreadCallSessions")(
+    function* (threadId: ThreadId) {
+      return Array.from((yield* transport.getSessions()).values()).filter(
+        (session) =>
+          session.purpose === "conversation" &&
+          session.fence.owner?.kind === "thread-call" &&
+          session.fence.owner.threadId === threadId,
+      );
+    },
+  );
+
+  const markThreadCallSpeech = Effect.fn("VoiceControllerService.markThreadCallSpeech")(function* (
+    threadId: ThreadId,
+  ) {
+    const sessions = yield* activeThreadCallSessions(threadId);
+    if (sessions.length === 0) return;
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    yield* Ref.update(narrationStatesRef, (states) => {
+      const next = new Map(states);
+      for (const session of sessions) {
+        const current =
+          next.get(session.transportSessionId) ?? initialVoiceNarrationRuntimeState(nowMs);
+        next.set(session.transportSessionId, { ...current, lastSpeechAtMs: nowMs });
+      }
+      return next;
+    });
+  });
+
+  const attemptThreadCallNarration = Effect.fn("VoiceControllerService.attemptThreadCallNarration")(
+    function* (session: ActiveVoiceSession) {
+      yield* narrationLifecycle.withPermits(1)(
+        Effect.gen(function* () {
+          const owner = session.fence.owner;
+          if (owner?.kind !== "thread-call") return;
+          const current = (yield* Ref.get(narrationStatesRef)).get(session.transportSessionId);
+          if (current === undefined) return;
+          const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+          const narrationSettings = yield* settings.getSettings;
+          const decision = decideVoiceNarration({
+            policy: resolveVoiceNarrationPolicy(narrationSettings.voiceNarrationLevel),
+            state: current,
+            nowMs,
+          });
+          if (!decision.speak || current.pending === null) return;
+          const narratedKey = current.pending.key;
+          const spoken = yield* speakInThreadCall({
+            environmentId: session.environmentId,
+            threadId: owner.threadId,
+            text: decision.text,
+          });
+          if (!spoken) return;
+          yield* Ref.update(narrationStatesRef, (states) => {
+            const next = new Map(states);
+            const latest = next.get(session.transportSessionId);
+            if (latest !== undefined) {
+              next.set(session.transportSessionId, {
+                ...latest,
+                lastNarratedKey: narratedKey,
+                lastSpeechAtMs: nowMs,
+              });
+            }
+            return next;
+          });
+        }),
+      );
+    },
+  );
+
+  const observeNarrationRuntimeEvent = Effect.fn(
+    "VoiceControllerService.observeNarrationRuntimeEvent",
+  )(function* (event: ProviderRuntimeEvent) {
+    const sessions = yield* activeThreadCallSessions(event.threadId);
+    if (sessions.length === 0) return;
+    if (event.type === "turn.completed" || event.type === "turn.aborted") {
+      yield* Ref.update(narrationStatesRef, (states) => {
+        const next = new Map(states);
+        for (const session of sessions) {
+          const current = next.get(session.transportSessionId);
+          if (current !== undefined)
+            next.set(session.transportSessionId, { ...current, pending: null });
+        }
+        return next;
+      });
+      return;
+    }
+    const checkpoint = voiceNarrationCheckpoint(event);
+    if (checkpoint === null) return;
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    yield* Ref.update(narrationStatesRef, (states) => {
+      const next = new Map(states);
+      for (const session of sessions) {
+        const current =
+          next.get(session.transportSessionId) ?? initialVoiceNarrationRuntimeState(nowMs);
+        next.set(session.transportSessionId, { ...current, pending: checkpoint });
+      }
+      return next;
+    });
+    yield* Effect.forEach(sessions, attemptThreadCallNarration, { discard: true });
+  });
+
+  const narrationTick = Effect.fn("VoiceControllerService.narrationTick")(function* () {
+    const sessions = Array.from((yield* transport.getSessions()).values()).filter(
+      (session) =>
+        session.purpose === "conversation" && session.fence.owner?.kind === "thread-call",
+    );
+    const activeIds = new Set(sessions.map((session) => session.transportSessionId));
+    yield* Ref.update(narrationStatesRef, (states) => {
+      const next = new Map(states);
+      for (const sessionId of next.keys()) {
+        if (!activeIds.has(sessionId)) next.delete(sessionId);
+      }
+      return next;
+    });
+    yield* Effect.forEach(sessions, attemptThreadCallNarration, { discard: true });
+  });
+
+  const narrationFailure = (scope: string) => (cause: Cause<unknown>) =>
+    Effect.logWarning("Call narration observer failed", { scope, cause });
+
+  if (Option.isSome(provider)) {
+    yield* provider.value.streamEvents.pipe(
+      Stream.runForEach((event) =>
+        observeNarrationRuntimeEvent(event).pipe(
+          Effect.catchCause(narrationFailure("provider-runtime")),
+        ),
+      ),
+      Effect.forkScoped,
+    );
+  }
+  yield* engine.streamDomainEvents.pipe(
+    Stream.runForEach((event) => {
+      if (
+        event.type !== "thread.voice-speech-appended" &&
+        event.type !== "thread.voice-exchange-appended"
+      ) {
+        return Effect.void;
+      }
+      return markThreadCallSpeech(event.payload.threadId).pipe(
+        Effect.catchCause(narrationFailure("voice-speech")),
+      );
+    }),
+    Effect.forkScoped,
+  );
+  yield* narrationTick().pipe(
+    Effect.catchCause(narrationFailure("tick")),
+    Effect.repeat(Schedule.spaced("1 second")),
+    Effect.forkScoped,
+  );
 
   const handleRuntimeEvent = Effect.fn("VoiceControllerService.handleRuntimeEvent")(function* (
     event: VoiceRuntimeGatewayEvent,

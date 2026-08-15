@@ -9,6 +9,7 @@ import {
   type OrchestrationSession,
   type ProviderEffectOperation,
   type ProviderEffectOutcomeState,
+  type VoiceNarrationLevel,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
@@ -51,6 +52,7 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { resolveVoiceNarrationPolicy } from "../../voice/VoiceNarrationPolicy.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderValidationError = Schema.is(ProviderValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -64,8 +66,10 @@ const sensitiveProviderActorKinds = new Set([
 export function voiceCallProviderInput(
   userText: string,
   provenance: Readonly<Record<string, unknown>> | undefined,
+  narrationLevel: VoiceNarrationLevel = "balanced",
 ): string {
   if (provenance?.actorKind !== "voice-call") return userText;
+  const narrationPolicy = resolveVoiceNarrationPolicy(narrationLevel);
   const activeTranscript = Array.isArray(provenance.activeTranscript)
     ? provenance.activeTranscript.flatMap((entry) => {
         if (
@@ -85,9 +89,8 @@ export function voiceCallProviderInput(
     "<voice_call>",
     "This durable turn was delegated by a realtime voice call attached to this exact thread.",
     "The live call is still active and the user may not be reading the full thread. Continue normal durable reasoning, tool use, code, and detailed text here.",
-    "Maintain conversational presence while you work. Whenever you send a useful commentary update, also call voice_speak with a shorter natural spoken version unless the same information was spoken recently.",
-    "If work remains active through an extended silent interval of roughly thirty seconds, call voice_speak with one truthful sentence about what you are checking, what you learned, or what you are waiting for. Do not repeat an unchanged status merely to fill silence.",
-    "Speak blockers, approval requests, and clarifying questions promptly. Before completing this turn, you MUST call voice_speak with a concise, independently understandable spoken result.",
+    ...narrationPolicy.prompt,
+    "Before completing this turn, you MUST call voice_speak with a concise, independently understandable spoken result.",
     "The voice_speak result must convey what the user needs to hear; do not return a text-only answer while the call is active. Keep code, logs, and long prose in the durable response instead of reading them aloud.",
     "The realtime side may already have acknowledged the request. Do not repeat any already-heard assistant text below.",
     ...(activeTranscript.length === 0
@@ -1397,6 +1400,7 @@ const make = Effect.gen(function* () {
       messageText: voiceCallProviderInput(
         message.text,
         Option.isSome(actorProvenance) ? actorProvenance.value : undefined,
+        (yield* serverSettingsService.getSettings).voiceNarrationLevel,
       ),
       clientUserMessageId: event.payload.messageId,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),

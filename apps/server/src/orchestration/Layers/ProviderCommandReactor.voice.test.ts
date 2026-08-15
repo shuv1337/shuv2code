@@ -32,4 +32,20 @@ describe("voice Call provider input", () => {
     expect(providerInput.endsWith(`User request:\n${visible}`)).toBe(true);
     expect(visible).toBe("Inspect the provider.");
   });
+
+  it("configures routine narration without weakening blocker and completion speech", () => {
+    const provenance = { actorKind: "voice-call" };
+    const quiet = voiceCallProviderInput("Inspect it.", provenance, "quiet");
+    const conversational = voiceCallProviderInput("Inspect it.", provenance, "conversational");
+
+    expect(quiet).toContain("Keep routine tool progress quiet");
+    expect(quiet).not.toContain("roughly thirty seconds");
+    expect(quiet).toContain("Speak blockers, approval requests");
+    expect(quiet).toContain("MUST call voice_speak");
+
+    expect(conversational).toContain("roughly fifteen seconds");
+    expect(conversational).toContain("meaningful tool calls");
+    expect(conversational).toContain("never read raw tool names");
+    expect(conversational).toContain("MUST call voice_speak");
+  });
 });
