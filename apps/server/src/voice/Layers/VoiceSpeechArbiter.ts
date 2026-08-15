@@ -134,7 +134,10 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
   )(function* (session) {
     const selected = yield* selectNext(session);
     if (selected === undefined) return;
-    const sent = yield* Effect.exit(sendSpeech(selected));
+    const sent = yield* sendSpeech(selected).pipe(
+      Effect.timeoutOption(VOICE_TRANSPORT_FEEDBACK_TIMEOUT),
+      Effect.exit,
+    );
     if (sent._tag === "Success") {
       yield* Effect.sleep("45 seconds").pipe(
         Effect.andThen(clearFailedAttempt(selected)),
@@ -347,13 +350,11 @@ export const VoiceSpeechArbiterLive = Layer.effect(
   Effect.gen(function* () {
     const runtime = yield* VoiceRuntimeGateway;
     return yield* makeVoiceSpeechArbiter((attempt) =>
-      runtime
-        .appendTransportSpeech({
-          transportThreadId: attempt.session.fence.transportThreadId,
-          generation: attempt.session.fence.generation,
-          text: attempt.requestedText,
-        })
-        .pipe(Effect.timeout(VOICE_TRANSPORT_FEEDBACK_TIMEOUT)),
+      runtime.appendTransportSpeech({
+        transportThreadId: attempt.session.fence.transportThreadId,
+        generation: attempt.session.fence.generation,
+        text: attempt.requestedText,
+      }),
     );
   }),
 );

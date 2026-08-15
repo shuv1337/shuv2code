@@ -10,8 +10,11 @@ import {
   VoiceTranscriptItemId,
 } from "@shuv2code/contracts";
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 
 import type { VoiceSpeechSource } from "../Services/VoiceSpeechArbiter.ts";
 import type { ActiveVoiceSession } from "../Services/VoiceTransportCoordinator.ts";
@@ -210,6 +213,47 @@ describe("VoiceSpeechArbiter", () => {
         "2026-08-15T00:00:02.000Z",
       );
       assert.strictEqual(completion?.deliveredText, "Delivered first.");
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First.", "Second."]);
+    }),
+  );
+
+  it.effect("keeps an attempt active when its transport acknowledgement times out", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const firstStarted = yield* Deferred.make<void>();
+      const arbiter = yield* makeVoiceSpeechArbiter((speech) =>
+        Ref.update(sent, (all) => [...all, speech.requestedText]).pipe(
+          Effect.andThen(
+            speech.attemptId === "authored-1"
+              ? Deferred.succeed(firstStarted, undefined).pipe(
+                  Effect.andThen(Effect.never as Effect.Effect<void>),
+                )
+              : Effect.void,
+          ),
+        ),
+      );
+      const activeSession = session();
+
+      const firstEnqueue = yield* arbiter
+        .enqueue(attempt(activeSession, "authored-1", "authored", "First."))
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(firstStarted);
+      assert.strictEqual(
+        yield* arbiter.enqueue(attempt(activeSession, "authored-2", "authored", "Second.")),
+        true,
+      );
+
+      yield* TestClock.adjust("3 seconds");
+      assert.strictEqual(yield* Fiber.join(firstEnqueue), true);
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First."]);
+
+      yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-first"),
+        text: "Delivered first.",
+        occurredAt: "2026-08-15T00:00:01.000Z",
+        outputDone: true,
+      });
       assert.deepStrictEqual(yield* Ref.get(sent), ["First.", "Second."]);
     }),
   );
