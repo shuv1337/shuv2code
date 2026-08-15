@@ -62,6 +62,7 @@ describe("VoiceTransportCoordinator ownership", () => {
       transportProviderInstanceId: "codex" as never,
       controller: {} as never,
       controllerRuntime: {} as never,
+      call: null,
       transportType: "webrtc" as const,
       purpose: "conversation" as const,
       answerSdp: "sdp",

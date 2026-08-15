@@ -3,7 +3,9 @@ import {
   ThreadId,
   VOICE_PCM_DEFAULT_CHANNELS,
   VOICE_PCM_DEFAULT_SAMPLE_RATE_HZ,
+  VoiceCallId,
   VoiceEventSequence,
+  VoiceDeviceId,
   VoiceGeneration,
   VoiceRealtimeSessionId,
   VoiceRuntimeInstanceId,
@@ -11,6 +13,8 @@ import {
   resolveVoiceSessionStartTransport,
   type VoiceSessionEvent,
   type VoiceSessionFence,
+  type VoiceCallPresence,
+  type VoiceDeviceIdentity,
 } from "@shuv2code/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -26,9 +30,10 @@ import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VoiceCallEventRepository } from "../../persistence/Services/VoiceCallEvents.ts";
+import { VoiceCallRepository } from "../../persistence/Services/VoiceCalls.ts";
 import { VoiceControllerActionRepository } from "../../persistence/Services/VoiceControllerActions.ts";
 import { VoiceTransportSessionRepository } from "../../persistence/Services/VoiceTransportSessions.ts";
-import type { VoiceTransportSession } from "../../persistence/VoiceControlModels.ts";
+import type { VoiceCall, VoiceTransportSession } from "../../persistence/VoiceControlModels.ts";
 import {
   VoiceTransportCoordinator,
   type ActiveVoiceSession,
@@ -92,6 +97,29 @@ export function boundedCallInitialItems(
   return selected.toReversed();
 }
 
+function callPresence(call: VoiceCall): VoiceCallPresence {
+  const activeDevice =
+    call.activeDeviceId !== null &&
+    call.activeDeviceLabel !== null &&
+    call.activeDeviceKind !== null
+      ? {
+          deviceId: call.activeDeviceId,
+          label: call.activeDeviceLabel,
+          kind: call.activeDeviceKind,
+        }
+      : null;
+  return {
+    callId: call.callId,
+    environmentId: call.environmentId,
+    threadId: call.threadId,
+    state: call.state,
+    activeDevice,
+    activeTransportSessionId: call.activeTransportSessionId,
+    revision: call.revision,
+    updatedAt: call.updatedAt,
+  };
+}
+
 export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinator.make")(
   function* () {
     const crypto = yield* Crypto.Crypto;
@@ -99,6 +127,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
     const engine = yield* OrchestrationEngineService;
     const projection = yield* ProjectionSnapshotQuery;
     const callEvents = yield* VoiceCallEventRepository;
+    const calls = yield* VoiceCallRepository;
     const transports = yield* VoiceTransportSessionRepository;
     const actions = yield* VoiceControllerActionRepository;
     const runtime = yield* VoiceRuntimeGateway;
@@ -165,6 +194,52 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
       yield* archiveTransportThread(session);
     });
 
+    const cleanupNegotiatingTransportLease = Effect.fn(
+      "VoiceTransportCoordinator.cleanupNegotiatingTransportLease",
+    )(function* (session: VoiceTransportSession) {
+      const closedAt = DateTime.formatIso(yield* DateTime.now);
+      yield* runtime
+        .stopTransport({
+          transportThreadId: session.transportThreadId,
+          runtimeInstanceId: VoiceRuntimeInstanceId.make(session.runtimeInstanceId),
+          generation: VoiceGeneration.make(session.generation),
+          ...(session.realtimeSessionId === null
+            ? {}
+            : { realtimeSessionId: VoiceRealtimeSessionId.make(session.realtimeSessionId) }),
+        })
+        .pipe(Effect.ignore);
+      yield* transports
+        .compareAndSetState({
+          transportSessionId: session.transportSessionId,
+          generation: session.generation,
+          runtimeInstanceId: session.runtimeInstanceId,
+          expectedState: "negotiating",
+          nextState: "failed",
+          updatedAt: closedAt,
+          closedAt,
+        })
+        .pipe(Effect.ignore);
+      yield* archiveTransportThread(session);
+    });
+
+    const makeCallDormant = Effect.fn("VoiceTransportCoordinator.makeCallDormant")(function* (
+      call: Pick<VoiceCall, "callId" | "revision" | "threadId">,
+      expectedTransportSessionId: string,
+      updatedAt: string,
+    ) {
+      return yield* calls.compareAndSetListener({
+        callId: call.callId,
+        expectedRevision: call.revision,
+        expectedActiveTransportSessionId: expectedTransportSessionId,
+        threadId: call.threadId,
+        state: "dormant",
+        activeTransportSessionId: null,
+        activeDevice: null,
+        updatedAt,
+        endedAt: null,
+      });
+    });
+
     // In-memory WebRTC state is process-local. Any durable lease left open when
     // this service is constructed belongs to a previous process generation and
     // must be fenced before it can block the next client generation.
@@ -174,7 +249,42 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           .getOpenByEnvironmentId(environmentId)
           .pipe(Effect.orElseSucceed(() => Option.none()));
         if (Option.isSome(staleStartupLease)) {
+          const stale = staleStartupLease.value;
+          const closedAt = DateTime.formatIso(yield* DateTime.now);
           yield* cleanupDurableTransportLease(staleStartupLease.value);
+          if (stale.callId !== null && stale.callId !== undefined) {
+            const call = yield* calls
+              .getById(stale.callId)
+              .pipe(Effect.orElseSucceed(() => Option.none()));
+            if (Option.isSome(call)) {
+              const dormant = yield* makeCallDormant(
+                call.value,
+                stale.transportSessionId,
+                closedAt,
+              ).pipe(Effect.orElseSucceed(() => Option.none()));
+              if (Option.isSome(dormant)) {
+                const snapshotSequence = yield* projection.getSnapshotSequence().pipe(
+                  Effect.map((snapshot) => snapshot.snapshotSequence),
+                  Effect.orElseSucceed(() => null),
+                );
+                yield* callEvents
+                  .append({
+                    callId: call.value.callId,
+                    deviceId: call.value.activeDeviceId,
+                    environmentId,
+                    threadId: call.value.threadId,
+                    transportSessionId: stale.transportSessionId,
+                    generation: stale.generation,
+                    kind: "listener.detached",
+                    correlationId: null,
+                    threadSnapshotSequence: snapshotSequence,
+                    payload: { reason: "stale-startup-lease" },
+                    occurredAt: closedAt,
+                  })
+                  .pipe(Effect.ignore);
+              }
+            }
+          }
         }
       });
 
@@ -186,24 +296,37 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
     )(function* (session) {
       const now = DateTime.formatIso(yield* DateTime.now);
       const owner = session.fence.owner;
+      let shouldRecordListenerDetach = session.call === null;
       if (owner?.kind === "thread-call") {
+        if (session.call !== null) {
+          const dormant = yield* makeCallDormant(
+            session.call,
+            session.transportSessionId,
+            now,
+          ).pipe(Effect.orElseSucceed(() => Option.none()));
+          shouldRecordListenerDetach = Option.isSome(dormant);
+        }
         const snapshotSequence = yield* projection.getSnapshotSequence().pipe(
           Effect.map((snapshot) => snapshot.snapshotSequence),
           Effect.orElseSucceed(() => null),
         );
-        yield* callEvents
-          .append({
-            environmentId: session.environmentId,
-            threadId: owner.threadId,
-            transportSessionId: session.transportSessionId,
-            generation: session.fence.generation,
-            kind: "listener.detached",
-            correlationId: null,
-            threadSnapshotSequence: snapshotSequence,
-            payload: {},
-            occurredAt: now,
-          })
-          .pipe(Effect.ignore);
+        if (shouldRecordListenerDetach) {
+          yield* callEvents
+            .append({
+              callId: session.call?.callId ?? null,
+              deviceId: session.call?.activeDevice?.deviceId ?? null,
+              environmentId: session.environmentId,
+              threadId: owner.threadId,
+              transportSessionId: session.transportSessionId,
+              generation: session.fence.generation,
+              kind: "listener.detached",
+              correlationId: null,
+              threadSnapshotSequence: snapshotSequence,
+              payload: {},
+              occurredAt: now,
+            })
+            .pipe(Effect.ignore);
+        }
       }
       yield* transports
         .compareAndSetState({
@@ -493,6 +616,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         transportProviderInstanceId: binding.providerInstanceId,
         controller: controllerIdentity(binding),
         controllerRuntime,
+        call: null,
         transportType: negotiated.transportType,
         purpose,
         answerSdp: negotiated.answerSdp,
@@ -513,6 +637,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         environmentId,
         owner,
         controller: current.controller,
+        call: null,
         transportThreadId,
         clientSessionId: startInput.clientSessionId,
         generation: startInput.generation,
@@ -543,6 +668,51 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           workspaceRoot,
         } = input;
         const owner = startInput.owner;
+        if (startInput.callId !== undefined && startInput.takeover !== undefined) {
+          return yield* voiceError(
+            "protocol_violation",
+            "A Call start cannot both resume and take over a listener.",
+            false,
+          );
+        }
+        const device: VoiceDeviceIdentity =
+          startInput.device ??
+          ({
+            deviceId: VoiceDeviceId.make(startInput.clientSessionId),
+            label: "This device",
+            kind: "web",
+          } as const);
+        const activeCall = yield* calls
+          .getActiveByEnvironmentId(environmentId)
+          .pipe(
+            Effect.mapError(
+              mapInternalError("internal_error", "The active Call could not be read."),
+            ),
+          );
+        const requestedCall =
+          startInput.callId === undefined
+            ? Option.none<VoiceCall>()
+            : yield* calls
+                .getById(startInput.callId)
+                .pipe(
+                  Effect.mapError(
+                    mapInternalError("internal_error", "The requested Call could not be read."),
+                  ),
+                );
+        if (
+          startInput.callId !== undefined &&
+          (Option.isNone(requestedCall) ||
+            requestedCall.value.environmentId !== environmentId ||
+            requestedCall.value.threadId !== owner.threadId ||
+            requestedCall.value.state !== "dormant" ||
+            requestedCall.value.activeTransportSessionId !== null)
+        ) {
+          return yield* voiceError(
+            "stale_generation",
+            "The requested Call is no longer available to resume.",
+            true,
+          );
+        }
         const existingOpen = yield* transports
           .getOpenByEnvironmentId(environmentId)
           .pipe(
@@ -565,6 +735,11 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
               environmentId,
               owner,
               controller: null,
+              call:
+                Option.isSome(activeCall) &&
+                activeCall.value.activeTransportSessionId === inMemory.transportSessionId
+                  ? callPresence(activeCall.value)
+                  : null,
               transportThreadId: inMemory.fence.transportThreadId,
               clientSessionId: inMemory.fence.clientSessionId,
               generation: inMemory.fence.generation,
@@ -584,14 +759,39 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
               eventCursor: VoiceEventSequence.make(inMemory.eventCursor),
             };
           }
+          const takeover = startInput.takeover;
+          if (
+            takeover === undefined ||
+            Option.isNone(activeCall) ||
+            activeCall.value.callId !== takeover.callId ||
+            activeCall.value.threadId !== owner.threadId ||
+            activeCall.value.revision !== takeover.expectedRevision ||
+            activeCall.value.activeTransportSessionId !== takeover.expectedTransportSessionId ||
+            existingOpen.value.transportSessionId !== takeover.expectedTransportSessionId
+          ) {
+            return yield* voiceError(
+              "generation_conflict",
+              "This environment already has an active voice session.",
+              false,
+            );
+          }
+        } else if (startInput.takeover !== undefined) {
+          return yield* voiceError(
+            "stale_generation",
+            "The Call listener changed before this handoff began.",
+            true,
+          );
+        } else if (Option.isSome(activeCall)) {
           return yield* voiceError(
             "generation_conflict",
-            "This environment already has an active voice session.",
+            "This environment already has an active Call.",
             false,
           );
         }
 
         const startTransportKind = resolveVoiceSessionStartTransport(startInput);
+        const callId =
+          startInput.takeover?.callId ?? startInput.callId ?? VoiceCallId.make(yield* randomUuid);
         const transportSessionId = `${startInput.clientSessionId}:${startInput.generation}`;
         const transportThreadId = ThreadId.make(
           `voice-transport:${thread.id}:${startInput.clientSessionId}:${startInput.generation}`,
@@ -621,25 +821,26 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
               mapInternalError("internal_error", "The voice transport could not be provisioned."),
             ),
           );
-        const opened = yield* transports
-          .openOrReplay({
-            transportSessionId,
-            environmentId,
-            owner,
-            controllerThreadId: thread.id,
-            transportThreadId,
-            runtimeInstanceId,
-            generation: startInput.generation,
-            createdAt: now,
-          })
-          .pipe(
-            Effect.mapError(
-              mapInternalError(
-                "internal_error",
-                "The voice transport lease could not be reserved.",
-              ),
-            ),
-          );
+        const openTransport =
+          startInput.takeover === undefined
+            ? transports.openOrReplay
+            : transports.openHandoffOrReplay;
+        const opened = yield* openTransport({
+          transportSessionId,
+          environmentId,
+          callId,
+          device,
+          owner,
+          controllerThreadId: thread.id,
+          transportThreadId,
+          runtimeInstanceId,
+          generation: startInput.generation,
+          createdAt: now,
+        }).pipe(
+          Effect.mapError(
+            mapInternalError("internal_error", "The voice transport lease could not be reserved."),
+          ),
+        );
         if (opened._tag === "conflict") {
           return yield* voiceError(
             "generation_conflict",
@@ -647,7 +848,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
             false,
           );
         }
-        const negotiated = yield* Effect.gen(function* () {
+        const started = yield* Effect.gen(function* () {
           const negotiated = yield* runtime
             .startTransport({
               transportThreadId,
@@ -683,13 +884,43 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
               false,
             );
           }
+          const activatedAt = DateTime.formatIso(yield* DateTime.now);
+          if (startInput.takeover !== undefined) {
+            const promoted = yield* calls
+              .promoteListener({
+                callId,
+                expectedRevision: startInput.takeover.expectedRevision,
+                expectedActiveTransportSessionId: startInput.takeover.expectedTransportSessionId,
+                nextTransportSessionId: transportSessionId,
+                nextGeneration: startInput.generation,
+                nextRuntimeInstanceId: runtimeInstanceId,
+                nextRealtimeSessionId: realtimeSessionId,
+                threadId: owner.threadId,
+                activeDevice: device,
+                updatedAt: activatedAt,
+              })
+              .pipe(
+                Effect.mapError(
+                  mapInternalError("internal_error", "The Call listener could not be moved."),
+                ),
+              );
+            if (Option.isNone(promoted)) {
+              return yield* voiceError(
+                "stale_generation",
+                "The Call listener changed during handoff.",
+                true,
+              );
+            }
+            return { negotiated, call: callPresence(promoted.value) } as const;
+          }
+
           const activated = yield* transports
             .activate({
               transportSessionId,
               generation: startInput.generation,
               runtimeInstanceId,
               realtimeSessionId,
-              updatedAt: DateTime.formatIso(yield* DateTime.now),
+              updatedAt: activatedAt,
             })
             .pipe(
               Effect.mapError(
@@ -706,8 +937,57 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
               true,
             );
           }
-          return negotiated;
-        }).pipe(Effect.onError(() => cleanupDurableTransportLease(opened.session)));
+          if (Option.isSome(requestedCall)) {
+            const resumed = yield* calls
+              .compareAndSetListener({
+                callId,
+                expectedRevision: requestedCall.value.revision,
+                expectedActiveTransportSessionId: null,
+                threadId: owner.threadId,
+                state: "active",
+                activeTransportSessionId: transportSessionId,
+                activeDevice: device,
+                updatedAt: activatedAt,
+                endedAt: null,
+              })
+              .pipe(
+                Effect.mapError(
+                  mapInternalError("internal_error", "The dormant Call could not be resumed."),
+                ),
+              );
+            if (Option.isNone(resumed)) {
+              return yield* voiceError(
+                "stale_generation",
+                "The Call changed while it was being resumed.",
+                true,
+              );
+            }
+            return { negotiated, call: callPresence(resumed.value) } as const;
+          }
+
+          const created = yield* calls
+            .create({
+              callId,
+              environmentId,
+              threadId: owner.threadId,
+              activeTransportSessionId: transportSessionId,
+              activeDevice: device,
+              createdAt: activatedAt,
+            })
+            .pipe(
+              Effect.mapError(
+                mapInternalError("internal_error", "The Call identity could not be created."),
+              ),
+            );
+          if (created._tag === "conflict") {
+            return yield* voiceError(
+              "generation_conflict",
+              "Another active Call already owns this environment.",
+              false,
+            );
+          }
+          return { negotiated, call: callPresence(created.call) } as const;
+        }).pipe(Effect.onError(() => cleanupNegotiatingTransportLease(opened.session)));
         const fence: VoiceSessionFence = {
           environmentId,
           owner,
@@ -726,20 +1006,75 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           transportProviderInstanceId: transportModelSelection.instanceId,
           controller: null,
           controllerRuntime: null,
-          transportType: negotiated.transportType,
+          call: started.call,
+          transportType: started.negotiated.transportType,
           purpose: "conversation",
-          answerSdp: negotiated.answerSdp,
+          answerSdp: started.negotiated.answerSdp,
           lastAudioSequence: 0,
           eventCursor: 0,
           history: [],
         };
+        const previousSession =
+          startInput.takeover === undefined
+            ? undefined
+            : Array.from((yield* Ref.get(sessionsRef)).values()).find(
+                (session) =>
+                  session.transportSessionId === startInput.takeover?.expectedTransportSessionId,
+              );
         yield* Ref.update(sessionsRef, (sessions) => {
           const next = new Map(sessions);
           next.set(startInput.clientSessionId, active);
           return next;
         });
+        if (previousSession !== undefined && startInput.takeover !== undefined) {
+          const detachedAt = DateTime.formatIso(yield* DateTime.now);
+          yield* callEvents
+            .append({
+              callId,
+              deviceId: previousSession.call?.activeDevice?.deviceId ?? null,
+              environmentId,
+              threadId: owner.threadId,
+              transportSessionId: previousSession.transportSessionId,
+              generation: previousSession.fence.generation,
+              kind: "listener.detached",
+              correlationId: transportSessionId,
+              threadSnapshotSequence: input.threadSnapshotSequence,
+              payload: { reason: "device-handoff" },
+              occurredAt: detachedAt,
+            })
+            .pipe(Effect.ignore);
+          yield* runtime
+            .stopTransport({
+              transportThreadId: previousSession.fence.transportThreadId,
+              runtimeInstanceId: previousSession.fence.runtimeInstanceId,
+              generation: previousSession.fence.generation,
+              realtimeSessionId: previousSession.fence.realtimeSessionId,
+            })
+            .pipe(Effect.ignore);
+          yield* actions
+            .fenceTransportGeneration({
+              transportSessionId: previousSession.transportSessionId,
+              throughGeneration: previousSession.fence.generation,
+              closedAt: detachedAt,
+            })
+            .pipe(Effect.ignore);
+          if (Option.isSome(existingOpen)) {
+            yield* archiveTransportThread(existingOpen.value);
+          }
+          yield* emit(previousSession.fence.clientSessionId, {
+            type: "session.state",
+            state: "stopped",
+          });
+          yield* Ref.update(sessionsRef, (sessions) => {
+            const next = new Map(sessions);
+            next.delete(previousSession.fence.clientSessionId);
+            return next;
+          });
+        }
         yield* callEvents
           .append({
+            callId,
+            deviceId: device.deviceId,
             environmentId,
             threadId: owner.threadId,
             transportSessionId,
@@ -761,14 +1096,15 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           environmentId,
           owner,
           controller: null,
+          call: current.call,
           transportThreadId,
           clientSessionId: startInput.clientSessionId,
           generation: startInput.generation,
           runtimeInstanceId,
           realtimeSessionId,
-          answerSdp: negotiated.answerSdp,
-          transportType: negotiated.transportType,
-          ...(negotiated.transportType === "websocket"
+          answerSdp: started.negotiated.answerSdp,
+          transportType: started.negotiated.transportType,
+          ...(started.negotiated.transportType === "websocket"
             ? {
                 inputAudio: {
                   format: "pcm16" as const,

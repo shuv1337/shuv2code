@@ -49,6 +49,10 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
         SELECT
           transport_session_id AS "transportSessionId",
           environment_id AS "environmentId",
+          call_id AS "callId",
+          device_id AS "deviceId",
+          device_label AS "deviceLabel",
+          device_kind AS "deviceKind",
           owner_kind AS "ownerKind",
           owner_id AS "ownerId",
           provider_anchor_thread_id AS "anchorThreadId",
@@ -74,6 +78,10 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
         SELECT
           transport_session_id AS "transportSessionId",
           environment_id AS "environmentId",
+          call_id AS "callId",
+          device_id AS "deviceId",
+          device_label AS "deviceLabel",
+          device_kind AS "deviceKind",
           owner_kind AS "ownerKind",
           owner_id AS "ownerId",
           provider_anchor_thread_id AS "anchorThreadId",
@@ -94,14 +102,47 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
       `,
   });
 
-  const openOrReplay: VoiceTransportSessionRepositoryShape["openOrReplay"] = (input) =>
+  const open = (
+    input: Parameters<VoiceTransportSessionRepositoryShape["openOrReplay"]>[0],
+    allowActiveListener: boolean,
+  ) =>
     sql
       .withTransaction(
         Effect.gen(function* () {
+          const replay = yield* findById({ transportSessionId: input.transportSessionId });
+          if (Option.isSome(replay)) {
+            const session = replay.value;
+            const exact =
+              session.environmentId === input.environmentId &&
+              session.callId === (input.callId ?? null) &&
+              session.deviceId === (input.device?.deviceId ?? null) &&
+              session.deviceLabel === (input.device?.label ?? null) &&
+              session.deviceKind === (input.device?.kind ?? null) &&
+              session.ownerKind === ownerKind(input.owner) &&
+              session.ownerId === ownerId(input.owner) &&
+              session.anchorThreadId === ownerAnchor(input.owner) &&
+              session.controllerThreadId === input.controllerThreadId &&
+              session.transportThreadId === input.transportThreadId &&
+              session.runtimeInstanceId === input.runtimeInstanceId &&
+              session.generation === input.generation;
+            return exact
+              ? ({ _tag: "existing", session } as const)
+              : ({ _tag: "conflict", session } as const);
+          }
+
+          if (!allowActiveListener) {
+            const open = yield* findOpenByEnvironment(input.environmentId);
+            if (Option.isSome(open)) return { _tag: "conflict", session: open.value } as const;
+          }
+
           const inserted = yield* sql`
             INSERT OR IGNORE INTO voice_transport_sessions (
               transport_session_id,
               environment_id,
+              call_id,
+              device_id,
+              device_label,
+              device_kind,
               controller_thread_id,
               owner_kind,
               owner_id,
@@ -118,6 +159,10 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
             VALUES (
               ${input.transportSessionId},
               ${input.environmentId},
+              ${input.callId ?? null},
+              ${input.device?.deviceId ?? null},
+              ${input.device?.label ?? null},
+              ${input.device?.kind ?? null},
               ${input.controllerThreadId},
               ${ownerKind(input.owner)},
               ${ownerId(input.owner)},
@@ -143,6 +188,10 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
             const session = byId.value;
             const exact =
               session.environmentId === input.environmentId &&
+              session.callId === (input.callId ?? null) &&
+              session.deviceId === (input.device?.deviceId ?? null) &&
+              session.deviceLabel === (input.device?.label ?? null) &&
+              session.deviceKind === (input.device?.kind ?? null) &&
               session.ownerKind === ownerKind(input.owner) &&
               session.ownerId === ownerId(input.owner) &&
               session.anchorThreadId === ownerAnchor(input.owner) &&
@@ -164,10 +213,15 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
         }),
       )
       .pipe(
-        Effect.mapError(
-          toPersistenceSqlError("VoiceTransportSessionRepository.openOrReplay:transaction"),
-        ),
+        Effect.mapError(toPersistenceSqlError("VoiceTransportSessionRepository.open:transaction")),
       );
+
+  const openOrReplay: VoiceTransportSessionRepositoryShape["openOrReplay"] = (input) =>
+    open(input, false);
+
+  const openHandoffOrReplay: VoiceTransportSessionRepositoryShape["openHandoffOrReplay"] = (
+    input,
+  ) => open(input, true);
 
   const getById: VoiceTransportSessionRepositoryShape["getById"] = (transportSessionId) =>
     findById({ transportSessionId }).pipe(
@@ -239,6 +293,7 @@ const makeVoiceTransportSessionRepository = Effect.gen(function* () {
 
   return VoiceTransportSessionRepository.of({
     openOrReplay,
+    openHandoffOrReplay,
     getById,
     getOpenByEnvironmentId,
     activate,

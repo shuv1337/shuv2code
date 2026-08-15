@@ -37,6 +37,7 @@ const session = (generation = 1): ActiveVoiceSession => ({
   transportProviderInstanceId: ProviderInstanceId.make("codex"),
   controller: null,
   controllerRuntime: null,
+  call: null,
   transportType: "webrtc",
   purpose: "conversation",
   answerSdp: "answer",

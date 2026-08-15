@@ -8,6 +8,7 @@ import type {
   VoiceAppendAudioResult,
   VoiceControllerError,
   VoiceControllerIdentity,
+  VoiceCallPresence,
   VoiceSessionEvent,
   VoiceSessionFence,
   VoiceSessionStartInput,
@@ -39,6 +40,7 @@ export interface ActiveVoiceSession {
   readonly transportProviderInstanceId: ProviderInstanceId;
   readonly controller: VoiceControllerIdentity | null;
   readonly controllerRuntime: ControllerRuntimeState | null;
+  readonly call: VoiceCallPresence | null;
   readonly transportType: "webrtc" | "websocket";
   readonly purpose: "conversation" | "transcription";
   readonly answerSdp: string | null;

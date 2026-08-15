@@ -37,10 +37,14 @@ import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { VoiceControllerActionRepositoryLive } from "./persistence/Layers/VoiceControllerActions.ts";
 import { VoiceControllerBindingRepositoryLive } from "./persistence/Layers/VoiceControllerBindings.ts";
 import { VoiceControllerMutationRepositoryLive } from "./persistence/Layers/VoiceControllerMutations.ts";
+import { VoiceCallEventRepositoryLive } from "./persistence/Layers/VoiceCallEvents.ts";
+import { VoiceCallRepositoryLive } from "./persistence/Layers/VoiceCalls.ts";
 import { VoiceTransportSessionRepositoryLive } from "./persistence/Layers/VoiceTransportSessions.ts";
 import { VoiceControllerActionRepository } from "./persistence/Services/VoiceControllerActions.ts";
 import { VoiceControllerBindingRepository } from "./persistence/Services/VoiceControllerBindings.ts";
 import { VoiceControllerMutationRepository } from "./persistence/Services/VoiceControllerMutations.ts";
+import { VoiceCallEventRepository } from "./persistence/Services/VoiceCallEvents.ts";
+import { VoiceCallRepository } from "./persistence/Services/VoiceCalls.ts";
 import { VoiceTransportSessionRepository } from "./persistence/Services/VoiceTransportSessions.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import { makeVoiceControllerActionRunner } from "./voice/Layers/VoiceControllerActionRunner.ts";
@@ -87,6 +91,8 @@ const voiceRepositories = Layer.mergeAll(
   VoiceTransportSessionRepositoryLive,
   VoiceControllerActionRepositoryLive,
   VoiceControllerMutationRepositoryLive,
+  VoiceCallEventRepositoryLive,
+  VoiceCallRepositoryLive,
 ).pipe(Layer.provideMerge(SqlitePersistenceMemory), Layer.provide(NodeServices.layer));
 
 const mcpRegistry = McpSessionRegistry.layer.pipe(
@@ -116,6 +122,8 @@ describe("authenticated voice RPC vertical integration", () => {
         const transports = Context.get(repositoryContext, VoiceTransportSessionRepository);
         const actions = Context.get(repositoryContext, VoiceControllerActionRepository);
         const mutations = Context.get(repositoryContext, VoiceControllerMutationRepository);
+        const callEvents = Context.get(repositoryContext, VoiceCallEventRepository);
+        const calls = Context.get(repositoryContext, VoiceCallRepository);
         const runtimeEvents = yield* PubSub.unbounded<VoiceRuntimeGatewayEvent>();
         const controllerStarts: Array<
           Parameters<VoiceRuntimeGatewayShape["startControllerAction"]>[0]
@@ -324,9 +332,12 @@ describe("authenticated voice RPC vertical integration", () => {
         const transportCoordinator = yield* makeVoiceTransportCoordinator().pipe(
           Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
           Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(ProjectionSnapshotQuery, projection),
           Effect.provideService(VoiceControllerBindingRepository, bindings),
           Effect.provideService(VoiceTransportSessionRepository, transports),
           Effect.provideService(VoiceControllerActionRepository, actions),
+          Effect.provideService(VoiceCallEventRepository, callEvents),
+          Effect.provideService(VoiceCallRepository, calls),
           Effect.provideService(VoiceRuntimeGateway, runtime),
           Effect.provideService(VoiceSpeechArbiter, speechArbiter),
           Effect.provide(NodeServices.layer),
@@ -336,6 +347,8 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(VoiceControllerBindingRepository, bindings),
           Effect.provideService(VoiceControllerActionRepository, actions),
           Effect.provideService(VoiceControllerMutationRepository, mutations),
+          Effect.provideService(VoiceCallEventRepository, callEvents),
+          Effect.provideService(VoiceCallRepository, calls),
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
         );
         const callBridge = yield* makeVoiceCallBridge().pipe(
@@ -363,6 +376,8 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(OrchestrationEngineService, engine),
           Effect.provideService(VoiceControllerBindingRepository, bindings),
           Effect.provideService(VoiceControllerMutationRepository, mutations),
+          Effect.provideService(VoiceCallEventRepository, callEvents),
+          Effect.provideService(VoiceCallRepository, calls),
           Effect.provideService(ServerSettings.ServerSettingsService, settings),
           Effect.provideService(VoiceRuntimeGateway, runtime),
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),

@@ -53,6 +53,10 @@ export type VoiceTransportSessionState = typeof VoiceTransportSessionState.Type;
 export const VoiceTransportSession = Schema.Struct({
   transportSessionId: TrimmedNonEmptyString,
   environmentId: EnvironmentId,
+  callId: Schema.optionalKey(Schema.NullOr(VoiceCallId)),
+  deviceId: Schema.optionalKey(Schema.NullOr(VoiceDeviceId)),
+  deviceLabel: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+  deviceKind: Schema.optionalKey(Schema.NullOr(VoiceDeviceKind)),
   ownerKind: Schema.Literals(["controller", "thread-call", "transcription-test"]),
   ownerId: TrimmedNonEmptyString,
   anchorThreadId: Schema.NullOr(ThreadId),

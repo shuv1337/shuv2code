@@ -1,3 +1,4 @@
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -15,6 +16,10 @@ import {
 import { VoiceCall } from "../VoiceControlModels.ts";
 
 const VoiceCallIdRequest = Schema.Struct({ callId: CreateVoiceCallInput.fields.callId });
+
+class VoiceCallListenerPromotionConflict extends Data.TaggedError(
+  "VoiceCallListenerPromotionConflict",
+) {}
 
 const selectVoiceCall = `
   call_id AS "callId",
@@ -159,11 +164,86 @@ const makeVoiceCallRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("VoiceCallRepository.compareAndSetListener:query")),
     );
 
+  const promoteListener: VoiceCallRepositoryShape["promoteListener"] = (input) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const current = yield* findById({ callId: input.callId });
+          if (
+            Option.isNone(current) ||
+            current.value.state !== "active" ||
+            current.value.revision !== input.expectedRevision ||
+            current.value.activeTransportSessionId !== input.expectedActiveTransportSessionId
+          ) {
+            return yield* new VoiceCallListenerPromotionConflict();
+          }
+
+          const next = yield* sql`
+            SELECT transport_session_id
+            FROM voice_transport_sessions
+            WHERE transport_session_id = ${input.nextTransportSessionId}
+              AND call_id = ${input.callId}
+              AND generation = ${input.nextGeneration}
+              AND runtime_instance_id = ${input.nextRuntimeInstanceId}
+              AND state = 'negotiating'
+          `;
+          if (next.length !== 1) return yield* new VoiceCallListenerPromotionConflict();
+
+          const previous = yield* sql`
+            UPDATE voice_transport_sessions
+            SET state = 'fenced', updated_at = ${input.updatedAt}, closed_at = ${input.updatedAt}
+            WHERE transport_session_id = ${input.expectedActiveTransportSessionId}
+              AND call_id = ${input.callId}
+              AND state = 'active'
+            RETURNING transport_session_id
+          `;
+          if (previous.length !== 1) return yield* new VoiceCallListenerPromotionConflict();
+
+          const activated = yield* sql`
+            UPDATE voice_transport_sessions
+            SET
+              realtime_session_id = ${input.nextRealtimeSessionId},
+              state = 'active',
+              updated_at = ${input.updatedAt}
+            WHERE transport_session_id = ${input.nextTransportSessionId}
+              AND generation = ${input.nextGeneration}
+              AND runtime_instance_id = ${input.nextRuntimeInstanceId}
+              AND state = 'negotiating'
+            RETURNING transport_session_id
+          `;
+          if (activated.length !== 1) return yield* new VoiceCallListenerPromotionConflict();
+
+          const promoted = yield* sql`
+            UPDATE voice_calls
+            SET
+              thread_id = ${input.threadId},
+              active_transport_session_id = ${input.nextTransportSessionId},
+              active_device_id = ${input.activeDevice.deviceId},
+              active_device_label = ${input.activeDevice.label},
+              active_device_kind = ${input.activeDevice.kind},
+              revision = revision + 1,
+              updated_at = ${input.updatedAt}
+            WHERE call_id = ${input.callId}
+              AND state = 'active'
+              AND revision = ${input.expectedRevision}
+              AND active_transport_session_id = ${input.expectedActiveTransportSessionId}
+            RETURNING call_id
+          `;
+          if (promoted.length !== 1) return yield* new VoiceCallListenerPromotionConflict();
+          return yield* findById({ callId: input.callId });
+        }),
+      )
+      .pipe(
+        Effect.catchTag("VoiceCallListenerPromotionConflict", () => Effect.succeed(Option.none())),
+        Effect.mapError(toPersistenceSqlError("VoiceCallRepository.promoteListener:transaction")),
+      );
+
   return VoiceCallRepository.of({
     create,
     getById,
     getActiveByEnvironmentId,
     compareAndSetListener,
+    promoteListener,
   });
 });
 

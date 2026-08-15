@@ -4,6 +4,8 @@ import {
   PositiveInt,
   ThreadId,
   TrimmedNonEmptyString,
+  VoiceCallId,
+  VoiceDeviceIdentity,
   VoiceSessionOwner,
 } from "@shuv2code/contracts";
 import * as Context from "effect/Context";
@@ -17,6 +19,8 @@ import { VoiceTransportSession, VoiceTransportSessionState } from "../VoiceContr
 export const OpenVoiceTransportSessionInput = Schema.Struct({
   transportSessionId: TrimmedNonEmptyString,
   environmentId: EnvironmentId,
+  callId: Schema.optionalKey(VoiceCallId),
+  device: Schema.optionalKey(VoiceDeviceIdentity),
   owner: VoiceSessionOwner,
   /** Compatibility anchor for the Controller coordinator until owner routing is authoritative. */
   controllerThreadId: ThreadId,
@@ -62,6 +66,9 @@ export type FenceVoiceTransportGenerationInput = typeof FenceVoiceTransportGener
 
 export interface VoiceTransportSessionRepositoryShape {
   readonly openOrReplay: (
+    input: OpenVoiceTransportSessionInput,
+  ) => Effect.Effect<OpenVoiceTransportSessionResult, ProjectionRepositoryError>;
+  readonly openHandoffOrReplay: (
     input: OpenVoiceTransportSessionInput,
   ) => Effect.Effect<OpenVoiceTransportSessionResult, ProjectionRepositoryError>;
   readonly getById: (
