@@ -42,13 +42,18 @@ const RawJjCommit = Schema.Struct({
 });
 type RawJjCommit = typeof RawJjCommit.Type;
 
-const RawJjBookmark = Schema.Struct({
+const EncodedJjBookmark = Schema.Struct({
   name: Schema.String,
   remote: Schema.optional(Schema.String),
-  target: Schema.Array(Schema.String),
-  tracking_target: Schema.optional(Schema.Array(Schema.String)),
+  target: Schema.Array(Schema.NullOr(Schema.String)),
+  tracking_target: Schema.optional(Schema.Array(Schema.NullOr(Schema.String))),
 });
-type RawJjBookmark = typeof RawJjBookmark.Type;
+type RawJjBookmark = {
+  readonly name: string;
+  readonly remote?: string;
+  readonly target: ReadonlyArray<string>;
+  readonly tracking_target?: ReadonlyArray<string>;
+};
 
 const RawJjWorkspace = Schema.Struct({
   name: Schema.String,
@@ -65,7 +70,9 @@ const RawJjDiffEntry = Schema.Struct({
 type RawJjDiffEntry = typeof RawJjDiffEntry.Type;
 
 const decodeRawJjCommit = Schema.decodeUnknownEffect(Schema.fromJsonString(RawJjCommit));
-const decodeRawJjBookmark = Schema.decodeUnknownEffect(Schema.fromJsonString(RawJjBookmark));
+const decodeEncodedJjBookmark = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(EncodedJjBookmark),
+);
 const decodeRawJjWorkspace = Schema.decodeUnknownEffect(Schema.fromJsonString(RawJjWorkspace));
 const decodeRawJjDiffEntry = Schema.decodeUnknownEffect(Schema.fromJsonString(RawJjDiffEntry));
 const SafeJjOperand = Schema.String.check(
@@ -523,7 +530,21 @@ export const makeVcsDriver = Effect.gen(function* () {
     return yield* Effect.forEach(
       result.stdout.split("\n").filter((line) => line.trim().length > 0),
       (line) =>
-        decodeRawJjBookmark(line).pipe(
+        decodeEncodedJjBookmark(line).pipe(
+          Effect.map(
+            (bookmark): RawJjBookmark => ({
+              name: bookmark.name,
+              ...(bookmark.remote === undefined ? {} : { remote: bookmark.remote }),
+              target: bookmark.target.filter((target): target is string => target !== null),
+              ...(bookmark.tracking_target === undefined
+                ? {}
+                : {
+                    tracking_target: bookmark.tracking_target.filter(
+                      (target): target is string => target !== null,
+                    ),
+                  }),
+            }),
+          ),
           Effect.mapError(() => structuredOutputError(operation, cwd)),
         ),
     );
