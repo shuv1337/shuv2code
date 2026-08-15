@@ -260,7 +260,10 @@ export function resolveAssistantMessageCopyState({
 }
 
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
-  const lastAssistantMessageIdByResponseKey = new Map<string, string>();
+  const terminalCandidateByResponseKey = new Map<
+    string,
+    { readonly messageId: string; readonly voice: boolean }
+  >();
   let nullTurnResponseIndex = 0;
 
   for (const timelineEntry of timelineEntries) {
@@ -279,10 +282,100 @@ function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<Timeli
     const responseKey = message.turnId
       ? `turn:${message.turnId}`
       : `unkeyed:${nullTurnResponseIndex}`;
-    lastAssistantMessageIdByResponseKey.set(responseKey, message.id);
+    const voice = message.modality === "voice";
+    const previous = terminalCandidateByResponseKey.get(responseKey);
+
+    // Voice speech is supporting Call history. It can be projected after the
+    // provider's durable answer, but must not replace that answer as the
+    // terminal result merely because it arrived later. Prefer the last text
+    // message when one exists, and fall back to the last voice message for a
+    // voice-only response.
+    if (!previous || !voice || previous.voice) {
+      terminalCandidateByResponseKey.set(responseKey, { messageId: message.id, voice });
+    }
   }
 
-  return new Set(lastAssistantMessageIdByResponseKey.values());
+  return new Set(
+    [...terminalCandidateByResponseKey.values()].map((candidate) => candidate.messageId),
+  );
+}
+
+/**
+ * Provider text can start streaming before later tool and Voice projection
+ * events, so its immutable createdAt does not necessarily describe its final
+ * visual position. Keep the canonical durable answer after every supporting
+ * entry from the same turn without changing the persisted event chronology.
+ */
+function orderTerminalAssistantMessagesAfterTurnActivity(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+  terminalAssistantMessageIds: ReadonlySet<string>,
+  unsettledTurnId: TurnId | null,
+): ReadonlyArray<TimelineEntry> {
+  const terminalEntryByTurnId = new Map<TurnId, Extract<TimelineEntry, { kind: "message" }>>();
+  const lastActivityIndexByTurnId = new Map<TurnId, number>();
+  const lastVoiceIndexByTurnId = new Map<TurnId, number>();
+  const entryIndexById = new Map<string, number>();
+
+  for (let index = 0; index < timelineEntries.length; index += 1) {
+    const entry = timelineEntries[index];
+    if (!entry) continue;
+
+    entryIndexById.set(entry.id, index);
+    const turnId =
+      entry.kind === "message" && entry.message.role === "assistant"
+        ? (entry.message.turnId ?? null)
+        : entry.kind === "work"
+          ? (entry.entry.turnId ?? null)
+          : null;
+    if (!turnId) continue;
+
+    lastActivityIndexByTurnId.set(turnId, index);
+    if (entry.kind === "message" && entry.message.modality === "voice") {
+      lastVoiceIndexByTurnId.set(turnId, index);
+    }
+    if (entry.kind === "message" && terminalAssistantMessageIds.has(entry.message.id)) {
+      terminalEntryByTurnId.set(turnId, entry);
+    }
+  }
+
+  const deferredTerminalByIndex = new Map<number, TimelineEntry>();
+  const deferredTerminalEntryIds = new Set<string>();
+  for (const [turnId, terminalEntry] of terminalEntryByTurnId) {
+    if (turnId === unsettledTurnId) {
+      continue;
+    }
+    const terminalIndex = entryIndexById.get(terminalEntry.id);
+    const lastActivityIndex = lastActivityIndexByTurnId.get(turnId);
+    const lastVoiceIndex = lastVoiceIndexByTurnId.get(turnId);
+    if (
+      terminalIndex === undefined ||
+      lastActivityIndex === undefined ||
+      lastVoiceIndex === undefined ||
+      terminalIndex >= lastVoiceIndex
+    ) {
+      continue;
+    }
+    deferredTerminalEntryIds.add(terminalEntry.id);
+    deferredTerminalByIndex.set(lastActivityIndex, terminalEntry);
+  }
+
+  if (deferredTerminalEntryIds.size === 0) {
+    return timelineEntries;
+  }
+
+  const orderedEntries: TimelineEntry[] = [];
+  for (let index = 0; index < timelineEntries.length; index += 1) {
+    const entry = timelineEntries[index];
+    if (!entry) continue;
+    if (!deferredTerminalEntryIds.has(entry.id)) {
+      orderedEntries.push(entry);
+    }
+    const deferredTerminal = deferredTerminalByIndex.get(index);
+    if (deferredTerminal) {
+      orderedEntries.push(deferredTerminal);
+    }
+  }
+  return orderedEntries;
 }
 
 interface TurnFold {
@@ -400,10 +493,6 @@ function deriveTurnFolds(input: {
       if (entry.kind === "work" && entry.entry.agentSpawn !== undefined) {
         continue;
       }
-      const isVoiceTranscript = entry.kind === "message" && entry.message.modality === "voice";
-      if (isVoiceTranscript) {
-        continue;
-      }
       hiddenEntryIds.add(entry.id);
     }
     if (hiddenEntryIds.size === 0) {
@@ -469,16 +558,21 @@ export function deriveMessagesTimelineRows(input: {
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
-  const durationStartByMessageId = computeMessageDurationStart(
-    input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
-  );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
   const unsettledTurnId = deriveUnsettledTurnId(
     input.latestTurn ?? null,
     input.runningTurnId ?? null,
   );
+  const timelineEntries = orderTerminalAssistantMessagesAfterTurnActivity(
+    input.timelineEntries,
+    terminalAssistantMessageIds,
+    unsettledTurnId,
+  );
+  const durationStartByMessageId = computeMessageDurationStart(
+    timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+  );
   const foldsByAnchorEntryId = deriveTurnFolds({
-    timelineEntries: input.timelineEntries,
+    timelineEntries,
     terminalAssistantMessageIds,
     latestTurn: input.latestTurn ?? null,
     unsettledTurnId,
@@ -492,8 +586,8 @@ export function deriveMessagesTimelineRows(input: {
     }
   }
 
-  for (let index = 0; index < input.timelineEntries.length; index += 1) {
-    const timelineEntry = input.timelineEntries[index];
+  for (let index = 0; index < timelineEntries.length; index += 1) {
+    const timelineEntry = timelineEntries[index];
     if (!timelineEntry) {
       continue;
     }
@@ -518,8 +612,8 @@ export function deriveMessagesTimelineRows(input: {
     if (timelineEntry.kind === "work") {
       const groupedEntries = [timelineEntry.entry];
       let cursor = index + 1;
-      while (cursor < input.timelineEntries.length) {
-        const nextEntry = input.timelineEntries[cursor];
+      while (cursor < timelineEntries.length) {
+        const nextEntry = timelineEntries[cursor];
         if (
           !nextEntry ||
           nextEntry.kind !== "work" ||
