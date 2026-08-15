@@ -49,6 +49,11 @@ import {
   type VoiceNarrationRuntimeState,
 } from "../VoiceNarrationPolicy.ts";
 import {
+  initialVoiceStreamNarrationState,
+  reduceVoiceStreamNarration,
+  type VoiceStreamNarrationState,
+} from "../VoiceStreamNarration.ts";
+import {
   controllerIdentity,
   mapInternalError,
   mapVoiceCatalogError,
@@ -199,6 +204,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const controllerLifecycle = yield* Semaphore.make(1);
   const narrationLifecycle = yield* Semaphore.make(1);
   const narrationStatesRef = yield* Ref.make(new Map<string, VoiceNarrationRuntimeState>());
+  const streamNarrationStatesRef = yield* Ref.make(new Map<string, VoiceStreamNarrationState>());
 
   const currentPolicy = settings.getSettings.pipe(
     Effect.map(resolveVoiceControlPolicy),
@@ -851,7 +857,9 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       readonly environmentId: import("@shuv2code/contracts").EnvironmentId;
       readonly threadId: ThreadId;
       readonly text: string;
-      readonly source: "authored" | "ambient";
+      readonly source: "authored" | "commentary" | "ambient";
+      readonly turnId?: ProviderRuntimeEvent["turnId"] | null;
+      readonly attemptId?: string;
     }) {
       const session = Array.from((yield* transport.getSessions()).values()).find(
         (candidate) =>
@@ -874,17 +882,19 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
           : Option.none();
       if (input.source === "authored" && Option.isNone(thread)) return false;
       const createdAt = DateTime.formatIso(yield* DateTime.now);
-      const speechId = yield* randomUuid;
+      const speechId = input.attemptId ?? (yield* randomUuid);
       const accepted = yield* speechArbiter.enqueue({
         attemptId: speechId,
         source: input.source,
         session,
         threadId: input.threadId,
-        turnId: Option.isSome(thread) ? (thread.value.latestTurn?.turnId ?? null) : null,
+        turnId:
+          input.turnId ??
+          (Option.isSome(thread) ? (thread.value.latestTurn?.turnId ?? null) : null),
         requestedText: text,
         requestedAt: createdAt,
       });
-      if (accepted && input.source === "authored") {
+      if (accepted && input.source !== "ambient") {
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
         yield* Ref.update(narrationStatesRef, (states) => {
           const current = states.get(session.transportSessionId);
@@ -979,6 +989,40 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   )(function* (event: ProviderRuntimeEvent) {
     const sessions = yield* activeThreadCallSessions(event.threadId);
     if (sessions.length === 0) return;
+    const streamMode =
+      (yield* settings.getSettings).voiceNarrationLevel === "quiet"
+        ? ("final-only" as const)
+        : ("streaming" as const);
+    yield* Effect.forEach(
+      sessions,
+      (session) =>
+        Effect.gen(function* () {
+          const update = yield* Ref.modify(streamNarrationStatesRef, (states) => {
+            const current =
+              states.get(session.transportSessionId) ?? initialVoiceStreamNarrationState();
+            const reduced = reduceVoiceStreamNarration(current, event, streamMode);
+            const next = new Map(states);
+            next.set(session.transportSessionId, reduced.state);
+            return [reduced, next] as const;
+          });
+          const owner = session.fence.owner;
+          if (owner?.kind !== "thread-call") return;
+          yield* Effect.forEach(
+            update.chunks,
+            (chunk) =>
+              queueThreadCallSpeech({
+                environmentId: session.environmentId,
+                threadId: owner.threadId,
+                text: chunk.text,
+                source: "commentary",
+                turnId: chunk.turnId,
+                attemptId: `${session.transportSessionId}:${chunk.key}`,
+              }),
+            { discard: true },
+          );
+        }),
+      { discard: true },
+    );
     if (event.type === "turn.completed" || event.type === "turn.aborted") {
       yield* Effect.forEach(sessions, speechArbiter.cancelAmbient, { discard: true });
       yield* Ref.update(narrationStatesRef, (states) => {
@@ -1014,6 +1058,13 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     );
     const activeIds = new Set(sessions.map((session) => session.transportSessionId));
     yield* Ref.update(narrationStatesRef, (states) => {
+      const next = new Map(states);
+      for (const sessionId of next.keys()) {
+        if (!activeIds.has(sessionId)) next.delete(sessionId);
+      }
+      return next;
+    });
+    yield* Ref.update(streamNarrationStatesRef, (states) => {
       const next = new Map(states);
       for (const sessionId of next.keys()) {
         if (!activeIds.has(sessionId)) next.delete(sessionId);

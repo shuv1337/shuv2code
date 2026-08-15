@@ -90,8 +90,9 @@ export function voiceCallProviderInput(
     "This durable turn was delegated by a realtime voice call attached to this exact thread.",
     "The live call is still active and the user may not be reading the full thread. Continue normal durable reasoning, tool use, code, and detailed text here.",
     ...narrationPolicy.prompt,
-    "Before completing this turn, you MUST call voice_speak with a concise, independently understandable spoken result.",
-    "The voice_speak result must convey what the user needs to hear; do not return a text-only answer while the call is active. Keep code, logs, and long prose in the durable response instead of reading them aloud.",
+    "Your ordinary assistant commentary and final response are relayed to the live Call through a provider-neutral bounded sentence channel.",
+    "If the voice_speak tool is available, you MAY use it when exact spoken phrasing matters, but do not depend on that tool for Call support and do not repeat commentary already sent normally.",
+    "Keep code, logs, and long prose in the durable response instead of reading them aloud.",
     "The realtime side may already have acknowledged the request. Do not repeat any already-heard assistant text below.",
     ...(activeTranscript.length === 0
       ? []

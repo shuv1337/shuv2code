@@ -153,6 +153,37 @@ describe("VoiceSpeechArbiter", () => {
     }),
   );
 
+  it.effect("keeps streamed commentary ordered and drops it on user barge-in", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const arbiter = yield* makeVoiceSpeechArbiter((speech) =>
+        Ref.update(sent, (all) => [...all, speech.requestedText]),
+      );
+      const activeSession = session();
+
+      yield* arbiter.enqueue(
+        attempt(activeSession, "commentary-1", "commentary", "First two sentences."),
+      );
+      yield* arbiter.enqueue(
+        attempt(activeSession, "commentary-2", "commentary", "The next update."),
+      );
+      yield* arbiter.enqueue(
+        attempt(activeSession, "commentary-duplicate", "commentary", " the next update. "),
+      );
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First two sentences."]);
+
+      yield* arbiter.observeUserSpeech(activeSession);
+      yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-commentary"),
+        text: "First two sentences.",
+        occurredAt: "2026-08-15T00:00:01.000Z",
+        outputDone: true,
+      });
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First two sentences."]);
+    }),
+  );
+
   it.effect("waits for output completion after receiving an early provider transcript", () =>
     Effect.gen(function* () {
       const sent = yield* Ref.make<Array<string>>([]);

@@ -25,14 +25,18 @@ interface CallSpeechState {
   readonly providerBusy: boolean;
   readonly active: ActiveAttempt | null;
   readonly authoredQueue: ReadonlyArray<VoiceSpeechAttempt>;
+  readonly commentaryQueue: ReadonlyArray<VoiceSpeechAttempt>;
   readonly pendingAmbient: VoiceSpeechAttempt | null;
 }
+
+const MAX_COMMENTARY_QUEUE = 8;
 
 const emptyCallState = (session: ActiveVoiceSession): CallSpeechState => ({
   generation: session.fence.generation,
   providerBusy: false,
   active: null,
   authoredQueue: [],
+  commentaryQueue: [],
   pendingAmbient: null,
 });
 
@@ -79,7 +83,11 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
         if (current.providerBusy || current.active !== null) {
           return [undefined, states] as const;
         }
-        const nextAttempt = current.authoredQueue[0] ?? current.pendingAmbient ?? undefined;
+        const nextAttempt =
+          current.authoredQueue[0] ??
+          current.commentaryQueue[0] ??
+          current.pendingAmbient ??
+          undefined;
         if (nextAttempt === undefined) return [undefined, states] as const;
         const nextState: CallSpeechState = {
           ...current,
@@ -93,6 +101,10 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
             current.authoredQueue[0] === nextAttempt
               ? current.authoredQueue.slice(1)
               : current.authoredQueue,
+          commentaryQueue:
+            current.commentaryQueue[0] === nextAttempt
+              ? current.commentaryQueue.slice(1)
+              : current.commentaryQueue,
           pendingAmbient: current.pendingAmbient === nextAttempt ? null : current.pendingAmbient,
         };
         const next = new Map(states);
@@ -142,17 +154,27 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
           const key = sessionKey(attempt.session);
           const current = stateFor(states, attempt.session);
           if (
-            attempt.source === "ambient" &&
-            current.active?.attempt.source === "ambient" &&
+            (attempt.source === "ambient" || attempt.source === "commentary") &&
+            current.active?.attempt.source === attempt.source &&
             sameSemanticText(current.active.attempt.requestedText, attempt.requestedText)
           ) {
             return [false, states] as const;
           }
           const next = new Map(states);
-          if (attempt.source !== "ambient") {
+          if (attempt.source === "authored" || attempt.source === "controller") {
             next.set(key, {
               ...current,
               authoredQueue: [...current.authoredQueue, attempt],
+              pendingAmbient: null,
+            });
+          } else if (attempt.source === "commentary") {
+            const duplicate = current.commentaryQueue.some((queued) =>
+              sameSemanticText(queued.requestedText, attempt.requestedText),
+            );
+            if (duplicate) return [false, states] as const;
+            next.set(key, {
+              ...current,
+              commentaryQueue: [...current.commentaryQueue, attempt].slice(-MAX_COMMENTARY_QUEUE),
               pendingAmbient: null,
             });
           } else {
@@ -275,6 +297,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
           ...current,
           providerBusy: true,
           active: current.active === null ? null : { ...current.active, interrupted: true },
+          commentaryQueue: [],
           pendingAmbient: null,
         });
         return next;

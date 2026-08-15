@@ -33,7 +33,7 @@ const POLICIES: Readonly<Record<VoiceNarrationLevel, VoiceNarrationPolicy>> = {
     level: "quiet",
     silenceIntervalMs: null,
     prompt: [
-      "Keep routine tool progress quiet. Do not call voice_speak merely to fill silence or narrate ordinary tool calls.",
+      "Keep routine tool progress quiet. Do not add commentary merely to fill silence or narrate ordinary tool calls.",
       "Speak blockers, approval requests, and clarifying questions promptly.",
     ],
   },
@@ -41,8 +41,8 @@ const POLICIES: Readonly<Record<VoiceNarrationLevel, VoiceNarrationPolicy>> = {
     level: "balanced",
     silenceIntervalMs: 30_000,
     prompt: [
-      "Maintain conversational presence while you work. Whenever you send a useful commentary update, also call voice_speak with a shorter natural spoken version unless the same information was spoken recently.",
-      "If work remains active through an extended silent interval of roughly thirty seconds, call voice_speak with one truthful sentence about what you are checking, what you learned, or what you are waiting for. Do not repeat an unchanged status merely to fill silence.",
+      "Maintain conversational presence while you work by sending useful, concise commentary updates; the Call relays a bounded spoken version automatically.",
+      "If work remains active through an extended silent interval of roughly thirty seconds, send one truthful commentary sentence about what you are checking, what you learned, or what you are waiting for. Do not repeat an unchanged status merely to fill silence.",
       "Speak blockers, approval requests, and clarifying questions promptly.",
     ],
   },
@@ -50,8 +50,8 @@ const POLICIES: Readonly<Record<VoiceNarrationLevel, VoiceNarrationPolicy>> = {
     level: "conversational",
     silenceIntervalMs: 15_000,
     prompt: [
-      "Maintain active conversational presence while you work. Speak a short natural update at meaningful changes of phase and before or after meaningful tool calls; never read raw tool names, arguments, code, or logs aloud.",
-      "If work remains active through a silent interval of roughly fifteen seconds, call voice_speak with one truthful sentence about what you are checking, what changed, or what you are waiting for. Do not repeat an unchanged status merely to fill silence.",
+      "Maintain active conversational presence while you work. Send a short natural commentary update at meaningful changes of phase and before or after meaningful tool calls; never read raw tool names, arguments, code, or logs aloud.",
+      "If work remains active through a silent interval of roughly fifteen seconds, send one truthful commentary sentence about what you are checking, what changed, or what you are waiting for. Do not repeat an unchanged status merely to fill silence.",
       "Speak blockers, approval requests, and clarifying questions promptly.",
     ],
   },

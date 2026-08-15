@@ -47,7 +47,7 @@ describe("VoiceNarrationPolicy", () => {
     const policy = resolveVoiceNarrationPolicy("balanced");
     assert.strictEqual(policy.silenceIntervalMs, 30_000);
     assert.include(policy.prompt.join("\n"), "roughly thirty seconds");
-    assert.include(policy.prompt.join("\n"), "useful commentary update");
+    assert.include(policy.prompt.join("\n"), "commentary updates");
   });
 
   it("uses shorter tool-aware conversational narration", () => {
