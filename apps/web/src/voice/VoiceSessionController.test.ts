@@ -470,6 +470,25 @@ describe("VoiceSessionController", () => {
             expect(ingress).not.toHaveBeenCalled();
             onData(
               JSON.stringify({
+                type: "delegation.created",
+                item: {
+                  id: "call-user-handoff",
+                  type: "delegation",
+                  target: "client",
+                  content: [{ type: "input_text", text: "completely." }],
+                },
+              }),
+            );
+            expect(controller.state.transcript).toContainEqual(
+              expect.objectContaining({
+                speaker: "user",
+                text: "Check this thread completely.",
+                final: false,
+              }),
+            );
+            expect(ingress).not.toHaveBeenCalled();
+            onData(
+              JSON.stringify({
                 type: "turn.done",
                 turn: {
                   id: "call-user-turn",
@@ -534,12 +553,14 @@ describe("VoiceSessionController", () => {
         final: true,
       }),
     );
+    expect(controller.state.transcript.filter((item) => item.speaker === "user")).toHaveLength(1);
     expect(controller.state.transcript).not.toContainEqual(
       expect.objectContaining({ speaker: "user", text: " completely.", final: false }),
     );
     expect(controller.state.transcript).toContainEqual(
       expect.objectContaining({ speaker: "assistant", text: "I'm checking.", final: true }),
     );
+    await vi.waitFor(() => expect(ingress).toHaveBeenCalledTimes(3));
     expect(onServerEvent).not.toBeNull();
     (onServerEvent as unknown as (event: VoiceSessionEvent) => void)({
       clientSessionId: VoiceClientSessionId.make("call-client"),
@@ -562,7 +583,7 @@ describe("VoiceSessionController", () => {
         final: true,
       }),
     );
-    expect(ingress).toHaveBeenCalledTimes(2);
+    expect(ingress).toHaveBeenCalledTimes(3);
     expect(ingress).toHaveBeenNthCalledWith(
       1,
       environmentId,
@@ -571,7 +592,7 @@ describe("VoiceSessionController", () => {
         controllerThreadId: callThreadId,
         event: {
           type: "transcript.done",
-          itemId: "call-user-turn",
+          itemId: "call-user-partial",
           role: "user",
           text: "Check this thread completely.",
         },
@@ -579,6 +600,20 @@ describe("VoiceSessionController", () => {
     );
     expect(ingress).toHaveBeenNthCalledWith(
       2,
+      environmentId,
+      expect.objectContaining({
+        owner: { kind: "thread-call", threadId: callThreadId },
+        controllerThreadId: callThreadId,
+        event: {
+          type: "handoff",
+          handoffId: "call-user-handoff",
+          itemId: "call-user-partial",
+          inputTranscript: "Check this thread completely.",
+        },
+      }),
+    );
+    expect(ingress).toHaveBeenNthCalledWith(
+      3,
       environmentId,
       expect.objectContaining({
         owner: { kind: "thread-call", threadId: callThreadId },
@@ -665,6 +700,12 @@ describe("VoiceSessionController", () => {
             );
             onData(
               JSON.stringify({
+                type: "turn.done",
+                turn: { id: "call-user-1-turn", role: "user", transcript: "First request" },
+              }),
+            );
+            onData(
+              JSON.stringify({
                 type: "output_transcript.added",
                 item_id: "call-assistant-1",
                 text: "I'm starting that.",
@@ -688,6 +729,12 @@ describe("VoiceSessionController", () => {
                 },
               }),
             );
+            onData(
+              JSON.stringify({
+                type: "turn.done",
+                turn: { id: "call-user-2-turn", role: "user", transcript: "Second request" },
+              }),
+            );
           },
           setMuted: vi.fn(),
           close: vi.fn(),
@@ -704,7 +751,7 @@ describe("VoiceSessionController", () => {
       modelSelection: { instanceId: providerInstanceId, model: "gpt-5", options: [] },
       authorizedRuntimeCeiling: "approval-required",
     });
-    await vi.waitFor(() => expect(ingress).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(ingress).toHaveBeenCalledTimes(4));
 
     expect(controller.state.phase).toEqual({ type: "connected", activity: "listening" });
     expect(stop).not.toHaveBeenCalled();

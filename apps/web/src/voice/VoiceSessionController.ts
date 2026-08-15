@@ -144,6 +144,15 @@ type VoiceClientTranscriptDeltaEvent = {
 };
 
 type VoiceClientDataChannelEvent = VoiceRealtimeIngressEvent | VoiceClientTranscriptDeltaEvent;
+type VoiceClientHandoffEvent = Extract<VoiceRealtimeIngressEvent, { readonly type: "handoff" }>;
+type PendingClientHandoff = {
+  readonly event: VoiceClientHandoffEvent;
+  readonly draft: { readonly id: string; readonly text: string };
+  readonly generation: number;
+  readonly cancelFallback: () => void;
+};
+
+const CLIENT_HANDOFF_TRANSCRIPT_WAIT_MS = 5_000;
 
 function defaultClientSessionId(): string {
   return randomUUID();
@@ -414,6 +423,12 @@ export class VoiceSessionController {
     "user" | "assistant",
     { readonly id: string; readonly text: string }
   >();
+  #clientTranscriptFinalizationQueue = new Map<
+    "user" | "assistant",
+    Array<{ readonly id: string; readonly text: string }>
+  >();
+  #pendingClientHandoffs: Array<PendingClientHandoff> = [];
+  #clientIngressTail: Promise<void> = Promise.resolve();
   #clientTranscriptAuthoritative = false;
   #activeAction: {
     readonly actionId: string;
@@ -913,22 +928,42 @@ export class VoiceSessionController {
     ) {
       return;
     }
-    if (
-      this.#startInput?.owner?.kind === "thread-call" &&
-      event.type === "handoff" &&
-      this.#clientTranscriptDrafts.has("user")
-    ) {
-      this.#handleClientTranscriptEvent(
-        {
-          type: "transcript.done",
-          itemId: VoiceTranscriptItemId.make(event.itemId),
-          role: "user",
-          text: event.inputTranscript,
-        },
-        generation,
-      );
+    let ingressEvent = event;
+    if (this.#startInput?.owner?.kind === "thread-call" && event.type === "handoff") {
+      const draft = this.#clientTranscriptDrafts.get("user");
+      if (draft !== undefined) {
+        this.#clientTranscriptDrafts.delete("user");
+        const pending = this.#clientTranscriptFinalizationQueue.get("user") ?? [];
+        this.#clientTranscriptFinalizationQueue.set("user", [...pending, draft]);
+        const pairedHandoff = {
+          ...event,
+          itemId: draft.id,
+          inputTranscript: draft.text,
+        };
+        const cancelFallback = this.#scheduleRetry(
+          () => this.#flushPendingClientHandoff(draft.id, generation),
+          CLIENT_HANDOFF_TRANSCRIPT_WAIT_MS,
+        );
+        this.#pendingClientHandoffs.push({
+          event: pairedHandoff,
+          draft,
+          generation,
+          cancelFallback,
+        });
+        return;
+      }
     }
-    const ingressEvent = event;
+    let pairedHandoff: PendingClientHandoff | undefined;
+    if (ingressEvent.type === "transcript.done" && ingressEvent.role === "user") {
+      pairedHandoff = this.#pendingClientHandoffs.shift();
+      if (pairedHandoff !== undefined) {
+        pairedHandoff.cancelFallback();
+        ingressEvent = {
+          ...ingressEvent,
+          itemId: VoiceTranscriptItemId.make(pairedHandoff.draft.id),
+        };
+      }
+    }
     if (ingressEvent.type === "transcript.delta" || ingressEvent.type === "transcript.done") {
       this.#handleClientTranscriptEvent(ingressEvent, generation);
       if (ingressEvent.type === "transcript.delta") {
@@ -941,9 +976,49 @@ export class VoiceSessionController {
     if (this.#api.ingestRealtimeEvent === undefined) {
       return;
     }
-    void this.#api
-      .ingestRealtimeEvent(environmentId, { ...fence, event: ingressEvent })
-      .catch((error) => {
+    this.#enqueueRealtimeIngress(
+      pairedHandoff === undefined ? [ingressEvent] : [ingressEvent, pairedHandoff.event],
+      generation,
+    );
+  }
+
+  #flushPendingClientHandoff(draftId: string, generation: number): void {
+    const index = this.#pendingClientHandoffs.findIndex(
+      (pending) => pending.generation === generation && pending.draft.id === draftId,
+    );
+    if (index < 0 || generation !== this.#state.generation) return;
+    const [pending] = this.#pendingClientHandoffs.splice(index, 1);
+    if (pending === undefined) return;
+    const transcript: Extract<VoiceRealtimeIngressEvent, { readonly type: "transcript.done" }> = {
+      type: "transcript.done",
+      itemId: VoiceTranscriptItemId.make(pending.draft.id),
+      role: "user",
+      text: pending.draft.text,
+    };
+    this.#handleClientTranscriptEvent(transcript, generation);
+    this.#enqueueRealtimeIngress([transcript, pending.event], generation);
+  }
+
+  #enqueueRealtimeIngress(
+    events: ReadonlyArray<VoiceRealtimeIngressEvent>,
+    generation: number,
+  ): void {
+    const ingest = async () => {
+      const environmentId = this.#environmentId;
+      const fence = this.#fence;
+      if (
+        environmentId === null ||
+        fence === null ||
+        generation !== this.#state.generation ||
+        this.#api.ingestRealtimeEvent === undefined
+      ) {
+        return;
+      }
+      try {
+        for (const event of events) {
+          await this.#api.ingestRealtimeEvent(environmentId, { ...fence, event });
+        }
+      } catch (error) {
         const normalized = normalizeVoiceSessionError(error);
         if (
           this.#startInput?.owner?.kind === "thread-call" &&
@@ -951,7 +1026,7 @@ export class VoiceSessionController {
         ) {
           return;
         }
-        return this.#fail(
+        await this.#fail(
           generation,
           new VoiceSessionError(
             "realtime-ingress-failed",
@@ -960,7 +1035,9 @@ export class VoiceSessionController {
             { cause: error },
           ),
         );
-      });
+      }
+    };
+    this.#clientIngressTail = this.#clientIngressTail.then(ingest, ingest);
   }
 
   #handleClientTranscriptEvent(
@@ -990,8 +1067,19 @@ export class VoiceSessionController {
       });
       return;
     }
-    const current = this.#clientTranscriptDrafts.get(event.role);
-    this.#clientTranscriptDrafts.delete(event.role);
+    const pending = this.#clientTranscriptFinalizationQueue.get(event.role);
+    const queued = pending?.[0];
+    if (queued !== undefined) {
+      if (pending.length === 1) {
+        this.#clientTranscriptFinalizationQueue.delete(event.role);
+      } else {
+        this.#clientTranscriptFinalizationQueue.set(event.role, pending.slice(1));
+      }
+    }
+    const current = queued ?? this.#clientTranscriptDrafts.get(event.role);
+    if (queued === undefined) {
+      this.#clientTranscriptDrafts.delete(event.role);
+    }
     this.#dispatch({
       type: "transcript-updated",
       generation,
@@ -1285,6 +1373,9 @@ export class VoiceSessionController {
     this.#releaseBrowserResources();
     this.#pendingTranscript.clear();
     this.#clientTranscriptDrafts.clear();
+    this.#clientTranscriptFinalizationQueue.clear();
+    for (const pending of this.#pendingClientHandoffs) pending.cancelFallback();
+    this.#pendingClientHandoffs = [];
     this.#clientTranscriptAuthoritative = false;
     this.#activeAction = null;
     this.#presentation = null;
@@ -1357,6 +1448,9 @@ export class VoiceSessionController {
     }
     this.#pendingTranscript.clear();
     this.#clientTranscriptDrafts.clear();
+    this.#clientTranscriptFinalizationQueue.clear();
+    for (const pending of this.#pendingClientHandoffs) pending.cancelFallback();
+    this.#pendingClientHandoffs = [];
     this.#clientTranscriptAuthoritative = false;
     this.#activeAction = null;
     this.#presentation = null;
