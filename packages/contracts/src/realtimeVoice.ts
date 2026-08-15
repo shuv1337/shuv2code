@@ -246,6 +246,12 @@ export const VoiceSessionStartInput = Schema.Struct({
   controllerThreadId: ThreadId,
   clientSessionId: VoiceClientSessionId,
   generation: VoiceGeneration,
+  /**
+   * Model used only for the low-latency realtime transport. For a direct
+   * thread Call this is deliberately independent of the durable thread's
+   * model selection, which continues to own delegated work.
+   */
+  transportModelSelection: Schema.optionalKey(ModelSelection),
   purpose: Schema.optionalKey(Schema.Literals(["conversation", "transcription"])),
   /** @deprecated Prefer `transport: { type: "webrtc", offerSdp }`. */
   offerSdp: Schema.optionalKey(SessionDescriptionSdp),

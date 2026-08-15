@@ -3,8 +3,10 @@ import {
   ThreadId,
   VoiceControllerHistoryMessageId,
   VoiceTranscriptItemId,
+  type ModelSelection,
   type ProviderRuntimeEvent,
   type VoiceControllerHistoryMessage,
+  type VoiceSessionStartInput,
 } from "@shuv2code/contracts";
 import type { Cause } from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -91,6 +93,13 @@ export function voiceSessionAcceptsHandoffs(session: {
   readonly fence?: { readonly owner?: import("@shuv2code/contracts").VoiceSessionOwner };
 }): boolean {
   return session.purpose === "conversation";
+}
+
+export function requestedThreadCallTransportSelection(
+  start: Pick<VoiceSessionStartInput, "transportModelSelection">,
+  durableThreadSelection: ModelSelection,
+): ModelSelection {
+  return start.transportModelSelection ?? durableThreadSelection;
 }
 
 export function controllerHistoryDisplayText(text: string): string {
@@ -652,12 +661,25 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       if (Option.isNone(project)) {
         return yield* voiceError("controller_not_found", "The Call project is unavailable.", false);
       }
-      const providerInstanceId = thread.value.modelSelection.instanceId;
+      const requestedTransportSelection = requestedThreadCallTransportSelection(
+        input,
+        thread.value.modelSelection,
+      );
+      const transportModelSelection = yield* runtime
+        .resolveModelSelection(requestedTransportSelection.instanceId, requestedTransportSelection)
+        .pipe(
+          Effect.mapError(
+            mapInternalError(
+              "negotiation_failed",
+              "No compatible realtime voice model is available.",
+            ),
+          ),
+        );
       return yield* transport.startThreadCallTransport({
         start: { ...input, owner: input.owner },
         environmentId,
         thread: thread.value,
-        providerInstanceId,
+        transportModelSelection,
         workspaceRoot: project.value.workspaceRoot,
       });
     }

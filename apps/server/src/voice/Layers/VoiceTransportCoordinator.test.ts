@@ -59,7 +59,7 @@ describe("VoiceTransportCoordinator ownership", () => {
       transportSessionId: "client:1",
       environmentId: "env" as never,
       hostProjectId: "project" as never,
-      providerInstanceId: "codex" as never,
+      transportProviderInstanceId: "codex" as never,
       controller: {} as never,
       controllerRuntime: {} as never,
       transportType: "webrtc" as const,

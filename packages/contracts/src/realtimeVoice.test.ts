@@ -20,6 +20,7 @@ import {
 const decodeVoiceGetControllerHistoryResult = Schema.decodeUnknownSync(
   VoiceGetControllerHistoryResult,
 );
+const decodeVoiceSessionStartInput = Schema.decodeUnknownSync(VoiceSessionStartInput);
 
 describe("realtime voice contracts", () => {
   it("models controller, exact-thread Call, and transcription as distinct owners", () => {
@@ -57,7 +58,7 @@ describe("realtime voice contracts", () => {
   });
 
   it("accepts the owner seam without changing the current controller wire", () => {
-    const input = Schema.decodeUnknownSync(VoiceSessionStartInput)({
+    const input = decodeVoiceSessionStartInput({
       environmentId: "environment-1",
       owner: { kind: "controller", controllerThreadId: "controller-1" },
       controllerThreadId: "controller-1",
@@ -139,6 +140,27 @@ describe("realtime voice contracts", () => {
     });
     expect(result.transportType).toBe("websocket");
     expect(result.answerSdp).toBeNull();
+  });
+
+  it("keeps realtime transport selection independent from the durable thread", () => {
+    const input = decodeVoiceSessionStartInput({
+      environmentId: "environment-1",
+      owner: { kind: "thread-call", threadId: "durable-thread-1" },
+      controllerThreadId: "durable-thread-1",
+      clientSessionId: "client-session-1",
+      generation: 1,
+      transportModelSelection: {
+        instanceId: "codex-voice",
+        model: "gpt-realtime",
+      },
+      transport: { type: "webrtc", offerSdp: "v=0\r\n" },
+    });
+
+    expect(input.transportModelSelection).toEqual({
+      instanceId: "codex-voice",
+      model: "gpt-realtime",
+    });
+    expect(input.owner).toEqual({ kind: "thread-call", threadId: "durable-thread-1" });
   });
 
   it("accepts an explicit provider-backed transcription session", () => {

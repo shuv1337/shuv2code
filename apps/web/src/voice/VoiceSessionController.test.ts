@@ -553,6 +553,11 @@ describe("VoiceSessionController", () => {
       expect.objectContaining({
         owner: { kind: "thread-call", threadId: callThreadId },
         controllerThreadId: callThreadId,
+        transportModelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5",
+          options: [],
+        },
         purpose: "conversation",
       }),
     );

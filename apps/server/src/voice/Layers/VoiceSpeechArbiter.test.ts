@@ -31,7 +31,7 @@ const session = (generation = 1): ActiveVoiceSession => ({
   },
   environmentId: EnvironmentId.make("environment"),
   hostProjectId: ProjectId.make("project"),
-  providerInstanceId: ProviderInstanceId.make("codex"),
+  transportProviderInstanceId: ProviderInstanceId.make("codex"),
   controller: null,
   controllerRuntime: null,
   transportType: "webrtc",

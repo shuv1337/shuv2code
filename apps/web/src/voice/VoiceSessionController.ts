@@ -653,6 +653,9 @@ export class VoiceSessionController {
                   : ensured!.controller.controllerThreadId,
                 clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
                 generation: VoiceGeneration.make(generationIdentity.generation),
+                ...(isThreadCall && input.modelSelection !== undefined
+                  ? { transportModelSelection: input.modelSelection }
+                  : {}),
                 purpose: input.purpose ?? "conversation",
                 transport: { type: "webrtc", offerSdp },
                 ...(voiceId === undefined ? {} : { voiceId }),
@@ -730,6 +733,9 @@ export class VoiceSessionController {
             : ensured!.controller.controllerThreadId,
           clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
           generation: VoiceGeneration.make(generationIdentity.generation),
+          ...(isThreadCall && input.modelSelection !== undefined
+            ? { transportModelSelection: input.modelSelection }
+            : {}),
           purpose: input.purpose ?? "conversation",
           transport: {
             type: "websocket",

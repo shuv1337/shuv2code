@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  ProviderInstanceId,
   ThreadId,
   VoiceActionId,
   VoiceClientSessionId,
@@ -28,6 +29,7 @@ import {
   deriveVoiceActionId,
   planVoicePolicyTransition,
   publicVoiceSessionId,
+  requestedThreadCallTransportSelection,
   runSerializedVoiceActions,
   targetThreadIdFromVoiceMutation,
   targetPhaseOf,
@@ -36,6 +38,29 @@ import {
 } from "./VoiceControllerService.ts";
 
 describe("VoiceControllerService coordination invariants", () => {
+  it("keeps direct Call transport selection independent from durable work", () => {
+    const durableSelection = {
+      instanceId: ProviderInstanceId.make("opencode-local"),
+      model: "deepseek-v3",
+    };
+    const transportSelection = {
+      instanceId: ProviderInstanceId.make("codex-voice"),
+      model: "gpt-realtime",
+    };
+
+    assert.deepStrictEqual(
+      requestedThreadCallTransportSelection(
+        { transportModelSelection: transportSelection },
+        durableSelection,
+      ),
+      transportSelection,
+    );
+    assert.deepStrictEqual(
+      requestedThreadCallTransportSelection({}, durableSelection),
+      durableSelection,
+    );
+  });
+
   it("never hands a transcription-only provider turn to the controller", () => {
     assert.strictEqual(voiceSessionAcceptsHandoffs({ purpose: "transcription" }), false);
     assert.strictEqual(voiceSessionAcceptsHandoffs({ purpose: "conversation" }), true);

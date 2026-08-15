@@ -35,7 +35,8 @@ export interface ActiveVoiceSession {
   readonly fence: VoiceSessionFence;
   readonly environmentId: EnvironmentId;
   readonly hostProjectId: ProjectId;
-  readonly providerInstanceId: ProviderInstanceId;
+  /** Provider instance that owns realtime media, not delegated durable work. */
+  readonly transportProviderInstanceId: ProviderInstanceId;
   readonly controller: VoiceControllerIdentity | null;
   readonly controllerRuntime: ControllerRuntimeState | null;
   readonly transportType: "webrtc" | "websocket";
@@ -92,7 +93,6 @@ export interface VoiceTransportCoordinatorShape {
       readonly id: ThreadId;
       readonly projectId: ProjectId;
       readonly modelSelection: ModelSelection;
-      readonly runtimeMode: import("@shuv2code/contracts").RuntimeMode;
       readonly messages: ReadonlyArray<{
         readonly role: "user" | "assistant" | "system";
         readonly text: string;
@@ -100,7 +100,7 @@ export interface VoiceTransportCoordinatorShape {
         readonly [key: string]: unknown;
       }>;
     };
-    readonly providerInstanceId: ProviderInstanceId;
+    readonly transportModelSelection: ModelSelection;
     readonly workspaceRoot: string;
   }) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;
   readonly stop: (

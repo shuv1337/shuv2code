@@ -67,7 +67,7 @@ const callSession = {
   },
   environmentId: EnvironmentId.make("environment-1"),
   hostProjectId: thread.projectId,
-  providerInstanceId: ProviderInstanceId.make("provider-1"),
+  transportProviderInstanceId: ProviderInstanceId.make("codex-voice"),
   controller: null,
   controllerRuntime: null,
   transportType: "webrtc",
