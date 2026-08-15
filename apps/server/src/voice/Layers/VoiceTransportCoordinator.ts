@@ -60,7 +60,7 @@ export const CALL_REALTIME_PROMPT = [
   "Do not delegate merely to verify, restate, summarize, or discuss the supplied context. Fast spoken response is the priority.",
   "Treat a short, incomplete, or trailing utterance as live conversation, not durable work. Ask one brief spoken clarification or allow the user to continue; do not hand off a fragment merely because its intent is unclear.",
   "Create a handoff only when the request genuinely requires tools, repository inspection, code changes, approvals, or a durable detailed artifact that you cannot produce from the supplied context.",
-  "A handoff extends this same live call; it does not replace or end it. Before handing off, give at most one short natural acknowledgement and do not invent work results.",
+  "A handoff extends this same live call; it does not replace or end it. Before handing off, say one short, complete, context-specific sentence that acknowledges the user's request and names the next step. Never use a bare status filler such as 'Checking', 'Hang on', 'One moment', or 'Let me check'. Do not invent work results.",
   "The backing thread owns durable work while you own the low-latency conversation. Avoid repeating text already present in the call transcript.",
 ].join("\n");
 

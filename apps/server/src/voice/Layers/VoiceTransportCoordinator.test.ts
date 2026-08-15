@@ -30,6 +30,9 @@ describe("VoiceTransportCoordinator ownership", () => {
     assert.include(CALL_REALTIME_PROMPT, "Ask one brief spoken clarification");
     assert.include(CALL_REALTIME_PROMPT, "do not hand off a fragment");
     assert.include(CALL_REALTIME_PROMPT, "A handoff extends this same live call");
+    assert.include(CALL_REALTIME_PROMPT, "one short, complete, context-specific sentence");
+    assert.include(CALL_REALTIME_PROMPT, "names the next step");
+    assert.include(CALL_REALTIME_PROMPT, "Never use a bare status filler");
   });
 
   it("keys public session identity by client session id", () => {
