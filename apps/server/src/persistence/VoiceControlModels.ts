@@ -64,6 +64,35 @@ export const VoiceTransportSession = Schema.Struct({
 });
 export type VoiceTransportSession = typeof VoiceTransportSession.Type;
 
+export const VoiceCallEventKind = Schema.Literals([
+  "listener.attached",
+  "listener.detached",
+  "speech.queued",
+  "speech.started",
+  "speech.completed",
+  "speech.interrupted",
+  "speech.failed",
+]);
+export type VoiceCallEventKind = typeof VoiceCallEventKind.Type;
+
+/**
+ * Provider-neutral, append-only Call lifecycle evidence. Unlike transport
+ * events, these rows survive media generations and app restarts.
+ */
+export const VoiceCallEvent = Schema.Struct({
+  eventId: PositiveInt,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  transportSessionId: TrimmedNonEmptyString,
+  generation: PositiveInt,
+  kind: VoiceCallEventKind,
+  correlationId: Schema.NullOr(TrimmedNonEmptyString),
+  threadSnapshotSequence: Schema.NullOr(NonNegativeInt),
+  payload: Schema.Unknown,
+  occurredAt: IsoDateTime,
+});
+export type VoiceCallEvent = typeof VoiceCallEvent.Type;
+
 export const VoiceControllerActionState = Schema.Literals([
   "queued",
   "active",
