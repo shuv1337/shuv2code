@@ -5,6 +5,7 @@ import type {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  VoiceCallPresence,
   VoiceControllerHistoryMessage,
   VoiceControllerIdentity,
 } from "@shuv2code/contracts";
@@ -59,6 +60,11 @@ type HistoryLookup =
 
 type TargetSync =
   | { readonly type: "idle" | "syncing" | "ready" }
+  | { readonly type: "error"; readonly message: string };
+
+type ActiveCallLookup =
+  | { readonly type: "loading" }
+  | { readonly type: "ready"; readonly call: VoiceCallPresence | null }
   | { readonly type: "error"; readonly message: string };
 
 export interface VoiceSurfaceSetup {
@@ -146,6 +152,7 @@ function VoiceCallSurface(props: {
   readonly sessionActive: boolean;
   readonly otherSessionActive: boolean;
   readonly callAvailable: boolean;
+  readonly remoteCall: VoiceCallPresence | null;
   readonly presented: boolean;
   readonly onControllerMode: () => void;
 }) {
@@ -173,7 +180,13 @@ function VoiceCallSurface(props: {
             ? { label: "You · live", text: userText || "Listening…" }
             : null;
 
-  const startCall = async (context = props.viewedContext) => {
+  const startCall = async (
+    context = props.viewedContext,
+    options?: Pick<VoiceCallPresence, "callId"> & {
+      readonly takeover: NonNullable<VoiceCallPresence["activeTransportSessionId"]>;
+      readonly revision: VoiceCallPresence["revision"];
+    },
+  ) => {
     const threadId = context.threadId;
     const setup = props.setup;
     if (threadId === null || setup === null || starting) return;
@@ -199,6 +212,15 @@ function VoiceCallSurface(props: {
         modelSelection: setup.modelSelection,
         authorizedRuntimeCeiling: "approval-required",
         microphoneStream: preparedMicrophone,
+        ...(options === undefined
+          ? {}
+          : {
+              takeover: {
+                callId: options.callId,
+                expectedRevision: options.revision,
+                expectedTransportSessionId: options.takeover,
+              },
+            }),
       });
     } catch (error) {
       setStartError(errorMessage(error));
@@ -211,6 +233,10 @@ function VoiceCallSurface(props: {
     props.sessionActive &&
     (props.callEnvironmentId !== props.environmentId ||
       props.callContext.threadId !== props.viewedContext.threadId);
+  const remoteCallHere =
+    props.remoteCall !== null &&
+    props.remoteCall.environmentId === props.environmentId &&
+    props.remoteCall.threadId === props.viewedContext.threadId;
 
   const returnToCallThread = () => {
     const threadId = props.callContext.threadId;
@@ -233,6 +259,16 @@ function VoiceCallSurface(props: {
     } finally {
       setStarting(false);
     }
+  };
+
+  const continueRemoteCall = async () => {
+    const call = props.remoteCall;
+    if (!call || !remoteCallHere || call.activeTransportSessionId === null) return;
+    await startCall(props.viewedContext, {
+      callId: call.callId,
+      takeover: call.activeTransportSessionId,
+      revision: call.revision,
+    });
   };
 
   return (
@@ -301,18 +337,24 @@ function VoiceCallSurface(props: {
         ) : (
           <div className="max-w-sm text-center">
             <p className="text-sm font-medium">
-              {props.otherSessionActive
-                ? "Controller voice is active"
-                : props.callAvailable
-                  ? "Call this thread"
-                  : "Start this thread to call it"}
+              {props.remoteCall !== null
+                ? `Call active on ${props.remoteCall.activeDevice?.label ?? "another device"}`
+                : props.otherSessionActive
+                  ? "Controller voice is active"
+                  : props.callAvailable
+                    ? "Call this thread"
+                    : "Start this thread to call it"}
             </p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              {props.otherSessionActive
-                ? "End Controller voice before starting a thread-owned Call."
-                : props.callAvailable
-                  ? "Speak directly in this thread. Your voice turns stay with its context."
-                  : "Call belongs to one ordinary thread. Drafts do not have thread context yet."}
+              {props.remoteCall !== null
+                ? remoteCallHere
+                  ? "Continue this Call here. The other device will disconnect cleanly."
+                  : "Open the owning thread before continuing this Call on this device."
+                : props.otherSessionActive
+                  ? "End Controller voice before starting a thread-owned Call."
+                  : props.callAvailable
+                    ? "Speak directly in this thread. Your voice turns stay with its context."
+                    : "Call belongs to one ordinary thread. Drafts do not have thread context yet."}
             </p>
             {startError || (props.sessionHere && voice.state.phase.type === "error") ? (
               <p className="mt-3 text-xs text-destructive-foreground" role="alert">
@@ -320,7 +362,17 @@ function VoiceCallSurface(props: {
                   (voice.state.phase.type === "error" ? voice.state.phase.message : null)}
               </p>
             ) : null}
-            {props.callAvailable && props.setup && !props.otherSessionActive ? (
+            {props.remoteCall !== null ? (
+              <Button
+                className="mt-4"
+                size="sm"
+                disabled={starting}
+                onClick={() => (remoteCallHere ? void continueRemoteCall() : returnToCallThread())}
+              >
+                {starting ? <LoaderCircleIcon className="animate-spin" /> : <ArrowLeftRightIcon />}
+                {starting ? "Moving…" : remoteCallHere ? "Continue here" : "Open call thread"}
+              </Button>
+            ) : props.callAvailable && props.setup && !props.otherSessionActive ? (
               <Button
                 className="mt-4"
                 size="sm"
@@ -406,6 +458,7 @@ export function VoiceSurface({
   const [lookup, setLookup] = useState<ControllerLookup>({ type: "loading" });
   const [history, setHistory] = useState<HistoryLookup>({ type: "idle", messages: [] });
   const [targetSync, setTargetSync] = useState<TargetSync>({ type: "idle" });
+  const [activeCall, setActiveCall] = useState<ActiveCallLookup>({ type: "loading" });
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const sessionHere = voice.state.environmentId === environmentId;
   const sessionActive =
@@ -421,6 +474,35 @@ export function VoiceSurface({
     voice.state.phase.type !== "error" &&
     voice.state.phase.type !== "unsupported";
   const callAvailable = currentContext.threadId !== null;
+
+  const loadActiveCall = useCallback(async () => {
+    setActiveCall({ type: "loading" });
+    try {
+      setActiveCall({ type: "ready", call: await voice.getActiveCall(environmentId) });
+    } catch (error) {
+      setActiveCall({ type: "error", message: errorMessage(error) });
+    }
+  }, [environmentId, voice.getActiveCall]);
+
+  useEffect(() => {
+    void loadActiveCall();
+  }, [loadActiveCall, voice.state.generation, voice.state.phase.type]);
+
+  const remoteCall = !callSessionActive && activeCall.type === "ready" ? activeCall.call : null;
+  const remoteCallHere =
+    remoteCall !== null &&
+    remoteCall.environmentId === environmentId &&
+    remoteCall.threadId === currentContext.threadId;
+  const shownCallContext =
+    callSessionActive || remoteCall === null || remoteCallHere
+      ? callPresentation.context
+      : {
+          ...currentContext,
+          threadId: remoteCall.threadId,
+          threadTitle: "Active Call thread",
+          projectTitle: remoteCall.activeDevice?.label ?? "Another device",
+        };
+  const shownCallEnvironmentId = remoteCall?.environmentId ?? callPresentation.environmentId;
 
   const loadController = useCallback(async () => {
     setLookup({ type: "loading" });
@@ -525,7 +607,7 @@ export function VoiceSurface({
 
   // An active thread-owned Call remains the primary Voice surface across
   // navigation, even when the newly viewed environment has another saved tab.
-  const shownMode = callSessionActive ? "call" : mode;
+  const shownMode = callSessionActive || remoteCall !== null ? "call" : mode;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Voice">
@@ -595,14 +677,15 @@ export function VoiceSurface({
       {shownMode === "call" ? (
         <VoiceCallSurface
           environmentId={environmentId}
-          callEnvironmentId={callPresentation.environmentId}
-          callContext={callPresentation.context}
+          callEnvironmentId={shownCallEnvironmentId}
+          callContext={shownCallContext}
           viewedContext={currentContext}
           setup={setup}
           sessionHere={callSessionHere}
           sessionActive={callSessionActive}
           otherSessionActive={sessionActive && !callSessionHere}
           callAvailable={callAvailable}
+          remoteCall={remoteCall}
           presented={presented}
           onControllerMode={() => setMode(environmentId, "controller")}
         />

@@ -6,6 +6,7 @@ import {
 import type {
   EnvironmentId,
   ThreadId,
+  VoiceCallPresence,
   VoiceControllerHistoryMessage,
   VoiceControllerIdentity,
 } from "@shuv2code/contracts";
@@ -93,6 +94,7 @@ interface VoiceSessionContextValue {
   readonly mediaActivity: VoiceMediaActivity;
   readonly activityLevel: RefObject<number>;
   readonly getController: (environmentId: EnvironmentId) => Promise<VoiceControllerIdentity | null>;
+  readonly getActiveCall: (environmentId: EnvironmentId) => Promise<VoiceCallPresence | null>;
   readonly getControllerHistory: (
     environmentId: EnvironmentId,
     controllerThreadId: ThreadId,
@@ -147,6 +149,11 @@ export function VoiceSessionProvider({
   const getController = useCallback(
     async (environmentId: EnvironmentId) =>
       (await runVoiceCommand(realtimeVoiceEnvironment.getController, environmentId, {})).controller,
+    [],
+  );
+  const getActiveCall = useCallback(
+    async (environmentId: EnvironmentId) =>
+      (await runVoiceCommand(realtimeVoiceEnvironment.getActiveCall, environmentId, {})).call,
     [],
   );
   const getControllerHistory = useCallback(
@@ -205,6 +212,7 @@ export function VoiceSessionProvider({
       mediaActivity,
       activityLevel: activityMonitor.activityLevel,
       getController,
+      getActiveCall,
       getControllerHistory,
       setControllerTarget,
       resetController,
@@ -216,6 +224,7 @@ export function VoiceSessionProvider({
     [
       activityMonitor,
       controller,
+      getActiveCall,
       getController,
       getControllerHistory,
       mediaActivity,

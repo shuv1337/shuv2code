@@ -1,5 +1,6 @@
 import {
   VoiceClientSessionId,
+  VoiceDeviceId,
   VoiceEventSequence,
   VoiceGeneration,
   VoiceTranscriptItemId,
@@ -11,6 +12,9 @@ import {
   type RuntimeMode,
   type ThreadId,
   type VoiceControllerIdentity,
+  type VoiceCallId,
+  type VoiceCallTakeover,
+  type VoiceDeviceIdentity,
   type VoiceEnsureControllerInput,
   type VoiceEnsureControllerResult,
   type VoiceListVoicesInput,
@@ -100,6 +104,8 @@ export interface StartVoiceSessionInput {
     readonly threadId: ThreadId;
     readonly threadTitle: string;
   };
+  readonly callId?: VoiceCallId;
+  readonly takeover?: VoiceCallTakeover;
   readonly providerInstanceId: ProviderInstanceId;
   readonly modelSelection?: ModelSelection;
   readonly authorizedRuntimeCeiling: RuntimeMode;
@@ -132,6 +138,7 @@ export interface VoiceSessionControllerDependencies {
     }) => void | Promise<void>;
   }) => PcmVoiceTransport;
   readonly createClientSessionId?: () => string;
+  readonly deviceIdentity?: VoiceDeviceIdentity;
   readonly detectSupport?: () => VoiceBrowserSupport;
   readonly scheduleRetry?: (callback: () => void, delayMs: number) => () => void;
 }
@@ -156,6 +163,30 @@ const CLIENT_HANDOFF_TRANSCRIPT_WAIT_MS = 5_000;
 
 function defaultClientSessionId(): string {
   return randomUUID();
+}
+
+function defaultVoiceDeviceIdentity(): VoiceDeviceIdentity {
+  const userAgent = globalThis.navigator?.userAgent ?? "";
+  const kind = /Android|iPhone|iPad|Mobile/i.test(userAgent)
+    ? "mobile"
+    : /Electron/i.test(userAgent)
+      ? "desktop"
+      : "web";
+  let deviceId: string | null = null;
+  try {
+    deviceId = globalThis.localStorage?.getItem("shuv2code.voice.device-id") ?? null;
+    if (deviceId === null) {
+      deviceId = randomUUID();
+      globalThis.localStorage?.setItem("shuv2code.voice.device-id", deviceId);
+    }
+  } catch {
+    deviceId = randomUUID();
+  }
+  return {
+    deviceId: VoiceDeviceId.make(deviceId),
+    label: kind === "mobile" ? "Mobile device" : kind === "desktop" ? "Desktop app" : "Web browser",
+    kind,
+  };
 }
 
 function controllerPresentation(environmentId: EnvironmentId, controller: VoiceControllerIdentity) {
@@ -424,6 +455,7 @@ export class VoiceSessionController {
     VoiceSessionControllerDependencies["createPcmTransport"]
   >;
   readonly #createClientSessionId: () => string;
+  readonly #deviceIdentity: VoiceDeviceIdentity;
   readonly #detectSupport: () => VoiceBrowserSupport;
   readonly #scheduleRetry: (callback: () => void, delayMs: number) => () => void;
   readonly #listeners = new Set<(state: RealtimeVoiceSessionState) => void>();
@@ -465,6 +497,7 @@ export class VoiceSessionController {
     this.#createPcmTransport =
       dependencies.createPcmTransport ?? ((options) => new PcmVoiceTransport(options));
     this.#createClientSessionId = dependencies.createClientSessionId ?? defaultClientSessionId;
+    this.#deviceIdentity = dependencies.deviceIdentity ?? defaultVoiceDeviceIdentity();
     this.#detectSupport = dependencies.detectSupport ?? detectVoiceBrowserSupport;
     this.#scheduleRetry =
       dependencies.scheduleRetry ??
@@ -653,6 +686,9 @@ export class VoiceSessionController {
                   : ensured!.controller.controllerThreadId,
                 clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
                 generation: VoiceGeneration.make(generationIdentity.generation),
+                device: this.#deviceIdentity,
+                ...(input.callId === undefined ? {} : { callId: input.callId }),
+                ...(input.takeover === undefined ? {} : { takeover: input.takeover }),
                 ...(isThreadCall && input.modelSelection !== undefined
                   ? { transportModelSelection: input.modelSelection }
                   : {}),
@@ -733,6 +769,9 @@ export class VoiceSessionController {
             : ensured!.controller.controllerThreadId,
           clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
           generation: VoiceGeneration.make(generationIdentity.generation),
+          device: this.#deviceIdentity,
+          ...(input.callId === undefined ? {} : { callId: input.callId }),
+          ...(input.takeover === undefined ? {} : { takeover: input.takeover }),
           ...(isThreadCall && input.modelSelection !== undefined
             ? { transportModelSelection: input.modelSelection }
             : {}),
@@ -884,6 +923,14 @@ export class VoiceSessionController {
       runtimeInstanceId: started.runtimeInstanceId,
       realtimeSessionId: started.realtimeSessionId,
     };
+    if (
+      started.call !== undefined &&
+      started.call !== null &&
+      this.#startInput?.owner !== undefined
+    ) {
+      const { takeover: _takeover, ...startInput } = this.#startInput;
+      this.#startInput = { ...startInput, callId: started.call.callId };
+    }
     this.#subscribeToEvents(environmentId, {
       ...(started.environmentId === undefined ? {} : { environmentId: started.environmentId }),
       ...(started.owner === undefined ? {} : { owner: started.owner }),

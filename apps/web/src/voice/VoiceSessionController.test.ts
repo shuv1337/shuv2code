@@ -4,7 +4,10 @@ import {
   ProviderInstanceId,
   ThreadId,
   VoiceActionId,
+  VoiceCallId,
+  VoiceCallRevision,
   VoiceClientSessionId,
+  VoiceDeviceId,
   VoiceEventSequence,
   VoiceGeneration,
   VoiceRealtimeSessionId,
@@ -655,6 +658,102 @@ describe("VoiceSessionController", () => {
       environmentId,
       expect.objectContaining({ owner: { kind: "thread-call", threadId: callThreadId } }),
     );
+  });
+
+  it("takes over a Call with the device fence and reconnects by durable Call identity", async () => {
+    const callId = VoiceCallId.make("call-1");
+    const callThreadId = ThreadId.make("called-thread");
+    const start = vi.fn(async (_environmentId, input) => ({
+      environmentId,
+      owner: input.owner,
+      controller: null,
+      call: {
+        callId,
+        environmentId,
+        threadId: callThreadId,
+        state: "active" as const,
+        activeDevice: {
+          deviceId: VoiceDeviceId.make("desktop-device"),
+          label: "Desktop app",
+          kind: "desktop" as const,
+        },
+        activeTransportSessionId: `${input.clientSessionId}:${input.generation}`,
+        revision: VoiceCallRevision.make(input.generation + 4),
+        updatedAt: "2026-08-16T01:00:00.000Z",
+      },
+      transportThreadId,
+      clientSessionId: input.clientSessionId,
+      generation: input.generation,
+      runtimeInstanceId: VoiceRuntimeInstanceId.make(`runtime-${input.generation}`),
+      realtimeSessionId: VoiceRealtimeSessionId.make(`realtime-${input.generation}`),
+      answerSdp: "answer",
+      transportType: "webrtc" as const,
+      eventCursor: VoiceEventSequence.make(0),
+    }));
+    const controller = new VoiceSessionController({
+      api: {
+        ensureController: vi.fn(async () => {
+          throw new Error("Call must not ensure a Controller");
+        }),
+        listVoices: vi.fn(async () => voiceCatalog),
+        start,
+        stop: vi.fn(async () => ({ stopped: true })),
+        subscribe: () => () => {},
+      },
+      deviceIdentity: {
+        deviceId: VoiceDeviceId.make("desktop-device"),
+        label: "Desktop app",
+        kind: "desktop",
+      },
+      createTransport: () =>
+        ({
+          connect: async ({ exchangeOffer }: { exchangeOffer: (sdp: string) => Promise<string> }) =>
+            void (await exchangeOffer("offer")),
+          setMuted: vi.fn(),
+          close: vi.fn(),
+        }) as unknown as WebRtcVoiceTransport,
+      createClientSessionId: () => "desktop-client",
+      detectSupport: () => ({ supported: true, webrtc: true, pcm: false }),
+    });
+
+    await controller.start({
+      environmentId,
+      owner: { kind: "thread-call", threadId: callThreadId, threadTitle: "Active thread" },
+      takeover: {
+        callId,
+        expectedRevision: VoiceCallRevision.make(4),
+        expectedTransportSessionId: "mobile-client:1",
+      },
+      hostProjectId: projectId,
+      providerInstanceId,
+      authorizedRuntimeCeiling: "approval-required",
+    });
+
+    expect(start).toHaveBeenNthCalledWith(
+      1,
+      environmentId,
+      expect.objectContaining({
+        device: {
+          deviceId: "desktop-device",
+          label: "Desktop app",
+          kind: "desktop",
+        },
+        takeover: {
+          callId: "call-1",
+          expectedRevision: 4,
+          expectedTransportSessionId: "mobile-client:1",
+        },
+      }),
+    );
+
+    await controller.reconnect();
+
+    expect(start).toHaveBeenNthCalledWith(
+      2,
+      environmentId,
+      expect.objectContaining({ callId: "call-1", device: expect.any(Object) }),
+    );
+    expect(start.mock.calls[1]?.[1]).not.toHaveProperty("takeover");
   });
 
   it("keeps a thread Call connected when its next utterance reaches a busy thread", async () => {
