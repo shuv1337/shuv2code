@@ -18,8 +18,31 @@ describe("ProviderSettingsForm helpers", () => {
       "binaryPath",
       "homePath",
       "shadowHomePath",
+      "historyMode",
       "launchArgs",
     ]);
+  });
+
+  it("derives the Codex history mode selector and its legacy default", () => {
+    const codex = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("codex")];
+    expect(codex).toBeDefined();
+
+    const historyMode = deriveProviderSettingsFields(codex!).find(
+      (field) => field.key === "historyMode",
+    );
+
+    expect(historyMode).toMatchObject({
+      label: "Thread history",
+      control: "select",
+      defaultStringValue: "legacy",
+      options: [
+        { label: "Legacy", value: "legacy" },
+        { label: "Paginated (experimental)", value: "paginated" },
+      ],
+    });
+    expect(readProviderConfigString({}, "historyMode", historyMode?.defaultStringValue)).toBe(
+      "legacy",
+    );
   });
 
   it("sources labels and descriptions from schema annotations", () => {

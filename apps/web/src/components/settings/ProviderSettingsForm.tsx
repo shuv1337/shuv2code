@@ -6,12 +6,14 @@ import * as Schema from "effect/Schema";
 import type {
   ProviderSettingsFormAnnotation,
   ProviderSettingsFormControl,
+  ProviderSettingsFormOption,
   ProviderSettingsFormSchemaAnnotation,
 } from "@shuv2code/contracts";
 
 import { cn } from "../../lib/utils";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import type { ProviderClientDefinition } from "./providerDriverMeta";
@@ -22,8 +24,10 @@ export interface ProviderSettingsFieldModel {
   readonly label: string;
   readonly description?: string | undefined;
   readonly placeholder?: string | undefined;
+  readonly options?: readonly ProviderSettingsFormOption[] | undefined;
   readonly clearWhenEmpty: "omit" | "persist";
   readonly defaultBooleanValue?: boolean | undefined;
+  readonly defaultStringValue?: string | undefined;
 }
 
 function titleizeFieldKey(key: string): string {
@@ -69,6 +73,14 @@ function readFieldBooleanDefault(
   return Option.isSome(decoded) && typeof decoded.value === "boolean" ? decoded.value : undefined;
 }
 
+function readFieldStringDefault(
+  fieldSchema: ProviderClientDefinition["settingsSchema"]["fields"][string],
+): string | undefined {
+  const decodeDefault = Schema.decodeUnknownOption(fieldSchema as Schema.Decoder<unknown>);
+  const decoded = decodeDefault(undefined);
+  return Option.isSome(decoded) && typeof decoded.value === "string" ? decoded.value : undefined;
+}
+
 export function deriveProviderSettingsFields(
   definition: ProviderClientDefinition,
 ): ReadonlyArray<ProviderSettingsFieldModel> {
@@ -102,19 +114,23 @@ export function deriveProviderSettingsFields(
           ...(formAnnotation.placeholder !== undefined
             ? { placeholder: formAnnotation.placeholder }
             : {}),
+          ...(formAnnotation.options !== undefined ? { options: formAnnotation.options } : {}),
           clearWhenEmpty: formAnnotation.clearWhenEmpty ?? "omit",
           ...(formAnnotation.control === "switch"
             ? { defaultBooleanValue: readFieldBooleanDefault(fieldSchema) }
+            : {}),
+          ...(formAnnotation.control === "select"
+            ? { defaultStringValue: readFieldStringDefault(fieldSchema) }
             : {}),
         } satisfies ProviderSettingsFieldModel,
       ];
     });
 }
 
-export function readProviderConfigString(config: unknown, key: string): string {
-  if (config === null || typeof config !== "object") return "";
+export function readProviderConfigString(config: unknown, key: string, defaultValue = ""): string {
+  if (config === null || typeof config !== "object") return defaultValue;
   const value = (config as Record<string, unknown>)[key];
-  return typeof value === "string" ? value : "";
+  return typeof value === "string" ? value : defaultValue;
 }
 
 export function readProviderConfigBoolean(
@@ -232,6 +248,43 @@ function ProviderSettingsFieldRow({
             placeholder={field.placeholder}
             spellCheck={false}
           />
+          {description}
+        </label>
+      </FieldFrame>
+    );
+  }
+
+  if (field.control === "select") {
+    const selectedValue = readProviderConfigString(value, field.key, field.defaultStringValue);
+    const selectedLabel =
+      field.options?.find((option) => option.value === selectedValue)?.label ?? selectedValue;
+    return (
+      <FieldFrame variant={variant}>
+        <label htmlFor={inputId} className={cn(variant === "card" && "block")}>
+          {label}
+          <Select
+            value={selectedValue}
+            onValueChange={(nextValue) => {
+              if (nextValue !== null) {
+                onChange(nextProviderConfigWithFieldValue(value, field, nextValue));
+              }
+            }}
+          >
+            <SelectTrigger
+              id={inputId}
+              className={cn(variant === "card" && "mt-1.5")}
+              aria-label={field.label}
+            >
+              <SelectValue>{selectedLabel}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="start" alignItemWithTrigger={false}>
+              {field.options?.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
           {description}
         </label>
       </FieldFrame>
