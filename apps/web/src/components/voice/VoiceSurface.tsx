@@ -8,8 +8,9 @@ import type {
   VoiceControllerHistoryMessage,
   VoiceControllerIdentity,
 } from "@shuv2code/contracts";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
+  ArrowLeftRightIcon,
   CheckIcon,
   CircleAlertIcon,
   LoaderCircleIcon,
@@ -73,6 +74,7 @@ export interface VoiceSurfaceContext {
   readonly threadId: ThreadId | null;
   readonly threadTitle: string;
   readonly projectTitle: string;
+  readonly projectId?: ProjectId;
 }
 
 export interface VoiceSurfaceProps {
@@ -136,7 +138,9 @@ function VoiceModeSwitch(props: {
 
 function VoiceCallSurface(props: {
   readonly environmentId: EnvironmentId;
-  readonly currentContext: VoiceSurfaceContext;
+  readonly callEnvironmentId: EnvironmentId;
+  readonly callContext: VoiceSurfaceContext;
+  readonly viewedContext: VoiceSurfaceContext;
   readonly setup: VoiceSurfaceSetup | null;
   readonly sessionHere: boolean;
   readonly sessionActive: boolean;
@@ -146,6 +150,7 @@ function VoiceCallSurface(props: {
   readonly onControllerMode: () => void;
 }) {
   const voice = useVoiceSession();
+  const navigate = useNavigate();
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const phase = resolveVoicePresencePhase(
@@ -168,8 +173,8 @@ function VoiceCallSurface(props: {
             ? { label: "You · live", text: userText || "Listening…" }
             : null;
 
-  const startCall = async () => {
-    const threadId = props.currentContext.threadId;
+  const startCall = async (context = props.viewedContext) => {
+    const threadId = context.threadId;
     const setup = props.setup;
     if (threadId === null || setup === null || starting) return;
     setStarting(true);
@@ -187,7 +192,7 @@ function VoiceCallSurface(props: {
         owner: {
           kind: "thread-call",
           threadId,
-          threadTitle: props.currentContext.threadTitle,
+          threadTitle: context.threadTitle,
         },
         hostProjectId: setup.hostProjectId,
         providerInstanceId: setup.providerInstanceId,
@@ -202,6 +207,33 @@ function VoiceCallSurface(props: {
       setStarting(false);
     }
   };
+  const callDiffersFromView =
+    props.sessionActive &&
+    (props.callEnvironmentId !== props.environmentId ||
+      props.callContext.threadId !== props.viewedContext.threadId);
+
+  const returnToCallThread = () => {
+    const threadId = props.callContext.threadId;
+    if (threadId === null) return;
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: props.callEnvironmentId, threadId },
+    });
+  };
+
+  const moveCallToViewedThread = async () => {
+    if (props.viewedContext.threadId === null || starting) return;
+    setStarting(true);
+    setStartError(null);
+    try {
+      await voice.stop();
+      await startCall(props.viewedContext);
+    } catch (error) {
+      setStartError(errorMessage(error));
+    } finally {
+      setStarting(false);
+    }
+  };
 
   return (
     <div
@@ -213,21 +245,47 @@ function VoiceCallSurface(props: {
         presented={props.presented}
         activityLevel={voice.activityLevel}
       />
-      <div className="relative z-10 flex items-start gap-3 border-border/50 border-b px-4 py-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--voice-accent)_12%,transparent)] text-[var(--voice-accent)] transition-colors duration-700">
-          <PhoneIcon className="size-4" />
+      <div className="relative z-10 border-border/50 border-b px-4 py-3">
+        <div className="flex items-start gap-3">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--voice-accent)_12%,transparent)] text-[var(--voice-accent)] transition-colors duration-700">
+            <PhoneIcon className="size-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-semibold tracking-wide text-[var(--voice-accent)] uppercase">
+              Call thread
+            </p>
+            <h2 className="truncate text-sm font-semibold">{props.callContext.threadTitle}</h2>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              {props.callContext.projectTitle} · Durable work stays here
+            </p>
+          </div>
+          <span className="mt-1 shrink-0 text-[11px] font-medium text-[var(--voice-accent)] transition-colors duration-700">
+            Thread-owned
+          </span>
         </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate text-sm font-semibold">
-            Call {props.currentContext.threadTitle}
-          </h2>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {props.currentContext.projectTitle} · Voice turns stay in this thread
-          </p>
-        </div>
-        <span className="mt-1 shrink-0 text-[11px] font-medium text-[var(--voice-accent)] transition-colors duration-700">
-          Thread-owned
-        </span>
+        {callDiffersFromView ? (
+          <div className="mt-3 flex items-center gap-2 rounded-lg border border-border/60 bg-background/45 px-2.5 py-2">
+            <MessageSquareTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-medium text-muted-foreground uppercase">Viewing</p>
+              <p className="truncate text-xs font-medium">{props.viewedContext.threadTitle}</p>
+            </div>
+            <Button size="xs" variant="ghost" onClick={returnToCallThread}>
+              Return
+            </Button>
+            {props.viewedContext.threadId !== null && props.setup !== null ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={starting}
+                onClick={() => void moveCallToViewedThread()}
+              >
+                <ArrowLeftRightIcon />
+                Move call
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-end px-5 pb-[clamp(5rem,12vh,8rem)]">
@@ -267,7 +325,7 @@ function VoiceCallSurface(props: {
                 className="mt-4"
                 size="sm"
                 disabled={starting}
-                onClick={() => void startCall()}
+                onClick={() => void startCall(props.viewedContext)}
               >
                 {starting ? <LoaderCircleIcon className="animate-spin" /> : <PhoneIcon />}
                 {starting ? "Starting…" : "Start call"}
@@ -465,7 +523,9 @@ export function VoiceSurface({
       />
     ) : null;
 
-  const shownMode = mode;
+  // An active thread-owned Call remains the primary Voice surface across
+  // navigation, even when the newly viewed environment has another saved tab.
+  const shownMode = callSessionActive ? "call" : mode;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Voice">
@@ -535,7 +595,9 @@ export function VoiceSurface({
       {shownMode === "call" ? (
         <VoiceCallSurface
           environmentId={environmentId}
-          currentContext={callPresentation.context}
+          callEnvironmentId={callPresentation.environmentId}
+          callContext={callPresentation.context}
+          viewedContext={currentContext}
           setup={setup}
           sessionHere={callSessionHere}
           sessionActive={callSessionActive}

@@ -7,6 +7,7 @@ import type { VoicePresencePhase } from "./voicePresenceTheme";
 
 export interface VoiceCallPresentation {
   readonly sessionHere: boolean;
+  readonly environmentId: EnvironmentId;
   readonly context: VoiceSurfaceContext;
 }
 
@@ -40,20 +41,30 @@ export function resolveVoiceCallPresentation(
   state: RealtimeVoiceSessionState,
   currentContext: VoiceSurfaceContext,
 ): VoiceCallPresentation {
-  const sessionHere = state.environmentId === environmentId && state.owner?.kind === "thread-call";
-  if (!sessionHere) return { sessionHere: false, context: currentContext };
+  const sessionHere = state.owner?.kind === "thread-call";
+  if (!sessionHere) return { sessionHere: false, environmentId, context: currentContext };
 
   const presentation = state.controller;
-  if (presentation === null || presentation.environmentId !== environmentId) {
-    return { sessionHere: true, context: currentContext };
+  if (presentation === null) {
+    return {
+      sessionHere: true,
+      environmentId: state.environmentId ?? environmentId,
+      context: currentContext,
+    };
   }
 
   return {
     sessionHere: true,
+    environmentId: presentation.environmentId,
     context: {
       ...currentContext,
       threadId: presentation.threadId,
       threadTitle: presentation.title,
+      projectTitle:
+        currentContext.projectId === presentation.projectId
+          ? currentContext.projectTitle
+          : "Call project",
+      projectId: presentation.projectId,
     },
   };
 }

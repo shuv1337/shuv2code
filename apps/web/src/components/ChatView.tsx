@@ -6229,11 +6229,13 @@ function ChatViewContent(props: ChatViewProps) {
         threadId: isServerThread ? activeThread.id : null,
         threadTitle: activeThread.title,
         projectTitle: activeProject?.title ?? "Current project",
+        ...(activeProject === null ? {} : { projectId: activeProject.id }),
       },
       setup: voiceSurfaceSetup,
     }),
     [
       activeProject?.title,
+      activeProject?.id,
       activeThread.environmentId,
       activeThread.id,
       activeThread.title,

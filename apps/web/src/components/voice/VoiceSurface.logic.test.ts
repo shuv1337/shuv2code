@@ -37,14 +37,17 @@ describe("resolveVoiceCallPresentation", () => {
       threadId: ThreadId.make("thread-selected"),
       threadTitle: "Newly selected thread",
       projectTitle: "Project",
+      projectId: ProjectId.make("project-call"),
     });
 
     expect(resolved).toEqual({
       sessionHere: true,
+      environmentId,
       context: {
         threadId: callThreadId,
         threadTitle: "Original call thread",
         projectTitle: "Project",
+        projectId: ProjectId.make("project-call"),
       },
     });
   });
@@ -58,7 +61,27 @@ describe("resolveVoiceCallPresentation", () => {
 
     expect(
       resolveVoiceCallPresentation(environmentId, initialRealtimeVoiceState, currentContext),
-    ).toEqual({ sessionHere: false, context: currentContext });
+    ).toEqual({ sessionHere: false, environmentId, context: currentContext });
+  });
+
+  it("keeps a Call visible while viewing a thread in another environment", () => {
+    const viewedEnvironmentId = EnvironmentId.make("env-viewed");
+    expect(
+      resolveVoiceCallPresentation(viewedEnvironmentId, callState, {
+        threadId: ThreadId.make("thread-viewed"),
+        threadTitle: "Viewed elsewhere",
+        projectTitle: "Viewed project",
+      }),
+    ).toEqual({
+      sessionHere: true,
+      environmentId,
+      context: {
+        threadId: callThreadId,
+        threadTitle: "Original call thread",
+        projectTitle: "Call project",
+        projectId: ProjectId.make("project-call"),
+      },
+    });
   });
 });
 
