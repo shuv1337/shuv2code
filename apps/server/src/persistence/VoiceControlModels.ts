@@ -9,6 +9,11 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
   TurnId,
+  VoiceCallId,
+  VoiceCallRevision,
+  VoiceCallState,
+  VoiceDeviceId,
+  VoiceDeviceKind,
 } from "@shuv2code/contracts";
 import * as Schema from "effect/Schema";
 
@@ -75,6 +80,22 @@ export const VoiceCallEventKind = Schema.Literals([
 ]);
 export type VoiceCallEventKind = typeof VoiceCallEventKind.Type;
 
+export const VoiceCall = Schema.Struct({
+  callId: VoiceCallId,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  state: VoiceCallState,
+  activeTransportSessionId: Schema.NullOr(TrimmedNonEmptyString),
+  activeDeviceId: Schema.NullOr(VoiceDeviceId),
+  activeDeviceLabel: Schema.NullOr(TrimmedNonEmptyString),
+  activeDeviceKind: Schema.NullOr(VoiceDeviceKind),
+  revision: VoiceCallRevision,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  endedAt: Schema.NullOr(IsoDateTime),
+});
+export type VoiceCall = typeof VoiceCall.Type;
+
 /**
  * Provider-neutral, append-only Call lifecycle evidence. Unlike transport
  * events, these rows survive media generations and app restarts.
@@ -83,6 +104,8 @@ export const VoiceCallEvent = Schema.Struct({
   eventId: PositiveInt,
   environmentId: EnvironmentId,
   threadId: ThreadId,
+  callId: Schema.NullOr(VoiceCallId),
+  deviceId: Schema.NullOr(VoiceDeviceId),
   transportSessionId: TrimmedNonEmptyString,
   generation: PositiveInt,
   kind: VoiceCallEventKind,

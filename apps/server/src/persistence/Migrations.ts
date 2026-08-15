@@ -68,6 +68,7 @@ import Migration0049 from "./Migrations/049_VoiceSessionOwnership.ts";
 import Migration0050 from "./Migrations/050_VoiceSessionControllerAnchorCompatibility.ts";
 import Migration0051 from "./Migrations/051_ProjectionThreadMessageModality.ts";
 import Migration0052 from "./Migrations/052_VoiceCallEvents.ts";
+import Migration0053 from "./Migrations/053_VoiceCallOwnership.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -131,6 +132,7 @@ export const migrationEntries = [
   [50, "VoiceSessionControllerAnchorCompatibility", Migration0050],
   [51, "ProjectionThreadMessageModality", Migration0051],
   [52, "VoiceCallEvents", Migration0052],
+  [53, "VoiceCallOwnership", Migration0053],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import {
   VoiceAppendAudioInput,
+  VoiceCallPresence,
   VoiceControllerError,
   VoiceGetControllerHistoryResult,
   VoiceGeneration,
@@ -20,6 +21,7 @@ import {
 const decodeVoiceGetControllerHistoryResult = Schema.decodeUnknownSync(
   VoiceGetControllerHistoryResult,
 );
+const decodeVoiceCallPresence = Schema.decodeUnknownSync(VoiceCallPresence);
 const decodeVoiceSessionStartInput = Schema.decodeUnknownSync(VoiceSessionStartInput);
 
 describe("realtime voice contracts", () => {
@@ -76,6 +78,16 @@ describe("realtime voice contracts", () => {
       environmentId: "environment-1",
       owner: { kind: "thread-call", threadId: "thread-1" },
       controller: null,
+      call: {
+        callId: "call-1",
+        environmentId: "environment-1",
+        threadId: "thread-1",
+        state: "active",
+        activeDevice: { deviceId: "desktop-1", label: "Desktop", kind: "desktop" },
+        activeTransportSessionId: "call-session-1:1",
+        revision: 1,
+        updatedAt: "2026-08-15T23:00:00.000Z",
+      },
       transportThreadId: "transport-1",
       clientSessionId: "call-session-1",
       generation: 1,
@@ -88,6 +100,39 @@ describe("realtime voice contracts", () => {
 
     expect(result.owner).toEqual({ kind: "thread-call", threadId: "thread-1" });
     expect(result.controller).toBeNull();
+    expect(result.call?.activeDevice?.label).toBe("Desktop");
+  });
+
+  it("models a fenced cross-device Call takeover", () => {
+    const input = decodeVoiceSessionStartInput({
+      environmentId: "environment-1",
+      owner: { kind: "thread-call", threadId: "thread-1" },
+      controllerThreadId: "thread-1",
+      clientSessionId: "mobile-session-1",
+      generation: 1,
+      device: { deviceId: "mobile-1", label: "Phone", kind: "mobile" },
+      takeover: {
+        callId: "call-1",
+        expectedRevision: 4,
+        expectedTransportSessionId: "desktop-session-1:3",
+      },
+      transport: { type: "webrtc", offerSdp: "v=0\r\n" },
+    });
+
+    expect(input.device?.kind).toBe("mobile");
+    expect(input.takeover?.expectedRevision).toBe(4);
+    expect(
+      decodeVoiceCallPresence({
+        callId: "call-1",
+        environmentId: "environment-1",
+        threadId: "thread-1",
+        state: "dormant",
+        activeDevice: null,
+        activeTransportSessionId: null,
+        revision: 5,
+        updatedAt: "2026-08-15T23:00:00.000Z",
+      }).state,
+    ).toBe("dormant");
   });
 
   it("accepts a generation-fenced WebRTC offer", () => {

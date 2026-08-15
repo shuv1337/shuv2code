@@ -34,6 +34,55 @@ export type VoiceTranscriptItemId = typeof VoiceTranscriptItemId.Type;
 export const VoiceTranscriptionRequestId = makeVoiceId("VoiceTranscriptionRequestId");
 export type VoiceTranscriptionRequestId = typeof VoiceTranscriptionRequestId.Type;
 
+export const VoiceCallId = makeVoiceId("VoiceCallId");
+export type VoiceCallId = typeof VoiceCallId.Type;
+
+export const VoiceDeviceId = makeVoiceId("VoiceDeviceId");
+export type VoiceDeviceId = typeof VoiceDeviceId.Type;
+
+export const VoiceDeviceKind = Schema.Literals(["desktop", "mobile", "web"]);
+export type VoiceDeviceKind = typeof VoiceDeviceKind.Type;
+
+export const VoiceDeviceIdentity = Schema.Struct({
+  deviceId: VoiceDeviceId,
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  kind: VoiceDeviceKind,
+});
+export type VoiceDeviceIdentity = typeof VoiceDeviceIdentity.Type;
+
+export const VoiceCallRevision = PositiveInt.pipe(Schema.brand("VoiceCallRevision"));
+export type VoiceCallRevision = typeof VoiceCallRevision.Type;
+
+export const VoiceCallState = Schema.Literals(["active", "dormant", "ended"]);
+export type VoiceCallState = typeof VoiceCallState.Type;
+
+export const VoiceCallPresence = Schema.Struct({
+  callId: VoiceCallId,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  state: VoiceCallState,
+  activeDevice: Schema.NullOr(VoiceDeviceIdentity),
+  activeTransportSessionId: Schema.NullOr(TrimmedNonEmptyString),
+  revision: VoiceCallRevision,
+  updatedAt: IsoDateTime,
+});
+export type VoiceCallPresence = typeof VoiceCallPresence.Type;
+
+export const VoiceCallTakeover = Schema.Struct({
+  callId: VoiceCallId,
+  expectedRevision: VoiceCallRevision,
+  expectedTransportSessionId: TrimmedNonEmptyString,
+});
+export type VoiceCallTakeover = typeof VoiceCallTakeover.Type;
+
+export const VoiceGetActiveCallInput = Schema.Struct({});
+export type VoiceGetActiveCallInput = typeof VoiceGetActiveCallInput.Type;
+
+export const VoiceGetActiveCallResult = Schema.Struct({
+  call: Schema.NullOr(VoiceCallPresence),
+});
+export type VoiceGetActiveCallResult = typeof VoiceGetActiveCallResult.Type;
+
 /**
  * Durable semantic owner of a media session. This is deliberately separate
  * from the surface currently selected in the right panel.
@@ -246,6 +295,12 @@ export const VoiceSessionStartInput = Schema.Struct({
   controllerThreadId: ThreadId,
   clientSessionId: VoiceClientSessionId,
   generation: VoiceGeneration,
+  /** Stable physical/browser installation identity for cross-device Call ownership. */
+  device: Schema.optionalKey(VoiceDeviceIdentity),
+  /** Resume or move an existing dormant Call without creating a new identity. */
+  callId: Schema.optionalKey(VoiceCallId),
+  /** Explicit compare-and-swap takeover of an active listener on another device. */
+  takeover: Schema.optionalKey(VoiceCallTakeover),
   /**
    * Model used only for the low-latency realtime transport. For a direct
    * thread Call this is deliberately independent of the durable thread's
@@ -281,6 +336,8 @@ export const VoiceSessionStartResult = Schema.Struct({
   owner: Schema.optionalKey(VoiceSessionOwner),
   /** Present only for Controller and transcription sessions. */
   controller: Schema.NullOr(VoiceControllerIdentity),
+  /** Present for direct Calls on handoff-aware servers. */
+  call: Schema.optionalKey(Schema.NullOr(VoiceCallPresence)),
   transportThreadId: ThreadId,
   clientSessionId: VoiceClientSessionId,
   generation: VoiceGeneration,

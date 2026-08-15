@@ -5,6 +5,8 @@ import {
   PositiveInt,
   ThreadId,
   TrimmedNonEmptyString,
+  VoiceCallId,
+  VoiceDeviceId,
 } from "@shuv2code/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -17,6 +19,8 @@ import { VoiceCallEvent, VoiceCallEventKind } from "../VoiceControlModels.ts";
 export const AppendVoiceCallEventInput = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: ThreadId,
+  callId: Schema.optionalKey(Schema.NullOr(VoiceCallId)),
+  deviceId: Schema.optionalKey(Schema.NullOr(VoiceDeviceId)),
   transportSessionId: TrimmedNonEmptyString,
   generation: PositiveInt,
   kind: VoiceCallEventKind,
