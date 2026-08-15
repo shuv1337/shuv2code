@@ -47,10 +47,12 @@ import { makeVoiceControllerActionRunner } from "./voice/Layers/VoiceControllerA
 import { makeVoiceCallBridge } from "./voice/Layers/VoiceCallBridge.ts";
 import { makeVoiceControllerService } from "./voice/Layers/VoiceControllerService.ts";
 import { makeVoiceTargetMonitor } from "./voice/Layers/VoiceTargetMonitor.ts";
+import { makeVoiceSpeechArbiter } from "./voice/Layers/VoiceSpeechArbiter.ts";
 import { makeVoiceTransportCoordinator } from "./voice/Layers/VoiceTransportCoordinator.ts";
 import { VoiceControllerActionRunner } from "./voice/Services/VoiceControllerActionRunner.ts";
 import { VoiceCallBridge } from "./voice/Services/VoiceCallBridge.ts";
 import { VoiceTargetMonitor } from "./voice/Services/VoiceTargetMonitor.ts";
+import { VoiceSpeechArbiter } from "./voice/Services/VoiceSpeechArbiter.ts";
 import { VoiceTransportCoordinator } from "./voice/Services/VoiceTransportCoordinator.ts";
 import {
   VoiceRuntimeGateway,
@@ -312,6 +314,13 @@ describe("authenticated voice RPC vertical integration", () => {
           }),
         );
         const settings = Context.get(settingsContext, ServerSettings.ServerSettingsService);
+        const speechArbiter = yield* makeVoiceSpeechArbiter((attempt) =>
+          runtime.appendTransportSpeech({
+            transportThreadId: attempt.session.fence.transportThreadId,
+            generation: attempt.session.fence.generation,
+            text: attempt.requestedText,
+          }),
+        );
         const transportCoordinator = yield* makeVoiceTransportCoordinator().pipe(
           Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
           Effect.provideService(OrchestrationEngineService, engine),
@@ -319,6 +328,7 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(VoiceTransportSessionRepository, transports),
           Effect.provideService(VoiceControllerActionRepository, actions),
           Effect.provideService(VoiceRuntimeGateway, runtime),
+          Effect.provideService(VoiceSpeechArbiter, speechArbiter),
           Effect.provide(NodeServices.layer),
         );
         const targetMonitor = yield* makeVoiceTargetMonitor().pipe(
@@ -344,6 +354,7 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
           Effect.provideService(VoiceTargetMonitor, targetMonitor),
           Effect.provideService(VoiceCallBridge, callBridge),
+          Effect.provideService(VoiceSpeechArbiter, speechArbiter),
           Effect.provide(NodeServices.layer),
         );
         const voiceController = yield* makeVoiceControllerService().pipe(
@@ -357,6 +368,7 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
           Effect.provideService(VoiceTargetMonitor, targetMonitor),
           Effect.provideService(VoiceControllerActionRunner, actionRunner),
+          Effect.provideService(VoiceSpeechArbiter, speechArbiter),
           Effect.provide(NodeServices.layer),
         );
 
@@ -527,7 +539,7 @@ describe("authenticated voice RPC vertical integration", () => {
             (command) =>
               command.type === "thread.turn.start" && command.threadId === targetThreadId,
           ),
-          1,
+          0,
         );
         const callHandoff = {
           ...callFence,

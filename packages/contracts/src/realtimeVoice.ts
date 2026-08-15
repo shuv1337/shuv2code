@@ -351,6 +351,13 @@ export const VoiceRealtimeTranscriptIngressEvent = Schema.Struct({
   itemId: VoiceTranscriptItemId,
   role: Schema.Literals(["user", "assistant"]),
   text: Schema.String.check(Schema.isMaxLength(120_000)),
+  /** True only when this transcript also marks the provider output turn complete. */
+  outputDone: Schema.optionalKey(Schema.Boolean),
+});
+
+export const VoiceRealtimeOutputIngressEvent = Schema.Struct({
+  type: Schema.Literals(["output.started", "output.done"]),
+  itemId: VoiceTranscriptItemId,
 });
 
 export const VoiceRealtimeHandoffIngressEvent = Schema.Struct({
@@ -370,6 +377,7 @@ export const VoiceRealtimeHandoffIngressEvent = Schema.Struct({
 
 export const VoiceRealtimeIngressEvent = Schema.Union([
   VoiceRealtimeTranscriptIngressEvent,
+  VoiceRealtimeOutputIngressEvent,
   VoiceRealtimeHandoffIngressEvent,
 ]);
 export type VoiceRealtimeIngressEvent = typeof VoiceRealtimeIngressEvent.Type;

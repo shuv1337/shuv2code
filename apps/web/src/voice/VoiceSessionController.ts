@@ -216,6 +216,27 @@ export function parseRealtimeVoiceDataChannelEvent(
   try {
     const message = JSON.parse(data) as unknown;
     if (!isRecord(message) || typeof message.type !== "string") return undefined;
+    if (
+      message.type === "response.created" ||
+      message.type === "response.output_audio.done" ||
+      message.type === "response.audio.done" ||
+      message.type === "response.done"
+    ) {
+      const response = isRecord(message.response) ? message.response : undefined;
+      const itemId =
+        typeof message.item_id === "string" && message.item_id.length > 0
+          ? message.item_id
+          : typeof message.response_id === "string" && message.response_id.length > 0
+            ? message.response_id
+            : typeof response?.id === "string" && response.id.length > 0
+              ? response.id
+              : "";
+      if (itemId.length === 0 || itemId.length > 256) return undefined;
+      return {
+        type: message.type === "response.created" ? "output.started" : "output.done",
+        itemId: VoiceTranscriptItemId.make(itemId),
+      };
+    }
     if (message.type === "input_transcript.added" || message.type === "output_transcript.added") {
       const item = message.item;
       const role = message.type === "input_transcript.added" ? "user" : "assistant";
@@ -341,6 +362,7 @@ export function parseRealtimeVoiceDataChannelEvent(
         itemId: VoiceTranscriptItemId.make(turnId),
         role,
         text: turn.transcript,
+        ...(role === "assistant" ? { outputDone: true } : {}),
       } as VoiceRealtimeIngressEvent;
     }
     if (message.type !== "delegation.created") return undefined;
@@ -1069,7 +1091,7 @@ export class VoiceSessionController {
     }
     const pending = this.#clientTranscriptFinalizationQueue.get(event.role);
     const queued = pending?.[0];
-    if (queued !== undefined) {
+    if (queued !== undefined && pending !== undefined) {
       if (pending.length === 1) {
         this.#clientTranscriptFinalizationQueue.delete(event.role);
       } else {

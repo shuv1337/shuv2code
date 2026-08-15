@@ -18,6 +18,7 @@ export interface VoiceNarrationCheckpoint {
 export interface VoiceNarrationRuntimeState {
   readonly pending: VoiceNarrationCheckpoint | null;
   readonly lastNarratedKey: string | null;
+  readonly lastNarratedText: string | null;
   readonly lastSpeechAtMs: number;
 }
 
@@ -115,6 +116,7 @@ export const voiceNarrationCheckpoint = (
 export const initialVoiceNarrationRuntimeState = (nowMs: number): VoiceNarrationRuntimeState => ({
   pending: null,
   lastNarratedKey: null,
+  lastNarratedText: null,
   lastSpeechAtMs: nowMs,
 });
 
@@ -127,7 +129,12 @@ export const decideVoiceNarration = (input: {
   if (intervalMs === null) return { speak: false, text: "", reason: "quiet" };
   const pending = input.state.pending;
   if (pending === null) return { speak: false, text: "", reason: "idle" };
-  if (pending.key === input.state.lastNarratedKey) {
+  const normalizedPendingText = pending.text.trim().replaceAll(/\s+/g, " ").toLowerCase();
+  const normalizedLastText = input.state.lastNarratedText
+    ?.trim()
+    .replaceAll(/\s+/g, " ")
+    .toLowerCase();
+  if (pending.key === input.state.lastNarratedKey || normalizedPendingText === normalizedLastText) {
     return { speak: false, text: pending.text, reason: "duplicate" };
   }
   if (input.nowMs - input.state.lastSpeechAtMs < intervalMs) {

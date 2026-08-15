@@ -7,7 +7,6 @@ import {
   VoiceGeneration,
   VoiceRealtimeSessionId,
   VoiceRuntimeInstanceId,
-  VoiceTranscriptItemId,
   VoiceTranscriptionRequestId,
   resolveVoiceSessionStartTransport,
   type VoiceSessionEvent,
@@ -35,6 +34,7 @@ import {
   type VoiceTransportCoordinatorShape,
 } from "../Services/VoiceTransportCoordinator.ts";
 import { VoiceRuntimeGateway } from "../Services/VoiceRuntimeGateway.ts";
+import { VoiceSpeechArbiter } from "../Services/VoiceSpeechArbiter.ts";
 import {
   decideProactiveSpeech,
   rememberProactiveSpeech,
@@ -98,6 +98,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
     const transports = yield* VoiceTransportSessionRepository;
     const actions = yield* VoiceControllerActionRepository;
     const runtime = yield* VoiceRuntimeGateway;
+    const speechArbiter = yield* VoiceSpeechArbiter;
     const events = yield* PubSub.unbounded<VoiceSessionEvent>();
     const eventMutex = yield* Semaphore.make(1);
     const sessionsRef = yield* Ref.make(new Map<string, ActiveVoiceSession>());
@@ -945,34 +946,18 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
             );
           }
           if (decision.speak) {
-            yield* runVoiceTransportFeedback(
-              runtime.appendTransportSpeech({
-                transportThreadId: session.fence.transportThreadId,
-                generation: session.fence.generation,
-                text: decision.text,
-              }),
-            );
+            yield* speechArbiter.enqueue({
+              attemptId: yield* randomUuid,
+              source: "controller",
+              session,
+              threadId: session.fence.controllerThreadId,
+              turnId: null,
+              requestedText: decision.text,
+              requestedAt: DateTime.formatIso(yield* DateTime.now),
+            });
           }
         },
       ),
-      speakExplicitly: Effect.fn("VoiceTransportCoordinator.speakExplicitly")(function* (input) {
-        const text = input.text.trim().slice(0, 2_048);
-        if (text.length === 0) return;
-        yield* emit(input.session.fence.clientSessionId, {
-          type: "transcript.done",
-          itemId: VoiceTranscriptItemId.make(`thread-speech:${input.session.eventCursor + 1}`),
-          role: "assistant",
-          text,
-          source: "thread",
-        });
-        yield* runVoiceTransportFeedback(
-          runtime.appendTransportSpeech({
-            transportThreadId: input.session.fence.transportThreadId,
-            generation: input.session.fence.generation,
-            text,
-          }),
-        );
-      }),
     });
   },
 );

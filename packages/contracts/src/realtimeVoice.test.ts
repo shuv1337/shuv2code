@@ -276,6 +276,19 @@ describe("realtime voice contracts", () => {
         source: "thread",
       }),
     ).toMatchObject({ source: "thread" });
+    expect(
+      Schema.decodeUnknownSync(VoiceRealtimeIngressInput)({
+        environmentId: "env-1",
+        owner: { kind: "thread-call", threadId: "thread-1" },
+        controllerThreadId: "thread-1",
+        transportThreadId: "transport-1",
+        clientSessionId: "client-1",
+        generation: 1,
+        runtimeInstanceId: "runtime-1",
+        realtimeSessionId: "realtime-1",
+        event: { type: "output.done", itemId: "provider-output-1" },
+      }),
+    ).toMatchObject({ event: { type: "output.done", itemId: "provider-output-1" } });
   });
 
   it("rejects oversized error messages", () => {

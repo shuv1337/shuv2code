@@ -32,6 +32,7 @@ export interface VoiceControllerActionRunnerShape {
       readonly itemId: VoiceTranscriptItemId;
       readonly role: "user" | "assistant";
       readonly text: string;
+      readonly outputDone?: boolean;
     },
   ) => Effect.Effect<VoiceRealtimeIngressResult, VoiceControllerError>;
 }

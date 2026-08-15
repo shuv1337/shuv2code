@@ -195,7 +195,24 @@ describe("VoiceSessionController", () => {
       itemId: "live-assistant",
       role: "assistant",
       text: "The live response is complete.",
+      outputDone: true,
     });
+    expect(
+      parseRealtimeVoiceDataChannelEvent(
+        JSON.stringify({
+          type: "response.created",
+          response: { id: "response-started" },
+        }),
+      ),
+    ).toEqual({ type: "output.started", itemId: "response-started" });
+    expect(
+      parseRealtimeVoiceDataChannelEvent(
+        JSON.stringify({
+          type: "response.done",
+          response: { id: "response-completed", status: "completed" },
+        }),
+      ),
+    ).toEqual({ type: "output.done", itemId: "response-completed" });
     expect(
       parseRealtimeVoiceDataChannelEvent(
         JSON.stringify({
@@ -623,6 +640,7 @@ describe("VoiceSessionController", () => {
           itemId: "call-assistant-turn",
           role: "assistant",
           text: "I'm checking.",
+          outputDone: true,
         },
       }),
     );

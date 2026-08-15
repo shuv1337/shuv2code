@@ -130,10 +130,6 @@ export interface VoiceTransportCoordinatorShape {
     readonly targetThreadId?: ThreadId;
     readonly phase?: VoiceTargetPhase;
   }) => Effect.Effect<void>;
-  readonly speakExplicitly: (input: {
-    readonly session: ActiveVoiceSession;
-    readonly text: string;
-  }) => Effect.Effect<void>;
   readonly appendAudio: (
     input: VoiceAppendAudioInput,
   ) => Effect.Effect<VoiceAppendAudioResult, VoiceControllerError>;

@@ -1,0 +1,208 @@
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  VoiceClientSessionId,
+  VoiceGeneration,
+  VoiceRealtimeSessionId,
+  VoiceRuntimeInstanceId,
+  VoiceTranscriptItemId,
+} from "@shuv2code/contracts";
+import { assert, describe, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Ref from "effect/Ref";
+
+import type { VoiceSpeechSource } from "../Services/VoiceSpeechArbiter.ts";
+import type { ActiveVoiceSession } from "../Services/VoiceTransportCoordinator.ts";
+import { makeVoiceSpeechArbiter } from "./VoiceSpeechArbiter.ts";
+
+const session = (generation = 1): ActiveVoiceSession => ({
+  transportSessionId: `call-client:${generation}`,
+  fence: {
+    environmentId: EnvironmentId.make("environment"),
+    owner: { kind: "thread-call", threadId: ThreadId.make("thread") },
+    controllerThreadId: ThreadId.make("thread"),
+    transportThreadId: ThreadId.make("transport"),
+    clientSessionId: VoiceClientSessionId.make("call-client"),
+    generation: VoiceGeneration.make(generation),
+    runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime"),
+    realtimeSessionId: VoiceRealtimeSessionId.make("realtime"),
+  },
+  environmentId: EnvironmentId.make("environment"),
+  hostProjectId: ProjectId.make("project"),
+  providerInstanceId: ProviderInstanceId.make("codex"),
+  controller: null,
+  controllerRuntime: null,
+  transportType: "webrtc",
+  purpose: "conversation",
+  answerSdp: "answer",
+  lastAudioSequence: 0,
+  eventCursor: 0,
+  history: [],
+});
+
+const attempt = (
+  activeSession: ActiveVoiceSession,
+  attemptId: string,
+  source: VoiceSpeechSource,
+  requestedText: string,
+) => ({
+  attemptId,
+  source,
+  session: activeSession,
+  threadId: ThreadId.make("thread"),
+  turnId: null,
+  requestedText,
+  requestedAt: "2026-08-15T00:00:00.000Z",
+});
+
+describe("VoiceSpeechArbiter", () => {
+  it.effect("serializes speech and lets authored narration displace queued ambient work", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const arbiter = yield* makeVoiceSpeechArbiter((speech) =>
+        Ref.update(sent, (all) => [...all, speech.requestedText]),
+      );
+      const activeSession = session();
+
+      assert.strictEqual(
+        yield* arbiter.enqueue(attempt(activeSession, "ambient-1", "ambient", "First check.")),
+        true,
+      );
+      assert.strictEqual(
+        yield* arbiter.enqueue(
+          attempt(activeSession, "ambient-duplicate", "ambient", " first  check. "),
+        ),
+        false,
+      );
+      assert.strictEqual(
+        yield* arbiter.enqueue(attempt(activeSession, "ambient-2", "ambient", "Second check.")),
+        true,
+      );
+      assert.strictEqual(
+        yield* arbiter.enqueue(attempt(activeSession, "authored-1", "authored", "I found it.")),
+        true,
+      );
+      assert.strictEqual(
+        yield* arbiter.enqueue(
+          attempt(activeSession, "controller-1", "controller", "The target changed."),
+        ),
+        true,
+      );
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First check."]);
+
+      const first = yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-ambient"),
+        text: "The first check is running.",
+        occurredAt: "2026-08-15T00:00:01.000Z",
+        outputDone: true,
+      });
+      assert.strictEqual(first.claimed, true);
+      assert.strictEqual(first.completion?.source, "ambient");
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First check.", "I found it."]);
+
+      const authored = yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-authored"),
+        text: "I actually found the root cause.",
+        occurredAt: "2026-08-15T00:00:02.000Z",
+        outputDone: true,
+      });
+      assert.strictEqual(authored.completion?.requestedText, "I found it.");
+      assert.strictEqual(authored.completion?.deliveredText, "I actually found the root cause.");
+      assert.deepStrictEqual(yield* Ref.get(sent), [
+        "First check.",
+        "I found it.",
+        "The target changed.",
+      ]);
+
+      const controller = yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-controller"),
+        text: "The target has changed.",
+        occurredAt: "2026-08-15T00:00:03.000Z",
+        outputDone: true,
+      });
+      assert.strictEqual(controller.completion?.source, "controller");
+    }),
+  );
+
+  it.effect("waits for native realtime output before starting app-injected speech", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const arbiter = yield* makeVoiceSpeechArbiter((speech) =>
+        Ref.update(sent, (all) => [...all, speech.requestedText]),
+      );
+      const activeSession = session();
+
+      yield* arbiter.observeUserSpeech(activeSession);
+      yield* arbiter.enqueue(attempt(activeSession, "authored-1", "authored", "My update."));
+      assert.deepStrictEqual(yield* Ref.get(sent), []);
+
+      const native = yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("native-ack"),
+        text: "I’ll check that now.",
+        occurredAt: "2026-08-15T00:00:01.000Z",
+        outputDone: true,
+      });
+      assert.strictEqual(native.claimed, false);
+      assert.deepStrictEqual(yield* Ref.get(sent), ["My update."]);
+    }),
+  );
+
+  it.effect("waits for output completion after receiving an early provider transcript", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const arbiter = yield* makeVoiceSpeechArbiter((speech) =>
+        Ref.update(sent, (all) => [...all, speech.requestedText]),
+      );
+      const activeSession = session();
+
+      yield* arbiter.enqueue(attempt(activeSession, "authored-1", "authored", "First."));
+      yield* arbiter.enqueue(attempt(activeSession, "authored-2", "authored", "Second."));
+      const transcript = yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-first"),
+        text: "Delivered first.",
+        occurredAt: "2026-08-15T00:00:01.000Z",
+        outputDone: false,
+      });
+      assert.strictEqual(transcript.claimed, true);
+      assert.isUndefined(transcript.completion);
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First."]);
+
+      const completion = yield* arbiter.observeOutputDone(
+        activeSession,
+        "2026-08-15T00:00:02.000Z",
+      );
+      assert.strictEqual(completion?.deliveredText, "Delivered first.");
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First.", "Second."]);
+    }),
+  );
+
+  it.effect("claims interrupted injected speech without projecting it as delivered", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const arbiter = yield* makeVoiceSpeechArbiter((speech) =>
+        Ref.update(sent, (all) => [...all, speech.requestedText]),
+      );
+      const activeSession = session();
+
+      yield* arbiter.enqueue(attempt(activeSession, "authored-1", "authored", "Long update."));
+      yield* arbiter.observeUserSpeech(activeSession);
+      const interrupted = yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-interrupted"),
+        text: "Long upd—",
+        occurredAt: "2026-08-15T00:00:01.000Z",
+        outputDone: true,
+      });
+
+      assert.strictEqual(interrupted.claimed, true);
+      assert.isUndefined(interrupted.completion);
+    }),
+  );
+});

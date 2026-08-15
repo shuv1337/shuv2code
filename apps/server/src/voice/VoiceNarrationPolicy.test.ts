@@ -112,5 +112,16 @@ describe("VoiceNarrationPolicy", () => {
         nowMs: 90_000,
       }),
     ).toMatchObject({ speak: false, reason: "duplicate" });
+    expect(
+      decideVoiceNarration({
+        policy,
+        state: {
+          ...state,
+          pending: { ...pending, key: "another-tool:item.started" },
+          lastNarratedText: pending.text,
+        },
+        nowMs: 90_000,
+      }),
+    ).toMatchObject({ speak: false, reason: "duplicate" });
   });
 });

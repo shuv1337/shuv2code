@@ -1,4 +1,10 @@
-import { CommandId, ThreadId, VoiceActionId, VoiceTranscriptItemId } from "@shuv2code/contracts";
+import {
+  CommandId,
+  MessageId,
+  ThreadId,
+  VoiceActionId,
+  VoiceTranscriptItemId,
+} from "@shuv2code/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -22,6 +28,7 @@ import {
   type VoiceControllerActionRunnerShape,
 } from "../Services/VoiceControllerActionRunner.ts";
 import { VoiceCallBridge } from "../Services/VoiceCallBridge.ts";
+import { VoiceSpeechArbiter, type VoiceSpeechCompletion } from "../Services/VoiceSpeechArbiter.ts";
 import { VoiceTargetMonitor } from "../Services/VoiceTargetMonitor.ts";
 import { VoiceTransportCoordinator } from "../Services/VoiceTransportCoordinator.ts";
 import { VoiceRuntimeGateway } from "../Services/VoiceRuntimeGateway.ts";
@@ -47,6 +54,7 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
     const transport = yield* VoiceTransportCoordinator;
     const targets = yield* VoiceTargetMonitor;
     const callBridge = yield* VoiceCallBridge;
+    const speechArbiter = yield* VoiceSpeechArbiter;
     const actionQueue = yield* Queue.unbounded<QueuedControllerAction>();
     const queuedActionIdsRef = yield* Ref.make(new Set<string>());
 
@@ -56,6 +64,27 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
         voiceError("internal_error", "The live voice policy could not be read.", false),
       ),
     );
+
+    const persistSpeechCompletion = Effect.fn(
+      "VoiceControllerActionRunner.persistSpeechCompletion",
+    )(function* (completion: VoiceSpeechCompletion) {
+      if (completion.source !== "authored") return;
+      yield* engine
+        .dispatch({
+          type: "thread.voice.speech.append",
+          commandId: CommandId.make(`voice-speech:${completion.attemptId}:append`),
+          threadId: completion.threadId,
+          turnId: completion.turnId,
+          messageId: MessageId.make(`voice-speech:${completion.attemptId}`),
+          text: completion.deliveredText,
+          createdAt: completion.completedAt,
+        })
+        .pipe(
+          Effect.mapError(() =>
+            voiceError("internal_error", "The delivered spoken response could not be saved.", true),
+          ),
+        );
+    });
 
     const enqueueHandoff: VoiceControllerActionRunnerShape["enqueueHandoff"] = Effect.fn(
       "VoiceControllerActionRunner.enqueueHandoff",
@@ -120,8 +149,31 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
             false,
           );
         }
+        if (event.role === "user") {
+          yield* speechArbiter.observeUserSpeech(session);
+        } else {
+          const observation = yield* speechArbiter.observeTranscript({
+            session,
+            itemId: event.itemId,
+            text: event.text,
+            occurredAt: DateTime.formatIso(yield* DateTime.now),
+            outputDone: event.outputDone === true,
+          });
+          if (observation.claimed) {
+            if (observation.completion !== undefined) {
+              yield* persistSpeechCompletion(observation.completion);
+            }
+            return { accepted: true };
+          }
+        }
+        const publicTranscriptEvent = {
+          type: event.type,
+          itemId: event.itemId,
+          role: event.role,
+          text: event.text,
+        } as const;
         const transcriptEvent =
-          prior ?? (yield* transport.emit(session.fence.clientSessionId, event));
+          prior ?? (yield* transport.emit(session.fence.clientSessionId, publicTranscriptEvent));
         if (transcriptEvent === undefined) {
           return yield* voiceError("session_not_found", "The voice session is not active.", false);
         }
@@ -161,8 +213,23 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
           false,
         );
       }
+      if (input.event.type === "output.started") {
+        yield* speechArbiter.observeOutputStarted(session);
+        return { accepted: true };
+      }
+      if (input.event.type === "output.done") {
+        const completion = yield* speechArbiter.observeOutputDone(
+          session,
+          DateTime.formatIso(yield* DateTime.now),
+        );
+        if (completion !== undefined) yield* persistSpeechCompletion(completion);
+        return { accepted: true };
+      }
       if (input.event.type === "transcript.done") {
         return yield* ingestTranscriptDone(session, input.event);
+      }
+      if (input.event.type !== "handoff") {
+        return { accepted: false };
       }
       if (session.fence.owner?.kind === "thread-call") {
         const delegated = yield* callBridge.delegateUtterance({

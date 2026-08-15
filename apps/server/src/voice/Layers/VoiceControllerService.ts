@@ -1,6 +1,5 @@
 import {
   CommandId,
-  MessageId,
   ThreadId,
   VoiceControllerHistoryMessageId,
   VoiceTranscriptItemId,
@@ -28,6 +27,7 @@ import { resolveVoiceControlPolicy, ServerSettingsService } from "../../serverSe
 import { parseVoiceHandoffRequest } from "../VoiceHandoffRequest.ts";
 import { VoiceControllerService } from "../Services/VoiceControllerService.ts";
 import { VoiceControllerActionRunner } from "../Services/VoiceControllerActionRunner.ts";
+import { VoiceSpeechArbiter } from "../Services/VoiceSpeechArbiter.ts";
 import { VoiceTargetMonitor } from "../Services/VoiceTargetMonitor.ts";
 import {
   type ActiveVoiceSession,
@@ -54,6 +54,7 @@ import {
   voiceError,
 } from "./voiceControllerShared.ts";
 import { VoiceControllerActionRunnerLive } from "./VoiceControllerActionRunner.ts";
+import { VoiceSpeechArbiterLive } from "./VoiceSpeechArbiter.ts";
 import { VoiceTargetMonitorLive } from "./VoiceTargetMonitor.ts";
 import { VoiceTransportCoordinatorLive } from "./VoiceTransportCoordinator.ts";
 import type { ProviderThreadSnapshot } from "../../provider/Services/ProviderAdapter.ts";
@@ -184,6 +185,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const transport = yield* VoiceTransportCoordinator;
   const targets = yield* VoiceTargetMonitor;
   const actionRunner = yield* VoiceControllerActionRunner;
+  const speechArbiter = yield* VoiceSpeechArbiter;
   const randomUuid = crypto.randomUUIDv4.pipe(Effect.orDie);
   const controllerLifecycle = yield* Semaphore.make(1);
   const narrationLifecycle = yield* Semaphore.make(1);
@@ -731,7 +733,14 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const start: VoiceControllerService["Service"]["start"] = (input) =>
     controllerLifecycle.withPermits(1)(startUnlocked(input));
 
-  const stop: VoiceControllerService["Service"]["stop"] = (input) => transport.stop(input);
+  const stop: VoiceControllerService["Service"]["stop"] = Effect.fn("VoiceControllerService.stop")(
+    function* (input) {
+      const session = yield* transport.getSession(input.clientSessionId);
+      const result = yield* transport.stop(input);
+      if (session !== undefined) yield* speechArbiter.close(session);
+      return result;
+    },
+  );
 
   const resetControllerUnlocked: VoiceControllerService["Service"]["resetController"] = Effect.fn(
     "VoiceControllerService.resetController",
@@ -815,44 +824,63 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const appendAudio: VoiceControllerService["Service"]["appendAudio"] = (input) =>
     transport.appendAudio(input);
 
-  const speakInThreadCall: VoiceControllerService["Service"]["speakInThreadCall"] = Effect.fn(
-    "VoiceControllerService.speakInThreadCall",
-  )(function* (input) {
-    const session = Array.from((yield* transport.getSessions()).values()).find(
-      (candidate) =>
-        candidate.environmentId === input.environmentId &&
-        candidate.fence.owner?.kind === "thread-call" &&
-        candidate.fence.owner.threadId === input.threadId,
-    );
-    if (session === undefined) return false;
-    const text = input.text.trim().slice(0, 2_048);
-    if (text.length === 0) return false;
-    const thread = yield* projection
-      .getThreadDetailById(input.threadId)
-      .pipe(
-        Effect.mapError(mapInternalError("internal_error", "The called thread could not be read.")),
+  const queueThreadCallSpeech = Effect.fn("VoiceControllerService.queueThreadCallSpeech")(
+    function* (input: {
+      readonly environmentId: import("@shuv2code/contracts").EnvironmentId;
+      readonly threadId: ThreadId;
+      readonly text: string;
+      readonly source: "authored" | "ambient";
+    }) {
+      const session = Array.from((yield* transport.getSessions()).values()).find(
+        (candidate) =>
+          candidate.environmentId === input.environmentId &&
+          candidate.fence.owner?.kind === "thread-call" &&
+          candidate.fence.owner.threadId === input.threadId,
       );
-    if (Option.isNone(thread)) return false;
-    const createdAt = DateTime.formatIso(yield* DateTime.now);
-    const speechId = yield* randomUuid;
-    yield* engine
-      .dispatch({
-        type: "thread.voice.speech.append",
-        commandId: CommandId.make(`voice-speech:${speechId}:append`),
+      if (session === undefined) return false;
+      const text = input.text.trim().slice(0, 2_048);
+      if (text.length === 0) return false;
+      const thread =
+        input.source === "authored"
+          ? yield* projection
+              .getThreadDetailById(input.threadId)
+              .pipe(
+                Effect.mapError(
+                  mapInternalError("internal_error", "The called thread could not be read."),
+                ),
+              )
+          : Option.none();
+      if (input.source === "authored" && Option.isNone(thread)) return false;
+      const createdAt = DateTime.formatIso(yield* DateTime.now);
+      const speechId = yield* randomUuid;
+      const accepted = yield* speechArbiter.enqueue({
+        attemptId: speechId,
+        source: input.source,
+        session,
         threadId: input.threadId,
-        turnId: thread.value.latestTurn?.turnId ?? null,
-        messageId: MessageId.make(`voice-speech:${speechId}`),
-        text,
-        createdAt,
-      })
-      .pipe(
-        Effect.mapError(
-          mapInternalError("internal_error", "The spoken response could not be saved."),
-        ),
-      );
-    yield* transport.speakExplicitly({ session, text });
-    return true;
-  });
+        turnId: Option.isSome(thread) ? (thread.value.latestTurn?.turnId ?? null) : null,
+        requestedText: text,
+        requestedAt: createdAt,
+      });
+      if (accepted && input.source === "authored") {
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        yield* Ref.update(narrationStatesRef, (states) => {
+          const current = states.get(session.transportSessionId);
+          const next = new Map(states);
+          next.set(session.transportSessionId, {
+            ...(current ?? initialVoiceNarrationRuntimeState(nowMs)),
+            pending: null,
+            lastSpeechAtMs: nowMs,
+          });
+          return next;
+        });
+      }
+      return accepted;
+    },
+  );
+
+  const speakInThreadCall: VoiceControllerService["Service"]["speakInThreadCall"] = (input) =>
+    queueThreadCallSpeech({ ...input, source: "authored" });
 
   const activeThreadCallSessions = Effect.fn("VoiceControllerService.activeThreadCallSessions")(
     function* (threadId: ThreadId) {
@@ -899,10 +927,11 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
           });
           if (!decision.speak || current.pending === null) return;
           const narratedKey = current.pending.key;
-          const spoken = yield* speakInThreadCall({
+          const spoken = yield* queueThreadCallSpeech({
             environmentId: session.environmentId,
             threadId: owner.threadId,
             text: decision.text,
+            source: "ambient",
           });
           if (!spoken) return;
           yield* Ref.update(narrationStatesRef, (states) => {
@@ -912,6 +941,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
               next.set(session.transportSessionId, {
                 ...latest,
                 lastNarratedKey: narratedKey,
+                lastNarratedText: decision.text,
                 lastSpeechAtMs: nowMs,
               });
             }
@@ -928,6 +958,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     const sessions = yield* activeThreadCallSessions(event.threadId);
     if (sessions.length === 0) return;
     if (event.type === "turn.completed" || event.type === "turn.aborted") {
+      yield* Effect.forEach(sessions, speechArbiter.cancelAmbient, { discard: true });
       yield* Ref.update(narrationStatesRef, (states) => {
         const next = new Map(states);
         for (const session of sessions) {
@@ -1297,4 +1328,5 @@ export const VoiceControllerServiceLive = VoiceControllerServiceLayer.pipe(
   Layer.provide(VoiceControllerActionRunnerLive),
   Layer.provide(VoiceTargetMonitorLive),
   Layer.provide(VoiceTransportCoordinatorLive),
+  Layer.provide(VoiceSpeechArbiterLive),
 );
