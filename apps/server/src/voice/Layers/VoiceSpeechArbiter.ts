@@ -20,7 +20,6 @@ interface ActiveAttempt {
   readonly attempt: VoiceSpeechAttempt;
   readonly deliveredText: string | null;
   readonly providerItemId: import("@shuv2code/contracts").VoiceTranscriptItemId | null;
-  readonly outputStarted: boolean;
   readonly interrupted: boolean;
 }
 
@@ -34,7 +33,6 @@ interface CallSpeechState {
 }
 
 const MAX_COMMENTARY_QUEUE = 8;
-const OUTPUT_START_LEASE = "8 seconds";
 const OUTPUT_TERMINAL_LEASE = "45 seconds";
 
 const emptyCallState = (session: ActiveVoiceSession): CallSpeechState => ({
@@ -85,6 +83,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
     readonly attempt: VoiceSpeechAttempt;
     readonly occurredAt: string;
     readonly deliveredText?: string;
+    readonly failureReason?: "transport-request-failed" | "output-timeout";
   }) => Effect.Effect<void> = () => Effect.void,
 ) {
   const statesRef = yield* Ref.make(new Map<string, CallSpeechState>());
@@ -113,7 +112,6 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
             attempt: nextAttempt,
             deliveredText: null,
             providerItemId: null,
-            outputStarted: false,
             interrupted: false,
           },
           authoredQueue:
@@ -135,16 +133,12 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
 
   const suspendFailedAttempt = Effect.fn("VoiceSpeechArbiter.suspendFailedAttempt")(function* (
     attempt: VoiceSpeechAttempt,
-    requireMissingOutputStart: boolean,
   ) {
     return yield* stateMutex.withPermits(1)(
       Ref.modify(statesRef, (states) => {
         const key = sessionKey(attempt.session);
         const current = stateFor(states, attempt.session);
-        if (
-          current.active?.attempt.attemptId !== attempt.attemptId ||
-          (requireMissingOutputStart && current.active.outputStarted)
-        ) {
+        if (current.active?.attempt.attemptId !== attempt.attemptId) {
           return [false, states] as const;
         }
         const next = new Map(states);
@@ -163,14 +157,15 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
 
   const failAndSuspend = Effect.fn("VoiceSpeechArbiter.failAndSuspend")(function* (
     attempt: VoiceSpeechAttempt,
-    requireMissingOutputStart: boolean,
+    failureReason: "transport-request-failed" | "output-timeout",
   ) {
-    const suspended = yield* suspendFailedAttempt(attempt, requireMissingOutputStart);
+    const suspended = yield* suspendFailedAttempt(attempt);
     if (!suspended) return;
     yield* observeLifecycle({
       kind: "speech.failed",
       attempt,
       occurredAt: DateTime.formatIso(yield* DateTime.now),
+      failureReason,
     });
     yield* Queue.offer(failureQueue, attempt);
   });
@@ -190,12 +185,8 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
       Effect.exit,
     );
     if (sent._tag === "Success") {
-      yield* Effect.sleep(OUTPUT_START_LEASE).pipe(
-        Effect.andThen(failAndSuspend(selected, true)),
-        Effect.forkDetach,
-      );
       yield* Effect.sleep(OUTPUT_TERMINAL_LEASE).pipe(
-        Effect.andThen(failAndSuspend(selected, false)),
+        Effect.andThen(failAndSuspend(selected, "output-timeout")),
         Effect.forkDetach,
       );
       return;
@@ -204,8 +195,9 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
       kind: "speech.failed",
       attempt: selected,
       occurredAt: DateTime.formatIso(yield* DateTime.now),
+      failureReason: "transport-request-failed",
     });
-    yield* suspendFailedAttempt(selected, false);
+    yield* suspendFailedAttempt(selected);
     yield* Queue.offer(failureQueue, selected);
   });
 
@@ -277,7 +269,6 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
         next.set(sessionKey(session), {
           ...current,
           providerBusy: true,
-          active: current.active === null ? null : { ...current.active, outputStarted: true },
         });
         return next;
       }),
@@ -345,7 +336,6 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
             ...current.active,
             deliveredText: input.text,
             providerItemId: input.itemId,
-            outputStarted: true,
           };
           const completion = input.outputDone
             ? completionFrom(active, input.occurredAt)
@@ -471,6 +461,7 @@ export const VoiceSpeechArbiterLive = Layer.effect(
               source: event.attempt.source,
               requestedText: event.attempt.requestedText,
               ...(event.deliveredText === undefined ? {} : { deliveredText: event.deliveredText }),
+              ...(event.failureReason === undefined ? {} : { failureReason: event.failureReason }),
             },
             occurredAt: event.occurredAt,
           })

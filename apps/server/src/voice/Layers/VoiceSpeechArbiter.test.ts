@@ -284,7 +284,42 @@ describe("VoiceSpeechArbiter", () => {
     }),
   );
 
-  it.effect("suspends the queue and reports recovery when realtime output never starts", () =>
+  it.effect("accepts late output without requiring an output-start signal", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const lifecycle = yield* Ref.make<Array<string>>([]);
+      const arbiter = yield* makeVoiceSpeechArbiter(
+        (speech) => Ref.update(sent, (all) => [...all, speech.requestedText]),
+        (event) =>
+          Ref.update(lifecycle, (all) => [...all, `${event.attempt.attemptId}:${event.kind}`]),
+      );
+      const activeSession = session();
+
+      yield* arbiter.enqueue(attempt(activeSession, "authored-1", "authored", "First."));
+      yield* arbiter.enqueue(attempt(activeSession, "authored-2", "authored", "Second."));
+
+      yield* TestClock.adjust("9 seconds");
+      yield* Effect.yieldNow;
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First."]);
+      assert.deepStrictEqual(yield* Ref.get(lifecycle), [
+        "authored-1:speech.queued",
+        "authored-1:speech.started",
+        "authored-2:speech.queued",
+      ]);
+
+      const completed = yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-first"),
+        text: "Delivered first after the former start deadline.",
+        occurredAt: "2026-08-15T00:00:09.000Z",
+        outputDone: true,
+      });
+      assert.strictEqual(completed.completion?.attemptId, "authored-1");
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First.", "Second."]);
+    }),
+  );
+
+  it.effect("suspends the queue and reports recovery when realtime output never terminates", () =>
     Effect.gen(function* () {
       const sent = yield* Ref.make<Array<string>>([]);
       const lifecycle = yield* Ref.make<Array<string>>([]);
@@ -312,7 +347,7 @@ describe("VoiceSpeechArbiter", () => {
       assert.strictEqual(yield* Fiber.join(firstEnqueue), true);
       assert.deepStrictEqual(yield* Ref.get(sent), ["First."]);
 
-      yield* TestClock.adjust("8 seconds");
+      yield* TestClock.adjust("45 seconds");
       yield* Effect.yieldNow;
       assert.strictEqual((yield* arbiter.takeFailure).attemptId, "authored-1");
       assert.deepStrictEqual(yield* Ref.get(sent), ["First."]);
