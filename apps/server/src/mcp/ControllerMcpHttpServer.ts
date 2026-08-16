@@ -11,6 +11,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { ThreadId } from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -18,6 +19,9 @@ import { Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
+import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
+import { makeDurableThreadControlInvocationResolver } from "../orchestration/DurableThreadControlInvocationResolver.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadControlInvocationResolver } from "../orchestration/Services/ThreadControlInvocationResolver.ts";
 import { ThreadControlExecutionCoordinator } from "../orchestration/Services/ThreadControlExecutionCoordinator.ts";
 import { ThreadControlGrantVerifier } from "../orchestration/Services/ThreadControlGrantVerifier.ts";
@@ -79,11 +83,14 @@ export function extractControllerTurnMetadata(
     return { _tag: "missing" };
   }
   const profile = invocation.profile;
-  if (profile.kind !== "voice-controller") {
+  if (profile.kind !== "voice-controller" && profile.kind !== "durable-thread-controller") {
     throw new McpError(ErrorCode.InvalidRequest, "Controller credential required.");
   }
-  const providerIdentity = profile.providerIdentity;
-  if (providerIdentity === undefined) {
+  const providerThreadId =
+    profile.kind === "voice-controller"
+      ? profile.providerIdentity?.codexProviderThreadId
+      : profile.providerIdentity?.providerThreadId;
+  if (providerThreadId === undefined) {
     throw new McpError(
       ErrorCode.InvalidRequest,
       "Controller credential is not bound to a Codex provider identity.",
@@ -98,10 +105,7 @@ export function extractControllerTurnMetadata(
   } catch {
     throw new McpError(ErrorCode.InvalidParams, "Invalid Codex controller turn metadata.");
   }
-  if (
-    decoded.session_id !== providerIdentity.codexProviderThreadId ||
-    decoded.thread_id !== providerIdentity.codexProviderThreadId
-  ) {
+  if (decoded.session_id !== providerThreadId || decoded.thread_id !== providerThreadId) {
     throw new McpError(
       ErrorCode.InvalidParams,
       "Codex controller turn metadata does not match this credential.",
@@ -256,6 +260,7 @@ const makeControllerSdkServer = (
     input: unknown,
     requestContext: {
       readonly turnMetadata: CodexControllerTurnMetadata | undefined;
+      readonly requestId: string;
     },
   ) => Promise<CallToolResult>,
 ) => {
@@ -271,10 +276,11 @@ const makeControllerSdkServer = (
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [...ControllerThreadToolDescriptors],
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const extraction = extractControllerTurnMetadata(request.params._meta, invocation);
     const requestContext = {
       turnMetadata: extraction._tag === "valid" ? extraction.metadata : undefined,
+      requestId: String(extra.requestId),
     };
     return runTool(request.params.name, request.params.arguments ?? {}, requestContext);
   });
@@ -313,6 +319,9 @@ const makeControllerMcpRequestHandler = (services: {
   readonly threadControl: ThreadControlService["Service"];
   readonly verifier: ThreadControlGrantVerifier["Service"];
   readonly execution: ThreadControlExecutionCoordinator["Service"];
+  readonly currentEnvironmentId: import("@shuv2code/contracts").EnvironmentId;
+  readonly projection: ProjectionSnapshotQuery["Service"];
+  readonly crypto: Crypto.Crypto["Service"];
 }) =>
   Effect.withFiber((fiber) => {
     const runPromise = Effect.runPromiseWith(fiber.context);
@@ -326,6 +335,9 @@ const makeControllerMcpRequestHandler = (services: {
         threadControl,
         verifier,
         execution,
+        currentEnvironmentId,
+        projection,
+        crypto,
       } = services;
       const authorization = request.headers.authorization;
       const rawToken =
@@ -333,37 +345,48 @@ const makeControllerMcpRequestHandler = (services: {
           ? authorization.slice("Bearer ".length).trim()
           : "";
       if (rawToken.length === 0) return unauthorized("missing");
-      const invocation = yield* registry.resolve(rawToken, "voice-controller");
+      const invocation = yield* registry.resolve(rawToken);
       if (invocation === undefined) return unauthorized("invalid");
       const profile = invocation.profile;
-      if (profile.kind !== "voice-controller") {
+      if (profile.kind !== "voice-controller" && profile.kind !== "durable-thread-controller") {
         return unauthorized("wrong_profile");
       }
       if (profile.providerIdentity === undefined) {
         return unauthorized("unbound");
       }
 
-      const settings = yield* settingsService.getSettings;
-      if (!ServerSettings.resolveVoiceControlPolicy(settings).read) {
-        yield* registry.revokeCredential(invocation.credentialId);
-        return readDisabled;
+      if (profile.kind === "voice-controller") {
+        const settings = yield* settingsService.getSettings;
+        if (!ServerSettings.resolveVoiceControlPolicy(settings).read) {
+          yield* registry.revokeCredential(invocation.credentialId);
+          return readDisabled;
+        }
       }
 
       const webRequest = yield* HttpServerRequest.toWeb(request);
       const runTool = (name: string, input: unknown, requestContext: ControllerMcpRequestScope) => {
-        const invocationResolver = makeVoiceThreadControlInvocationResolver({
-          invocation,
-          request: requestContext,
-          settingsService,
-          bindingRepository,
-          actionResolver,
-          verifier,
-          execution,
-        });
         return runPromise(
-          decodeAndRunThreadTool(name, input).pipe(
-            Effect.provideService(ThreadControlInvocationResolver, invocationResolver),
-            Effect.provideService(ThreadControlService, threadControl),
+          Effect.gen(function* () {
+            const invocationResolver =
+              profile.kind === "voice-controller"
+                ? makeVoiceThreadControlInvocationResolver({
+                    invocation,
+                    request: requestContext,
+                    settingsService,
+                    bindingRepository,
+                    actionResolver,
+                    verifier,
+                    execution,
+                  })
+                : makeDurableThreadControlInvocationResolver(
+                    { invocation, request: requestContext },
+                    { currentEnvironmentId, projection, crypto },
+                  );
+            return yield* decodeAndRunThreadTool(name, input).pipe(
+              Effect.provideService(ThreadControlInvocationResolver, invocationResolver),
+              Effect.provideService(ThreadControlService, threadControl),
+            );
+          }).pipe(
             Effect.matchCause({
               onFailure: sanitizedFailure,
               onSuccess: successfulResult,
@@ -414,6 +437,10 @@ export const layer = Layer.unwrap(
     const threadControl = yield* ThreadControlService;
     const verifier = yield* ThreadControlGrantVerifier;
     const execution = yield* ThreadControlExecutionCoordinator;
+    const environment = yield* ServerEnvironment;
+    const currentEnvironmentId = yield* environment.getEnvironmentId;
+    const projection = yield* ProjectionSnapshotQuery;
+    const crypto = yield* Crypto.Crypto;
     const handler = makeControllerMcpRequestHandler({
       registry,
       settingsService,
@@ -422,6 +449,9 @@ export const layer = Layer.unwrap(
       threadControl,
       verifier,
       execution,
+      currentEnvironmentId,
+      projection,
+      crypto,
     });
     return Layer.mergeAll(
       HttpRouter.add("POST", CONTROLLER_MCP_PATH, handler),

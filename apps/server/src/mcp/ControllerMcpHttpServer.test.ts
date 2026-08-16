@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadControlExecutionCoordinator } from "../orchestration/Services/ThreadControlExecutionCoordinator.ts";
 import { ThreadControlGrantVerifier } from "../orchestration/Services/ThreadControlGrantVerifier.ts";
 import { ThreadControlService } from "../orchestration/Services/ThreadControlService.ts";
@@ -29,6 +30,8 @@ const environmentId = EnvironmentId.make("environment-controller-http-test");
 const controllerThreadId = ThreadId.make("controller-thread-http-test");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const codexProviderThreadId = "codex-provider-thread-http-test";
+let requestedUntrustedContext = false;
+let durableMutationRequestId: string | undefined;
 
 const fakeEnvironment = Layer.succeed(
   ServerEnvironment.ServerEnvironment,
@@ -75,13 +78,62 @@ const threadControl = ThreadControlService.of({
       threads: [],
       nextCursor: null,
     }),
-  get: () => Effect.die("unused"),
-  create: () => Effect.die("mutation must be rejected before dispatch"),
+  get: (input) => {
+    requestedUntrustedContext = input.includeUntrustedContext === true;
+    return Effect.succeed({
+      snapshotSequence: 42,
+      snapshotTimestamp: "2026-07-30T00:00:00.000Z",
+      thread: {
+        threadId: input.threadId,
+        projectId: ProjectId.make("target-project"),
+        title: "Current work",
+        modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+        runtimeMode: "approval-required",
+        phase: "ready",
+        activeTurnId: null,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        latestTurnUpdatedAt: "2026-07-30T00:00:00.000Z",
+      },
+      latestTurnState: "completed",
+      lastErrorCode: null,
+      resultCount: 1,
+      activityCount: 0,
+      ...(input.includeUntrustedContext === true
+        ? {
+            untrustedTargetContext: {
+              marker: "untrusted-target-context" as const,
+              messages: [
+                { role: "user" as const, text: "What are we fixing?" },
+                { role: "assistant" as const, text: "Voice context retrieval." },
+              ],
+            },
+          }
+        : {}),
+    });
+  },
+  create: (input) => {
+    if (input.action.adapterKind === "durable-thread") {
+      durableMutationRequestId = input.action.providerRequestId;
+    }
+    return Effect.succeed({
+      actionId: input.action.actionId,
+      operationId: `${input.action.operationIdPrefix}:create-start`,
+      targetThreadId: input.action.createdThreadId,
+      disposition: "create" as const,
+      expectedTurnId: null,
+      acceptedTurnId: null,
+      acceptedProjectionSequence: 43,
+      providerConfirmation: "pending" as const,
+    });
+  },
   send: () => Effect.die("unused"),
   interrupt: () => Effect.die("unused"),
 });
 
 const ControllerServices = Layer.mergeAll(
+  fakeEnvironment,
+  NodeServices.layer,
   ServerSettings.layerTest({
     // Availability defaults on does not authorize non-controller sessions.
     enableRealtimeVoice: true,
@@ -94,6 +146,18 @@ const ControllerServices = Layer.mergeAll(
     ControllerActionContextResolver.of({ resolve: () => Effect.die("unused") }),
   ),
   Layer.succeed(ThreadControlService, threadControl),
+  Layer.mock(ProjectionSnapshotQuery)({
+    getThreadDetailById: () =>
+      Effect.succeed(
+        Option.some({
+          purpose: "standard",
+          deletedAt: null,
+          archivedAt: null,
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+          runtimeMode: "approval-required",
+        } as never),
+      ),
+  }),
   Layer.succeed(
     ThreadControlGrantVerifier,
     ThreadControlGrantVerifier.of({
@@ -161,8 +225,23 @@ it.effect("serves only the five controller tools and enforces profile and turn m
           controlEnabled: true,
         },
       });
+      const durableController = yield* registry.issue({
+        threadId: controllerThreadId,
+        providerInstanceId,
+        profile: {
+          kind: "durable-thread-controller",
+          controllerThreadId,
+          authorizedRuntimeCeiling: "approval-required",
+          controlEnabled: true,
+        },
+      });
       expect(
         yield* registry.bindControllerProviderIdentity(controller.config.credentialId, {
+          codexProviderThreadId,
+        }),
+      ).toBe(true);
+      expect(
+        yield* registry.bindControllerProviderIdentity(durableController.config.credentialId, {
           codexProviderThreadId,
         }),
       ).toBe(true);
@@ -205,6 +284,41 @@ it.effect("serves only the five controller tools and enforces profile and turn m
         "thread_send",
       ]);
 
+      const durableRead = yield* postJsonRpc(durableController.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: "durable-read-1",
+        method: "tools/call",
+        params: { name: "thread_list", arguments: {} },
+      });
+      expect(durableRead.status).toBe(200);
+      expect(durableRead.body).toMatchObject({
+        result: { isError: false, structuredContent: { snapshotSequence: 41 } },
+      });
+
+      const durableMutation = yield* postJsonRpc(durableController.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: "durable-mutation-1",
+        method: "tools/call",
+        params: {
+          name: "thread_create",
+          arguments: {
+            projectId: "project-http-test",
+            initialInstruction: "Create a real thread.",
+          },
+          _meta: {
+            "x-codex-turn-metadata": {
+              turn_id: "provider-turn-durable-1",
+              session_id: codexProviderThreadId,
+              thread_id: codexProviderThreadId,
+              turn_started_at_unix_ms: 1_754_000_000_000,
+            },
+          },
+        },
+      });
+      expect(durableMutation.status).toBe(200);
+      expect(durableMutation.body).toMatchObject({ result: { isError: false } });
+      expect(durableMutationRequestId).toBe("durable-mutation-1");
+
       const read = yield* postJsonRpc(controller.config.authorizationHeader, {
         jsonrpc: "2.0",
         id: 3,
@@ -216,6 +330,35 @@ it.effect("serves only the five controller tools and enforces profile and turn m
         result: {
           isError: false,
           structuredContent: { snapshotSequence: 41 },
+        },
+      });
+
+      const contextRead = yield* postJsonRpc(controller.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: 31,
+        method: "tools/call",
+        params: {
+          name: "thread_get",
+          arguments: {
+            threadId: "target-thread-http-test",
+            includeUntrustedContext: true,
+          },
+        },
+      });
+      expect(contextRead.status).toBe(200);
+      expect(requestedUntrustedContext).toBe(true);
+      expect(contextRead.body).toMatchObject({
+        result: {
+          isError: false,
+          structuredContent: {
+            untrustedTargetContext: {
+              marker: "untrusted-target-context",
+              messages: [
+                { role: "user", text: "What are we fixing?" },
+                { role: "assistant", text: "Voice context retrieval." },
+              ],
+            },
+          },
         },
       });
 
