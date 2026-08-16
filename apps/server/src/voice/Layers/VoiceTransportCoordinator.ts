@@ -15,6 +15,8 @@ import {
   type VoiceSessionFence,
   type VoiceCallPresence,
   type VoiceDeviceIdentity,
+  type ModelSelection,
+  type ProjectId,
 } from "@shuv2code/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -42,6 +44,7 @@ import {
 } from "../Services/VoiceTransportCoordinator.ts";
 import { VoiceRuntimeGateway } from "../Services/VoiceRuntimeGateway.ts";
 import { VoiceSpeechArbiter } from "../Services/VoiceSpeechArbiter.ts";
+import { formatVoiceCallIdentity, makeVoiceCallIdentity } from "../VoiceCallIdentity.ts";
 import {
   decideProactiveSpeech,
   rememberProactiveSpeech,
@@ -63,7 +66,8 @@ const CALL_CONTEXT_MAX_ITEMS = 24;
 const CALL_CONTEXT_MAX_CHARS = 24_000;
 export const CALL_REALTIME_PROMPT = [
   "You are the primary realtime conversational voice for an active call attached to one exact coding thread.",
-  "Stay in the conversation and answer the user aloud yourself whenever the request can be answered from the supplied thread context or ordinary conversation. The supplied thread messages are real context; questions about them do not require a handoff.",
+  "Stay in the conversation and answer the user aloud yourself whenever the request can be answered from the supplied thread context, the authoritative Call attachment, or ordinary conversation. The supplied thread messages are real context; questions about them do not require a handoff.",
+  "The application supplies an authoritative Call attachment as a developer item. Use it for questions about the attached thread, durable provider, model, or agent. Distinguish that durable worker from your Realtime voice transport. Never guess these identities or substitute identity from another thread.",
   "Do not delegate merely to verify, restate, summarize, or discuss the supplied context. Fast spoken response is the priority.",
   "Treat a short, incomplete, or trailing utterance as live conversation, not durable work. Ask one brief spoken clarification or allow the user to continue; do not hand off a fragment merely because its intent is unclear.",
   "Create a handoff only when the request genuinely requires tools, repository inspection, code changes, approvals, or a durable detailed artifact that you cannot produce from the supplied context.",
@@ -95,6 +99,29 @@ export function boundedCallInitialItems(
     remaining -= text.length;
   }
   return selected.toReversed();
+}
+
+export function callIdentityInitialItem(input: {
+  readonly thread: {
+    readonly id: ThreadId;
+    readonly title: string;
+    readonly projectId: ProjectId;
+    readonly modelSelection: ModelSelection;
+  };
+  readonly transportModelSelection: ModelSelection;
+}): { readonly role: "developer"; readonly text: string } {
+  return {
+    role: "developer",
+    text: formatVoiceCallIdentity(
+      makeVoiceCallIdentity({
+        threadId: input.thread.id,
+        threadTitle: input.thread.title,
+        projectId: input.thread.projectId,
+        durableModelSelection: input.thread.modelSelection,
+        transportModelSelection: input.transportModelSelection,
+      }),
+    ),
+  };
 }
 
 function callPresence(call: VoiceCall): VoiceCallPresence {
@@ -867,7 +894,10 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
               clientManagedHandoffs: true,
               prompt: CALL_REALTIME_PROMPT,
               includeStartupContext: false,
-              initialItems: boundedCallInitialItems(thread.messages),
+              initialItems: [
+                callIdentityInitialItem({ thread, transportModelSelection }),
+                ...boundedCallInitialItems(thread.messages),
+              ],
             })
             .pipe(
               Effect.mapError(
@@ -1004,6 +1034,7 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
           environmentId,
           hostProjectId: thread.projectId,
           transportProviderInstanceId: transportModelSelection.instanceId,
+          transportModelSelection,
           controller: null,
           controllerRuntime: null,
           call: started.call,

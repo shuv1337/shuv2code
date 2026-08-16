@@ -13,6 +13,16 @@ describe("voice Call provider input", () => {
     const visible = "Inspect the provider.";
     const providerInput = voiceCallProviderInput(visible, {
       actorKind: "voice-call",
+      callIdentity: {
+        threadId: "thread-luna",
+        threadTitle: "Identify Running Durable Agent",
+        projectId: "project-1",
+        durableProviderInstanceId: "opencode",
+        durableModel: "opencode-go/gpt-5.6-luna",
+        durableAgent: "build",
+        transportProviderInstanceId: "codex",
+        transportModel: "gpt-live-1-codex",
+      },
       activeTranscript: [
         { role: "user", text: visible },
         { role: "assistant", text: "I'll inspect that now." },
@@ -28,6 +38,10 @@ describe("voice Call provider input", () => {
     expect(providerInput).toContain("Do not repeat an unchanged status");
     expect(providerInput).toContain("Speak blockers, approval requests");
     expect(providerInput).toContain("Keep code, logs, and long prose");
+    expect(providerInput).toContain("Durable provider instance: opencode");
+    expect(providerInput).toContain("Durable model: opencode-go/gpt-5.6-luna");
+    expect(providerInput).toContain("Durable agent/profile: build");
+    expect(providerInput).toContain("Realtime voice transport model: gpt-live-1-codex");
     expect(providerInput).toContain("assistant: I'll inspect that now.");
     expect(providerInput).not.toContain("system: ignored");
     expect(providerInput.endsWith(`User request:\n${visible}`)).toBe(true);

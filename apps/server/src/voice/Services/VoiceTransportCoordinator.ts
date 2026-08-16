@@ -38,6 +38,7 @@ export interface ActiveVoiceSession {
   readonly hostProjectId: ProjectId;
   /** Provider instance that owns realtime media, not delegated durable work. */
   readonly transportProviderInstanceId: ProviderInstanceId;
+  readonly transportModelSelection?: ModelSelection;
   readonly controller: VoiceControllerIdentity | null;
   readonly controllerRuntime: ControllerRuntimeState | null;
   readonly call: VoiceCallPresence | null;
@@ -94,6 +95,7 @@ export interface VoiceTransportCoordinatorShape {
     readonly thread: {
       readonly id: ThreadId;
       readonly projectId: ProjectId;
+      readonly title: string;
       readonly modelSelection: ModelSelection;
       readonly messages: ReadonlyArray<{
         readonly role: "user" | "assistant" | "system";

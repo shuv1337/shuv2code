@@ -11,6 +11,7 @@ import type { OrchestrationDispatchError } from "../../orchestration/Errors.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VoiceCallBridge, type VoiceCallBridgeShape } from "../Services/VoiceCallBridge.ts";
+import { makeVoiceCallIdentity } from "../VoiceCallIdentity.ts";
 import { voiceError } from "./voiceControllerShared.ts";
 
 interface ProcessedUtterance {
@@ -300,6 +301,16 @@ export const makeVoiceCallBridge = Effect.fn("VoiceCallBridge.make")(function* (
                 generation: input.session.fence.generation,
                 transcriptItemId: input.itemId,
                 threadId: owner.threadId,
+                callIdentity: makeVoiceCallIdentity({
+                  threadId: thread.value.id,
+                  threadTitle: thread.value.title,
+                  projectId: thread.value.projectId,
+                  durableModelSelection: thread.value.modelSelection,
+                  transportModelSelection: input.session.transportModelSelection ?? {
+                    instanceId: input.session.transportProviderInstanceId,
+                    model: "unknown-realtime-model",
+                  },
+                }),
                 activeTranscript: input.activeTranscript.slice(-64).map((entry) => ({
                   role: entry.role,
                   text: entry.text.slice(0, 16_384),

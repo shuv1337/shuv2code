@@ -1,8 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
-import { boundedCallInitialItems, CALL_REALTIME_PROMPT } from "./VoiceTransportCoordinator.ts";
+import {
+  boundedCallInitialItems,
+  callIdentityInitialItem,
+  CALL_REALTIME_PROMPT,
+} from "./VoiceTransportCoordinator.ts";
 import { fenceMatches, publicVoiceSessionId } from "./voiceControllerShared.ts";
 import {
   EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
   ThreadId,
   VoiceClientSessionId,
   VoiceGeneration,
@@ -33,6 +39,32 @@ describe("VoiceTransportCoordinator ownership", () => {
     assert.include(CALL_REALTIME_PROMPT, "one short, complete, context-specific sentence");
     assert.include(CALL_REALTIME_PROMPT, "names the next step");
     assert.include(CALL_REALTIME_PROMPT, "Never use a bare status filler");
+    assert.include(CALL_REALTIME_PROMPT, "authoritative Call attachment");
+    assert.include(CALL_REALTIME_PROMPT, "Never guess these identities");
+  });
+
+  it("supplies authoritative durable and transport identities to Realtime", () => {
+    const item = callIdentityInitialItem({
+      thread: {
+        id: ThreadId.make("thread-luna"),
+        title: "Identify Running Durable Agent",
+        projectId: ProjectId.make("project-1"),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "opencode-go/gpt-5.6-luna",
+          options: [{ id: "agent", value: "build" }],
+        },
+      },
+      transportModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-live-1-codex",
+      },
+    });
+    assert.strictEqual(item.role, "developer");
+    assert.include(item.text, "Durable provider instance: opencode");
+    assert.include(item.text, "Durable model: opencode-go/gpt-5.6-luna");
+    assert.include(item.text, "Durable agent/profile: build");
+    assert.include(item.text, "Realtime voice transport model: gpt-live-1-codex");
   });
 
   it("keys public session identity by client session id", () => {

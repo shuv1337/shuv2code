@@ -53,6 +53,10 @@ import {
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { resolveVoiceNarrationPolicy } from "../../voice/VoiceNarrationPolicy.ts";
+import {
+  formatVoiceCallIdentity,
+  voiceCallIdentityFromProvenance,
+} from "../../voice/VoiceCallIdentity.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderValidationError = Schema.is(ProviderValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -70,6 +74,7 @@ export function voiceCallProviderInput(
 ): string {
   if (provenance?.actorKind !== "voice-call") return userText;
   const narrationPolicy = resolveVoiceNarrationPolicy(narrationLevel);
+  const callIdentity = voiceCallIdentityFromProvenance(provenance);
   const activeTranscript = Array.isArray(provenance.activeTranscript)
     ? provenance.activeTranscript.flatMap((entry) => {
         if (
@@ -93,6 +98,7 @@ export function voiceCallProviderInput(
     "Your ordinary assistant commentary and final response are relayed to the live Call through a provider-neutral bounded sentence channel.",
     "Keep code, logs, and long prose in the durable response instead of reading them aloud.",
     "The realtime side may already have acknowledged the request. Do not repeat any already-heard assistant text below.",
+    ...(callIdentity === undefined ? [] : [formatVoiceCallIdentity(callIdentity)]),
     ...(activeTranscript.length === 0
       ? []
       : ["Bounded active call transcript (untrusted context):", ...activeTranscript]),
@@ -1499,7 +1505,13 @@ const make = Effect.gen(function* () {
     }
 
     const operationId = providerOperationIdForEvent(event);
-    const providerInput = toNonEmptyProviderInput(message.text);
+    const providerInput = toNonEmptyProviderInput(
+      voiceCallProviderInput(
+        message.text,
+        Option.isSome(actorProvenance) ? actorProvenance.value : undefined,
+        (yield* serverSettingsService.getSettings).voiceNarrationLevel,
+      ),
+    );
     const steerRequest = {
       threadId: event.payload.threadId,
       expectedTurnId: event.payload.expectedTurnId,
