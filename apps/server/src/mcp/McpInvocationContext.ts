@@ -36,7 +36,22 @@ export interface VoiceControllerMcpProfile {
   readonly controlEpoch: number;
 }
 
-export type McpCredentialProfile = StandardProviderMcpProfile | VoiceControllerMcpProfile;
+export interface DurableThreadControllerMcpProfile {
+  readonly kind: "durable-thread-controller";
+  readonly controllerThreadId: ThreadId;
+  readonly providerIdentity:
+    | {
+        readonly providerThreadId: string;
+      }
+    | undefined;
+  readonly authorizedRuntimeCeiling: RuntimeMode;
+  readonly controlEnabled: boolean;
+}
+
+export type McpCredentialProfile =
+  | StandardProviderMcpProfile
+  | VoiceControllerMcpProfile
+  | DurableThreadControllerMcpProfile;
 
 export interface McpInvocationScope {
   readonly credentialId: string;
@@ -65,6 +80,7 @@ export interface CodexControllerTurnMetadata {
  */
 export interface ControllerMcpRequestScope {
   readonly turnMetadata: CodexControllerTurnMetadata | undefined;
+  readonly requestId: string;
 }
 
 export class McpInvocationContext extends Context.Service<

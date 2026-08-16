@@ -36,9 +36,21 @@ export interface VoiceControllerMcpCredentialRequest {
   };
 }
 
+export interface DurableThreadControllerMcpCredentialRequest {
+  readonly threadId: ThreadId;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly profile: {
+    readonly kind: "durable-thread-controller";
+    readonly controllerThreadId: ThreadId;
+    readonly authorizedRuntimeCeiling: RuntimeMode;
+    readonly controlEnabled: boolean;
+  };
+}
+
 export type McpCredentialRequest =
   | StandardMcpCredentialRequest
-  | VoiceControllerMcpCredentialRequest;
+  | VoiceControllerMcpCredentialRequest
+  | DurableThreadControllerMcpCredentialRequest;
 
 export interface McpIssuedCredential {
   readonly config: McpProviderSession.McpProviderSessionConfig;
@@ -177,9 +189,18 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
               liveControllerRuntimeMode: requestedProfile.liveControllerRuntimeMode,
               controlEpoch: requestedProfile.controlEpoch,
             }
-          : { kind: "standard-provider" };
+          : requestedProfile.kind === "durable-thread-controller"
+            ? {
+                kind: "durable-thread-controller",
+                controllerThreadId: ThreadId.make(requestedProfile.controllerThreadId),
+                providerIdentity: undefined,
+                authorizedRuntimeCeiling: requestedProfile.authorizedRuntimeCeiling,
+                controlEnabled: requestedProfile.controlEnabled,
+              }
+            : { kind: "standard-provider" };
       const capabilities: ReadonlySet<McpInvocationContext.McpCapability> =
-        requestedProfile.kind === "voice-controller"
+        requestedProfile.kind === "voice-controller" ||
+        requestedProfile.kind === "durable-thread-controller"
           ? new Set([
               "threads.read",
               ...(requestedProfile.controlEnabled ? (["threads.control"] as const) : []),
@@ -215,7 +236,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerInstanceId: scope.providerInstanceId,
           profile,
           endpoint:
-            profile.kind === "voice-controller"
+            profile.kind === "voice-controller" || profile.kind === "durable-thread-controller"
               ? `${endpointBase}/mcp/controller`
               : `${endpointBase}/mcp`,
           authorizationHeader: `Bearer ${rawToken}`,
@@ -272,21 +293,37 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           if (!entry) return [false, { records }] as const;
           const [tokenHash, record] = entry;
           const profile = record.scope.profile;
-          if (profile.kind !== "voice-controller") {
+          if (
+            profile.kind !== "voice-controller" &&
+            profile.kind !== "durable-thread-controller"
+          ) {
             return [false, { records }] as const;
           }
-          const current = profile.providerIdentity;
-          if (current !== undefined && current.codexProviderThreadId !== codexProviderThreadId) {
+          const currentProviderThreadId =
+            profile.kind === "voice-controller"
+              ? profile.providerIdentity?.codexProviderThreadId
+              : profile.providerIdentity?.providerThreadId;
+          if (
+            currentProviderThreadId !== undefined &&
+            currentProviderThreadId !== codexProviderThreadId
+          ) {
             return [false, { records }] as const;
           }
+          const nextProfile: McpInvocationContext.McpCredentialProfile =
+            profile.kind === "voice-controller"
+              ? {
+                  ...profile,
+                  providerIdentity: { codexProviderThreadId },
+                }
+              : {
+                  ...profile,
+                  providerIdentity: { providerThreadId: codexProviderThreadId },
+                };
           next.set(tokenHash, {
             ...record,
             scope: {
               ...record.scope,
-              profile: {
-                ...profile,
-                providerIdentity: { codexProviderThreadId },
-              },
+              profile: nextProfile,
             },
           });
           return [true, { records: next }] as const;

@@ -189,6 +189,42 @@ it.effect("never grants threads.read or threads.control to a non-controller prov
   }),
 );
 
+it.effect("issues and provider-binds an explicitly granted durable thread controller", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const threadId = ThreadId.make("durable-controller-thread");
+    const issued = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      profile: {
+        kind: "durable-thread-controller",
+        controllerThreadId: threadId,
+        authorizedRuntimeCeiling: "auto-accept-edits",
+        controlEnabled: true,
+      },
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    expect(issued.config.endpoint).toBe("http://127.0.0.1:43123/mcp/controller");
+    expect(
+      yield* registry.bindControllerProviderIdentity(issued.config.credentialId, {
+        codexProviderThreadId: "provider-thread-1",
+      }),
+    ).toBe(true);
+
+    const resolved = yield* registry.resolve(token, "durable-thread-controller");
+    expect(resolved?.profile).toMatchObject({
+      kind: "durable-thread-controller",
+      controllerThreadId: threadId,
+      providerIdentity: { providerThreadId: "provider-thread-1" },
+      authorizedRuntimeCeiling: "auto-accept-edits",
+      controlEnabled: true,
+    });
+    expect(resolved?.capabilities).toEqual(new Set(["threads.read", "threads.control"]));
+    expect(yield* registry.resolve(token, "standard-provider")).toBeUndefined();
+  }),
+);
+
 it.effect("replaces only the matching profile for a thread", () =>
   Effect.gen(function* () {
     const registry = yield* makeRegistry(() => 1_000);
