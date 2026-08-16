@@ -19,6 +19,7 @@ interface ActiveAttempt {
   readonly attempt: VoiceSpeechAttempt;
   readonly deliveredText: string | null;
   readonly providerItemId: import("@shuv2code/contracts").VoiceTranscriptItemId | null;
+  readonly outputStarted: boolean;
   readonly interrupted: boolean;
 }
 
@@ -32,6 +33,8 @@ interface CallSpeechState {
 }
 
 const MAX_COMMENTARY_QUEUE = 8;
+const OUTPUT_START_LEASE = "8 seconds";
+const OUTPUT_TERMINAL_LEASE = "45 seconds";
 
 const emptyCallState = (session: ActiveVoiceSession): CallSpeechState => ({
   generation: session.fence.generation,
@@ -108,6 +111,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
             attempt: nextAttempt,
             deliveredText: null,
             providerItemId: null,
+            outputStarted: false,
             interrupted: false,
           },
           authoredQueue:
@@ -129,17 +133,37 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
 
   const clearFailedAttempt = Effect.fn("VoiceSpeechArbiter.clearFailedAttempt")(function* (
     attempt: VoiceSpeechAttempt,
+    requireMissingOutputStart: boolean,
   ) {
-    yield* stateMutex.withPermits(1)(
-      Ref.update(statesRef, (states) => {
+    return yield* stateMutex.withPermits(1)(
+      Ref.modify(statesRef, (states) => {
         const key = sessionKey(attempt.session);
         const current = stateFor(states, attempt.session);
-        if (current.active?.attempt.attemptId !== attempt.attemptId) return states;
+        if (
+          current.active?.attempt.attemptId !== attempt.attemptId ||
+          (requireMissingOutputStart && current.active.outputStarted)
+        ) {
+          return [false, states] as const;
+        }
         const next = new Map(states);
         next.set(key, { ...current, providerBusy: false, active: null });
-        return next;
+        return [true, next] as const;
       }),
     );
+  });
+
+  const failAndContinue = Effect.fn("VoiceSpeechArbiter.failAndContinue")(function* (
+    attempt: VoiceSpeechAttempt,
+    requireMissingOutputStart: boolean,
+  ) {
+    const cleared = yield* clearFailedAttempt(attempt, requireMissingOutputStart);
+    if (!cleared) return;
+    yield* observeLifecycle({
+      kind: "speech.failed",
+      attempt,
+      occurredAt: DateTime.formatIso(yield* DateTime.now),
+    });
+    yield* startNext(attempt.session);
   });
 
   const startNext: (session: ActiveVoiceSession) => Effect.Effect<void> = Effect.fn(
@@ -157,9 +181,12 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
       Effect.exit,
     );
     if (sent._tag === "Success") {
-      yield* Effect.sleep("45 seconds").pipe(
-        Effect.andThen(clearFailedAttempt(selected)),
-        Effect.andThen(startNext(session)),
+      yield* Effect.sleep(OUTPUT_START_LEASE).pipe(
+        Effect.andThen(failAndContinue(selected, true)),
+        Effect.forkDetach,
+      );
+      yield* Effect.sleep(OUTPUT_TERMINAL_LEASE).pipe(
+        Effect.andThen(failAndContinue(selected, false)),
         Effect.forkDetach,
       );
       return;
@@ -169,7 +196,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
       attempt: selected,
       occurredAt: DateTime.formatIso(yield* DateTime.now),
     });
-    yield* clearFailedAttempt(selected);
+    yield* clearFailedAttempt(selected, false);
     yield* startNext(session);
   });
 
@@ -238,7 +265,11 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
       Ref.update(statesRef, (states) => {
         const next = new Map(states);
         const current = stateFor(states, session);
-        next.set(sessionKey(session), { ...current, providerBusy: true });
+        next.set(sessionKey(session), {
+          ...current,
+          providerBusy: true,
+          active: current.active === null ? null : { ...current.active, outputStarted: true },
+        });
         return next;
       }),
     );
@@ -305,6 +336,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
             ...current.active,
             deliveredText: input.text,
             providerItemId: input.itemId,
+            outputStarted: true,
           };
           const completion = input.outputDone
             ? completionFrom(active, input.occurredAt)

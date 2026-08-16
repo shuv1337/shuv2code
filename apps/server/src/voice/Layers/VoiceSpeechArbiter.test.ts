@@ -283,6 +283,50 @@ describe("VoiceSpeechArbiter", () => {
     }),
   );
 
+  it.effect("fails an orphaned attempt and advances when realtime output never starts", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const lifecycle = yield* Ref.make<Array<string>>([]);
+      const firstStarted = yield* Deferred.make<void>();
+      const arbiter = yield* makeVoiceSpeechArbiter(
+        (speech) =>
+          Ref.update(sent, (all) => [...all, speech.requestedText]).pipe(
+            Effect.andThen(
+              speech.attemptId === "authored-1"
+                ? Deferred.succeed(firstStarted, undefined).pipe(
+                    Effect.andThen(Effect.never as Effect.Effect<void>),
+                  )
+                : Effect.void,
+            ),
+          ),
+        (event) =>
+          Ref.update(lifecycle, (all) => [...all, `${event.attempt.attemptId}:${event.kind}`]),
+      );
+      const activeSession = session();
+
+      const firstEnqueue = yield* arbiter
+        .enqueue(attempt(activeSession, "authored-1", "authored", "First."))
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(firstStarted);
+      yield* arbiter.enqueue(attempt(activeSession, "authored-2", "authored", "Second."));
+
+      yield* TestClock.adjust("3 seconds");
+      assert.strictEqual(yield* Fiber.join(firstEnqueue), true);
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First."]);
+
+      yield* TestClock.adjust("8 seconds");
+      yield* Effect.yieldNow();
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First.", "Second."]);
+      assert.deepStrictEqual(yield* Ref.get(lifecycle), [
+        "authored-1:speech.queued",
+        "authored-1:speech.started",
+        "authored-2:speech.queued",
+        "authored-1:speech.failed",
+        "authored-2:speech.started",
+      ]);
+    }),
+  );
+
   it.effect("claims interrupted injected speech without projecting it as delivered", () =>
     Effect.gen(function* () {
       const sent = yield* Ref.make<Array<string>>([]);
