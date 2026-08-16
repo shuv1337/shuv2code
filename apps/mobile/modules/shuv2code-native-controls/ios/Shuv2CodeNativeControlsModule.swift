@@ -51,7 +51,7 @@ public final class Shuv2CodeNativeControlsModule: Module {
       let mask: UIInterfaceOrientationMask = orientation == "landscape" ? .landscapeRight : .portrait
       for case let windowScene as UIWindowScene in UIApplication.shared.connectedScenes {
         windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
-          NSLog("T3NativeControls applyShowcaseOrientation(\(orientation)) failed: \(error)")
+          NSLog("Shuv2CodeNativeControls applyShowcaseOrientation(\(orientation)) failed: \(error)")
         }
         for window in windowScene.windows {
           window.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
@@ -88,15 +88,5 @@ public final class Shuv2CodeNativeControlsModule: Module {
       try? scene.write(toFile: readyPath, atomically: true, encoding: .utf8)
     }
 
-    View(Shuv2CodeHeaderButtonView.self) {
-      Prop("label") { (view: Shuv2CodeHeaderButtonView, label: String) in
-        view.setLabel(label)
-      }
-      Prop("systemImage") { (view: Shuv2CodeHeaderButtonView, systemImage: String) in
-        view.setSystemImage(systemImage)
-      }
-
-      Events("onTriggered")
-    }
   }
 }

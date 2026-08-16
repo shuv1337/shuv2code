@@ -6,16 +6,20 @@ import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 import { classifyReleaseVersion } from "../../scripts/lib/release-version.ts";
 import packageJson from "./package.json" with { type: "json" };
 
-const bundledPackagePrefixes = [
-  "@pierre/diffs",
-  "@shuv2code/",
-  "effect-acp",
-  "effect-codex-app-server",
-];
+// The bundle used to inline only workspace packages, leaving every third-party
+// runtime dep external. External deps must exist on the real filesystem (the WSL
+// backend runs plain `wsl.exe -- node`, which cannot read inside an asar), so the
+// desktop build unpacked `**\/node_modules\/**` wholesale: 13,875 loose files to
+// support 20 native binaries. NSIS install time tracks file count, not bytes.
+//
+// Inverted here — bundle everything except the packages that genuinely cannot be
+// inlined. See scripts/lib/cli-external-packages.ts for what earns an exemption.
+import {
+  isExternalCliDependency,
+  shouldBundleCliDependency,
+} from "../../scripts/lib/cli-external-packages.ts";
 
-export function shouldBundleCliDependency(id: string): boolean {
-  return bundledPackagePrefixes.some((prefix) => id.startsWith(prefix));
-}
+export { shouldBundleCliDependency };
 
 const repoEnv = loadRepoEnv();
 const cliBuildChannel =
@@ -39,7 +43,14 @@ export default mergeConfig(
       sourcemap: true,
       clean: true,
       deps: {
+        // Both halves are required. `alwaysBundle` forces the JS dependencies in
+        // (declared deps are external by default, which is what this change is
+        // undoing). `neverBundle` forces the native packages out: returning
+        // false from `alwaysBundle` only means "no opinion", so a transitive
+        // dependency would still be bundled — which silently inlined
+        // msgpackr-extract and its loader, losing native acceleration.
         alwaysBundle: shouldBundleCliDependency,
+        neverBundle: (id: string) => isExternalCliDependency(id),
         onlyBundle: false,
       },
       banner: {

@@ -35,6 +35,8 @@ import {
   type ProjectionPipelineLogicalOperation,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ServerConfig } from "../../config.ts";
@@ -74,6 +76,9 @@ it("classifies every orchestration event by interested projector", () => {
     "thread.snoozed": [ORCHESTRATION_PROJECTOR_NAMES.threads],
     "thread.unsnoozed": [ORCHESTRATION_PROJECTOR_NAMES.threads],
     "thread.meta-updated": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.pinned": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.unpinned": [ORCHESTRATION_PROJECTOR_NAMES.threads],
+    "thread.pin-reordered": [ORCHESTRATION_PROJECTOR_NAMES.threads],
     "thread.runtime-mode-set": [ORCHESTRATION_PROJECTOR_NAMES.threads],
     "thread.interaction-mode-set": [ORCHESTRATION_PROJECTOR_NAMES.threads],
     "thread.message-sent": [
@@ -3114,6 +3119,8 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
 const engineLayer = it.layer(
   OrchestrationEngineLive.pipe(
     Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provide(ThreadBackgroundLiveness.layer),
+    Layer.provide(ThreadPlanProgress.layer),
     Layer.provide(OrchestrationProjectionPipelineLive),
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
@@ -3203,15 +3210,18 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           instanceId: ProviderInstanceId.make("codex"),
           model: "gpt-5",
         },
+        faviconPath: "brand/icon.svg",
       });
 
       const projectRows = yield* sql<{
         readonly scriptsJson: string;
         readonly defaultModelSelection: string;
+        readonly faviconPath: string | null;
       }>`
         SELECT
           scripts_json AS "scriptsJson",
-          default_model_selection_json AS "defaultModelSelection"
+          default_model_selection_json AS "defaultModelSelection",
+          favicon_path AS "faviconPath"
         FROM projection_projects
         WHERE project_id = 'project-scripts'
       `;
@@ -3220,6 +3230,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           scriptsJson:
             '[{"id":"script-1","name":"Build","command":"bun run build","icon":"build","runOnWorktreeCreate":false}]',
           defaultModelSelection: '{"instanceId":"codex","model":"gpt-5"}',
+          faviconPath: "brand/icon.svg",
         },
       ]);
     }),

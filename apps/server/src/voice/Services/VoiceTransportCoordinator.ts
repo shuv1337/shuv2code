@@ -117,4 +117,4 @@ export interface VoiceTransportCoordinatorShape {
 export class VoiceTransportCoordinator extends Context.Service<
   VoiceTransportCoordinator,
   VoiceTransportCoordinatorShape
->()("@shuv2code/voice/Services/VoiceTransportCoordinator") {}
+>()("shuv2code/voice/Services/VoiceTransportCoordinator") {}

@@ -1,10 +1,9 @@
-import { CONNECT_OAUTH_SCOPES } from "@shuv2code/shared/connectAuth";
+import { connectLoopbackRedirectUri, CONNECT_OAUTH_SCOPES } from "@shuv2code/shared/connectAuth";
 import { clerkFrontendApiUrlFromPublishableKey } from "@shuv2code/shared/relayAuth";
 import { normalizeSecureRelayUrl } from "@shuv2code/shared/relayUrl";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 
@@ -15,7 +14,7 @@ declare const __SHUV2CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_URL__: string | undefin
 declare const __SHUV2CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_DATASET__: string | undefined;
 declare const __SHUV2CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_TOKEN__: string | undefined;
 
-const CLOUD_CLI_OAUTH_REDIRECT_URI = "http://127.0.0.1:34338/callback";
+const CLOUD_CLI_OAUTH_LOOPBACK_PORT = 34338;
 const CLOUD_CLI_OAUTH_SCOPES = CONNECT_OAUTH_SCOPES;
 
 function validateRelayUrl(value: string) {
@@ -24,7 +23,7 @@ function validateRelayUrl(value: string) {
     ? Effect.fail(
         new Config.ConfigError(
           new Schema.SchemaError(
-            new SchemaIssue.InvalidValue(Option.some(value), {
+            new SchemaIssue.InvalidValue({
               message: "Relay URL must be a secure absolute HTTPS origin.",
             }),
           ),
@@ -129,7 +128,7 @@ function validateHostedAppUrl(value: string) {
     return Effect.fail(
       new Config.ConfigError(
         new Schema.SchemaError(
-          new SchemaIssue.InvalidValue(Option.some(value), {
+          new SchemaIssue.InvalidValue({
             message: "Hosted app URL must be an absolute HTTPS origin (or HTTP loopback origin).",
           }),
         ),
@@ -145,10 +144,16 @@ function makePublicValueConfig(name: string, fallback: string) {
   );
 }
 
+/**
+ * The CLI never calls Clerk's /oauth/authorize itself: the browser leg goes
+ * through the hosted /connect page, which builds the authorize URL after a
+ * Clerk session exists (see CliTokenManager.login). Only the token endpoint
+ * is contacted directly.
+ */
 export interface CloudCliOAuthConfig {
-  readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
   readonly clientId: string;
+  readonly loopbackPort: number;
   readonly redirectUri: string;
   readonly scopes: typeof CLOUD_CLI_OAUTH_SCOPES;
 }
@@ -184,10 +189,10 @@ export function makeCloudCliOAuthConfig({
         Effect.map(
           (clerkFrontendApiUrl) =>
             ({
-              authorizationEndpoint: `${clerkFrontendApiUrl}/oauth/authorize`,
               tokenEndpoint: `${clerkFrontendApiUrl}/oauth/token`,
               clientId,
-              redirectUri: CLOUD_CLI_OAUTH_REDIRECT_URI,
+              loopbackPort: CLOUD_CLI_OAUTH_LOOPBACK_PORT,
+              redirectUri: connectLoopbackRedirectUri(CLOUD_CLI_OAUTH_LOOPBACK_PORT),
               scopes: CLOUD_CLI_OAUTH_SCOPES,
             }) satisfies CloudCliOAuthConfig,
         ),

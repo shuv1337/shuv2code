@@ -68,4 +68,4 @@ export interface OrchestrationEventStoreShape {
 export class OrchestrationEventStore extends Context.Service<
   OrchestrationEventStore,
   OrchestrationEventStoreShape
->()("@shuv2code/persistence/Services/OrchestrationEventStore") {}
+>()("shuv2code/persistence/Services/OrchestrationEventStore") {}

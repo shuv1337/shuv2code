@@ -69,7 +69,7 @@ export class AutomationService extends Context.Service<
     readonly sweepDue: () => Effect.Effect<void, AutomationError>;
     readonly reconcileRuns: () => Effect.Effect<void, AutomationError>;
   }
->()("@shuv2code/automations/AutomationService") {}
+>()("shuv2code/automations/AutomationService") {}
 
 export const make = Effect.gen(function* () {
   const store = yield* AutomationStore;

@@ -1,6 +1,7 @@
 import { Connection } from "@shuv2code/client-runtime/connection";
 import { shellSnapshotLoaderLayer } from "@shuv2code/client-runtime/state/shell";
 import { threadSnapshotLoaderLayer } from "@shuv2code/client-runtime/state/threads";
+import { pullRequestDiffLoaderLayer } from "@shuv2code/client-runtime/state/pull-requests";
 import * as Layer from "effect/Layer";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -15,7 +16,11 @@ const providedConnectionPlatformLayer = connectionPlatformLayer.pipe(
   Layer.provide(runtimeContextLayer),
 );
 
-const snapshotLoaderLayer = Layer.merge(threadSnapshotLoaderLayer, shellSnapshotLoaderLayer);
+const snapshotLoaderLayer = Layer.mergeAll(
+  threadSnapshotLoaderLayer,
+  shellSnapshotLoaderLayer,
+  pullRequestDiffLoaderLayer,
+);
 
 type ConnectionLayerSource =
   | typeof Connection.layer

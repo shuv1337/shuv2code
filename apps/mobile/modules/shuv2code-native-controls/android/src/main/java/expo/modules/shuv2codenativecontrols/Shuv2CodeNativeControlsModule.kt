@@ -33,15 +33,5 @@ class Shuv2CodeNativeControlsModule : Module() {
         ?.writeText(scene)
     }
 
-    View(Shuv2CodeHeaderButtonView::class) {
-      Prop("label") { view: Shuv2CodeHeaderButtonView, label: String ->
-        view.setLabel(label)
-      }
-      Prop("systemImage") { view: Shuv2CodeHeaderButtonView, systemImage: String ->
-        view.setSystemImage(systemImage)
-      }
-
-      Events("onTriggered")
-    }
   }
 }

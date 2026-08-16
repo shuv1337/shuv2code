@@ -19,6 +19,6 @@ describe("AppRoot voice ownership", () => {
     const providerChildren = Children.toArray(
       (voiceProvider as ReactElement<{ readonly children: ReactNode }>).props.children,
     );
-    expect(providerChildren).toHaveLength(3);
+    expect(providerChildren).toHaveLength(4);
   });
 });

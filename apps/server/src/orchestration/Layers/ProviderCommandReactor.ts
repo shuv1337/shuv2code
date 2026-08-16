@@ -44,6 +44,7 @@ import {
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { forkParked, ServerActivation } from "../../serverActivation.ts";
+import { canReplaceThreadTitle, DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import {
   resolveSourceControlWriterModelSelection,
   ServerSettingsService,
@@ -53,7 +54,7 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderValidationError = Schema.is(ProviderValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
-const decodeActorProvenanceJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
+const decodeActorProvenanceJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const sensitiveProviderActorKinds = new Set([
   "voice-controller",
   "voice-controller-supervisor",
@@ -105,45 +106,64 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_PROVIDER_EFFECT_TIMEOUT = Duration.minutes(2);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
-const DEFAULT_THREAD_TITLE = "New thread";
 
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
+const MAX_FIRST_USER_TITLE_CONTEXT_CHARS = 2_000;
 const THREAD_TITLE_CONTEXT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n";
+const FIRST_USER_CONTEXT_TRUNCATION_MARKER = "\n[First user message truncated]";
 
-function formatThreadTitleContext(
-  messages: ReadonlyArray<{
-    readonly role: "user" | "assistant" | "system";
-    readonly text: string;
-    readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
-  }>,
+type ThreadTitleMessage = {
+  readonly role: "user" | "assistant" | "system";
+  readonly text: string;
+  readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+};
+
+function formatThreadTitleSection(message: ThreadTitleMessage): string | undefined {
+  if (message.role === "system") {
+    return undefined;
+  }
+  const text = message.text.trim();
+  const attachmentSummary = (message.attachments ?? [])
+    .map((attachment) => attachment.name)
+    .join(", ");
+  const contents = [
+    ...(text.length > 0 ? [text] : []),
+    ...(attachmentSummary.length > 0 ? [`[Attachments: ${attachmentSummary}]`] : []),
+  ].join("\n");
+  return contents.length > 0 ? `${message.role.toUpperCase()}:\n${contents}` : undefined;
+}
+
+function limitFirstUserSection(section: string): string {
+  if (section.length <= MAX_FIRST_USER_TITLE_CONTEXT_CHARS) {
+    return section;
+  }
+  return `${section.slice(
+    0,
+    MAX_FIRST_USER_TITLE_CONTEXT_CHARS - FIRST_USER_CONTEXT_TRUNCATION_MARKER.length,
+  )}${FIRST_USER_CONTEXT_TRUNCATION_MARKER}`;
+}
+
+function collectRecentThreadTitleContext(
+  messages: ReadonlyArray<ThreadTitleMessage>,
+  maxChars: number,
 ): {
-  readonly message: string;
+  readonly context: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
+  readonly truncated: boolean;
 } {
   let context = "";
   let truncated = false;
   const retainedAttachments: Array<ChatAttachment> = [];
 
   for (const message of messages.toReversed()) {
-    if (message.role === "system") {
-      continue;
-    }
-    const text = message.text.trim();
-    const attachmentSummary = (message.attachments ?? [])
-      .map((attachment) => attachment.name)
-      .join(", ");
-    const contents = [
-      ...(text.length > 0 ? [text] : []),
-      ...(attachmentSummary.length > 0 ? [`[Attachments: ${attachmentSummary}]`] : []),
-    ].join("\n");
-    if (contents.length === 0) {
+    const section = formatThreadTitleSection(message);
+    if (section === undefined) {
       continue;
     }
 
-    const section = `${message.role.toUpperCase()}:\n${contents}`;
     const separator = context.length > 0 ? "\n\n" : "";
-    const available = MAX_THREAD_TITLE_CONTEXT_CHARS - context.length - separator.length;
+    const available = maxChars - context.length - separator.length;
     if (section.length > available) {
       if (available > 0) {
         context = `${section.slice(-available)}${separator}${context}`;
@@ -156,9 +176,54 @@ function formatThreadTitleContext(
     retainedAttachments.unshift(...(message.attachments ?? []));
   }
 
+  return { context, attachments: retainedAttachments, truncated };
+}
+
+function formatThreadTitleContext(messages: ReadonlyArray<ThreadTitleMessage>): {
+  readonly message: string;
+  readonly attachments: ReadonlyArray<ChatAttachment>;
+} {
+  const recent = collectRecentThreadTitleContext(messages, MAX_THREAD_TITLE_CONTEXT_CHARS);
+  if (!recent.truncated) {
+    return {
+      message: recent.context,
+      attachments: recent.attachments.slice(-MAX_REGENERATION_ATTACHMENTS),
+    };
+  }
+
+  const firstUserMessage = messages.find(
+    (message) => message.role === "user" && formatThreadTitleSection(message),
+  );
+  const firstUserSection = firstUserMessage
+    ? formatThreadTitleSection(firstUserMessage)
+    : undefined;
+  if (!firstUserMessage || !firstUserSection) {
+    return {
+      message: `${THREAD_TITLE_CONTEXT_TRUNCATION_MARKER}${recent.context}`,
+      attachments: recent.attachments.slice(-MAX_REGENERATION_ATTACHMENTS),
+    };
+  }
+
+  const pinnedSection = limitFirstUserSection(firstUserSection);
+  const recentContextBudget =
+    MAX_THREAD_TITLE_CONTEXT_CHARS -
+    pinnedSection.length -
+    "\n\n".length -
+    THREAD_TITLE_CONTEXT_TRUNCATION_MARKER.length;
+  const retainedRecent = collectRecentThreadTitleContext(messages, recentContextBudget);
+  const pinnedAttachment = firstUserMessage.attachments?.[0];
+  const recentAttachments = retainedRecent.attachments.filter(
+    (attachment) => attachment.id !== pinnedAttachment?.id,
+  );
+
   return {
-    message: truncated ? `${THREAD_TITLE_CONTEXT_TRUNCATION_MARKER}${context}` : context,
-    attachments: retainedAttachments.slice(-MAX_REGENERATION_ATTACHMENTS),
+    message: `${pinnedSection}\n\n${THREAD_TITLE_CONTEXT_TRUNCATION_MARKER}${retainedRecent.context}`,
+    attachments: [
+      ...(pinnedAttachment ? [pinnedAttachment] : []),
+      ...recentAttachments.slice(
+        -(MAX_REGENERATION_ATTACHMENTS - (pinnedAttachment === undefined ? 0 : 1)),
+      ),
+    ],
   };
 }
 
@@ -189,18 +254,6 @@ export function providerEffectRecoveryLogFields(input: {
         originalCause: input.sanitizedCode,
       }
     : { cause: input.recoveryCause, originalCause: input.originalCause };
-}
-
-function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolean {
-  const trimmedCurrentTitle = currentTitle.trim();
-  if (trimmedCurrentTitle === DEFAULT_THREAD_TITLE) {
-    return true;
-  }
-
-  const trimmedTitleSeed = titleSeed?.trim();
-  return trimmedTitleSeed !== undefined && trimmedTitleSeed.length > 0
-    ? trimmedCurrentTitle === trimmedTitleSeed
-    : false;
 }
 
 function findProviderAdapterRequestError(
@@ -747,6 +800,7 @@ const make = Effect.gen(function* () {
         ...(preferredProvider ? { provider: preferredProvider } : {}),
         providerInstanceId: desiredInstanceId,
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+        ...(thread.title ? { title: thread.title } : {}),
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         ...(options?.recoveryPolicy === "forbid" ? { recoveryPolicy: "forbid" as const } : {}),
@@ -1503,7 +1557,7 @@ const make = Effect.gen(function* () {
       operation: "interrupt",
       state: "pending",
       threadId: event.payload.threadId,
-      expectedTurnId: event.payload.turnId,
+      expectedTurnId: event.payload.turnId ?? null,
       actualTurnId: null,
       sanitizedCode: "dispatch_pending",
       createdAt: event.payload.createdAt,
@@ -1521,8 +1575,8 @@ const make = Effect.gen(function* () {
             operation: "interrupt",
             state: "confirmed",
             threadId: event.payload.threadId,
-            expectedTurnId: event.payload.turnId,
-            actualTurnId: event.payload.turnId,
+            expectedTurnId: event.payload.turnId ?? null,
+            actualTurnId: event.payload.turnId ?? null,
             sanitizedCode: "provider_acknowledged",
             createdAt: event.payload.createdAt,
           }),
@@ -1534,7 +1588,7 @@ const make = Effect.gen(function* () {
             operation: "interrupt",
             ...outcome,
             threadId: event.payload.threadId,
-            expectedTurnId: event.payload.turnId,
+            expectedTurnId: event.payload.turnId ?? null,
             actualTurnId: null,
             createdAt: event.payload.createdAt,
           }).pipe(
@@ -1544,7 +1598,7 @@ const make = Effect.gen(function* () {
                 kind: "provider.turn.interrupt.failed",
                 summary: "Provider turn interrupt failed",
                 detail: formatFailureDetail(cause, sensitiveProviderEffect),
-                turnId: event.payload.turnId,
+                turnId: event.payload.turnId ?? null,
                 createdAt: event.payload.createdAt,
               }),
             ),
@@ -1777,7 +1831,8 @@ const make = Effect.gen(function* () {
       }
     });
 
-    yield* forkParked(Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent));
+    const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
+    yield* forkParked(Stream.runForEach(domainEvents, processEvent));
 
     const clearInterrupted = clearInterruptedThreadTitleRegenerations(
       interruptedTitleRegenerations,

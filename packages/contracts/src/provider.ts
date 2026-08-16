@@ -62,6 +62,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   // See ProviderSession for the migration story.
   providerInstanceId: Schema.optional(ProviderInstanceId),
   cwd: Schema.optional(TrimmedNonEmptyString),
+  title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
@@ -136,7 +137,10 @@ export type ProviderTurnSteerResult = typeof ProviderTurnSteerResult.Type;
 
 export const ProviderInterruptTurnInput = Schema.Struct({
   threadId: ThreadId,
-  turnId: TurnId,
+  // Optional: a targeted interrupt names the turn it expects to stop, while a
+  // legacy/session-scoped interrupt (no turn id) stops whatever the session is
+  // running. `thread.turn-interrupt-requested` carries the same optionality.
+  turnId: Schema.optional(TurnId),
 });
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 

@@ -97,9 +97,9 @@ const ControllerServices = Layer.mergeAll(
 const postJsonRpc = (authorizationHeader: string, body: unknown) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
-    const encodedBody = yield* Schema.encodeEffect(Schema.UnknownFromJsonString)(body).pipe(
-      Effect.orDie,
-    );
+    const encodedBody = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+      body,
+    ).pipe(Effect.orDie);
     const response = yield* client.post("/mcp/controller", {
       headers: {
         accept: "application/json, text/event-stream",

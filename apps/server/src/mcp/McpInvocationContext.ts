@@ -70,12 +70,12 @@ export interface ControllerMcpRequestScope {
 export class McpInvocationContext extends Context.Service<
   McpInvocationContext,
   McpInvocationScope
->()("@shuv2code/mcp/McpInvocationContext") {}
+>()("shuv2code/mcp/McpInvocationContext") {}
 
 export class ControllerMcpRequestContext extends Context.Service<
   ControllerMcpRequestContext,
   ControllerMcpRequestScope
->()("@shuv2code/mcp/McpInvocationContext/ControllerMcpRequestContext") {}
+>()("shuv2code/mcp/McpInvocationContext/ControllerMcpRequestContext") {}
 
 export const requireMcpCapability = Effect.fn("mcp.requireCapability")(function* (
   capability: StandardMcpCapability,

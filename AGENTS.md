@@ -21,7 +21,7 @@
 ## Dev Servers
 
 - In a linked git worktree, dev state defaults to that worktree's gitignored `.shuv2code`. This deliberately outranks an ambient `SHUV2CODE_HOME`, which could otherwise select the installed app's live `~/.shuv2code/userdata` database. An explicit `--home-dir` still wins.
-- Start the web stack with `vp run dev`. Add `--share` when someone needs to open it from another device on the tailnet.
+- Start the web stack with `vp run dev`. Add `--share` when someone needs to open it from another device on the tailnet. Hand over the full pairing URL (token included), never the bare origin; if the token got consumed, mint a fresh one with `node apps/server/src/bin.ts pair` — note it carries standard scopes, while the startup URL carries admin scopes (needed for Settings → Connections management).
 - Browser dev is single-origin: Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` to the backend. Do not set `VITE_HTTP_URL` or `VITE_WS_URL` for `dev`/`dev:web`.
 - Worktree paths supply stable preferred port offsets. Read the actual server and web ports from the `[dev-runner]` line because occupied ports can still shift them.
 - Before handing off a `--share` URL, open its origin in a controlled browser and confirm the app loads. A successful curl is insufficient because browsers reject some otherwise reachable ports.

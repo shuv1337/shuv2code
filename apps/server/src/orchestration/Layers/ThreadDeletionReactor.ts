@@ -81,8 +81,9 @@ const make = Effect.gen(function* () {
   const worker = yield* makeDrainableWorker(processThreadDeletedSafely);
 
   const start: ThreadDeletionReactorShape["start"] = Effect.fn("start")(function* () {
+    const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
     yield* forkParked(
-      Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
+      Stream.runForEach(domainEvents, (event) => {
         if (event.type !== "thread.deleted") {
           return Effect.void;
         }

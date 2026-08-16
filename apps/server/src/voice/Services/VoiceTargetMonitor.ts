@@ -26,4 +26,4 @@ export interface VoiceTargetMonitorShape {
 export class VoiceTargetMonitor extends Context.Service<
   VoiceTargetMonitor,
   VoiceTargetMonitorShape
->()("@shuv2code/voice/Services/VoiceTargetMonitor") {}
+>()("shuv2code/voice/Services/VoiceTargetMonitor") {}

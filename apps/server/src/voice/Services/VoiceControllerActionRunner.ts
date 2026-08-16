@@ -29,4 +29,4 @@ export interface VoiceControllerActionRunnerShape {
 export class VoiceControllerActionRunner extends Context.Service<
   VoiceControllerActionRunner,
   VoiceControllerActionRunnerShape
->()("@shuv2code/voice/Services/VoiceControllerActionRunner") {}
+>()("shuv2code/voice/Services/VoiceControllerActionRunner") {}

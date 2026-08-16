@@ -35,6 +35,7 @@ import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import {
+  isAgentActivityPublishingEnabledValue,
   PUBLISH_AGENT_ACTIVITY_SECRET,
   RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
   RELAY_ISSUER_SECRET,
@@ -52,7 +53,7 @@ export class AgentAwarenessRelay extends Context.Service<
     readonly publishThread: (threadId: ThreadId) => Effect.Effect<void>;
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   }
->()("@shuv2code/relay/AgentAwarenessRelay") {}
+>()("shuv2code/relay/AgentAwarenessRelay") {}
 
 export function eventThreadId(event: OrchestrationEvent): ThreadId | null {
   const payload = event.payload as { readonly threadId?: unknown };
@@ -102,7 +103,7 @@ export function agentAwarenessPublishIdentity(state: RelayAgentActivityState | n
 }
 
 export function isAgentActivityPublishingEnabled(value: string | null): boolean {
-  return value === "true";
+  return isAgentActivityPublishingEnabledValue(value);
 }
 
 export function resolveAgentActivityPublishingStartupState(input: {
@@ -607,8 +608,9 @@ export const make = Effect.gen(function* () {
           Effect.andThen(publishActiveThreadsOnceWhenConfigured(startupState !== "enabled")),
         ),
       );
+      const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
       yield* forkParked(
-        Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
+        Stream.runForEach(domainEvents, (event) => {
           const threadId = eventThreadId(event);
           if (threadId === null) {
             return Effect.logDebug("agent activity publishing ignored event without thread id", {

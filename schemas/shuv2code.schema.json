@@ -19,6 +19,14 @@
         }
       ]
     },
+    "defaultThreadEnvMode": {
+      "type": "string",
+      "enum": [
+        "local",
+        "worktree"
+      ],
+      "description": "Where new threads start for this repository: \"worktree\" for a fresh git worktree, \"local\" for the current checkout. A per-project setting in shuv2code overrides this; when neither is set, the global default applies."
+    },
     "scripts": {
       "type": "array",
       "items": {

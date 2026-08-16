@@ -13,6 +13,7 @@
 import type { OrchestrationCommand, OrchestrationEvent } from "@shuv2code/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
 import type { OrchestrationDispatchError } from "../Errors.ts";
@@ -61,6 +62,19 @@ export interface OrchestrationEngineShape {
   readonly streamDomainEvents: Stream.Stream<OrchestrationEvent>;
 
   /**
+   * Establishes a PubSub subscription eagerly in the caller's scope and
+   * returns the stream over it. Use this from reactors that fork their
+   * consumer loop: the subscription exists before the effect returns, so
+   * events published immediately after setup are never dropped by the
+   * fork-then-subscribe race that `streamDomainEvents` allows.
+   */
+  readonly subscribeDomainEvents: Effect.Effect<
+    Stream.Stream<OrchestrationEvent>,
+    never,
+    Scope.Scope
+  >;
+
+  /**
    * The latest sequence reflected in the engine's authoritative command read
    * model (0 if none). Used to gauge how far behind a resuming client is before
    * choosing between an incremental replay and a fresh projected snapshot.
@@ -82,4 +96,4 @@ export interface OrchestrationEngineShape {
 export class OrchestrationEngineService extends Context.Service<
   OrchestrationEngineService,
   OrchestrationEngineShape
->()("@shuv2code/orchestration/Services/OrchestrationEngine/OrchestrationEngineService") {}
+>()("shuv2code/orchestration/Services/OrchestrationEngine/OrchestrationEngineService") {}

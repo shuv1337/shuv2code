@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import { HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -110,6 +111,10 @@ function makeLayer(input: {
     Layer.provideMerge(networkLayer),
     Layer.provideMerge(DesktopConfig.layerTest(env)),
     Layer.provideMerge(environmentLayer),
+    // The harness environment declares a darwin desktop; pin the ambient
+    // platform reference the tailscale CLI discovery reads so the test does
+    // not depend on the host OS actually being macOS.
+    Layer.provideMerge(Layer.succeed(HostProcessPlatform, "darwin")),
   );
 }
 

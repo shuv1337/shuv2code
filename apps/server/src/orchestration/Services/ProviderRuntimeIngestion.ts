@@ -38,4 +38,4 @@ export interface ProviderRuntimeIngestionShape {
 export class ProviderRuntimeIngestionService extends Context.Service<
   ProviderRuntimeIngestionService,
   ProviderRuntimeIngestionShape
->()("@shuv2code/orchestration/Services/ProviderRuntimeIngestion/ProviderRuntimeIngestionService") {}
+>()("shuv2code/orchestration/Services/ProviderRuntimeIngestion/ProviderRuntimeIngestionService") {}

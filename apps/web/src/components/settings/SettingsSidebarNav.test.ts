@@ -13,7 +13,6 @@ describe("SETTINGS_NAV_ITEMS", () => {
       { label: "Speech", to: "/settings/speech" },
       { label: "Source Control", to: "/settings/source-control" },
       { label: "Connections", to: "/settings/connections" },
-      { label: "Beta", to: "/settings/beta" },
       { label: "Archive", to: "/settings/archived" },
     ]);
   });

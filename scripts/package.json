@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
+    "@electron/asar": "^3.4.1",
     "@shuv2code/contracts": "workspace:*",
     "@shuv2code/shared": "workspace:*",
     "@shuv2code/tailscale": "workspace:*",
