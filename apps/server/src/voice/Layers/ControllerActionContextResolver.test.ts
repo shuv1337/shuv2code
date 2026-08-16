@@ -11,6 +11,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
+import { ThreadControlGrantVerifier } from "../../orchestration/Services/ThreadControlGrantVerifier.ts";
 import { ThreadControlInvocationResolver } from "../../orchestration/Services/ThreadControlInvocationResolver.ts";
 import { __testing as threadHandlerTesting } from "../../mcp/toolkits/threads/handlers.ts";
 import { VoiceControllerActionRepositoryLive } from "../../persistence/Layers/VoiceControllerActions.ts";
@@ -23,6 +25,7 @@ import { VoiceTransportSessionRepository } from "../../persistence/Services/Voic
 import * as ServerSettings from "../../serverSettings.ts";
 import { makeVoiceThreadControlInvocationResolver } from "../VoiceThreadControlInvocationResolver.ts";
 import { ControllerActionContextResolverLive } from "./ControllerActionContextResolver.ts";
+import { VoiceThreadControlGrantVerifierLive } from "./VoiceThreadControlGrantVerifier.ts";
 import { ControllerActionContextResolver } from "../Services/ControllerActionContextResolver.ts";
 
 const environmentId = EnvironmentId.make("environment-controller-action-resolver");
@@ -41,7 +44,27 @@ const repositories = Layer.mergeAll(
   VoiceTransportSessionRepositoryLive,
 ).pipe(Layer.provideMerge(SqlitePersistenceMemory));
 
-const services = ControllerActionContextResolverLive.pipe(Layer.provideMerge(repositories));
+const services = Layer.mergeAll(
+  ControllerActionContextResolverLive,
+  VoiceThreadControlGrantVerifierLive,
+).pipe(
+  Layer.provideMerge(repositories),
+  Layer.provideMerge(
+    ServerSettings.layerTest({
+      enableVoiceThreadRead: true,
+      enableVoiceThreadControl: true,
+    }),
+  ),
+  Layer.provideMerge(
+    Layer.succeed(
+      ServerEnvironment,
+      ServerEnvironment.of({
+        getEnvironmentId: Effect.succeed(environmentId),
+        getDescriptor: Effect.die("unused in grant verification tests"),
+      }),
+    ),
+  ),
+);
 
 const layer = it.layer(services);
 
@@ -283,6 +306,50 @@ layer("ControllerActionContextResolverLive", (it) => {
         _tag: "ThreadControlInvocationError",
         code: "action_not_found",
       });
+    }),
+  );
+
+  it.effect("revalidates the Voice grant and exact mutation at the application boundary", () =>
+    Effect.gen(function* () {
+      yield* resetVoiceRows;
+      yield* openControllerScope;
+      yield* createBoundAction("action-a", "turn-a");
+
+      const verifier = yield* ThreadControlGrantVerifier;
+      const action = yield* resolve();
+      const authorization = {
+        environmentId,
+        controllerThreadId,
+        providerInstanceId,
+        authorizedRuntimeCeiling: "full-access" as const,
+        liveControllerRuntimeMode: "full-access" as const,
+        bindingGeneration: 1,
+        controlEpoch: 0,
+        canRead: true,
+        canControl: true,
+      };
+
+      yield* verifier.authorize(authorization, "read");
+      yield* verifier.authorize(authorization, "control");
+      yield* verifier.validateMutation(authorization, action);
+
+      expect(
+        (yield* verifier
+          .authorize({ ...authorization, controlEpoch: 1 }, "control")
+          .pipe(Effect.flip)).code,
+      ).toBe("control_disabled");
+
+      const actions = yield* VoiceControllerActionRepository;
+      expect(
+        yield* actions.fenceTransportGeneration({
+          transportSessionId,
+          throughGeneration: 1,
+          closedAt: now,
+        }),
+      ).toBe(1);
+      expect((yield* verifier.validateMutation(authorization, action).pipe(Effect.flip)).code).toBe(
+        "controller_mismatch",
+      );
     }),
   );
 });

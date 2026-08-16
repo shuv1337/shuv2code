@@ -116,6 +116,7 @@ import * as AutomationService from "./automations/AutomationService.ts";
 import { ThreadControlServiceLive } from "./orchestration/Layers/ThreadControlService.ts";
 import { VoiceControlPersistenceLayerLive } from "./persistence/Layers/VoiceControl.ts";
 import { ControllerActionContextResolverLive } from "./voice/Layers/ControllerActionContextResolver.ts";
+import { VoiceThreadControlGrantVerifierLive } from "./voice/Layers/VoiceThreadControlGrantVerifier.ts";
 import { VoiceControllerServiceLive } from "./voice/Layers/VoiceControllerService.ts";
 import { VoiceRuntimeGatewayLive } from "./voice/Layers/VoiceRuntimeGateway.ts";
 import * as UsageService from "./usage/UsageService.ts";
@@ -291,7 +292,9 @@ const VoiceControlPersistenceLive = VoiceControlPersistenceLayerLive.pipe(
 
 const McpSessionRegistryLayerLive = McpSessionRegistry.layer;
 
-const ThreadControlLayerLive = ThreadControlServiceLive;
+const ThreadControlLayerLive = ThreadControlServiceLive.pipe(
+  Layer.provide(VoiceThreadControlGrantVerifierLive),
+);
 
 const ControllerActionContextResolverLayerLive = ControllerActionContextResolverLive;
 
