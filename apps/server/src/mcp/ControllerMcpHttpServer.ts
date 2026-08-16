@@ -19,6 +19,8 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 
 import packageJson from "../../package.json" with { type: "json" };
 import { ThreadControlInvocationResolver } from "../orchestration/Services/ThreadControlInvocationResolver.ts";
+import { ThreadControlExecutionCoordinator } from "../orchestration/Services/ThreadControlExecutionCoordinator.ts";
+import { ThreadControlGrantVerifier } from "../orchestration/Services/ThreadControlGrantVerifier.ts";
 import { ThreadControlService } from "../orchestration/Services/ThreadControlService.ts";
 import { VoiceControllerBindingRepository } from "../persistence/Services/VoiceControllerBindings.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -309,13 +311,22 @@ const makeControllerMcpRequestHandler = (services: {
   readonly bindingRepository: VoiceControllerBindingRepository["Service"];
   readonly actionResolver: ControllerActionContextResolver["Service"];
   readonly threadControl: ThreadControlService["Service"];
+  readonly verifier: ThreadControlGrantVerifier["Service"];
+  readonly execution: ThreadControlExecutionCoordinator["Service"];
 }) =>
   Effect.withFiber((fiber) => {
     const runPromise = Effect.runPromiseWith(fiber.context);
     return Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
-      const { registry, settingsService, bindingRepository, actionResolver, threadControl } =
-        services;
+      const {
+        registry,
+        settingsService,
+        bindingRepository,
+        actionResolver,
+        threadControl,
+        verifier,
+        execution,
+      } = services;
       const authorization = request.headers.authorization;
       const rawToken =
         authorization?.startsWith("Bearer ") === true
@@ -346,6 +357,8 @@ const makeControllerMcpRequestHandler = (services: {
           settingsService,
           bindingRepository,
           actionResolver,
+          verifier,
+          execution,
         });
         return runPromise(
           decodeAndRunThreadTool(name, input).pipe(
@@ -399,12 +412,16 @@ export const layer = Layer.unwrap(
     const bindingRepository = yield* VoiceControllerBindingRepository;
     const actionResolver = yield* ControllerActionContextResolver;
     const threadControl = yield* ThreadControlService;
+    const verifier = yield* ThreadControlGrantVerifier;
+    const execution = yield* ThreadControlExecutionCoordinator;
     const handler = makeControllerMcpRequestHandler({
       registry,
       settingsService,
       bindingRepository,
       actionResolver,
       threadControl,
+      verifier,
+      execution,
     });
     return Layer.mergeAll(
       HttpRouter.add("POST", CONTROLLER_MCP_PATH, handler),

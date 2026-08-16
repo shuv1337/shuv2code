@@ -15,6 +15,8 @@ import * as Schema from "effect/Schema";
 import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { ThreadControlExecutionCoordinator } from "../orchestration/Services/ThreadControlExecutionCoordinator.ts";
+import { ThreadControlGrantVerifier } from "../orchestration/Services/ThreadControlGrantVerifier.ts";
 import { ThreadControlService } from "../orchestration/Services/ThreadControlService.ts";
 import { VoiceControllerBindingRepository } from "../persistence/Services/VoiceControllerBindings.ts";
 import { VoiceControllerBinding } from "../persistence/VoiceControlModels.ts";
@@ -92,6 +94,21 @@ const ControllerServices = Layer.mergeAll(
     ControllerActionContextResolver.of({ resolve: () => Effect.die("unused") }),
   ),
   Layer.succeed(ThreadControlService, threadControl),
+  Layer.succeed(
+    ThreadControlGrantVerifier,
+    ThreadControlGrantVerifier.of({
+      authorize: () => Effect.void,
+      validateMutation: () => Effect.void,
+    }),
+  ),
+  Layer.succeed(
+    ThreadControlExecutionCoordinator,
+    ThreadControlExecutionCoordinator.of({
+      execute: () => Effect.die("unused"),
+      setActiveTarget: () => Effect.void,
+      clearActiveTargetIfMatching: () => Effect.void,
+    }),
+  ),
 );
 
 const postJsonRpc = (authorizationHeader: string, body: unknown) =>

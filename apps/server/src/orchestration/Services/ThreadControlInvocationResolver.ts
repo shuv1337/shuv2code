@@ -7,11 +7,24 @@ import type {
   ThreadControlAuthorization,
   ThreadControlError,
 } from "./ThreadControlService.ts";
+import type { ThreadControlExecutionCoordinatorShape } from "./ThreadControlExecutionCoordinator.ts";
+import type { ThreadControlGrantVerifierShape } from "./ThreadControlGrantVerifier.ts";
 
 export type ThreadControlOperation = "read" | "control";
 
-export interface ThreadControlMutationInvocation {
+/**
+ * An invocation-scoped object capability. It couples immutable authorization
+ * data with the adapter that can revalidate and execute it. Canonical thread
+ * operations never select a Voice, provider, or automation adapter globally.
+ */
+export interface ThreadControlGrant {
   readonly authorization: ThreadControlAuthorization;
+  readonly verifier: ThreadControlGrantVerifierShape;
+  readonly execution: ThreadControlExecutionCoordinatorShape;
+}
+
+export interface ThreadControlMutationInvocation {
+  readonly grant: ThreadControlGrant;
   readonly action: ControllerActionContext;
 }
 
@@ -43,7 +56,7 @@ export class ThreadControlInvocationError extends Schema.TaggedErrorClass<Thread
 export interface ThreadControlInvocationResolverShape {
   readonly resolveAuthorization: (
     operation: ThreadControlOperation,
-  ) => Effect.Effect<ThreadControlAuthorization, ThreadControlError>;
+  ) => Effect.Effect<ThreadControlGrant, ThreadControlError>;
   readonly resolveMutation: () => Effect.Effect<
     ThreadControlMutationInvocation,
     ThreadControlError | ThreadControlInvocationError

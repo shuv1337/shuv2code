@@ -37,6 +37,11 @@ const providerThreadId = "provider-thread-1";
 const transportSessionId = "transport-session-1";
 const transportRuntimeInstanceId = "transport-runtime-1";
 const now = "2026-07-30T00:00:00.000Z";
+const execution = {
+  execute: () => Effect.die("unused"),
+  setActiveTarget: () => Effect.void,
+  clearActiveTargetIfMatching: () => Effect.void,
+};
 
 const repositories = Layer.mergeAll(
   VoiceControllerActionRepositoryLive,
@@ -192,6 +197,7 @@ const provideMcpRequest = <A, E, R>(effect: Effect.Effect<A, E, R>, turnId: stri
     const actionResolver = yield* ControllerActionContextResolver;
     const bindingRepository = yield* VoiceControllerBindingRepository;
     const settingsService = yield* ServerSettings.ServerSettingsService;
+    const verifier = yield* ThreadControlGrantVerifier;
     const invocationResolver = makeVoiceThreadControlInvocationResolver({
       invocation,
       request: {
@@ -207,6 +213,8 @@ const provideMcpRequest = <A, E, R>(effect: Effect.Effect<A, E, R>, turnId: stri
       settingsService,
       bindingRepository,
       actionResolver,
+      verifier,
+      execution,
     });
     return yield* effect.pipe(
       Effect.provideService(ThreadControlInvocationResolver, invocationResolver),

@@ -13,6 +13,8 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import type { ThreadControlGrant } from "./ThreadControlInvocationResolver.ts";
+
 export interface ThreadControlAuthorization {
   readonly environmentId: EnvironmentId;
   readonly controllerThreadId: ThreadId;
@@ -74,7 +76,7 @@ export interface ThreadControlThreadSummary {
 }
 
 export interface ThreadControlListInput {
-  readonly authorization: ThreadControlAuthorization;
+  readonly grant: ThreadControlGrant;
   readonly projectQuery?: string | undefined;
   readonly phase?: ThreadControlPhase | undefined;
   readonly cursor?: number | undefined;
@@ -88,7 +90,7 @@ export interface ThreadControlListResult {
 }
 
 export interface ThreadControlGetInput {
-  readonly authorization: ThreadControlAuthorization;
+  readonly grant: ThreadControlGrant;
   readonly threadId: ThreadId;
   readonly includeUntrustedExcerpt?: boolean | undefined;
 }
@@ -108,7 +110,7 @@ export interface ThreadControlGetResult {
 }
 
 export interface ThreadControlCreateInput {
-  readonly authorization: ThreadControlAuthorization;
+  readonly grant: ThreadControlGrant;
   readonly action: ControllerActionContext;
   readonly projectId: ProjectId;
   readonly initialInstruction: string;
@@ -118,7 +120,7 @@ export interface ThreadControlCreateInput {
 
 export type ThreadControlSendInput =
   | {
-      readonly authorization: ThreadControlAuthorization;
+      readonly grant: ThreadControlGrant;
       readonly action: ControllerActionContext;
       readonly threadId: ThreadId;
       readonly text: string;
@@ -126,7 +128,7 @@ export type ThreadControlSendInput =
       readonly expectedTurnId: null;
     }
   | {
-      readonly authorization: ThreadControlAuthorization;
+      readonly grant: ThreadControlGrant;
       readonly action: ControllerActionContext;
       readonly threadId: ThreadId;
       readonly text: string;
@@ -135,7 +137,7 @@ export type ThreadControlSendInput =
     };
 
 export interface ThreadControlInterruptInput {
-  readonly authorization: ThreadControlAuthorization;
+  readonly grant: ThreadControlGrant;
   readonly action: ControllerActionContext;
   readonly threadId: ThreadId;
   readonly expectedTurnId: TurnId;

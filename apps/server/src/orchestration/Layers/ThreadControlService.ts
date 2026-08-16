@@ -16,8 +16,7 @@ import * as Option from "effect/Option";
 
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
-import { ThreadControlExecutionCoordinator } from "../Services/ThreadControlExecutionCoordinator.ts";
-import { ThreadControlGrantVerifier } from "../Services/ThreadControlGrantVerifier.ts";
+import type { ThreadControlGrant } from "../Services/ThreadControlInvocationResolver.ts";
 import {
   ThreadControlError,
   ThreadControlService,
@@ -179,13 +178,12 @@ export const validateInterruptTargetPrecondition = (input: {
 export const makeThreadControlService = Effect.fn("ThreadControlService.make")(function* () {
   const projection = yield* ProjectionSnapshotQuery;
   const engine = yield* OrchestrationEngineService;
-  const execution = yield* ThreadControlExecutionCoordinator;
-  const grantVerifier = yield* ThreadControlGrantVerifier;
 
   const getManagedThread = Effect.fn("ThreadControlService.getManagedThread")(function* (
-    authorization: ThreadControlAuthorization,
+    grant: ThreadControlGrant,
     threadId: ThreadId,
   ) {
+    const authorization = grant.authorization;
     if (threadId === authorization.controllerThreadId) {
       return yield* new ThreadControlError({
         code: "controller_target_forbidden",
@@ -202,7 +200,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       ),
     );
     if (Option.isNone(snapshot)) {
-      yield* execution.clearActiveTargetIfMatching(authorization, threadId);
+      yield* grant.execution.clearActiveTargetIfMatching(authorization, threadId);
       return yield* new ThreadControlError({
         code: "thread_not_found",
         message: "The target thread was not found.",
@@ -215,7 +213,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       });
     }
     if (snapshot.value.thread.deletedAt !== null || snapshot.value.thread.archivedAt !== null) {
-      yield* execution.clearActiveTargetIfMatching(authorization, threadId);
+      yield* grant.execution.clearActiveTargetIfMatching(authorization, threadId);
       return yield* new ThreadControlError({
         code: "thread_archived",
         message: "The target thread is deleted or archived.",
@@ -286,7 +284,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
    * result without issuing another orchestration command.
    */
   const executeMutation = <A extends ThreadControlMutationResult>(input: {
-    readonly authorization: ThreadControlAuthorization;
+    readonly grant: ThreadControlGrant;
     readonly action: ControllerActionContext;
     readonly toolName: "thread_create" | "thread_send" | "thread_interrupt";
     readonly operation: string;
@@ -300,22 +298,25 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       readonly operation: string;
       readonly canonicalRequestHash: string;
     }) => Effect.Effect<A, ThreadControlError>;
-  }): Effect.Effect<A, ThreadControlError> =>
-    execution.execute({
-      ...input,
+  }): Effect.Effect<A, ThreadControlError> => {
+    const { grant, effect, preDispatch, ...mutation } = input;
+    return grant.execution.execute({
+      ...mutation,
+      authorization: grant.authorization,
       revalidate: Effect.gen(function* () {
-        yield* grantVerifier.authorize(input.authorization, "control");
-        yield* grantVerifier.validateMutation(input.authorization, input.action);
-        if (input.preDispatch !== undefined) {
-          yield* input.preDispatch;
+        yield* grant.verifier.authorize(grant.authorization, "control");
+        yield* grant.verifier.validateMutation(grant.authorization, input.action);
+        if (preDispatch !== undefined) {
+          yield* preDispatch;
         }
       }),
-      dispatch: input.effect,
+      dispatch: effect,
     });
+  };
 
   const list: ThreadControlService["Service"]["list"] = Effect.fn("ThreadControlService.list")(
     function* (input) {
-      yield* grantVerifier.authorize(input.authorization, "read");
+      yield* input.grant.verifier.authorize(input.grant.authorization, "read");
       const snapshot = yield* projection.getShellSnapshot().pipe(
         Effect.mapError(
           () =>
@@ -361,8 +362,9 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
 
   const get: ThreadControlService["Service"]["get"] = Effect.fn("ThreadControlService.get")(
     function* (input) {
-      yield* grantVerifier.authorize(input.authorization, "read");
-      const snapshot = yield* getManagedThread(input.authorization, input.threadId);
+      const authorization = input.grant.authorization;
+      yield* input.grant.verifier.authorize(authorization, "read");
+      const snapshot = yield* getManagedThread(input.grant, input.threadId);
       const thread = snapshot.thread;
       const shell = yield* projection.getThreadShellById(input.threadId).pipe(
         Effect.mapError(
@@ -379,7 +381,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
           message: "The target thread was not found.",
         });
       }
-      yield* execution.setActiveTarget(input.authorization, input.threadId);
+      yield* input.grant.execution.setActiveTarget(authorization, input.threadId);
       const shellSummary = summarizeThread(shell.value);
       const latestAssistant = thread.messages.findLast(
         (candidate) => candidate.role === "assistant" && !candidate.streaming,
@@ -407,8 +409,9 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
   const create: ThreadControlService["Service"]["create"] = Effect.fn(
     "ThreadControlService.create",
   )(function* (input) {
-    yield* grantVerifier.authorize(input.authorization, "control");
-    yield* grantVerifier.validateMutation(input.authorization, input.action);
+    const authorization = input.grant.authorization;
+    yield* input.grant.verifier.authorize(authorization, "control");
+    yield* input.grant.verifier.validateMutation(authorization, input.action);
     const instruction = yield* requireNonEmpty(input.initialInstruction, "initialInstruction");
     const project = yield* projection.getProjectShellById(input.projectId).pipe(
       Effect.mapError(
@@ -425,17 +428,15 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
         message: "The target project was not found.",
       });
     }
-    const controller = yield* projection
-      .getThreadDetailById(input.authorization.controllerThreadId)
-      .pipe(
-        Effect.mapError(
-          () =>
-            new ThreadControlError({
-              code: "dispatch_failed",
-              message: "The controller projection could not be read.",
-            }),
-        ),
-      );
+    const controller = yield* projection.getThreadDetailById(authorization.controllerThreadId).pipe(
+      Effect.mapError(
+        () =>
+          new ThreadControlError({
+            code: "dispatch_failed",
+            message: "The controller projection could not be read.",
+          }),
+      ),
+    );
     if (Option.isNone(controller) || !isAvailableThreadControlSource(controller.value)) {
       return yield* new ThreadControlError({
         code: "controller_mismatch",
@@ -443,7 +444,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       });
     }
     const baseModel = controller.value.modelSelection;
-    if (baseModel.instanceId !== input.authorization.providerInstanceId) {
+    if (baseModel.instanceId !== authorization.providerInstanceId) {
       return yield* new ThreadControlError({
         code: "invalid_model",
         message: "The controller model is not on its bound provider instance.",
@@ -456,20 +457,20 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       });
     }
     const modelSelection = ModelSelection.make({
-      instanceId: input.authorization.providerInstanceId,
+      instanceId: authorization.providerInstanceId,
       model: baseModel.model,
       ...(baseModel.options !== undefined ? { options: baseModel.options } : {}),
     });
     const createdAt = DateTime.formatIso(yield* DateTime.now);
     const threadId = input.action.createdThreadId;
     const mode =
-      RUNTIME_MODE_RANK[input.authorization.authorizedRuntimeCeiling] <=
+      RUNTIME_MODE_RANK[authorization.authorizedRuntimeCeiling] <=
       RUNTIME_MODE_RANK[controller.value.runtimeMode]
-        ? input.authorization.authorizedRuntimeCeiling
+        ? authorization.authorizedRuntimeCeiling
         : controller.value.runtimeMode;
     const providerCreationId = input.action.providerCreationId;
     return yield* executeMutation({
-      authorization: input.authorization,
+      grant: input.grant,
       action: input.action,
       toolName: "thread_create",
       // Provider effect acknowledgement belongs to the initial turn start,
@@ -504,7 +505,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
               createdAt,
             },
             input.action,
-            input.authorization,
+            authorization,
             provenance,
           );
           const startResult = yield* dispatch(
@@ -527,7 +528,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
               createdAt,
             },
             input.action,
-            input.authorization,
+            authorization,
             provenance,
           );
           return {
@@ -546,11 +547,12 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
 
   const send: ThreadControlService["Service"]["send"] = Effect.fn("ThreadControlService.send")(
     function* (input) {
-      yield* grantVerifier.authorize(input.authorization, "control");
-      yield* grantVerifier.validateMutation(input.authorization, input.action);
+      const authorization = input.grant.authorization;
+      yield* input.grant.verifier.authorize(authorization, "control");
+      yield* input.grant.verifier.validateMutation(authorization, input.action);
       const text = yield* requireNonEmpty(input.text, "text");
-      const target = yield* getManagedThread(input.authorization, input.threadId);
-      const currentCeiling = yield* getEffectiveRuntimeCeiling(input.authorization);
+      const target = yield* getManagedThread(input.grant, input.threadId);
+      const currentCeiling = yield* getEffectiveRuntimeCeiling(authorization);
       const currentTurnId = target.thread.session?.activeTurnId ?? null;
       yield* validateSendTargetPrecondition({
         disposition: input.disposition,
@@ -561,7 +563,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       });
       const createdAt = DateTime.formatIso(yield* DateTime.now);
       return yield* executeMutation({
-        authorization: input.authorization,
+        grant: input.grant,
         action: input.action,
         toolName: "thread_send",
         operation: `send-${input.disposition}`,
@@ -576,8 +578,8 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
           text,
         ]),
         preDispatch: Effect.gen(function* () {
-          const liveTarget = yield* getManagedThread(input.authorization, input.threadId);
-          const liveCeiling = yield* getEffectiveRuntimeCeiling(input.authorization);
+          const liveTarget = yield* getManagedThread(input.grant, input.threadId);
+          const liveCeiling = yield* getEffectiveRuntimeCeiling(authorization);
           const liveTurnId = liveTarget.thread.session?.activeTurnId ?? null;
           yield* validateSendTargetPrecondition({
             disposition: input.disposition,
@@ -606,7 +608,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
                       createdAt,
                     },
                     input.action,
-                    input.authorization,
+                    authorization,
                     provenance,
                   )
                 : yield* dispatch(
@@ -628,7 +630,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
                       createdAt,
                     },
                     input.action,
-                    input.authorization,
+                    authorization,
                     provenance,
                   );
             return {
@@ -649,9 +651,10 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
   const interrupt: ThreadControlService["Service"]["interrupt"] = Effect.fn(
     "ThreadControlService.interrupt",
   )(function* (input) {
-    yield* grantVerifier.authorize(input.authorization, "control");
-    yield* grantVerifier.validateMutation(input.authorization, input.action);
-    const target = yield* getManagedThread(input.authorization, input.threadId);
+    const authorization = input.grant.authorization;
+    yield* input.grant.verifier.authorize(authorization, "control");
+    yield* input.grant.verifier.validateMutation(authorization, input.action);
+    const target = yield* getManagedThread(input.grant, input.threadId);
     const currentTurnId = target.thread.session?.activeTurnId ?? null;
     yield* validateInterruptTargetPrecondition({
       expectedTurnId: input.expectedTurnId,
@@ -659,7 +662,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
     });
     const createdAt = DateTime.formatIso(yield* DateTime.now);
     return yield* executeMutation({
-      authorization: input.authorization,
+      grant: input.grant,
       action: input.action,
       toolName: "thread_interrupt",
       operation: "interrupt",
@@ -668,7 +671,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       providerCreationId: null,
       canonicalRequest: stableStringify(["thread_interrupt", input.threadId, input.expectedTurnId]),
       preDispatch: Effect.gen(function* () {
-        const liveTarget = yield* getManagedThread(input.authorization, input.threadId);
+        const liveTarget = yield* getManagedThread(input.grant, input.threadId);
         const liveTurnId = liveTarget.thread.session?.activeTurnId ?? null;
         yield* validateInterruptTargetPrecondition({
           expectedTurnId: input.expectedTurnId,
@@ -686,7 +689,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
               createdAt,
             },
             input.action,
-            input.authorization,
+            authorization,
             provenance,
           );
           return {

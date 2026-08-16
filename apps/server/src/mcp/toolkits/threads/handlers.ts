@@ -44,11 +44,11 @@ const parseCursor = (
 export const threadListHandler = Effect.fn("ThreadToolkit.thread_list")(function* (
   input: ThreadListInput,
 ) {
-  const authorization = yield* resolveAuthorization("read");
+  const grant = yield* resolveAuthorization("read");
   const service = yield* ThreadControlService;
   const cursor = yield* parseCursor(input.cursor);
   const result = yield* service.list({
-    authorization,
+    grant,
     ...(input.projectQuery === undefined ? {} : { projectQuery: input.projectQuery }),
     ...(input.phase === undefined ? {} : { phase: input.phase }),
     ...(cursor === undefined ? {} : { cursor }),
@@ -62,10 +62,10 @@ export const threadListHandler = Effect.fn("ThreadToolkit.thread_list")(function
 export const threadGetHandler = Effect.fn("ThreadToolkit.thread_get")(function* (
   input: ThreadGetInput,
 ) {
-  const authorization = yield* resolveAuthorization("read");
+  const grant = yield* resolveAuthorization("read");
   const service = yield* ThreadControlService;
   return yield* service.get({
-    authorization,
+    grant,
     threadId: ThreadId.make(input.threadId),
     ...(input.includeUntrustedExcerpt === undefined
       ? {}
@@ -76,10 +76,10 @@ export const threadGetHandler = Effect.fn("ThreadToolkit.thread_get")(function* 
 export const threadCreateHandler = Effect.fn("ThreadToolkit.thread_create")(function* (
   input: ThreadCreateInput,
 ) {
-  const { action, authorization } = yield* requireAction();
+  const { action, grant } = yield* requireAction();
   const service = yield* ThreadControlService;
   return yield* service.create({
-    authorization,
+    grant,
     action,
     projectId: ProjectId.make(input.projectId),
     initialInstruction: input.initialInstruction,
@@ -91,11 +91,11 @@ export const threadCreateHandler = Effect.fn("ThreadToolkit.thread_create")(func
 export const threadSendHandler = Effect.fn("ThreadToolkit.thread_send")(function* (
   input: ThreadSendInput,
 ) {
-  const { action, authorization } = yield* requireAction();
+  const { action, grant } = yield* requireAction();
   const service = yield* ThreadControlService;
   return input.disposition === "start"
     ? yield* service.send({
-        authorization,
+        grant,
         action,
         threadId: ThreadId.make(input.threadId),
         text: input.text,
@@ -103,7 +103,7 @@ export const threadSendHandler = Effect.fn("ThreadToolkit.thread_send")(function
         expectedTurnId: null,
       })
     : yield* service.send({
-        authorization,
+        grant,
         action,
         threadId: ThreadId.make(input.threadId),
         text: input.text,
@@ -115,10 +115,10 @@ export const threadSendHandler = Effect.fn("ThreadToolkit.thread_send")(function
 export const threadInterruptHandler = Effect.fn("ThreadToolkit.thread_interrupt")(function* (
   input: ThreadInterruptInput,
 ) {
-  const { action, authorization } = yield* requireAction();
+  const { action, grant } = yield* requireAction();
   const service = yield* ThreadControlService;
   return yield* service.interrupt({
-    authorization,
+    grant,
     action,
     threadId: ThreadId.make(input.threadId),
     expectedTurnId: TurnId.make(input.expectedTurnId),

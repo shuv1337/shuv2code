@@ -21,6 +21,15 @@ import { threadListHandler } from "./handlers.ts";
 const environmentId = EnvironmentId.make("environment-controller-handler-test");
 const controllerThreadId = ThreadId.make("controller-thread-handler-test");
 const providerInstanceId = ProviderInstanceId.make("codex");
+const verifier = {
+  authorize: () => Effect.void,
+  validateMutation: () => Effect.void,
+};
+const execution = {
+  execute: () => Effect.die("unused"),
+  setActiveTarget: () => Effect.void,
+  clearActiveTargetIfMatching: () => Effect.void,
+};
 
 const invocation = {
   credentialId: "credential-handler-test",
@@ -81,6 +90,8 @@ const makeResolver = (bindings: VoiceControllerBindingRepository["Service"]) =>
       settingsService,
       bindingRepository: bindings,
       actionResolver: ControllerActionContextResolver.of({ resolve: () => Effect.die("unused") }),
+      verifier,
+      execution,
     });
   }).pipe(
     Effect.provide(
@@ -94,7 +105,7 @@ const makeResolver = (bindings: VoiceControllerBindingRepository["Service"]) =>
 it.effect("passes the live binding generation into thread-control authorization", () =>
   Effect.gen(function* () {
     const resolver = yield* makeResolver(makeBindings(6, 23));
-    const authorization = yield* resolver.resolveAuthorization("read");
+    const { authorization } = yield* resolver.resolveAuthorization("read");
 
     expect(authorization.bindingGeneration).toBe(23);
     expect(authorization.controlEpoch).toBe(6);
@@ -107,7 +118,7 @@ it.effect("passes the live binding generation into thread-control authorization"
 it.effect("allows reads but rejects mutations from a stale control epoch", () =>
   Effect.gen(function* () {
     const resolver = yield* makeResolver(makeBindings(7, 24));
-    const readAuthorization = yield* resolver.resolveAuthorization("read");
+    const { authorization: readAuthorization } = yield* resolver.resolveAuthorization("read");
     expect(readAuthorization.bindingGeneration).toBe(24);
     expect(readAuthorization.canControl).toBe(false);
 
@@ -130,14 +141,15 @@ it.effect("runs the canonical thread toolkit against an app-level invocation res
       canRead: true,
       canControl: false,
     };
+    const grant = { authorization, verifier, execution };
     const resolver = ThreadControlInvocationResolver.of({
-      resolveAuthorization: () => Effect.succeed(authorization),
+      resolveAuthorization: () => Effect.succeed(grant),
       resolveMutation: () => Effect.die("unused"),
     });
     const threadControl = ThreadControlService.of({
       list: (input) =>
         Effect.succeed({
-          snapshotSequence: input.authorization.bindingGeneration,
+          snapshotSequence: input.grant.authorization.bindingGeneration,
           projects: [],
           threads: [],
           nextCursor: null,

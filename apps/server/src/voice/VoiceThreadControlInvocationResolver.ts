@@ -7,6 +7,8 @@ import {
   ThreadControlInvocationResolver,
   type ThreadControlOperation,
 } from "../orchestration/Services/ThreadControlInvocationResolver.ts";
+import type { ThreadControlExecutionCoordinatorShape } from "../orchestration/Services/ThreadControlExecutionCoordinator.ts";
+import type { ThreadControlGrantVerifierShape } from "../orchestration/Services/ThreadControlGrantVerifier.ts";
 import {
   ThreadControlError,
   type ThreadControlAuthorization,
@@ -22,6 +24,8 @@ export interface VoiceThreadControlInvocationResolverInput {
   readonly settingsService: ServerSettings.ServerSettingsService["Service"];
   readonly bindingRepository: VoiceControllerBindingRepository["Service"];
   readonly actionResolver: ControllerActionContextResolver["Service"];
+  readonly verifier: ThreadControlGrantVerifierShape;
+  readonly execution: ThreadControlExecutionCoordinatorShape;
 }
 
 const authorizationError = (message: string) =>
@@ -54,8 +58,8 @@ export function makeVoiceThreadControlInvocationResolver(
     return { ...input.invocation, profile: input.invocation.profile };
   });
 
-  const resolveAuthorization = Effect.fn(
-    "VoiceThreadControlInvocationResolver.resolveAuthorization",
+  const resolveAuthorizationData = Effect.fn(
+    "VoiceThreadControlInvocationResolver.resolveAuthorizationData",
   )(function* (operation: ThreadControlOperation) {
     const invocation = yield* requireControllerInvocation();
     if (!invocation.capabilities.has("threads.read")) {
@@ -115,9 +119,20 @@ export function makeVoiceThreadControlInvocationResolver(
     } satisfies ThreadControlAuthorization;
   });
 
+  const resolveAuthorization = Effect.fn(
+    "VoiceThreadControlInvocationResolver.resolveAuthorization",
+  )(function* (operation: ThreadControlOperation) {
+    const authorization = yield* resolveAuthorizationData(operation);
+    return {
+      authorization,
+      verifier: input.verifier,
+      execution: input.execution,
+    };
+  });
+
   const resolveMutation = Effect.fn("VoiceThreadControlInvocationResolver.resolveMutation")(
     function* () {
-      const authorization = yield* resolveAuthorization("control");
+      const grant = yield* resolveAuthorization("control");
       const invocation = yield* requireControllerInvocation();
       const metadata = input.request.turnMetadata;
       if (metadata === undefined) {
@@ -142,7 +157,7 @@ export function makeVoiceThreadControlInvocationResolver(
               }),
           ),
         );
-      return { authorization, action };
+      return { grant, action };
     },
   );
 
