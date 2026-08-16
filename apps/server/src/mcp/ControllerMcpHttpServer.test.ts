@@ -19,6 +19,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ThreadControlExecutionCoordinator } from "../orchestration/Services/ThreadControlExecutionCoordinator.ts";
 import { ThreadControlGrantVerifier } from "../orchestration/Services/ThreadControlGrantVerifier.ts";
 import { ThreadControlService } from "../orchestration/Services/ThreadControlService.ts";
+import { ThreadControlGrantRepository } from "../persistence/Services/ThreadControlGrants.ts";
 import { VoiceControllerBindingRepository } from "../persistence/Services/VoiceControllerBindings.ts";
 import { VoiceControllerBinding } from "../persistence/VoiceControlModels.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -146,6 +147,18 @@ const ControllerServices = Layer.mergeAll(
     ControllerActionContextResolver.of({ resolve: () => Effect.die("unused") }),
   ),
   Layer.succeed(ThreadControlService, threadControl),
+  Layer.mock(ThreadControlGrantRepository)({
+    getByThreadId: (threadId) =>
+      Effect.succeed(
+        Option.some({
+          threadId,
+          authorizedRuntimeCeiling: "approval-required",
+          controlEnabled: true,
+          createdAt: "2026-07-30T00:00:00.000Z",
+          updatedAt: "2026-07-30T00:00:00.000Z",
+        }),
+      ),
+  }),
   Layer.mock(ProjectionSnapshotQuery)({
     getThreadDetailById: () =>
       Effect.succeed(

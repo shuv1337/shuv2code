@@ -27,6 +27,7 @@ import { ThreadControlExecutionCoordinator } from "../orchestration/Services/Thr
 import { ThreadControlGrantVerifier } from "../orchestration/Services/ThreadControlGrantVerifier.ts";
 import { ThreadControlService } from "../orchestration/Services/ThreadControlService.ts";
 import { VoiceControllerBindingRepository } from "../persistence/Services/VoiceControllerBindings.ts";
+import { ThreadControlGrantRepository } from "../persistence/Services/ThreadControlGrants.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ControllerActionContextResolver } from "../voice/Services/ControllerActionContextResolver.ts";
 import { makeVoiceThreadControlInvocationResolver } from "../voice/VoiceThreadControlInvocationResolver.ts";
@@ -321,6 +322,7 @@ const makeControllerMcpRequestHandler = (services: {
   readonly execution: ThreadControlExecutionCoordinator["Service"];
   readonly currentEnvironmentId: import("@shuv2code/contracts").EnvironmentId;
   readonly projection: ProjectionSnapshotQuery["Service"];
+  readonly threadControlGrants: ThreadControlGrantRepository["Service"];
   readonly crypto: Crypto.Crypto["Service"];
 }) =>
   Effect.withFiber((fiber) => {
@@ -337,6 +339,7 @@ const makeControllerMcpRequestHandler = (services: {
         execution,
         currentEnvironmentId,
         projection,
+        threadControlGrants,
         crypto,
       } = services;
       const authorization = request.headers.authorization;
@@ -380,7 +383,7 @@ const makeControllerMcpRequestHandler = (services: {
                   })
                 : makeDurableThreadControlInvocationResolver(
                     { invocation, request: requestContext },
-                    { currentEnvironmentId, projection, crypto },
+                    { currentEnvironmentId, projection, threadControlGrants, crypto },
                   );
             return yield* decodeAndRunThreadTool(name, input).pipe(
               Effect.provideService(ThreadControlInvocationResolver, invocationResolver),
@@ -440,6 +443,7 @@ export const layer = Layer.unwrap(
     const environment = yield* ServerEnvironment;
     const currentEnvironmentId = yield* environment.getEnvironmentId;
     const projection = yield* ProjectionSnapshotQuery;
+    const threadControlGrants = yield* ThreadControlGrantRepository;
     const crypto = yield* Crypto.Crypto;
     const handler = makeControllerMcpRequestHandler({
       registry,
@@ -451,6 +455,7 @@ export const layer = Layer.unwrap(
       execution,
       currentEnvironmentId,
       projection,
+      threadControlGrants,
       crypto,
     });
     return Layer.mergeAll(

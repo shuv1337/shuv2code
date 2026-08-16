@@ -14,6 +14,7 @@ import {
 } from "./Services/ThreadControlInvocationResolver.ts";
 import type { ThreadControlExecutionCoordinatorShape } from "./Services/ThreadControlExecutionCoordinator.ts";
 import type { ThreadControlGrantVerifierShape } from "./Services/ThreadControlGrantVerifier.ts";
+import type { ThreadControlGrantRepositoryShape } from "../persistence/Services/ThreadControlGrants.ts";
 import {
   ThreadControlError,
   type DurableThreadActionContext,
@@ -28,6 +29,7 @@ export interface DurableThreadControlInvocationResolverInput {
 export interface DurableThreadControlInvocationResolverServices {
   readonly currentEnvironmentId: EnvironmentId;
   readonly projection: ProjectionSnapshotQuery["Service"];
+  readonly threadControlGrants: ThreadControlGrantRepositoryShape;
   readonly crypto: Crypto.Crypto["Service"];
 }
 
@@ -44,7 +46,7 @@ export function makeDurableThreadControlInvocationResolver(
   input: DurableThreadControlInvocationResolverInput,
   services: DurableThreadControlInvocationResolverServices,
 ): ThreadControlInvocationResolver["Service"] {
-  const { currentEnvironmentId, projection, crypto } = services;
+  const { currentEnvironmentId, projection, threadControlGrants, crypto } = services;
 
   const requireProfile = Effect.fn("DurableThreadControlInvocationResolver.requireProfile")(
     function* () {
@@ -62,6 +64,16 @@ export function makeDurableThreadControlInvocationResolver(
   const readLiveController = Effect.fn("DurableThreadControlInvocationResolver.readLiveController")(
     function* () {
       const profile = yield* requireProfile();
+      const persistedGrant = yield* threadControlGrants
+        .getByThreadId(profile.controllerThreadId)
+        .pipe(Effect.mapError(projectionFailure));
+      if (
+        Option.isNone(persistedGrant) ||
+        persistedGrant.value.authorizedRuntimeCeiling !== profile.authorizedRuntimeCeiling ||
+        persistedGrant.value.controlEnabled !== profile.controlEnabled
+      ) {
+        return yield* mismatch("The durable controller grant is no longer active.");
+      }
       const controller = yield* projection
         .getThreadDetailById(profile.controllerThreadId)
         .pipe(Effect.mapError(projectionFailure));
