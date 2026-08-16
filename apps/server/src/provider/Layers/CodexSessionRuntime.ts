@@ -1129,6 +1129,37 @@ function shouldSuppressChildConversationNotification(
 }
 
 /**
+ * Whether a thread-scoped notification from another conversation on the same
+ * app-server connection is barred from the parent path.
+ *
+ * - A receiver-map child (v1 collab, `isReceiverChild`) keeps the enumerated
+ *   lifecycle suppression: its item traffic deliberately flows through and is
+ *   re-attributed to the parent turn.
+ * - Every other foreign conversation suppresses everything the child routing
+ *   table does not explicitly send to the parent path. The app-server spawns
+ *   internal agent threads (memory consolidation, review, compact) whose
+ *   `thread/started` may never carry a recognizable source marker; with only
+ *   the enumerated lifecycle list their `item/*` traffic streamed into the
+ *   user's thread as assistant prose and leaked cross-project memory
+ *   content. Reusing `routeCodexChildNotification` keeps one source of truth:
+ *   parent-owned bookkeeping (`serverRequest/resolved`) and unknown future
+ *   methods still surface, while known thread content stays out.
+ */
+export function shouldSuppressForeignConversationNotification(input: {
+  readonly method: CodexRpc.ServerNotificationMethod;
+  readonly isReceiverChild: boolean;
+  readonly isForeignConversation: boolean;
+}): boolean {
+  if (input.isReceiverChild) {
+    return shouldSuppressChildConversationNotification(input.method);
+  }
+  if (!input.isForeignConversation) {
+    return false;
+  }
+  return routeCodexChildNotification(input.method) !== "parent";
+}
+
+/**
  * How a notification addressed to a REGISTERED child thread is handled.
  *
  * Exported and pure so the routing table can be asserted against captured
@@ -1809,8 +1840,11 @@ export const makeCodexSessionRuntime = (
           );
         })();
         if (
-          (childParentTurnId !== undefined || foreignConversation) &&
-          shouldSuppressChildConversationNotification(notification.method)
+          shouldSuppressForeignConversationNotification({
+            method: notification.method,
+            isReceiverChild: childParentTurnId !== undefined,
+            isForeignConversation: foreignConversation,
+          })
         ) {
           // Stop-everything must not depend on registration timing: a
           // child's turn/started can arrive before the subAgentActivity that

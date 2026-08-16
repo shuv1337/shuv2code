@@ -32,6 +32,7 @@ import {
   openCodexThread,
   persistedTurnTerminalStatus,
   recoverCodexThreadBySource,
+  shouldSuppressForeignConversationNotification,
   transitionRealtimeLaneForNotification,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
@@ -427,6 +428,111 @@ function makeThreadStartedNotification(
     },
   };
 }
+
+describe("shouldSuppressForeignConversationNotification", () => {
+  it("default-denies every thread-scoped method from an unregistered foreign conversation", () => {
+    // Memory consolidation, review, and compact agents run on app-server
+    // internal threads whose thread/started may carry no recognizable source
+    // marker. Their item traffic must never reach the parent path: an
+    // enumerated method list here let consolidation prose — including
+    // cross-project MEMORY.md content — render as assistant messages in the
+    // user's thread.
+    for (const method of [
+      "item/started",
+      "item/completed",
+      "item/agentMessage/delta",
+      "item/reasoning/textDelta",
+      "item/commandExecution/outputDelta",
+      "turn/started",
+      "turn/completed",
+      "thread/started",
+      "thread/status/changed",
+      "thread/tokenUsage/updated",
+      "thread/name/updated",
+      "thread/compacted",
+      "error",
+    ] as const) {
+      NodeAssert.equal(
+        shouldSuppressForeignConversationNotification({
+          method: method as never,
+          isReceiverChild: false,
+          isForeignConversation: true,
+        }),
+        true,
+        `${method} from an unregistered foreign conversation must be suppressed`,
+      );
+    }
+    // Parent-owned bookkeeping and unknown future methods still surface —
+    // swallowing serverRequest/resolved left approvals stuck (shipped bug),
+    // and a codex upgrade adding a method must degrade to "parent sees it".
+    for (const method of ["serverRequest/resolved", "thread/somethingBrandNew"] as const) {
+      NodeAssert.equal(
+        shouldSuppressForeignConversationNotification({
+          method: method as never,
+          isReceiverChild: false,
+          isForeignConversation: true,
+        }),
+        false,
+        `${method} routes to the parent path even for foreign conversations`,
+      );
+    }
+  });
+
+  it("keeps the root conversation's traffic flowing", () => {
+    for (const method of ["item/completed", "turn/started", "item/agentMessage/delta"] as const) {
+      NodeAssert.equal(
+        shouldSuppressForeignConversationNotification({
+          method: method as never,
+          isReceiverChild: false,
+          isForeignConversation: false,
+        }),
+        false,
+        `${method} on the root conversation must flow to the parent path`,
+      );
+    }
+  });
+
+  it("keeps the v1 receiver-child contract: lifecycle suppressed, items re-attributed", () => {
+    // Receiver-map children deliberately surface their items under the
+    // parent turn, so item methods flow while child-owned lifecycle stays
+    // suppressed.
+    for (const method of ["item/started", "item/completed", "item/agentMessage/delta"] as const) {
+      NodeAssert.equal(
+        shouldSuppressForeignConversationNotification({
+          method: method as never,
+          isReceiverChild: true,
+          isForeignConversation: true,
+        }),
+        false,
+        `${method} from a receiver child flows through with parent attribution`,
+      );
+    }
+    for (const method of [
+      "thread/started",
+      "thread/status/changed",
+      "thread/archived",
+      "thread/unarchived",
+      "thread/closed",
+      "thread/compacted",
+      "thread/name/updated",
+      "thread/tokenUsage/updated",
+      "turn/started",
+      "turn/completed",
+      "turn/plan/updated",
+      "item/plan/delta",
+    ] as const) {
+      NodeAssert.equal(
+        shouldSuppressForeignConversationNotification({
+          method: method as never,
+          isReceiverChild: true,
+          isForeignConversation: true,
+        }),
+        true,
+        `${method} from a receiver child is child-owned lifecycle and must stay suppressed`,
+      );
+    }
+  });
+});
 
 describe("makeMemoryConsolidationNotificationFilter", () => {
   it("suppresses memory consolidation without hiding other Codex subagents", () => {
