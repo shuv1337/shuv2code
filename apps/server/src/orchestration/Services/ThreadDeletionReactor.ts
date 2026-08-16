@@ -2,7 +2,8 @@
  * ThreadDeletionReactor - Thread deletion cleanup reactor service interface.
  *
  * Owns background workers that react to thread deletion domain events and
- * perform best-effort runtime cleanup for provider sessions and terminals.
+ * perform best-effort cleanup for controller authority, provider sessions,
+ * and terminals.
  *
  * @module ThreadDeletionReactor
  */
