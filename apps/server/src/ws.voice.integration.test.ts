@@ -261,6 +261,25 @@ describe("authenticated voice RPC vertical integration", () => {
           streamEvents: Stream.fromPubSub(runtimeEvents),
         });
 
+        const threadDetail = (threadId: ThreadId) =>
+          ({
+            id: threadId,
+            projectId: hostProjectId,
+            title: threadId === targetThreadId ? "Current work" : "Voice controller",
+            modelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            purpose: threadId === targetThreadId ? "standard" : "voice-controller",
+            deletedAt: null,
+            archivedAt: null,
+            messages:
+              threadId === targetThreadId
+                ? [
+                    { role: "user", text: "The provider reconnect is the current task." },
+                    { role: "assistant", text: "I am tracing the provider session." },
+                  ]
+                : [],
+          }) as never;
         const projection = ProjectionSnapshotQuery.of({
           ...({} as ProjectionSnapshotQuery["Service"]),
           getProjectShellById: () =>
@@ -275,27 +294,15 @@ describe("authenticated voice RPC vertical integration", () => {
                 updatedAt: now,
               }),
             ),
-          getThreadDetailById: (threadId) =>
+          getThreadDetailById: (threadId) => Effect.succeed(Option.some(threadDetail(threadId))),
+          getThreadDetailSnapshot: (threadId) =>
             Effect.succeed(
               Option.some({
-                id: threadId,
-                projectId: hostProjectId,
-                title: threadId === targetThreadId ? "Current work" : "Voice controller",
-                modelSelection,
-                runtimeMode: "approval-required",
-                interactionMode: "default",
-                purpose: threadId === targetThreadId ? "standard" : "voice-controller",
-                deletedAt: null,
-                archivedAt: null,
-                messages:
-                  threadId === targetThreadId
-                    ? [
-                        { role: "user", text: "The provider reconnect is the current task." },
-                        { role: "assistant", text: "I am tracing the provider session." },
-                      ]
-                    : [],
-              } as never),
+                snapshotSequence: 0,
+                thread: threadDetail(threadId),
+              }),
             ),
+          getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: 0,

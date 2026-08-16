@@ -695,7 +695,7 @@ export function VoiceSurface({
           callAvailable={callAvailable}
           remoteCall={remoteCall}
           presented={presented}
-          onMaterializeThreadForCall={onMaterializeThreadForCall}
+          {...(onMaterializeThreadForCall === undefined ? {} : { onMaterializeThreadForCall })}
           onControllerMode={() => setMode(environmentId, "controller")}
         />
       ) : (

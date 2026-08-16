@@ -14,7 +14,8 @@ layer("053_VoiceCallOwnership", (it) => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         CREATE TABLE voice_transport_sessions (
-          transport_session_id TEXT PRIMARY KEY
+          transport_session_id TEXT PRIMARY KEY,
+          generation INTEGER NOT NULL
         )
       `;
       yield* sql`
