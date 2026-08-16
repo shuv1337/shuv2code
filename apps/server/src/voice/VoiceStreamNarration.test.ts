@@ -48,7 +48,7 @@ describe("VoiceStreamNarration", () => {
     );
   });
 
-  it("uses a reasoning summary only when a tool boundary has no assistant update", () => {
+  it("holds a reasoning summary until the turn ends without an assistant update", () => {
     const reasoning = reduceVoiceStreamNarration(
       initialVoiceStreamNarrationState(),
       delta("Checking the adapter boundary before changing the queue.", "reasoning_summary_text"),
@@ -58,8 +58,14 @@ describe("VoiceStreamNarration", () => {
       type: "item.started",
       payload: { itemType: "command_execution", status: "inProgress" },
     });
+    assert.deepStrictEqual(tool.chunks, []);
+    const completedWithoutAssistant = reduceVoiceStreamNarration(tool.state, {
+      ...base,
+      type: "turn.completed",
+      payload: { state: "completed" },
+    });
     assert.deepStrictEqual(
-      tool.chunks.map((chunk) => chunk.source),
+      completedWithoutAssistant.chunks.map((chunk) => chunk.source),
       ["reasoning-summary"],
     );
 
@@ -73,6 +79,15 @@ describe("VoiceStreamNarration", () => {
       payload: { itemType: "command_execution", status: "inProgress" },
     });
     assert.deepStrictEqual(assistantThenTool.chunks, []);
+    const completedAfterAssistant = reduceVoiceStreamNarration(assistantThenTool.state, {
+      ...base,
+      type: "turn.completed",
+      payload: { state: "completed" },
+    });
+    assert.deepStrictEqual(
+      completedAfterAssistant.chunks.map((chunk) => chunk.source),
+      [],
+    );
   });
 
   it("flushes a short final remainder and strips code and table payloads", () => {

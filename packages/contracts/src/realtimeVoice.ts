@@ -525,6 +525,7 @@ export const VoiceErrorCode = Schema.Literals([
   "controller_not_found",
   "controller_binding_conflict",
   "controller_runtime_lost",
+  "realtime_speech_stalled",
   "controller_busy",
   "generation_conflict",
   "stale_generation",

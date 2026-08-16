@@ -29,6 +29,8 @@ export interface VoiceSpeechTranscriptObservation {
 
 export interface VoiceSpeechArbiterShape {
   readonly enqueue: (attempt: VoiceSpeechAttempt) => Effect.Effect<boolean>;
+  /** Blocks until a speech attempt proves the realtime output lifecycle is wedged. */
+  readonly takeFailure: Effect.Effect<VoiceSpeechAttempt>;
   readonly observeOutputStarted: (session: ActiveVoiceSession) => Effect.Effect<void>;
   readonly observeOutputDone: (
     session: ActiveVoiceSession,

@@ -1330,6 +1330,10 @@ export class VoiceSessionController {
         });
         break;
       case "session.error":
+        if (event.payload.code === "realtime_speech_stalled" && event.payload.retryable) {
+          void this.reconnect();
+          break;
+        }
         void this.#fail(
           generation,
           new VoiceSessionError(

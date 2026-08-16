@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 
@@ -87,6 +88,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
   }) => Effect.Effect<void> = () => Effect.void,
 ) {
   const statesRef = yield* Ref.make(new Map<string, CallSpeechState>());
+  const failureQueue = yield* Queue.unbounded<VoiceSpeechAttempt>();
   const stateMutex = yield* Semaphore.make(1);
 
   const selectNext = Effect.fn("VoiceSpeechArbiter.selectNext")(function* (
@@ -131,7 +133,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
     );
   });
 
-  const clearFailedAttempt = Effect.fn("VoiceSpeechArbiter.clearFailedAttempt")(function* (
+  const suspendFailedAttempt = Effect.fn("VoiceSpeechArbiter.suspendFailedAttempt")(function* (
     attempt: VoiceSpeechAttempt,
     requireMissingOutputStart: boolean,
   ) {
@@ -146,24 +148,31 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
           return [false, states] as const;
         }
         const next = new Map(states);
-        next.set(key, { ...current, providerBusy: false, active: null });
+        next.set(key, {
+          ...current,
+          providerBusy: true,
+          active: null,
+          authoredQueue: [],
+          commentaryQueue: [],
+          pendingAmbient: null,
+        });
         return [true, next] as const;
       }),
     );
   });
 
-  const failAndContinue = Effect.fn("VoiceSpeechArbiter.failAndContinue")(function* (
+  const failAndSuspend = Effect.fn("VoiceSpeechArbiter.failAndSuspend")(function* (
     attempt: VoiceSpeechAttempt,
     requireMissingOutputStart: boolean,
   ) {
-    const cleared = yield* clearFailedAttempt(attempt, requireMissingOutputStart);
-    if (!cleared) return;
+    const suspended = yield* suspendFailedAttempt(attempt, requireMissingOutputStart);
+    if (!suspended) return;
     yield* observeLifecycle({
       kind: "speech.failed",
       attempt,
       occurredAt: DateTime.formatIso(yield* DateTime.now),
     });
-    yield* startNext(attempt.session);
+    yield* Queue.offer(failureQueue, attempt);
   });
 
   const startNext: (session: ActiveVoiceSession) => Effect.Effect<void> = Effect.fn(
@@ -182,11 +191,11 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
     );
     if (sent._tag === "Success") {
       yield* Effect.sleep(OUTPUT_START_LEASE).pipe(
-        Effect.andThen(failAndContinue(selected, true)),
+        Effect.andThen(failAndSuspend(selected, true)),
         Effect.forkDetach,
       );
       yield* Effect.sleep(OUTPUT_TERMINAL_LEASE).pipe(
-        Effect.andThen(failAndContinue(selected, false)),
+        Effect.andThen(failAndSuspend(selected, false)),
         Effect.forkDetach,
       );
       return;
@@ -196,8 +205,8 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
       attempt: selected,
       occurredAt: DateTime.formatIso(yield* DateTime.now),
     });
-    yield* clearFailedAttempt(selected, false);
-    yield* startNext(session);
+    yield* suspendFailedAttempt(selected, false);
+    yield* Queue.offer(failureQueue, selected);
   });
 
   const enqueue: VoiceSpeechArbiterShape["enqueue"] = Effect.fn("VoiceSpeechArbiter.enqueue")(
@@ -424,6 +433,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
 
   return VoiceSpeechArbiter.of({
     enqueue,
+    takeFailure: Queue.take(failureQueue),
     observeOutputStarted,
     observeOutputDone,
     observeTranscript,

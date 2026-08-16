@@ -167,17 +167,12 @@ export function reduceVoiceStreamNarration(
     };
   }
   if (event.type === "item.started" && isToolLifecycleItemType(event.payload.itemType)) {
-    const fallback =
-      mode === "final-only" || state.assistantSpokenSinceBoundary
-        ? { buffer: emptyBuffer(), chunks: [] }
-        : drainBuffer(state.reasoningSummary, true, "reasoning-summary", turnId);
+    // A reasoning header is only a fallback. Emitting it at every tool boundary
+    // races ordinary assistant commentary and floods Realtime with tiny prompts.
+    // Keep it buffered until the turn ends, when we know no assistant message followed.
     return {
-      state: {
-        ...state,
-        reasoningSummary: emptyBuffer(),
-        assistantSpokenSinceBoundary: false,
-      },
-      chunks: fallback.chunks,
+      state,
+      chunks: [],
     };
   }
   if (event.type === "item.completed" && event.payload.itemType === "assistant_message") {

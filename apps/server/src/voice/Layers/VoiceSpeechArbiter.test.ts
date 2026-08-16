@@ -284,22 +284,19 @@ describe("VoiceSpeechArbiter", () => {
     }),
   );
 
-  it.effect("fails an orphaned attempt and advances when realtime output never starts", () =>
+  it.effect("suspends the queue and reports recovery when realtime output never starts", () =>
     Effect.gen(function* () {
       const sent = yield* Ref.make<Array<string>>([]);
       const lifecycle = yield* Ref.make<Array<string>>([]);
       const firstStarted = yield* Deferred.make<void>();
       const arbiter = yield* makeVoiceSpeechArbiter(
         (speech) =>
-          Ref.update(sent, (all) => [...all, speech.requestedText]).pipe(
-            Effect.andThen(
-              speech.attemptId === "authored-1"
-                ? Deferred.succeed(firstStarted, undefined).pipe(
-                    Effect.andThen(Effect.never as Effect.Effect<void>),
-                  )
-                : Effect.void,
-            ),
-          ),
+          Effect.gen(function* () {
+            yield* Ref.update(sent, (all) => [...all, speech.requestedText]);
+            if (speech.attemptId !== "authored-1") return;
+            yield* Deferred.succeed(firstStarted, undefined);
+            return yield* Effect.never;
+          }),
         (event) =>
           Ref.update(lifecycle, (all) => [...all, `${event.attempt.attemptId}:${event.kind}`]),
       );
@@ -316,14 +313,14 @@ describe("VoiceSpeechArbiter", () => {
       assert.deepStrictEqual(yield* Ref.get(sent), ["First."]);
 
       yield* TestClock.adjust("8 seconds");
-      yield* Effect.yieldNow();
-      assert.deepStrictEqual(yield* Ref.get(sent), ["First.", "Second."]);
+      yield* Effect.yieldNow;
+      assert.strictEqual((yield* arbiter.takeFailure).attemptId, "authored-1");
+      assert.deepStrictEqual(yield* Ref.get(sent), ["First."]);
       assert.deepStrictEqual(yield* Ref.get(lifecycle), [
         "authored-1:speech.queued",
         "authored-1:speech.started",
         "authored-2:speech.queued",
         "authored-1:speech.failed",
-        "authored-2:speech.started",
       ]);
     }),
   );

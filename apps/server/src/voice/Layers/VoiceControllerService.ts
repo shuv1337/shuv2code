@@ -1203,6 +1203,19 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     }),
     Effect.forkScoped,
   );
+  yield* speechArbiter.takeFailure.pipe(
+    Effect.flatMap((attempt) =>
+      transport
+        .emit(attempt.session.fence.clientSessionId, {
+          type: "session.error",
+          code: "realtime_speech_stalled",
+          retryable: true,
+        })
+        .pipe(Effect.ignore),
+    ),
+    Effect.forever,
+    Effect.forkScoped,
+  );
   yield* narrationTick().pipe(
     Effect.catchCause(narrationFailure("tick")),
     Effect.repeat(Schedule.spaced("1 second")),
