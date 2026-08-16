@@ -148,7 +148,7 @@ interface TimelineRowSharedState {
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
-  onToggleTurnFold: (turnId: TurnId) => void;
+  onToggleTurnFold: (foldId: string) => void;
   onToggleWorkGroup: (groupId: string, anchorKey?: string) => void;
   agentPanelModel: AgentPanelModel;
   onOpenAgents: () => void;
@@ -291,7 +291,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   topFadeEnabled = false,
   loadEarlier = null,
 }: MessagesTimelineProps) {
-  const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
+  const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<string>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
@@ -360,14 +360,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   const onToggleTurnFold = useCallback(
-    (turnId: TurnId) => {
-      suspendEndScrollMaintenanceForDisclosure(`turn-fold:${turnId}`);
+    (foldId: string) => {
+      suspendEndScrollMaintenanceForDisclosure(`turn-fold:${foldId}`);
       setExpandedTurnIds((existing) => {
         const next = new Set(existing);
-        if (next.has(turnId)) {
-          next.delete(turnId);
+        if (next.has(foldId)) {
+          next.delete(foldId);
         } else {
-          next.add(turnId);
+          next.add(foldId);
         }
         return next;
       });
@@ -1164,7 +1164,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         type="button"
         aria-expanded={row.expanded}
         data-scroll-anchor-ignore
-        onClick={() => ctx.onToggleTurnFold(row.turnId)}
+        onClick={() => ctx.onToggleTurnFold(row.foldId)}
         className="flex cursor-pointer select-none items-center gap-1 rounded-md px-1 text-xs text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
       >
         <span>{row.label}</span>

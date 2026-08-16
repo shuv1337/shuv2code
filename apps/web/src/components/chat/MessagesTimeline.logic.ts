@@ -184,6 +184,7 @@ export type MessagesTimelineRow =
       kind: "turn-fold";
       id: string;
       createdAt: string;
+      foldId: string;
       turnId: TurnId;
       label: string;
       expanded: boolean;
@@ -301,6 +302,60 @@ function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<Timeli
 }
 
 /**
+ * A provider turn can contain several user steering messages. Keep the last
+ * assistant message after each user boundary visible so the rendered chat
+ * preserves those conversational exchanges even though the provider still
+ * owns one durable turn underneath them.
+ */
+function deriveExchangeAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
+  const turnIdsWithTextAssistant = new Set<TurnId>();
+  for (const entry of timelineEntries) {
+    if (
+      entry.kind === "message" &&
+      entry.message.role === "assistant" &&
+      entry.message.modality !== "voice" &&
+      entry.message.turnId
+    ) {
+      turnIdsWithTextAssistant.add(entry.message.turnId);
+    }
+  }
+
+  const terminalCandidateByExchange = new Map<
+    string,
+    { readonly messageId: string; readonly voice: boolean }
+  >();
+  let exchangeIndex = 0;
+
+  for (const entry of timelineEntries) {
+    if (entry.kind !== "message") {
+      continue;
+    }
+    if (entry.message.role === "user") {
+      exchangeIndex += 1;
+      continue;
+    }
+    if (entry.message.role !== "assistant") {
+      continue;
+    }
+
+    const exchangeKey = `exchange:${exchangeIndex}`;
+    const voice = entry.message.modality === "voice";
+    if (voice && entry.message.turnId && turnIdsWithTextAssistant.has(entry.message.turnId)) {
+      continue;
+    }
+    const previous = terminalCandidateByExchange.get(exchangeKey);
+    if (!previous || !voice || previous.voice) {
+      terminalCandidateByExchange.set(exchangeKey, {
+        messageId: entry.message.id,
+        voice,
+      });
+    }
+  }
+
+  return new Set([...terminalCandidateByExchange.values()].map((candidate) => candidate.messageId));
+}
+
+/**
  * Provider text can start streaming before later tool and Voice projection
  * events, so its immutable createdAt does not necessarily describe its final
  * visual position. Keep the canonical durable answer after every supporting
@@ -379,6 +434,7 @@ function orderTerminalAssistantMessagesAfterTurnActivity(
 }
 
 interface TurnFold {
+  foldId: string;
   turnId: TurnId;
   anchorEntryId: string;
   createdAt: string;
@@ -416,14 +472,16 @@ function deriveUnsettledTurnId(
  */
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
-  terminalAssistantMessageIds: ReadonlySet<string>;
+  exchangeAssistantMessageIds: ReadonlySet<string>;
   latestTurn: TimelineLatestTurn | null;
   unsettledTurnId: TurnId | null;
 }): ReadonlyMap<string, TurnFold> {
-  interface TurnGroup {
+  interface ExchangeGroup {
+    key: string;
     entries: Array<TimelineEntry>;
     terminalEntry: Extract<TimelineEntry, { kind: "message" }> | null;
     hasStreamingMessage: boolean;
+    turnIds: Set<TurnId>;
     /**
      * The user message that kicked the turn off. Entry timestamps alone
      * undercount the duration (the first entry appears only once the
@@ -432,12 +490,21 @@ function deriveTurnFolds(input: {
      */
     startBoundary: string | null;
   }
-  const groupsByTurnId = new Map<TurnId, TurnGroup>();
+  const groups: ExchangeGroup[] = [];
+  let currentGroup: ExchangeGroup | null = null;
+  let orphanGroupIndex = 0;
 
-  let pendingUserBoundary: string | null = null;
   for (const entry of input.timelineEntries) {
     if (entry.kind === "message" && entry.message.role === "user") {
-      pendingUserBoundary = entry.message.createdAt;
+      currentGroup = {
+        key: `exchange:${entry.message.id}`,
+        entries: [],
+        terminalEntry: null,
+        hasStreamingMessage: false,
+        turnIds: new Set(),
+        startBoundary: entry.message.createdAt,
+      };
+      groups.push(currentGroup);
       continue;
     }
     const turnId =
@@ -449,36 +516,48 @@ function deriveTurnFolds(input: {
     if (!turnId) {
       continue;
     }
-    let group = groupsByTurnId.get(turnId);
-    if (!group) {
-      group = {
+    if (!currentGroup) {
+      currentGroup = {
+        key: `orphan:${turnId}:${orphanGroupIndex}`,
         entries: [],
         terminalEntry: null,
         hasStreamingMessage: false,
-        // Each user boundary starts at most one turn; a second turn after the
-        // same user message (e.g. a steer-superseded continuation) falls back
-        // to its own first entry.
-        startBoundary: pendingUserBoundary,
+        turnIds: new Set(),
+        startBoundary: null,
       };
-      pendingUserBoundary = null;
-      groupsByTurnId.set(turnId, group);
+      orphanGroupIndex += 1;
+      groups.push(currentGroup);
     }
-    group.entries.push(entry);
+    currentGroup.entries.push(entry);
+    currentGroup.turnIds.add(turnId);
     if (entry.kind === "message") {
-      if (input.terminalAssistantMessageIds.has(entry.message.id)) {
-        group.terminalEntry = entry;
+      if (input.exchangeAssistantMessageIds.has(entry.message.id)) {
+        currentGroup.terminalEntry = entry;
       }
       if (entry.message.streaming) {
-        group.hasStreamingMessage = true;
+        currentGroup.hasStreamingMessage = true;
       }
     }
   }
 
+  const groupCountByTurnId = new Map<TurnId, number>();
+  const lastGroupIndexByTurnId = new Map<TurnId, number>();
+  for (let index = 0; index < groups.length; index += 1) {
+    const group = groups[index];
+    if (!group || group.entries.length === 0) continue;
+    for (const turnId of group.turnIds) {
+      groupCountByTurnId.set(turnId, (groupCountByTurnId.get(turnId) ?? 0) + 1);
+      lastGroupIndexByTurnId.set(turnId, index);
+    }
+  }
+
   const foldsByAnchorEntryId = new Map<string, TurnFold>();
-  for (const [turnId, group] of groupsByTurnId) {
-    if (turnId === input.unsettledTurnId) {
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+    const group = groups[groupIndex];
+    if (!group || group.entries.length === 0) {
       continue;
     }
+    if (input.unsettledTurnId !== null && group.turnIds.has(input.unsettledTurnId)) continue;
     if (group.hasStreamingMessage) {
       continue;
     }
@@ -506,14 +585,21 @@ function deriveTurnFolds(input: {
       continue;
     }
 
+    const terminalTurnId =
+      group.terminalEntry?.message.turnId ?? [...group.turnIds].at(-1) ?? [...group.turnIds][0];
+    if (!terminalTurnId) continue;
+
     const isLatestInterruptedTurn =
-      input.latestTurn?.turnId === turnId && input.latestTurn.state === "interrupted";
+      input.latestTurn?.turnId === terminalTurnId &&
+      input.latestTurn.state === "interrupted" &&
+      lastGroupIndexByTurnId.get(terminalTurnId) === groupIndex;
     // A turn cut short by a steer leaves trailing work entries behind its
     // terminal message — take whichever ended last.
     const lastEntryEnd =
       lastEntry.kind === "message" ? lastEntry.message.updatedAt : lastEntry.createdAt;
     const elapsedMs =
-      input.latestTurn?.turnId === turnId &&
+      input.latestTurn?.turnId === terminalTurnId &&
+      groupCountByTurnId.get(terminalTurnId) === 1 &&
       input.latestTurn.startedAt &&
       input.latestTurn.completedAt
         ? computeElapsedMs(input.latestTurn.startedAt, input.latestTurn.completedAt)
@@ -534,8 +620,14 @@ function deriveTurnFolds(input: {
       entry.kind === "work" ? (entry.entry.images ?? []) : [],
     );
 
+    const foldId =
+      group.turnIds.size === 1 && groupCountByTurnId.get(terminalTurnId) === 1
+        ? terminalTurnId
+        : `${terminalTurnId}:${group.key}`;
+
     foldsByAnchorEntryId.set(anchorEntry.id, {
-      turnId,
+      foldId,
+      turnId: terminalTurnId,
       anchorEntryId: anchorEntry.id,
       createdAt: anchorEntry.createdAt,
       hiddenEntryIds,
@@ -550,7 +642,7 @@ export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestTurn?: TimelineLatestTurn | null;
   runningTurnId?: TurnId | null;
-  expandedTurnIds?: ReadonlySet<TurnId>;
+  expandedTurnIds?: ReadonlySet<string>;
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
@@ -568,18 +660,19 @@ export function deriveMessagesTimelineRows(input: {
     terminalAssistantMessageIds,
     unsettledTurnId,
   );
+  const exchangeAssistantMessageIds = deriveExchangeAssistantMessageIds(timelineEntries);
   const durationStartByMessageId = computeMessageDurationStart(
     timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
   const foldsByAnchorEntryId = deriveTurnFolds({
     timelineEntries,
-    terminalAssistantMessageIds,
+    exchangeAssistantMessageIds,
     latestTurn: input.latestTurn ?? null,
     unsettledTurnId,
   });
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorEntryId.values()) {
-    if (!input.expandedTurnIds?.has(fold.turnId)) {
+    if (!input.expandedTurnIds?.has(fold.foldId) && !input.expandedTurnIds?.has(fold.turnId)) {
       for (const entryId of fold.hiddenEntryIds) {
         collapsedEntryIds.add(entryId);
       }
@@ -596,11 +689,14 @@ export function deriveMessagesTimelineRows(input: {
     if (turnFold) {
       nextRows.push({
         kind: "turn-fold",
-        id: `turn-fold:${turnFold.turnId}`,
+        id: `turn-fold:${turnFold.foldId}`,
         createdAt: turnFold.createdAt,
+        foldId: turnFold.foldId,
         turnId: turnFold.turnId,
         label: turnFold.label,
-        expanded: input.expandedTurnIds?.has(turnFold.turnId) ?? false,
+        expanded:
+          input.expandedTurnIds?.has(turnFold.foldId) === true ||
+          input.expandedTurnIds?.has(turnFold.turnId) === true,
         images: turnFold.images,
       });
     }
@@ -782,6 +878,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       const bf = b as typeof a;
       return (
         a.createdAt === bf.createdAt &&
+        a.foldId === bf.foldId &&
         a.label === bf.label &&
         a.expanded === bf.expanded &&
         Equal.equals(a.images, bf.images)
