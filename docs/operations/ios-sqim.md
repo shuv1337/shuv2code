@@ -45,6 +45,30 @@ skill files are the authoritative reference for the build and push invocation**
 — read them on the macOS host rather than assuming a command shape from this
 document.
 
+### Credentials
+
+`sqim login` authenticates the CLI against the operator's Sqim account
+(<https://account.sqim.dev>). That is a separate concern from the Apple/team
+configuration in step 1 of the release procedure below.
+
+- **No Sqim credential belongs in this repository or in GitHub Actions
+  secrets.** The Sqim step is macOS-local and deliberately outside CI, so
+  nothing in the release workflows consumes one. Adding a Sqim secret to the
+  repository would widen its exposure without enabling anything.
+- **Authenticate with an individual operator account rather than a shared
+  login,** so builds in the dashboard stay attributable to the person who
+  produced them.
+- **Apple signing material stays out of git.** `apps/mobile/.gitignore` already
+  ignores `*.p8`, `*.p12`, `*.key`, and `*.mobileprovision`, along with the
+  generated `/ios` and `/android` directories that step 3 produces. Do not
+  force-add any of these.
+
+The credential type `sqim login` prompts for, and where it persists the
+resulting session, are not publicly documented. Confirm both with
+`sqim login --help` and the installed `SKILL.md` — and check whether the CLI
+offers a logout or revoke path — before authenticating on a shared or
+long-lived machine.
+
 ## Release procedure
 
 1. Set `APP_VARIANT=production` and provide only the Apple/team configuration
