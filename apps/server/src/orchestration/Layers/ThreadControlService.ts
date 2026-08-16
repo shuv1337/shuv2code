@@ -8,18 +8,14 @@ import {
   type TurnId,
 } from "@shuv2code/contracts";
 import { stableStringify } from "@shuv2code/shared/relaySigning";
-import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
-import { VoiceControllerBindingRepository } from "../../persistence/Services/VoiceControllerBindings.ts";
-import { VoiceControllerMutationRepository } from "../../persistence/Services/VoiceControllerMutations.ts";
-import { reconcileVoiceMutationOutcomes } from "../../voice/VoiceMutationOutcomeReconciler.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { ThreadControlExecutionCoordinator } from "../Services/ThreadControlExecutionCoordinator.ts";
 import { ThreadControlGrantVerifier } from "../Services/ThreadControlGrantVerifier.ts";
 import {
   ThreadControlError,
@@ -171,66 +167,11 @@ export const validateInterruptTargetPrecondition = (input: {
   return Effect.void;
 };
 
-export const completeClaimedMutationDispatch = <A>(input: {
-  readonly dispatchIntents: Effect.Effect<A, ThreadControlError>;
-  readonly markDispatched: () => Effect.Effect<boolean, ThreadControlError>;
-  readonly releaseClaim: (mayHavePersistedIntents: boolean) => Effect.Effect<void>;
-  readonly reconcileOutcome: () => Effect.Effect<void>;
-}): Effect.Effect<A, ThreadControlError> =>
-  Effect.gen(function* () {
-    const outcome = yield* input.dispatchIntents.pipe(
-      Effect.tapError(() => input.releaseClaim(true).pipe(Effect.ignore)),
-    );
-    const marked = yield* input
-      .markDispatched()
-      .pipe(Effect.tapError(() => input.releaseClaim(true).pipe(Effect.ignore)));
-    if (!marked) {
-      yield* input.releaseClaim(true).pipe(Effect.ignore);
-      return yield* new ThreadControlError({
-        code: "dispatch_failed",
-        message: "The voice mutation dispatch lease expired.",
-      });
-    }
-    yield* input.reconcileOutcome();
-    return outcome;
-  });
-
 export const makeThreadControlService = Effect.fn("ThreadControlService.make")(function* () {
   const projection = yield* ProjectionSnapshotQuery;
   const engine = yield* OrchestrationEngineService;
-  const bindings = yield* VoiceControllerBindingRepository;
-  const mutations = yield* VoiceControllerMutationRepository;
+  const execution = yield* ThreadControlExecutionCoordinator;
   const grantVerifier = yield* ThreadControlGrantVerifier;
-  const crypto = yield* Crypto.Crypto;
-
-  const persistActiveTarget = Effect.fn("ThreadControlService.persistActiveTarget")(function* (
-    authorization: ThreadControlAuthorization,
-    activeTargetThreadId: ThreadId,
-  ) {
-    yield* bindings
-      .setActiveTarget({
-        environmentId: authorization.environmentId,
-        controllerThreadId: authorization.controllerThreadId,
-        expectedControlEpoch: authorization.controlEpoch,
-        activeTargetThreadId,
-        updatedAt: DateTime.formatIso(yield* DateTime.now),
-      })
-      .pipe(Effect.ignore);
-  });
-
-  const clearActiveTargetIfMatching = Effect.fn("ThreadControlService.clearActiveTargetIfMatching")(
-    function* (authorization: ThreadControlAuthorization, targetThreadId: ThreadId) {
-      yield* bindings
-        .clearActiveTargetIfMatches({
-          environmentId: authorization.environmentId,
-          controllerThreadId: authorization.controllerThreadId,
-          expectedControlEpoch: authorization.controlEpoch,
-          expectedActiveTargetThreadId: targetThreadId,
-          updatedAt: DateTime.formatIso(yield* DateTime.now),
-        })
-        .pipe(Effect.ignore);
-    },
-  );
 
   const getManagedThread = Effect.fn("ThreadControlService.getManagedThread")(function* (
     authorization: ThreadControlAuthorization,
@@ -252,7 +193,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       ),
     );
     if (Option.isNone(snapshot)) {
-      yield* clearActiveTargetIfMatching(authorization, threadId);
+      yield* execution.clearActiveTargetIfMatching(authorization, threadId);
       return yield* new ThreadControlError({
         code: "thread_not_found",
         message: "The target thread was not found.",
@@ -265,7 +206,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       });
     }
     if (snapshot.value.thread.deletedAt !== null || snapshot.value.thread.archivedAt !== null) {
-      yield* clearActiveTargetIfMatching(authorization, threadId);
+      yield* execution.clearActiveTargetIfMatching(authorization, threadId);
       return yield* new ThreadControlError({
         code: "thread_archived",
         message: "The target thread is deleted or archived.",
@@ -335,18 +276,6 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
         ),
       );
 
-  const requestHash = (canonicalRequest: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(canonicalRequest)).pipe(
-      Effect.map(Encoding.encodeHex),
-      Effect.mapError(
-        () =>
-          new ThreadControlError({
-            code: "dispatch_failed",
-            message: "The voice mutation request could not be authenticated.",
-          }),
-      ),
-    );
-
   /**
    * Claims the action's single semantic mutation, fences it against the live
    * binding/epoch, persists the dispatch boundary, and replays an exact prior
@@ -368,144 +297,16 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       readonly canonicalRequestHash: string;
     }) => Effect.Effect<A, ThreadControlError>;
   }): Effect.Effect<A, ThreadControlError> =>
-    Effect.gen(function* () {
-      const claimedAt = yield* DateTime.now;
-      const claimedAtIso = DateTime.formatIso(claimedAt);
-      const mutationKey = `voice:${input.action.voiceActionId}:thread-control`;
-      const canonicalRequestHash = yield* requestHash(input.canonicalRequest);
-      const claimed = yield* mutations
-        .claimOrReplay({
-          voiceActionId: input.action.voiceActionId,
-          mutationKey,
-          toolName: input.toolName,
-          semanticSlot: input.semanticSlot,
-          canonicalRequestHash,
-          operationId: operationId(input.action, input.operation),
-          providerCreationId: input.providerCreationId,
-          bindingGeneration: input.authorization.bindingGeneration,
-          controlEpoch: input.authorization.controlEpoch,
-          createdAt: claimedAtIso,
-        })
-        .pipe(
-          Effect.mapError(
-            () =>
-              new ThreadControlError({
-                code: "dispatch_failed",
-                message: "The voice mutation could not be durably claimed.",
-              }),
-          ),
-        );
-      if (claimed._tag === "conflict" || claimed._tag === "action_unavailable") {
-        return yield* new ThreadControlError({
-          code: "dispatch_failed",
-          message:
-            claimed._tag === "conflict"
-              ? "This controller action already claimed a different thread mutation."
-              : "This controller action is no longer available for mutation.",
-        });
-      }
-      if (
-        claimed._tag === "replay" &&
-        claimed.mutation.dispatchState !== "never_dispatched" &&
-        claimed.mutation.dispatchState !== "claimed"
-      ) {
-        return yield* new ThreadControlError({
-          code: "dispatch_failed",
-          message: "The prior voice mutation is already dispatched and is being reconciled.",
-        });
-      }
-      const claimOwner = `${mutationKey}:dispatcher`;
-      const dispatchClaimed = yield* mutations
-        .claimDispatch({
-          voiceActionId: input.action.voiceActionId,
-          claimOwner,
-          claimExpiresAt: DateTime.formatIso(DateTime.add(claimedAt, { minutes: 1 })),
-          claimedAt: claimedAtIso,
-          expectedBindingGeneration: input.authorization.bindingGeneration,
-          expectedControlEpoch: input.authorization.controlEpoch,
-        })
-        .pipe(
-          Effect.mapError(
-            () =>
-              new ThreadControlError({
-                code: "dispatch_failed",
-                message: "The voice mutation dispatch claim failed.",
-              }),
-          ),
-        );
-      if (!dispatchClaimed) {
-        return yield* new ThreadControlError({
-          code: "dispatch_failed",
-          message: "The voice mutation dispatch was fenced before it started.",
-        });
-      }
-      // Re-read every mutable privilege boundary immediately before crossing
-      // from the durable claim into orchestration.
-      yield* Effect.gen(function* () {
+    execution.execute({
+      ...input,
+      revalidate: Effect.gen(function* () {
         yield* grantVerifier.authorize(input.authorization, "control");
         yield* grantVerifier.validateMutation(input.authorization, input.action);
         if (input.preDispatch !== undefined) {
           yield* input.preDispatch;
         }
-      }).pipe(
-        Effect.tapError(() =>
-          mutations
-            .releaseClaim({
-              voiceActionId: input.action.voiceActionId,
-              claimOwner,
-              mayHavePersistedIntents: false,
-              updatedAt: DateTime.formatIso(claimedAt),
-            })
-            .pipe(Effect.ignore),
-        ),
-      );
-      const result = yield* completeClaimedMutationDispatch({
-        dispatchIntents: input.effect({
-          toolName: input.toolName,
-          operation: input.operation,
-          canonicalRequestHash,
-        }),
-        releaseClaim: (mayHavePersistedIntents) =>
-          mutations
-            .releaseClaim({
-              voiceActionId: input.action.voiceActionId,
-              claimOwner,
-              mayHavePersistedIntents,
-              updatedAt: DateTime.formatIso(claimedAt),
-            })
-            .pipe(Effect.ignore),
-        markDispatched: () =>
-          Effect.gen(function* () {
-            const dispatchedAt = DateTime.formatIso(yield* DateTime.now);
-            return yield* mutations
-              .markDispatched({
-                voiceActionId: input.action.voiceActionId,
-                claimOwner,
-                dispatchedAt,
-              })
-              .pipe(
-                Effect.mapError(
-                  () =>
-                    new ThreadControlError({
-                      code: "dispatch_failed",
-                      message: "The voice mutation dispatch boundary could not be persisted.",
-                    }),
-                ),
-              );
-          }),
-        reconcileOutcome: () =>
-          reconcileVoiceMutationOutcomes({ engine, mutations }).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("voice mutation post-dispatch outcome reconciliation failed", {
-                voiceActionId: input.action.voiceActionId,
-                operationId: operationId(input.action, input.operation),
-                cause,
-              }),
-            ),
-          ),
-      });
-      yield* persistActiveTarget(input.authorization, input.targetThreadId);
-      return result;
+      }),
+      dispatch: input.effect,
     });
 
   const list: ThreadControlService["Service"]["list"] = Effect.fn("ThreadControlService.list")(
@@ -574,7 +375,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
           message: "The target thread was not found.",
         });
       }
-      yield* persistActiveTarget(input.authorization, input.threadId);
+      yield* execution.setActiveTarget(input.authorization, input.threadId);
       const shellSummary = summarizeThread(shell.value);
       const latestAssistant = thread.messages.findLast(
         (candidate) => candidate.role === "assistant" && !candidate.streaming,

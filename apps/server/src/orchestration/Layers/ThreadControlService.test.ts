@@ -5,10 +5,11 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
 import {
-  completeClaimedMutationDispatch,
+  boundedUntrustedThreadContext,
   validateInterruptTargetPrecondition,
   validateSendTargetPrecondition,
 } from "./ThreadControlService.ts";
+import { completeClaimedMutationDispatch } from "../Services/ThreadControlExecutionCoordinator.ts";
 import { ThreadControlError } from "../Services/ThreadControlService.ts";
 
 const failureCode = <A>(effect: Effect.Effect<A, { readonly code: string }>) =>
