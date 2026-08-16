@@ -138,10 +138,7 @@ const EMPTY_ENVIRONMENT_STATE: EnvironmentRightPanelState = {
 const VOICE_SURFACE: RightPanelSurface = { id: "voice", kind: "voice" };
 
 const singletonSurface = (
-  kind: Exclude<
-    RightPanelKind,
-    "voice" | "file" | "preview" | "terminal" | "pull-request"
-  >,
+  kind: Exclude<RightPanelKind, "voice" | "file" | "preview" | "terminal" | "pull-request">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":

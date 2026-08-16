@@ -15,13 +15,14 @@ import {
 import { useRightPanelStore } from "../../rightPanelStore";
 import { resolveThreadRouteRef } from "../../threadRoutes";
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
+import { useIsMobile } from "../../hooks/useMediaQuery";
 import { Button } from "../ui/button";
 import { VoiceActionStatusStrip } from "./VoiceActionStatusStrip";
 import { VoiceTargetStrip } from "./VoiceTargetStrip";
 import { VoiceTranscript } from "./VoiceTranscript";
 
-export function shouldShowVoiceTray(state: RealtimeVoiceSessionState): boolean {
-  return state.phase.type !== "idle";
+export function shouldShowVoiceTray(state: RealtimeVoiceSessionState, isMobile = false): boolean {
+  return !isMobile && state.phase.type !== "idle";
 }
 
 export function voiceTraySubtitle(state: RealtimeVoiceSessionState): string {
@@ -37,6 +38,7 @@ export function voiceTrayTitle(state: RealtimeVoiceSessionState): string {
 
 export function VoiceSessionTray() {
   const voice = useVoiceSession();
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const routeThreadRef = useParams({
     strict: false,
@@ -47,7 +49,7 @@ export function VoiceSessionTray() {
       ? state.byEnvironmentId[voice.state.environmentId]?.voiceActive === true
       : false,
   );
-  if (!shouldShowVoiceTray(voice.state) || voiceSurfaceOpen) {
+  if (!shouldShowVoiceTray(voice.state, isMobile) || voiceSurfaceOpen) {
     return null;
   }
   const label = realtimeVoiceStateLabel(voice.state);

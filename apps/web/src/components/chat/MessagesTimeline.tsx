@@ -7,10 +7,7 @@ import {
 } from "@shuv2code/contracts";
 import { parseScopedThreadKey } from "@shuv2code/client-runtime/environment";
 import type { AgentPanelModel } from "@shuv2code/client-runtime/state/subagentRuntime";
-import {
-  emptyAgentPanelModel,
-  formatSubagentTokenCount,
-} from "@shuv2code/client-runtime/state/subagentRuntime";
+import { emptyAgentPanelModel } from "@shuv2code/client-runtime/state/subagentRuntime";
 const EMPTY_AGENT_PANEL_MODEL = emptyAgentPanelModel();
 const NOOP_OPEN_AGENTS = () => {};
 import { resolveChatListAnchoredEndSpace } from "@shuv2code/shared/chatList";

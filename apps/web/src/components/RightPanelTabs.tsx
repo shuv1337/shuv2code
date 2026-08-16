@@ -18,7 +18,6 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   ChevronLeft,
   ChevronRight,
-  ClipboardList,
   Bot,
   FileDiff,
   Files,
@@ -46,7 +45,6 @@ import type { DesktopPreviewOverlay } from "~/previewStateStore";
 import type { RightPanelSurface } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
-import { Button } from "~/components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { Kbd } from "~/components/ui/kbd";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
@@ -85,7 +83,7 @@ interface RightPanelTabsProps {
   onCloseAllSurfaces: () => void;
   onMoveSurface: (surfaceId: string, targetSurfaceId: string) => void;
   onCopyFilePath: (relativePath: string) => void;
-  onAddVoice: () => void;
+  onAddVoice?: () => void;
   onAddBrowser: () => void;
   onAddTerminal: () => void;
   onAddDiff: () => void;
@@ -140,6 +138,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   diff: "Available for Git repositories.",
   pullRequest: "No pull request on this branch yet.",
   agents: "Available from a thread.",
+  voice: "Available from a thread.",
 } as const;
 
 type TabContextMenuAction =
@@ -187,7 +186,7 @@ function SurfaceMenuItem(props: {
  * surfaces stay visible with a one-line reason.
  */
 function RightPanelEmptyState(props: {
-  onAddVoice: () => void;
+  onAddVoice?: () => void;
   onAddBrowser: () => void;
   onAddTerminal: () => void;
   onAddDiff: () => void;
@@ -270,9 +269,11 @@ function RightPanelEmptyState(props: {
       label: "Voice",
       description: "Open the persistent environment voice thread.",
       icon: MicIcon,
-      available: true,
-      disabledReason: null,
-      onClick: props.onAddVoice,
+      shortcut: "V",
+      available: props.onAddVoice !== undefined,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.voice,
+      onClick: () => props.onAddVoice?.(),
+      badgeCount: 0,
     },
   ] as const;
 
@@ -1002,7 +1003,11 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     <Plus className="size-4" />
                   </MenuTrigger>
                   <MenuPopup align="start" side="bottom" sideOffset={6} className="min-w-44">
-                    <SurfaceMenuItem available onClick={props.onAddVoice}>
+                    <SurfaceMenuItem
+                      available={props.onAddVoice !== undefined}
+                      disabledReason={SURFACE_UNAVAILABLE_HINTS.voice}
+                      onClick={() => props.onAddVoice?.()}
+                    >
                       <MicIcon />
                       Voice
                     </SurfaceMenuItem>
@@ -1081,7 +1086,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       <div className="flex min-h-0 flex-1 flex-col" data-right-panel-surface-content>
         {props.activeSurfaceId === null ? (
           <RightPanelEmptyState
-            onAddVoice={props.onAddVoice}
+            {...(props.onAddVoice === undefined ? {} : { onAddVoice: props.onAddVoice })}
             onAddBrowser={props.onAddBrowser}
             onAddTerminal={props.onAddTerminal}
             onAddDiff={props.onAddDiff}

@@ -29,6 +29,18 @@ describe("VoiceSessionTray", () => {
     expect(voiceTraySubtitle(failed)).toBe("Needs attention");
   });
 
+  it("does not show the floating tray on mobile", () => {
+    const requesting = reduceRealtimeVoiceState(initialRealtimeVoiceState, {
+      type: "attempt-started",
+      clientSessionId: "client",
+      generation: 1,
+      environmentId: EnvironmentId.make("environment"),
+    });
+
+    expect(shouldShowVoiceTray(requesting, true)).toBe(false);
+    expect(shouldShowVoiceTray(requesting, false)).toBe(true);
+  });
+
   it("names a thread-owned Call without exposing Controller terminology", () => {
     const environmentId = EnvironmentId.make("environment");
     const threadId = ThreadId.make("thread");

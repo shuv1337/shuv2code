@@ -49,4 +49,4 @@ export interface VoiceCallEventRepositoryShape {
 export class VoiceCallEventRepository extends Context.Service<
   VoiceCallEventRepository,
   VoiceCallEventRepositoryShape
->()("@shuv2code/persistence/Services/VoiceCallEvents/VoiceCallEventRepository") {}
+>()("shuv2code/persistence/Services/VoiceCallEvents/VoiceCallEventRepository") {}

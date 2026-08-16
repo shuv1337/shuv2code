@@ -82,4 +82,4 @@ export interface VoiceCallRepositoryShape {
 export class VoiceCallRepository extends Context.Service<
   VoiceCallRepository,
   VoiceCallRepositoryShape
->()("@shuv2code/persistence/Services/VoiceCalls/VoiceCallRepository") {}
+>()("shuv2code/persistence/Services/VoiceCalls/VoiceCallRepository") {}

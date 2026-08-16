@@ -89,6 +89,7 @@ const makeTestLayer = Effect.gen(function* () {
         Effect.as({ sequence: 1 }),
       ) as never,
     streamDomainEvents: Stream.empty,
+    subscribeDomainEvents: Effect.succeed(Stream.empty),
     latestSequence: Effect.succeed(0),
   });
   const projection = ProjectionSnapshotQuery.of({
