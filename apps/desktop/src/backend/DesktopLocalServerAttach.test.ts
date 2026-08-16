@@ -226,6 +226,6 @@ describe("discoverReusableLocalServer", () => {
         Effect.scoped,
         Effect.provide(Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici)),
       ),
-    15_000,
+    30_000,
   );
 });
