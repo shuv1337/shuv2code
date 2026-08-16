@@ -1863,10 +1863,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const standardMcpSession = mcpSessions.find(
           (entry) => entry.profile.kind === "standard-provider",
         );
-        const controllerMcpSession =
-          input.threadPurpose === "voice-controller"
-            ? mcpSessions.find((entry) => entry.profile.kind === "voice-controller")
-            : undefined;
+        const controllerMcpSession = mcpSessions.find(
+          (entry) =>
+            entry.profile.kind === "voice-controller" ||
+            entry.profile.kind === "durable-thread-controller",
+        );
         const resolvedLaunchArgs = resolveCodexLaunchArgs(
           codexConfig.launchArgs,
           options?.environment,
