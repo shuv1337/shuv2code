@@ -10,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopLocalServerAttach from "./DesktopLocalServerAttach.ts";
@@ -106,6 +107,11 @@ const listenApiOnlyServer = Effect.callback<{
   });
 });
 
+const apiOnlyHttpClient = HttpClient.make((request) => {
+  const status = new URL(request.url).pathname === "/.well-known/shuv2code/environment" ? 200 : 503;
+  return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status })));
+});
+
 describe("discoverReusableLocalServer", () => {
   it.effect("returns none when no attach credential exists", () =>
     Effect.gen(function* () {
@@ -178,54 +184,53 @@ describe("discoverReusableLocalServer", () => {
     ),
   );
 
-  it.effect(
-    "rejects a healthy API when its renderer is unavailable",
-    () =>
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const root = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "shuv2code-desktop-local-attach-renderer-unavailable-",
-        });
-        const stateDir = path.join(root, "userdata");
-        yield* fileSystem.makeDirectory(stateDir, { recursive: true });
-        const ready = yield* listenApiOnlyServer;
-        yield* Effect.addFinalizer(() => Effect.sync(ready.close));
+  it.effect("rejects a healthy API when its renderer is unavailable", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "shuv2code-desktop-local-attach-renderer-unavailable-",
+      });
+      const stateDir = path.join(root, "userdata");
+      yield* fileSystem.makeDirectory(stateDir, { recursive: true });
+      const ready = yield* listenApiOnlyServer;
+      yield* Effect.addFinalizer(() => Effect.sync(ready.close));
 
-        yield* fileSystem.writeFileString(
-          path.join(stateDir, "server-runtime.json"),
-          `${encodeRuntimeState({
-            version: 1,
-            pid: process.pid,
-            host: "127.0.0.1",
-            port: ready.port,
-            origin: ready.origin,
-            startedAt: "2026-08-02T00:00:00.000Z",
-          })}\n`,
-        );
-        yield* fileSystem.writeFileString(
-          path.join(stateDir, "local-desktop-attach.json"),
-          `${encodeAttachCredential({ version: 1, credential: "attach-credential" })}\n`,
-        );
+      yield* fileSystem.writeFileString(
+        path.join(stateDir, "server-runtime.json"),
+        `${encodeRuntimeState({
+          version: 1,
+          pid: process.pid,
+          host: "127.0.0.1",
+          port: ready.port,
+          origin: ready.origin,
+          startedAt: "2026-08-02T00:00:00.000Z",
+        })}\n`,
+      );
+      yield* fileSystem.writeFileString(
+        path.join(stateDir, "local-desktop-attach.json"),
+        `${encodeAttachCredential({ version: 1, credential: "attach-credential" })}\n`,
+      );
 
-        const environment = {
-          path,
-          stateDir,
-          configuredBackendPort: Option.some(ready.port),
-          baseDir: root,
-        } as unknown as DesktopEnvironment.DesktopEnvironment["Service"];
+      const environment = {
+        path,
+        stateDir,
+        configuredBackendPort: Option.some(ready.port),
+        baseDir: root,
+      } as unknown as DesktopEnvironment.DesktopEnvironment["Service"];
 
-        const discovered = yield* DesktopLocalServerAttach.discoverReusableLocalServer().pipe(
-          Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
-        );
+      const discovered = yield* DesktopLocalServerAttach.discoverReusableLocalServer().pipe(
+        Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
+      );
 
-        if (Option.isSome(discovered)) {
-          assert.notEqual(discovered.value.port, ready.port);
-        }
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici)),
+      if (Option.isSome(discovered)) {
+        assert.notEqual(discovered.value.port, ready.port);
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, Layer.succeed(HttpClient.HttpClient, apiOnlyHttpClient)),
       ),
-    30_000,
+    ),
   );
 });
