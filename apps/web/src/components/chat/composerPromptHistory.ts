@@ -15,6 +15,80 @@ export type PromptHistoryStep =
   | { kind: "draft" }
   | { kind: "boundary" };
 
+export interface ComposerPromptHistoryBrowseState<Target> {
+  target: Target;
+  index: number;
+  draft: string;
+  recalledValue: string;
+}
+
+export type ComposerPromptHistoryBrowseReconciliation = "keep" | "discard" | "restore";
+
+export interface ComposerPromptHistoryEligibility {
+  direction: PromptHistoryDirection;
+  value: string;
+  cursor: number;
+  isVisualEdge: boolean;
+  isMobileViewport: boolean;
+  hasModifier: boolean;
+  isComposing: boolean;
+  keyCode: number;
+  isBlocked: boolean;
+  hasTerminalContexts: boolean;
+  hasActiveTrigger: boolean;
+  hasActiveBrowse: boolean;
+  isSelectionCollapsed: boolean;
+}
+
+export function canBrowseComposerPromptHistory({
+  direction,
+  value,
+  cursor,
+  isVisualEdge,
+  isMobileViewport,
+  hasModifier,
+  isComposing,
+  keyCode,
+  isBlocked,
+  hasTerminalContexts,
+  hasActiveTrigger,
+  hasActiveBrowse,
+  isSelectionCollapsed,
+}: ComposerPromptHistoryEligibility): boolean {
+  if (
+    isMobileViewport ||
+    hasModifier ||
+    isComposing ||
+    keyCode === 229 ||
+    isBlocked ||
+    hasTerminalContexts ||
+    (!hasActiveBrowse && hasActiveTrigger) ||
+    !isSelectionCollapsed
+  ) {
+    return false;
+  }
+
+  const isLogicalEdge =
+    direction === "older"
+      ? value.lastIndexOf("\n", Math.max(0, cursor - 1)) < 0
+      : value.indexOf("\n", cursor) < 0;
+
+  return isLogicalEdge && isVisualEdge;
+}
+
+export function reconcileComposerPromptHistoryBrowse<Target>(
+  browse: ComposerPromptHistoryBrowseState<Target>,
+  currentTarget: Target,
+  currentValue: string,
+  entries: ReadonlyArray<string>,
+): ComposerPromptHistoryBrowseReconciliation {
+  if (browse.target !== currentTarget) return "restore";
+  if (!isComposerPromptHistoryPositionValid(entries, browse.index, browse.recalledValue)) {
+    return "restore";
+  }
+  return currentValue === browse.recalledValue ? "keep" : "discard";
+}
+
 export function isComposerPromptHistoryBlankHardEdge(
   value: string,
   cursor: number,

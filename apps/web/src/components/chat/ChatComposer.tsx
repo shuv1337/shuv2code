@@ -237,9 +237,11 @@ import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 import {
+  canBrowseComposerPromptHistory,
+  type ComposerPromptHistoryBrowseState,
   isComposerPromptHistoryBlankHardEdge,
-  isComposerPromptHistoryPositionValid,
   projectComposerPromptHistory,
+  reconcileComposerPromptHistoryBrowse,
   stepComposerPromptHistory,
 } from "./composerPromptHistory";
 
@@ -1064,12 +1066,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
    * thread) can still be stashed while an earlier encode is running.
    */
   const stashInFlightRef = useRef<Set<string>>(new Set());
-  const promptHistoryBrowseRef = useRef<{
-    target: ScopedThreadRef | DraftId;
-    index: number;
-    draft: string;
-    recalledValue: string;
-  } | null>(null);
+  const promptHistoryBrowseRef = useRef<ComposerPromptHistoryBrowseState<
+    ScopedThreadRef | DraftId
+  > | null>(null);
   /**
    * Count of pasted attachments still being prepared, per thread. Reserved
    * against the attachment limit so concurrent pastes can't overshoot it,
@@ -1467,27 +1466,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useEffect(() => {
     const browse = promptHistoryBrowseRef.current;
     if (!browse) return;
-    if (browse.target !== composerDraftTarget) {
-      leavePromptHistory(true);
-      return;
-    }
-    if (
-      !isComposerPromptHistoryPositionValid(
-        promptHistoryEntries,
-        browse.index,
-        browse.recalledValue,
-      )
-    ) {
-      leavePromptHistory(true);
-    }
-  }, [composerDraftTarget, leavePromptHistory, promptHistoryEntries]);
-
-  useEffect(() => {
-    const browse = promptHistoryBrowseRef.current;
-    if (browse?.target === composerDraftTarget && prompt !== browse.recalledValue) {
-      leavePromptHistory(false);
-    }
-  }, [composerDraftTarget, leavePromptHistory, prompt]);
+    const reconciliation = reconcileComposerPromptHistoryBrowse(
+      browse,
+      composerDraftTarget,
+      prompt,
+      promptHistoryEntries,
+    );
+    if (reconciliation === "restore") leavePromptHistory(true);
+    if (reconciliation === "discard") leavePromptHistory(false);
+  }, [composerDraftTarget, leavePromptHistory, prompt, promptHistoryEntries]);
 
   useEffect(() => () => leavePromptHistory(true, { restoreActiveUi: false }), [leavePromptHistory]);
 
@@ -2112,35 +2099,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
       const activeBrowse = promptHistoryBrowseRef.current;
       const selection = document.getSelection();
-      if (
-        isMobileViewport ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey ||
-        event.isComposing ||
-        event.keyCode === 229 ||
-        isComposerApprovalState ||
-        pendingUserInputs.length > 0 ||
-        composerTerminalContexts.length > 0 ||
-        (!activeBrowse && trigger !== null) ||
-        !selection?.isCollapsed
-      ) {
-        return false;
-      }
-
-      const logicalEdge =
-        direction === "older"
-          ? snapshot.value.lastIndexOf("\n", Math.max(0, snapshot.expandedCursor - 1)) < 0
-          : snapshot.value.indexOf("\n", snapshot.expandedCursor) < 0;
-      const editor = composerSurfaceRef.current?.querySelector<HTMLElement>(
-        '[data-testid="composer-editor"]',
-      );
+      const editor = composerEditorRef.current?.getRootElement() ?? null;
       const isVisualEdge =
         editor &&
         (isDomCaretAtVisualEdge(editor, direction) ||
           isComposerPromptHistoryBlankHardEdge(snapshot.value, snapshot.expandedCursor, direction));
-      if (!logicalEdge || !isVisualEdge) {
+      if (
+        !canBrowseComposerPromptHistory({
+          direction,
+          value: snapshot.value,
+          cursor: snapshot.expandedCursor,
+          isVisualEdge: Boolean(isVisualEdge),
+          isMobileViewport,
+          hasModifier: event.altKey || event.ctrlKey || event.metaKey || event.shiftKey,
+          isComposing: event.isComposing,
+          keyCode: event.keyCode,
+          isBlocked: isComposerApprovalState || pendingUserInputs.length > 0,
+          hasTerminalContexts: composerTerminalContexts.length > 0,
+          hasActiveTrigger: trigger !== null,
+          hasActiveBrowse: activeBrowse !== null,
+          isSelectionCollapsed: selection?.isCollapsed === true,
+        })
+      ) {
         return false;
       }
 
