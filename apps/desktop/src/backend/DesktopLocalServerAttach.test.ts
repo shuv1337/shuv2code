@@ -280,17 +280,31 @@ describe("discoverReusableLocalServer", () => {
         configuredBackendPort: Option.none<number>(),
         baseDir: root,
       } as unknown as DesktopEnvironment.DesktopEnvironment["Service"];
-
-      const discovered = yield* DesktopLocalServerAttach.discoverReusableLocalServer().pipe(
-        Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
-        TestClock.withLive,
+      const concurrentProbesStarted = yield* Deferred.make<void>();
+      let probeCount = 0;
+      const delayedHttpClient = HttpClient.make((request) =>
+        Effect.gen(function* () {
+          probeCount += 1;
+          if (probeCount === 2) {
+            yield* Deferred.succeed(concurrentProbesStarted, undefined);
+          }
+          yield* Effect.sleep("1 second");
+          return HttpClientResponse.fromWeb(request, new Response(null, { status: 503 }));
+        }),
       );
 
+      const discovery = yield* DesktopLocalServerAttach.discoverReusableLocalServer().pipe(
+        Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
+        Effect.provideService(HttpClient.HttpClient, delayedHttpClient),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(concurrentProbesStarted);
+      assert.strictEqual(probeCount, 2);
+      yield* TestClock.adjust("500 millis");
+      const discovered = yield* Fiber.join(discovery);
+
       assert.isTrue(Option.isNone(discovered));
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, unavailableHttpClientLayer)),
-    ),
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("preserves state-directory credential precedence for duplicate origins", () =>
