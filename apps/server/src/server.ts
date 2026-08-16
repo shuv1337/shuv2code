@@ -115,7 +115,10 @@ import * as AutomationStore from "./automations/AutomationStore.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
 import { ThreadControlServiceLive } from "./orchestration/Layers/ThreadControlService.ts";
 import { VoiceControlPersistenceLayerLive } from "./persistence/Layers/VoiceControl.ts";
+import { ThreadControlGrantRepositoryLive } from "./persistence/Layers/ThreadControlGrants.ts";
 import { ControllerActionContextResolverLive } from "./voice/Layers/ControllerActionContextResolver.ts";
+import { VoiceThreadControlExecutionCoordinatorLive } from "./voice/Layers/VoiceThreadControlExecutionCoordinator.ts";
+import { VoiceThreadControlGrantVerifierLive } from "./voice/Layers/VoiceThreadControlGrantVerifier.ts";
 import { VoiceControllerServiceLive } from "./voice/Layers/VoiceControllerService.ts";
 import { VoiceRuntimeGatewayLive } from "./voice/Layers/VoiceRuntimeGateway.ts";
 import * as UsageService from "./usage/UsageService.ts";
@@ -255,9 +258,13 @@ const PlatformServicesLive = Layer.unwrap(
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
-  Layer.provideMerge(ProviderCommandReactorLive),
+  Layer.provideMerge(
+    ProviderCommandReactorLive.pipe(Layer.provideMerge(ThreadControlGrantRepositoryLive)),
+  ),
   Layer.provideMerge(CheckpointReactorLive),
-  Layer.provideMerge(ThreadDeletionReactorLive),
+  Layer.provideMerge(
+    ThreadDeletionReactorLive.pipe(Layer.provideMerge(ThreadControlGrantRepositoryLive)),
+  ),
   Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(RuntimeReceiptBusLive),
 );
@@ -307,6 +314,8 @@ const VoiceControllerLayerLive = VoiceControllerServiceLive.pipe(
 
 const VoiceControlServicesLayerLive = Layer.mergeAll(
   ThreadControlLayerLive,
+  VoiceThreadControlGrantVerifierLive,
+  VoiceThreadControlExecutionCoordinatorLive,
   ControllerActionContextResolverLayerLive,
   VoiceControllerLayerLive,
 ).pipe(
@@ -529,7 +538,9 @@ export const makeRoutesLayer = Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
       Layer.provide(authHttpApiLayer),
       Layer.provide(connectHttpApiLayer),
-      Layer.provide(orchestrationHttpApiLayer),
+      Layer.provide(
+        orchestrationHttpApiLayer.pipe(Layer.provideMerge(ThreadControlGrantRepositoryLive)),
+      ),
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),

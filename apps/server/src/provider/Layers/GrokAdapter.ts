@@ -572,7 +572,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             threadId: input.threadId,
           });
 
-          const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          const mcpSessions = McpProviderSession.readMcpProviderSessions(input.threadId);
           const acp = yield* makeGrokAcpRuntime({
             grokSettings,
             ...(options?.environment ? { environment: options.environment } : {}),
@@ -580,21 +580,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "shuv2code", version: "0.0.0" },
-            ...(mcpSession
+            ...(mcpSessions.length > 0
               ? {
-                  mcpServers: [
-                    {
-                      type: "http" as const,
-                      name: "shuv2code",
-                      url: mcpSession.endpoint,
-                      headers: [
-                        {
-                          name: "Authorization",
-                          value: mcpSession.authorizationHeader,
-                        },
-                      ],
-                    },
-                  ],
+                  mcpServers: McpProviderSession.toAcpHttpMcpServers(mcpSessions),
                 }
               : {}),
             ...acpNativeLoggers,

@@ -27,6 +27,7 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { grokPromptSettlementBelongsToContext, makeGrokAdapter } from "./GrokAdapter.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
@@ -124,6 +125,79 @@ it("requires a settlement to match the live Grok turn", () => {
 });
 
 it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
+  it.effect("registers ordinary and durable controller MCP servers", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-controller-mcp");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-controller-mcp-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({ SHUV2CODE_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      const base = {
+        environmentId: "environment-test" as never,
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("grok"),
+      };
+      McpProviderSession.setMcpProviderSession({
+        ...base,
+        credentialId: "standard-credential",
+        providerSessionId: "standard-session",
+        profile: { kind: "standard-provider" },
+        endpoint: "http://127.0.0.1/mcp",
+        authorizationHeader: "Bearer standard-token",
+      });
+      McpProviderSession.setMcpProviderSession({
+        ...base,
+        credentialId: "controller-credential",
+        providerSessionId: "controller-session",
+        profile: {
+          kind: "durable-thread-controller",
+          controllerThreadId: threadId,
+          providerIdentity: undefined,
+          authorizedRuntimeCeiling: "full-access",
+          controlEnabled: true,
+        },
+        endpoint: "http://127.0.0.1/mcp/controller",
+        authorizationHeader: "Bearer controller-token",
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const sessionNew = requests.find((entry) => entry.method === "session/new");
+      if (sessionNew === undefined) {
+        return yield* Effect.die("expected the Grok ACP session/new request");
+      }
+      assert.deepEqual((sessionNew.params as Record<string, unknown>).mcpServers, [
+        {
+          type: "http",
+          name: "shuv2code",
+          url: "http://127.0.0.1/mcp",
+          headers: [{ name: "Authorization", value: "Bearer standard-token" }],
+        },
+        {
+          type: "http",
+          name: "shuv2code_controller",
+          url: "http://127.0.0.1/mcp/controller",
+          headers: [{ name: "Authorization", value: "Bearer controller-token" }],
+        },
+      ]);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("sends PDF attachments as ACP resource links", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-pdf-attachment");

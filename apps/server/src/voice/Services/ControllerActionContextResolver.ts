@@ -3,7 +3,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import type { ControllerActionContext } from "../../orchestration/Services/ThreadControlService.ts";
+import type { VoiceControllerActionContext } from "../../orchestration/Services/ThreadControlService.ts";
 
 export interface ResolveControllerActionInput {
   readonly controllerThreadId: ThreadId;
@@ -39,7 +39,7 @@ export interface ControllerActionContextResolverShape {
    */
   readonly resolve: (
     input: ResolveControllerActionInput,
-  ) => Effect.Effect<ControllerActionContext, ControllerActionContextError>;
+  ) => Effect.Effect<VoiceControllerActionContext, ControllerActionContextError>;
 }
 
 export class ControllerActionContextResolver extends Context.Service<
@@ -56,6 +56,21 @@ export function makeControllerActionContext(input: {
   readonly controllerRuntimeInstanceId: VoiceRuntimeInstanceId;
   readonly transportGeneration: number;
   readonly runtimeInstanceId: VoiceRuntimeInstanceId;
-}): ControllerActionContext {
-  return input;
+}): VoiceControllerActionContext {
+  return {
+    ...input,
+    adapterKind: "voice-controller",
+    actionId: input.voiceActionId,
+    operationIdPrefix: `voice:${input.voiceActionId}`,
+    createdThreadId: ThreadId.make(`voice:${input.voiceActionId}:thread`),
+    providerCreationId: `voice-create:${input.voiceActionId}`,
+    actorProvenance: {
+      actorKind: "voice-controller",
+      voiceActionId: input.voiceActionId,
+      controllerThreadId: input.controllerThreadId,
+      controllerRuntimeInstanceId: input.controllerRuntimeInstanceId,
+      controllerProviderTurnId: input.controllerProviderTurnId,
+      providerSessionId: input.controllerCodexProviderThreadId,
+    },
+  };
 }

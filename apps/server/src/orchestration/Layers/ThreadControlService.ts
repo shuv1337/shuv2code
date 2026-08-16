@@ -2,28 +2,21 @@ import {
   CommandId,
   MessageId,
   ModelSelection,
+  type OrchestrationThread,
   ThreadId,
   type OrchestrationThreadShell,
   type RuntimeMode,
   type TurnId,
 } from "@shuv2code/contracts";
 import { stableStringify } from "@shuv2code/shared/relaySigning";
-import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
-import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
-import { VoiceControllerActionRepository } from "../../persistence/Services/VoiceControllerActions.ts";
-import { VoiceControllerBindingRepository } from "../../persistence/Services/VoiceControllerBindings.ts";
-import { VoiceControllerMutationRepository } from "../../persistence/Services/VoiceControllerMutations.ts";
-import { VoiceTransportSessionRepository } from "../../persistence/Services/VoiceTransportSessions.ts";
-import { resolveVoiceControlPolicy, ServerSettingsService } from "../../serverSettings.ts";
-import { reconcileVoiceMutationOutcomes } from "../../voice/VoiceMutationOutcomeReconciler.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import type { ThreadControlGrant } from "../Services/ThreadControlInvocationResolver.ts";
 import {
   ThreadControlError,
   ThreadControlService,
@@ -76,6 +69,14 @@ const RUNTIME_MODE_RANK: Readonly<Record<RuntimeMode, number>> = {
   "full-access": 3,
 };
 
+export function isAvailableThreadControlSource(
+  thread: Pick<OrchestrationThread, "purpose" | "deletedAt" | "archivedAt">,
+): boolean {
+  return (
+    thread.purpose !== "voice-transport" && thread.deletedAt === null && thread.archivedAt === null
+  );
+}
+
 function shellPhaseOf(thread: OrchestrationThreadShell): ThreadControlPhase {
   const session = thread.session;
   const latestTurn = thread.latestTurn;
@@ -124,7 +125,7 @@ function summarizeThread(thread: OrchestrationThreadShell): ThreadControlThreadS
 }
 
 function operationId(action: ControllerActionContext, operation: string): string {
-  return `voice:${action.voiceActionId}:${operation}`;
+  return `${action.operationIdPrefix}:${operation}`;
 }
 
 function commandId(action: ControllerActionContext, operation: string): CommandId {
@@ -209,201 +210,19 @@ export const validateInterruptTargetPrecondition = (input: {
   return Effect.void;
 };
 
-export const completeClaimedMutationDispatch = <A>(input: {
-  readonly dispatchIntents: Effect.Effect<A, ThreadControlError>;
-  readonly markDispatched: () => Effect.Effect<boolean, ThreadControlError>;
-  readonly releaseClaim: (mayHavePersistedIntents: boolean) => Effect.Effect<void>;
-  readonly reconcileOutcome: () => Effect.Effect<void>;
-}): Effect.Effect<A, ThreadControlError> =>
-  Effect.gen(function* () {
-    const outcome = yield* input.dispatchIntents.pipe(
-      Effect.tapError(() => input.releaseClaim(true).pipe(Effect.ignore)),
-    );
-    const marked = yield* input
-      .markDispatched()
-      .pipe(Effect.tapError(() => input.releaseClaim(true).pipe(Effect.ignore)));
-    if (!marked) {
-      yield* input.releaseClaim(true).pipe(Effect.ignore);
-      return yield* new ThreadControlError({
-        code: "dispatch_failed",
-        message: "The voice mutation dispatch lease expired.",
-      });
-    }
-    yield* input.reconcileOutcome();
-    return outcome;
-  });
-
 export const makeThreadControlService = Effect.fn("ThreadControlService.make")(function* () {
-  const environment = yield* ServerEnvironment;
   const projection = yield* ProjectionSnapshotQuery;
   const engine = yield* OrchestrationEngineService;
-  const bindings = yield* VoiceControllerBindingRepository;
-  const actions = yield* VoiceControllerActionRepository;
-  const mutations = yield* VoiceControllerMutationRepository;
-  const transports = yield* VoiceTransportSessionRepository;
-  const settings = yield* ServerSettingsService;
-  const crypto = yield* Crypto.Crypto;
-
-  const persistActiveTarget = Effect.fn("ThreadControlService.persistActiveTarget")(function* (
-    authorization: ThreadControlAuthorization,
-    activeTargetThreadId: ThreadId,
-  ) {
-    yield* bindings
-      .setActiveTarget({
-        environmentId: authorization.environmentId,
-        controllerThreadId: authorization.controllerThreadId,
-        expectedControlEpoch: authorization.controlEpoch,
-        activeTargetThreadId,
-        updatedAt: DateTime.formatIso(yield* DateTime.now),
-      })
-      .pipe(Effect.ignore);
-  });
-
-  const clearActiveTargetIfMatching = Effect.fn("ThreadControlService.clearActiveTargetIfMatching")(
-    function* (authorization: ThreadControlAuthorization, targetThreadId: ThreadId) {
-      yield* bindings
-        .clearActiveTargetIfMatches({
-          environmentId: authorization.environmentId,
-          controllerThreadId: authorization.controllerThreadId,
-          expectedControlEpoch: authorization.controlEpoch,
-          expectedActiveTargetThreadId: targetThreadId,
-          updatedAt: DateTime.formatIso(yield* DateTime.now),
-        })
-        .pipe(Effect.ignore);
-    },
-  );
-
-  const authorize = Effect.fn("ThreadControlService.authorize")(function* (
-    authorization: ThreadControlAuthorization,
-    operation: "read" | "control",
-  ) {
-    const environmentId = yield* environment.getEnvironmentId;
-    if (authorization.environmentId !== environmentId) {
-      return yield* new ThreadControlError({
-        code: "environment_mismatch",
-        message: "The controller grant is for a different environment.",
-      });
-    }
-    const policy = resolveVoiceControlPolicy(
-      yield* settings.getSettings.pipe(
-        Effect.mapError(
-          () =>
-            new ThreadControlError({
-              code: "read_disabled",
-              message: "The live voice policy could not be read.",
-            }),
-        ),
-      ),
-    );
-    if (!authorization.canRead || !policy.read) {
-      return yield* new ThreadControlError({
-        code: "read_disabled",
-        message: "Voice thread reads are disabled.",
-      });
-    }
-    if (operation === "control" && (!authorization.canControl || !policy.control)) {
-      return yield* new ThreadControlError({
-        code: "control_disabled",
-        message: "Voice thread control is disabled.",
-      });
-    }
-    const binding = yield* bindings.getByEnvironmentId(environmentId).pipe(
-      Effect.mapError(
-        () =>
-          new ThreadControlError({
-            code: "controller_mismatch",
-            message: "The live controller binding could not be read.",
-          }),
-      ),
-    );
-    if (
-      Option.isNone(binding) ||
-      binding.value.controllerThreadId !== authorization.controllerThreadId ||
-      binding.value.providerInstanceId !== authorization.providerInstanceId ||
-      binding.value.authorizedRuntimeCeiling !== authorization.authorizedRuntimeCeiling ||
-      binding.value.bindingGeneration !== authorization.bindingGeneration ||
-      binding.value.state !== "active"
-    ) {
-      return yield* new ThreadControlError({
-        code: "controller_mismatch",
-        message: "The controller credential no longer matches the live binding.",
-      });
-    }
-    if (operation === "control" && binding.value.controlEpoch !== authorization.controlEpoch) {
-      return yield* new ThreadControlError({
-        code: "control_disabled",
-        message: "The controller credential belongs to an obsolete control epoch.",
-      });
-    }
-  });
-
-  const validateAction = Effect.fn("ThreadControlService.validateAction")(function* (
-    authorization: ThreadControlAuthorization,
-    action: ControllerActionContext,
-  ) {
-    if (action.controllerThreadId !== authorization.controllerThreadId) {
-      return yield* new ThreadControlError({
-        code: "controller_mismatch",
-        message: "The action is not bound to this controller.",
-      });
-    }
-    const persisted = yield* actions.getById(action.voiceActionId).pipe(
-      Effect.mapError(
-        () =>
-          new ThreadControlError({
-            code: "controller_mismatch",
-            message: "The live controller action could not be read.",
-          }),
-      ),
-    );
-    if (
-      Option.isNone(persisted) ||
-      persisted.value.state !== "active" ||
-      persisted.value.closedAt !== null ||
-      persisted.value.controllerThreadId !== authorization.controllerThreadId ||
-      persisted.value.transportSessionId !== action.transportSessionId ||
-      persisted.value.transportRuntimeInstanceId !== action.runtimeInstanceId ||
-      persisted.value.transportGeneration !== action.transportGeneration ||
-      persisted.value.controllerRuntimeInstanceId !== action.controllerRuntimeInstanceId ||
-      persisted.value.controllerProviderSessionId !== action.controllerCodexProviderThreadId ||
-      persisted.value.controllerProviderTurnId !== action.controllerProviderTurnId
-    ) {
-      return yield* new ThreadControlError({
-        code: "controller_mismatch",
-        message: "The controller action is closed, stale, or no longer matches its provider turn.",
-      });
-    }
-    const transport = yield* transports.getById(action.transportSessionId).pipe(
-      Effect.mapError(
-        () =>
-          new ThreadControlError({
-            code: "controller_mismatch",
-            message: "The live voice transport could not be read.",
-          }),
-      ),
-    );
-    if (
-      Option.isNone(transport) ||
-      transport.value.state !== "active" ||
-      transport.value.controllerThreadId !== authorization.controllerThreadId ||
-      transport.value.runtimeInstanceId !== action.runtimeInstanceId ||
-      transport.value.generation !== action.transportGeneration
-    ) {
-      return yield* new ThreadControlError({
-        code: "controller_mismatch",
-        message: "The voice transport generation has been fenced.",
-      });
-    }
-  });
 
   const getManagedThread = Effect.fn("ThreadControlService.getManagedThread")(function* (
-    authorization: ThreadControlAuthorization,
+    grant: ThreadControlGrant,
     threadId: ThreadId,
   ) {
+    const authorization = grant.authorization;
     if (threadId === authorization.controllerThreadId) {
       return yield* new ThreadControlError({
         code: "controller_target_forbidden",
-        message: "A voice controller cannot target itself.",
+        message: "A controller thread cannot target itself.",
       });
     }
     const snapshot = yield* projection.getThreadDetailSnapshot(threadId).pipe(
@@ -416,7 +235,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       ),
     );
     if (Option.isNone(snapshot)) {
-      yield* clearActiveTargetIfMatching(authorization, threadId);
+      yield* grant.execution.clearActiveTargetIfMatching(authorization, threadId);
       return yield* new ThreadControlError({
         code: "thread_not_found",
         message: "The target thread was not found.",
@@ -425,11 +244,11 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
     if (snapshot.value.thread.purpose !== "standard") {
       return yield* new ThreadControlError({
         code: "controller_target_forbidden",
-        message: "Voice controllers may target only standard threads.",
+        message: "Controller threads may target only standard threads.",
       });
     }
     if (snapshot.value.thread.deletedAt !== null || snapshot.value.thread.archivedAt !== null) {
-      yield* clearActiveTargetIfMatching(authorization, threadId);
+      yield* grant.execution.clearActiveTargetIfMatching(authorization, threadId);
       return yield* new ThreadControlError({
         code: "thread_archived",
         message: "The target thread is deleted or archived.",
@@ -451,10 +270,10 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
               }),
           ),
         );
-      if (Option.isNone(controller) || controller.value.purpose !== "voice-controller") {
+      if (Option.isNone(controller) || !isAvailableThreadControlSource(controller.value)) {
         return yield* new ThreadControlError({
           code: "controller_mismatch",
-          message: "The designated controller could not be verified.",
+          message: "The designated controller thread is unavailable.",
         });
       }
       return RUNTIME_MODE_RANK[authorization.authorizedRuntimeCeiling] <=
@@ -477,12 +296,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
     engine
       .dispatch(command, {
         actorProvenance: {
-          actorKind: "voice-controller",
-          voiceActionId: action.voiceActionId,
-          controllerThreadId: action.controllerThreadId,
-          controllerRuntimeInstanceId: action.controllerRuntimeInstanceId,
-          controllerProviderTurnId: action.controllerProviderTurnId,
-          providerSessionId: action.controllerCodexProviderThreadId,
+          ...action.actorProvenance,
           providerInstanceId: authorization.providerInstanceId,
           toolName: provenance.toolName,
           operation: provenance.operation,
@@ -499,25 +313,13 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
         ),
       );
 
-  const requestHash = (canonicalRequest: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(canonicalRequest)).pipe(
-      Effect.map(Encoding.encodeHex),
-      Effect.mapError(
-        () =>
-          new ThreadControlError({
-            code: "dispatch_failed",
-            message: "The voice mutation request could not be authenticated.",
-          }),
-      ),
-    );
-
   /**
    * Claims the action's single semantic mutation, fences it against the live
    * binding/epoch, persists the dispatch boundary, and replays an exact prior
    * result without issuing another orchestration command.
    */
   const executeMutation = <A extends ThreadControlMutationResult>(input: {
-    readonly authorization: ThreadControlAuthorization;
+    readonly grant: ThreadControlGrant;
     readonly action: ControllerActionContext;
     readonly toolName: "thread_create" | "thread_send" | "thread_interrupt";
     readonly operation: string;
@@ -531,150 +333,25 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       readonly operation: string;
       readonly canonicalRequestHash: string;
     }) => Effect.Effect<A, ThreadControlError>;
-  }): Effect.Effect<A, ThreadControlError> =>
-    Effect.gen(function* () {
-      const claimedAt = yield* DateTime.now;
-      const claimedAtIso = DateTime.formatIso(claimedAt);
-      const mutationKey = `voice:${input.action.voiceActionId}:thread-control`;
-      const canonicalRequestHash = yield* requestHash(input.canonicalRequest);
-      const claimed = yield* mutations
-        .claimOrReplay({
-          voiceActionId: input.action.voiceActionId,
-          mutationKey,
-          toolName: input.toolName,
-          semanticSlot: input.semanticSlot,
-          canonicalRequestHash,
-          operationId: operationId(input.action, input.operation),
-          providerCreationId: input.providerCreationId,
-          bindingGeneration: input.authorization.bindingGeneration,
-          controlEpoch: input.authorization.controlEpoch,
-          createdAt: claimedAtIso,
-        })
-        .pipe(
-          Effect.mapError(
-            () =>
-              new ThreadControlError({
-                code: "dispatch_failed",
-                message: "The voice mutation could not be durably claimed.",
-              }),
-          ),
-        );
-      if (claimed._tag === "conflict" || claimed._tag === "action_unavailable") {
-        return yield* new ThreadControlError({
-          code: "dispatch_failed",
-          message:
-            claimed._tag === "conflict"
-              ? "This controller action already claimed a different thread mutation."
-              : "This controller action is no longer available for mutation.",
-        });
-      }
-      if (
-        claimed._tag === "replay" &&
-        claimed.mutation.dispatchState !== "never_dispatched" &&
-        claimed.mutation.dispatchState !== "claimed"
-      ) {
-        return yield* new ThreadControlError({
-          code: "dispatch_failed",
-          message: "The prior voice mutation is already dispatched and is being reconciled.",
-        });
-      }
-      const claimOwner = `${mutationKey}:dispatcher`;
-      const dispatchClaimed = yield* mutations
-        .claimDispatch({
-          voiceActionId: input.action.voiceActionId,
-          claimOwner,
-          claimExpiresAt: DateTime.formatIso(DateTime.add(claimedAt, { minutes: 1 })),
-          claimedAt: claimedAtIso,
-          expectedBindingGeneration: input.authorization.bindingGeneration,
-          expectedControlEpoch: input.authorization.controlEpoch,
-        })
-        .pipe(
-          Effect.mapError(
-            () =>
-              new ThreadControlError({
-                code: "dispatch_failed",
-                message: "The voice mutation dispatch claim failed.",
-              }),
-          ),
-        );
-      if (!dispatchClaimed) {
-        return yield* new ThreadControlError({
-          code: "dispatch_failed",
-          message: "The voice mutation dispatch was fenced before it started.",
-        });
-      }
-      // Re-read every mutable privilege boundary immediately before crossing
-      // from the durable claim into orchestration.
-      yield* Effect.gen(function* () {
-        yield* authorize(input.authorization, "control");
-        yield* validateAction(input.authorization, input.action);
-        if (input.preDispatch !== undefined) {
-          yield* input.preDispatch;
+  }): Effect.Effect<A, ThreadControlError> => {
+    const { grant, effect, preDispatch, ...mutation } = input;
+    return grant.execution.execute({
+      ...mutation,
+      authorization: grant.authorization,
+      revalidate: Effect.gen(function* () {
+        yield* grant.verifier.authorize(grant.authorization, "control");
+        yield* grant.verifier.validateMutation(grant.authorization, input.action);
+        if (preDispatch !== undefined) {
+          yield* preDispatch;
         }
-      }).pipe(
-        Effect.tapError(() =>
-          mutations
-            .releaseClaim({
-              voiceActionId: input.action.voiceActionId,
-              claimOwner,
-              mayHavePersistedIntents: false,
-              updatedAt: DateTime.formatIso(claimedAt),
-            })
-            .pipe(Effect.ignore),
-        ),
-      );
-      const result = yield* completeClaimedMutationDispatch({
-        dispatchIntents: input.effect({
-          toolName: input.toolName,
-          operation: input.operation,
-          canonicalRequestHash,
-        }),
-        releaseClaim: (mayHavePersistedIntents) =>
-          mutations
-            .releaseClaim({
-              voiceActionId: input.action.voiceActionId,
-              claimOwner,
-              mayHavePersistedIntents,
-              updatedAt: DateTime.formatIso(claimedAt),
-            })
-            .pipe(Effect.ignore),
-        markDispatched: () =>
-          Effect.gen(function* () {
-            const dispatchedAt = DateTime.formatIso(yield* DateTime.now);
-            return yield* mutations
-              .markDispatched({
-                voiceActionId: input.action.voiceActionId,
-                claimOwner,
-                dispatchedAt,
-              })
-              .pipe(
-                Effect.mapError(
-                  () =>
-                    new ThreadControlError({
-                      code: "dispatch_failed",
-                      message: "The voice mutation dispatch boundary could not be persisted.",
-                    }),
-                ),
-              );
-          }),
-        reconcileOutcome: () =>
-          reconcileVoiceMutationOutcomes({ engine, mutations }).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("voice mutation post-dispatch outcome reconciliation failed", {
-                voiceActionId: input.action.voiceActionId,
-                operationId: operationId(input.action, input.operation),
-                cause,
-              }),
-            ),
-          ),
-      });
-      yield* persistActiveTarget(input.authorization, input.targetThreadId);
-      return result;
+      }),
+      dispatch: effect,
     });
+  };
 
   const list: ThreadControlService["Service"]["list"] = Effect.fn("ThreadControlService.list")(
     function* (input) {
-      yield* authorize(input.authorization, "read");
+      yield* input.grant.verifier.authorize(input.grant.authorization, "read");
       const snapshot = yield* projection.getShellSnapshot().pipe(
         Effect.mapError(
           () =>
@@ -720,8 +397,9 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
 
   const get: ThreadControlService["Service"]["get"] = Effect.fn("ThreadControlService.get")(
     function* (input) {
-      yield* authorize(input.authorization, "read");
-      const snapshot = yield* getManagedThread(input.authorization, input.threadId);
+      const authorization = input.grant.authorization;
+      yield* input.grant.verifier.authorize(authorization, "read");
+      const snapshot = yield* getManagedThread(input.grant, input.threadId);
       const thread = snapshot.thread;
       const shell = yield* projection.getThreadShellById(input.threadId).pipe(
         Effect.mapError(
@@ -738,7 +416,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
           message: "The target thread was not found.",
         });
       }
-      yield* persistActiveTarget(input.authorization, input.threadId);
+      yield* input.grant.execution.setActiveTarget(authorization, input.threadId);
       const shellSummary = summarizeThread(shell.value);
       const latestAssistant = thread.messages.findLast(
         (candidate) => candidate.role === "assistant" && !candidate.streaming,
@@ -775,8 +453,9 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
   const create: ThreadControlService["Service"]["create"] = Effect.fn(
     "ThreadControlService.create",
   )(function* (input) {
-    yield* authorize(input.authorization, "control");
-    yield* validateAction(input.authorization, input.action);
+    const authorization = input.grant.authorization;
+    yield* input.grant.verifier.authorize(authorization, "control");
+    yield* input.grant.verifier.validateMutation(authorization, input.action);
     const instruction = yield* requireNonEmpty(input.initialInstruction, "initialInstruction");
     const project = yield* projection.getProjectShellById(input.projectId).pipe(
       Effect.mapError(
@@ -793,25 +472,23 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
         message: "The target project was not found.",
       });
     }
-    const controller = yield* projection
-      .getThreadDetailById(input.authorization.controllerThreadId)
-      .pipe(
-        Effect.mapError(
-          () =>
-            new ThreadControlError({
-              code: "dispatch_failed",
-              message: "The controller projection could not be read.",
-            }),
-        ),
-      );
-    if (Option.isNone(controller) || controller.value.purpose !== "voice-controller") {
+    const controller = yield* projection.getThreadDetailById(authorization.controllerThreadId).pipe(
+      Effect.mapError(
+        () =>
+          new ThreadControlError({
+            code: "dispatch_failed",
+            message: "The controller projection could not be read.",
+          }),
+      ),
+    );
+    if (Option.isNone(controller) || !isAvailableThreadControlSource(controller.value)) {
       return yield* new ThreadControlError({
         code: "controller_mismatch",
-        message: "The designated controller could not be verified.",
+        message: "The designated controller thread is unavailable.",
       });
     }
     const baseModel = controller.value.modelSelection;
-    if (baseModel.instanceId !== input.authorization.providerInstanceId) {
+    if (baseModel.instanceId !== authorization.providerInstanceId) {
       return yield* new ThreadControlError({
         code: "invalid_model",
         message: "The controller model is not on its bound provider instance.",
@@ -820,24 +497,24 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
     if (input.model !== undefined && input.model !== baseModel.model) {
       return yield* new ThreadControlError({
         code: "invalid_model",
-        message: "Voice-created threads must use the live controller model.",
+        message: "Controller-created threads must use the source thread model.",
       });
     }
     const modelSelection = ModelSelection.make({
-      instanceId: input.authorization.providerInstanceId,
+      instanceId: authorization.providerInstanceId,
       model: baseModel.model,
       ...(baseModel.options !== undefined ? { options: baseModel.options } : {}),
     });
     const createdAt = DateTime.formatIso(yield* DateTime.now);
-    const threadId = ThreadId.make(`voice:${input.action.voiceActionId}:thread`);
+    const threadId = input.action.createdThreadId;
     const mode =
-      RUNTIME_MODE_RANK[input.authorization.authorizedRuntimeCeiling] <=
+      RUNTIME_MODE_RANK[authorization.authorizedRuntimeCeiling] <=
       RUNTIME_MODE_RANK[controller.value.runtimeMode]
-        ? input.authorization.authorizedRuntimeCeiling
+        ? authorization.authorizedRuntimeCeiling
         : controller.value.runtimeMode;
-    const providerCreationId = `voice-create:${input.action.voiceActionId}`;
+    const providerCreationId = input.action.providerCreationId;
     return yield* executeMutation({
-      authorization: input.authorization,
+      grant: input.grant,
       action: input.action,
       toolName: "thread_create",
       // Provider effect acknowledgement belongs to the initial turn start,
@@ -872,7 +549,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
               createdAt,
             },
             input.action,
-            input.authorization,
+            authorization,
             provenance,
           );
           const startResult = yield* dispatch(
@@ -895,11 +572,11 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
               createdAt,
             },
             input.action,
-            input.authorization,
+            authorization,
             provenance,
           );
           return {
-            voiceActionId: input.action.voiceActionId,
+            actionId: input.action.actionId,
             operationId: operationId(input.action, "create-start"),
             targetThreadId: threadId,
             disposition: "create" as const,
@@ -914,11 +591,12 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
 
   const send: ThreadControlService["Service"]["send"] = Effect.fn("ThreadControlService.send")(
     function* (input) {
-      yield* authorize(input.authorization, "control");
-      yield* validateAction(input.authorization, input.action);
+      const authorization = input.grant.authorization;
+      yield* input.grant.verifier.authorize(authorization, "control");
+      yield* input.grant.verifier.validateMutation(authorization, input.action);
       const text = yield* requireNonEmpty(input.text, "text");
-      const target = yield* getManagedThread(input.authorization, input.threadId);
-      const currentCeiling = yield* getEffectiveRuntimeCeiling(input.authorization);
+      const target = yield* getManagedThread(input.grant, input.threadId);
+      const currentCeiling = yield* getEffectiveRuntimeCeiling(authorization);
       const currentTurnId = target.thread.session?.activeTurnId ?? null;
       yield* validateSendTargetPrecondition({
         disposition: input.disposition,
@@ -929,7 +607,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       });
       const createdAt = DateTime.formatIso(yield* DateTime.now);
       return yield* executeMutation({
-        authorization: input.authorization,
+        grant: input.grant,
         action: input.action,
         toolName: "thread_send",
         operation: `send-${input.disposition}`,
@@ -944,8 +622,8 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
           text,
         ]),
         preDispatch: Effect.gen(function* () {
-          const liveTarget = yield* getManagedThread(input.authorization, input.threadId);
-          const liveCeiling = yield* getEffectiveRuntimeCeiling(input.authorization);
+          const liveTarget = yield* getManagedThread(input.grant, input.threadId);
+          const liveCeiling = yield* getEffectiveRuntimeCeiling(authorization);
           const liveTurnId = liveTarget.thread.session?.activeTurnId ?? null;
           yield* validateSendTargetPrecondition({
             disposition: input.disposition,
@@ -974,7 +652,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
                       createdAt,
                     },
                     input.action,
-                    input.authorization,
+                    authorization,
                     provenance,
                   )
                 : yield* dispatch(
@@ -996,11 +674,11 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
                       createdAt,
                     },
                     input.action,
-                    input.authorization,
+                    authorization,
                     provenance,
                   );
             return {
-              voiceActionId: input.action.voiceActionId,
+              actionId: input.action.actionId,
               operationId: operationId(input.action, `send-${input.disposition}`),
               targetThreadId: input.threadId,
               disposition: input.disposition,
@@ -1017,9 +695,10 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
   const interrupt: ThreadControlService["Service"]["interrupt"] = Effect.fn(
     "ThreadControlService.interrupt",
   )(function* (input) {
-    yield* authorize(input.authorization, "control");
-    yield* validateAction(input.authorization, input.action);
-    const target = yield* getManagedThread(input.authorization, input.threadId);
+    const authorization = input.grant.authorization;
+    yield* input.grant.verifier.authorize(authorization, "control");
+    yield* input.grant.verifier.validateMutation(authorization, input.action);
+    const target = yield* getManagedThread(input.grant, input.threadId);
     const currentTurnId = target.thread.session?.activeTurnId ?? null;
     yield* validateInterruptTargetPrecondition({
       expectedTurnId: input.expectedTurnId,
@@ -1027,7 +706,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
     });
     const createdAt = DateTime.formatIso(yield* DateTime.now);
     return yield* executeMutation({
-      authorization: input.authorization,
+      grant: input.grant,
       action: input.action,
       toolName: "thread_interrupt",
       operation: "interrupt",
@@ -1036,7 +715,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       providerCreationId: null,
       canonicalRequest: stableStringify(["thread_interrupt", input.threadId, input.expectedTurnId]),
       preDispatch: Effect.gen(function* () {
-        const liveTarget = yield* getManagedThread(input.authorization, input.threadId);
+        const liveTarget = yield* getManagedThread(input.grant, input.threadId);
         const liveTurnId = liveTarget.thread.session?.activeTurnId ?? null;
         yield* validateInterruptTargetPrecondition({
           expectedTurnId: input.expectedTurnId,
@@ -1054,11 +733,11 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
               createdAt,
             },
             input.action,
-            input.authorization,
+            authorization,
             provenance,
           );
           return {
-            voiceActionId: input.action.voiceActionId,
+            actionId: input.action.actionId,
             operationId: operationId(input.action, "interrupt"),
             targetThreadId: input.threadId,
             disposition: "interrupt" as const,

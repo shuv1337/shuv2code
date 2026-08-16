@@ -2,8 +2,11 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
+  type RuntimeMode,
+  type ThreadId,
 } from "@shuv2code/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
@@ -18,6 +21,9 @@ import {
 } from "../auth/http.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
+import { ThreadControlGrantRepository } from "../persistence/Services/ThreadControlGrants.ts";
+import * as McpProviderSession from "../mcp/McpProviderSession.ts";
+import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 
 export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
@@ -25,6 +31,49 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const threadControlGrants = yield* ThreadControlGrantRepository;
+
+    const grantState = (
+      threadId: ThreadId,
+      grant: Option.Option<{
+        readonly authorizedRuntimeCeiling: RuntimeMode;
+        readonly controlEnabled: boolean;
+        readonly updatedAt: string;
+      }>,
+    ) =>
+      Option.match(grant, {
+        onNone: () => ({
+          threadId,
+          granted: false as const,
+          authorizedRuntimeCeiling: null,
+          controlEnabled: false,
+          updatedAt: null,
+        }),
+        onSome: (value) => ({
+          threadId,
+          granted: true as const,
+          authorizedRuntimeCeiling: value.authorizedRuntimeCeiling,
+          controlEnabled: value.controlEnabled,
+          updatedAt: value.updatedAt,
+        }),
+      });
+
+    const requireOrdinaryThread = Effect.fn("environment.orchestration.requireOrdinaryThread")(
+      function* (threadId: ThreadId) {
+        const thread = yield* projectionSnapshotQuery
+          .getThreadDetailById(threadId)
+          .pipe(
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
+            ),
+          );
+        if (Option.isNone(thread)) return yield* failEnvironmentNotFound("thread_not_found");
+        if ((thread.value.purpose ?? "standard") !== "standard") {
+          return yield* failEnvironmentInvalidRequest("invalid_command");
+        }
+        return thread.value;
+      },
+    );
 
     return handlers
       .handle(
@@ -103,6 +152,87 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
                 failEnvironmentInternal("orchestration_dispatch_failed", cause),
               ),
             );
+        }),
+      )
+      .handle(
+        "threadControlGrant",
+        Effect.fn("environment.orchestration.threadControlGrant")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          yield* requireOrdinaryThread(args.params.threadId);
+          const grant = yield* threadControlGrants
+            .getByThreadId(args.params.threadId)
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("thread_control_grant_read_failed", cause),
+              ),
+            );
+          return grantState(args.params.threadId, grant);
+        }),
+      )
+      .handle(
+        "setThreadControlGrant",
+        Effect.fn("environment.orchestration.setThreadControlGrant")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          yield* requireOrdinaryThread(args.params.threadId);
+          const existing = yield* threadControlGrants
+            .getByThreadId(args.params.threadId)
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("thread_control_grant_read_failed", cause),
+              ),
+            );
+          const updatedAt = DateTime.formatIso(yield* DateTime.now);
+          yield* threadControlGrants
+            .upsert({
+              threadId: args.params.threadId,
+              authorizedRuntimeCeiling: args.payload.authorizedRuntimeCeiling,
+              controlEnabled: args.payload.controlEnabled,
+              createdAt: Option.match(existing, {
+                onNone: () => updatedAt,
+                onSome: (grant) => grant.createdAt,
+              }),
+              updatedAt,
+            })
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("thread_control_grant_write_failed", cause),
+              ),
+            );
+          yield* McpSessionRegistry.revokeActiveMcpThreadProfile(
+            args.params.threadId,
+            "durable-thread-controller",
+          );
+          McpProviderSession.clearMcpProviderSessionProfile(
+            args.params.threadId,
+            "durable-thread-controller",
+          );
+          return grantState(args.params.threadId, Option.some({ ...args.payload, updatedAt }));
+        }),
+      )
+      .handle(
+        "revokeThreadControlGrant",
+        Effect.fn("environment.orchestration.revokeThreadControlGrant")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          yield* requireOrdinaryThread(args.params.threadId);
+          yield* threadControlGrants
+            .revoke(args.params.threadId)
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("thread_control_grant_revoke_failed", cause),
+              ),
+            );
+          yield* McpSessionRegistry.revokeActiveMcpThreadProfile(
+            args.params.threadId,
+            "durable-thread-controller",
+          );
+          McpProviderSession.clearMcpProviderSessionProfile(
+            args.params.threadId,
+            "durable-thread-controller",
+          );
+          return grantState(args.params.threadId, Option.none());
         }),
       );
   }),

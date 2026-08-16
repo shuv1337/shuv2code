@@ -79,7 +79,7 @@ layer("049_VoiceSessionOwnership", (it) => {
         )
       `;
 
-        yield* runMigrations({ toMigrationInclusive: 43 });
+        yield* runMigrations({ toMigrationInclusive: 49 });
 
         const sessions = yield* sql<{
           readonly transportSessionId: string;
