@@ -9,6 +9,7 @@ import {
 import { assert, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
@@ -201,6 +202,7 @@ const provideMcpRequest = <A, E, R>(effect: Effect.Effect<A, E, R>, turnId: stri
     const invocationResolver = makeVoiceThreadControlInvocationResolver({
       invocation,
       request: {
+        requestId: `request-${turnId ?? "proactive"}`,
         turnMetadata:
           turnId === undefined
             ? undefined
@@ -316,6 +318,8 @@ layer("ControllerActionContextResolverLive", (it) => {
       yield* createBoundAction("action-b", "turn-b");
 
       const delayed = yield* provideMcpRequest(threadHandlerTesting.requireAction(), "turn-a");
+      expect(delayed.action.adapterKind).toBe("voice-controller");
+      if (delayed.action.adapterKind !== "voice-controller") return assert.fail("voice action");
       expect(delayed.action.voiceActionId).toBe("action-a");
       expect(delayed.action.controllerProviderTurnId).toBe("turn-a");
 
@@ -338,17 +342,27 @@ layer("ControllerActionContextResolverLive", (it) => {
 
       const verifier = yield* ThreadControlGrantVerifier;
       const action = yield* resolve();
+      const bindingRepository = yield* VoiceControllerBindingRepository;
+      const binding = Option.getOrThrow(yield* bindingRepository.getByEnvironmentId(environmentId));
       const authorization = {
         environmentId,
         controllerThreadId,
         providerInstanceId,
         authorizedRuntimeCeiling: "full-access" as const,
         liveControllerRuntimeMode: "full-access" as const,
-        bindingGeneration: 1,
+        bindingGeneration: binding.bindingGeneration,
         controlEpoch: 0,
         canRead: true,
         canControl: true,
       };
+      expect(binding).toMatchObject({
+        controllerThreadId: authorization.controllerThreadId,
+        providerInstanceId: authorization.providerInstanceId,
+        authorizedRuntimeCeiling: authorization.authorizedRuntimeCeiling,
+        bindingGeneration: authorization.bindingGeneration,
+        controlEpoch: authorization.controlEpoch,
+        state: "active",
+      });
 
       yield* verifier.authorize(authorization, "read");
       yield* verifier.authorize(authorization, "control");

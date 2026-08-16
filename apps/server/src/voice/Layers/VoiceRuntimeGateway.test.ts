@@ -331,6 +331,7 @@ function makeHarness(
       revokeCredential: vi.fn(() => Effect.void),
       revokeProviderSession: vi.fn(() => Effect.void),
       revokeThread: vi.fn(() => Effect.void),
+      revokeThreadProfile: vi.fn(() => Effect.void),
       revokeAll: Effect.void,
     });
     const providerRegistry = ProviderRegistry.of({

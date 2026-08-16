@@ -28,4 +28,4 @@ export interface ThreadControlGrantRepositoryShape {
 export class ThreadControlGrantRepository extends Context.Service<
   ThreadControlGrantRepository,
   ThreadControlGrantRepositoryShape
->()("@shuv2code/persistence/Services/ThreadControlGrantRepository") {}
+>()("shuv2code/persistence/Services/ThreadControlGrants/ThreadControlGrantRepository") {}

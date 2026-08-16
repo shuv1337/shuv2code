@@ -91,6 +91,9 @@ export const EnvironmentInternalErrorReason = Schema.Literals([
   "orchestration_snapshot_failed",
   "orchestration_thread_snapshot_failed",
   "orchestration_dispatch_failed",
+  "thread_control_grant_read_failed",
+  "thread_control_grant_write_failed",
+  "thread_control_grant_revoke_failed",
   "internal_error",
 ]);
 export type EnvironmentInternalErrorReason = typeof EnvironmentInternalErrorReason.Type;
@@ -326,6 +329,10 @@ const EnvironmentOrchestrationThreadSnapshotErrors = [
   EnvironmentResourceNotFoundError,
   EnvironmentInternalError,
 ] as const;
+const EnvironmentThreadControlGrantErrors = [
+  EnvironmentRequestInvalidError,
+  ...EnvironmentOrchestrationThreadSnapshotErrors,
+] as const;
 const EnvironmentOrchestrationDispatchErrors = [
   EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
@@ -553,7 +560,7 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
         headers: OptionalBearerHeaders,
         params: EnvironmentOrchestrationThreadSnapshotParams,
         success: EnvironmentThreadControlGrantState,
-        error: EnvironmentOrchestrationThreadSnapshotErrors,
+        error: EnvironmentThreadControlGrantErrors,
       },
     ).middleware(EnvironmentAuthenticatedAuth),
   )
@@ -566,7 +573,7 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
         params: EnvironmentOrchestrationThreadSnapshotParams,
         payload: EnvironmentThreadControlGrantRequest,
         success: EnvironmentThreadControlGrantState,
-        error: EnvironmentOrchestrationThreadSnapshotErrors,
+        error: EnvironmentThreadControlGrantErrors,
       },
     ).middleware(EnvironmentAuthenticatedAuth),
   )
@@ -578,7 +585,7 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
         headers: OptionalBearerHeaders,
         params: EnvironmentOrchestrationThreadSnapshotParams,
         success: EnvironmentThreadControlGrantState,
-        error: EnvironmentOrchestrationThreadSnapshotErrors,
+        error: EnvironmentThreadControlGrantErrors,
       },
     ).middleware(EnvironmentAuthenticatedAuth),
   ) {}

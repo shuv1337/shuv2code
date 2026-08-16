@@ -299,27 +299,32 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     if (controllerGrant === undefined && threadControlGrant === undefined) {
       return undefined;
     }
-    const controller = yield* McpSessionRegistry.issueActiveMcpCredential({
-      threadId: input.threadId,
-      providerInstanceId: input.providerInstanceId,
-      profile:
-        controllerGrant !== undefined
-          ? {
-              kind: "voice-controller",
-              controllerThreadId: controllerGrant.controllerThreadId,
-              runtimeInstanceId: VoiceRuntimeInstanceId.make(controllerGrant.runtimeInstanceId),
-              authorizedRuntimeCeiling: controllerGrant.authorizedRuntimeCeiling,
-              liveControllerRuntimeMode: controllerGrant.liveControllerRuntimeMode,
-              controlEpoch: controllerGrant.controlEpoch,
-              controlEnabled: controllerGrant.controlEnabled,
-            }
-          : {
+    const controller = yield* controllerGrant !== undefined
+      ? McpSessionRegistry.issueActiveMcpCredential({
+          threadId: input.threadId,
+          providerInstanceId: input.providerInstanceId,
+          profile: {
+            kind: "voice-controller",
+            controllerThreadId: controllerGrant.controllerThreadId,
+            runtimeInstanceId: VoiceRuntimeInstanceId.make(controllerGrant.runtimeInstanceId),
+            authorizedRuntimeCeiling: controllerGrant.authorizedRuntimeCeiling,
+            liveControllerRuntimeMode: controllerGrant.liveControllerRuntimeMode,
+            controlEpoch: controllerGrant.controlEpoch,
+            controlEnabled: controllerGrant.controlEnabled,
+          },
+        })
+      : threadControlGrant !== undefined
+        ? McpSessionRegistry.issueActiveMcpCredential({
+            threadId: input.threadId,
+            providerInstanceId: input.providerInstanceId,
+            profile: {
               kind: "durable-thread-controller",
               controllerThreadId: threadControlGrant.controllerThreadId,
               authorizedRuntimeCeiling: threadControlGrant.authorizedRuntimeCeiling,
               controlEnabled: threadControlGrant.controlEnabled,
             },
-    });
+          })
+        : Effect.succeed(undefined);
     if (controller) {
       McpProviderSession.setMcpProviderSession(controller.config);
     }

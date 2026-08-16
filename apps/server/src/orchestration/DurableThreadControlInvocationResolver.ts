@@ -30,7 +30,7 @@ export interface DurableThreadControlInvocationResolverServices {
   readonly currentEnvironmentId: EnvironmentId;
   readonly projection: ProjectionSnapshotQuery["Service"];
   readonly threadControlGrants: ThreadControlGrantRepositoryShape;
-  readonly crypto: Crypto.Crypto["Service"];
+  readonly crypto: Crypto.Crypto;
 }
 
 const mismatch = (message: string) =>

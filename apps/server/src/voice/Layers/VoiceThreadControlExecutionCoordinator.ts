@@ -207,7 +207,7 @@ export const makeVoiceThreadControlExecutionCoordinator = Effect.fn(
         reconcileVoiceMutationOutcomes({ engine, mutations }).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("voice mutation post-dispatch outcome reconciliation failed", {
-              voiceActionId: input.action.voiceActionId,
+              voiceActionId: action.voiceActionId,
               operationId: operationId(action, input.operation),
               cause,
             }),

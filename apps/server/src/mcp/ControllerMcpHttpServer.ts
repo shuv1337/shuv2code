@@ -323,7 +323,7 @@ const makeControllerMcpRequestHandler = (services: {
   readonly currentEnvironmentId: import("@shuv2code/contracts").EnvironmentId;
   readonly projection: ProjectionSnapshotQuery["Service"];
   readonly threadControlGrants: ThreadControlGrantRepository["Service"];
-  readonly crypto: Crypto.Crypto["Service"];
+  readonly crypto: Crypto.Crypto;
 }) =>
   Effect.withFiber((fiber) => {
     const runPromise = Effect.runPromiseWith(fiber.context);

@@ -86,7 +86,7 @@ const makeResolver = (bindings: VoiceControllerBindingRepository["Service"]) =>
     const settingsService = yield* ServerSettings.ServerSettingsService;
     return makeVoiceThreadControlInvocationResolver({
       invocation,
-      request: { turnMetadata: undefined },
+      request: { requestId: "request-handler-test", turnMetadata: undefined },
       settingsService,
       bindingRepository: bindings,
       actionResolver: ControllerActionContextResolver.of({ resolve: () => Effect.die("unused") }),
