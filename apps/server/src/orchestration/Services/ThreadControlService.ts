@@ -26,6 +26,12 @@ export interface ThreadControlAuthorization {
 }
 
 export interface ControllerActionContext {
+  readonly adapterKind: "voice-controller";
+  readonly actionId: string;
+  readonly operationIdPrefix: string;
+  readonly createdThreadId: ThreadId;
+  readonly providerCreationId: string;
+  readonly actorProvenance: Readonly<Record<string, unknown>>;
   readonly voiceActionId: VoiceActionId;
   readonly controllerThreadId: ThreadId;
   readonly transportSessionId: string;
@@ -136,7 +142,7 @@ export interface ThreadControlInterruptInput {
 }
 
 export interface ThreadControlMutationResult {
-  readonly voiceActionId: VoiceActionId;
+  readonly actionId: string;
   readonly operationId: string;
   readonly targetThreadId: ThreadId;
   readonly disposition: "create" | "start" | "steer" | "interrupt";

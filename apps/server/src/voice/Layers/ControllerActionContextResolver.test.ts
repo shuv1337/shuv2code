@@ -231,6 +231,19 @@ layer("ControllerActionContextResolverLive", (it) => {
       const delayed = yield* resolve();
       const current = yield* resolve({ providerTurnId: TurnId.make("turn-b") });
 
+      expect(delayed).toMatchObject({
+        adapterKind: "voice-controller",
+        actionId: "action-a",
+        operationIdPrefix: "voice:action-a",
+        createdThreadId: "voice:action-a:thread",
+        providerCreationId: "voice-create:action-a",
+        actorProvenance: {
+          actorKind: "voice-controller",
+          voiceActionId: "action-a",
+          controllerThreadId,
+          providerSessionId: providerThreadId,
+        },
+      });
       expect(delayed.voiceActionId).toBe("action-a");
       expect(delayed.controllerProviderTurnId).toBe("turn-a");
       expect(current.voiceActionId).toBe("action-b");

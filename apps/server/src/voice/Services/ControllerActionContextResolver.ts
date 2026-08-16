@@ -57,5 +57,20 @@ export function makeControllerActionContext(input: {
   readonly transportGeneration: number;
   readonly runtimeInstanceId: VoiceRuntimeInstanceId;
 }): ControllerActionContext {
-  return input;
+  return {
+    ...input,
+    adapterKind: "voice-controller",
+    actionId: input.voiceActionId,
+    operationIdPrefix: `voice:${input.voiceActionId}`,
+    createdThreadId: ThreadId.make(`voice:${input.voiceActionId}:thread`),
+    providerCreationId: `voice-create:${input.voiceActionId}`,
+    actorProvenance: {
+      actorKind: "voice-controller",
+      voiceActionId: input.voiceActionId,
+      controllerThreadId: input.controllerThreadId,
+      controllerRuntimeInstanceId: input.controllerRuntimeInstanceId,
+      controllerProviderTurnId: input.controllerProviderTurnId,
+      providerSessionId: input.controllerCodexProviderThreadId,
+    },
+  };
 }

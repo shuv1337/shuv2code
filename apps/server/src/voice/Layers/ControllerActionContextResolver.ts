@@ -7,6 +7,7 @@ import { VoiceControllerActionRepository } from "../../persistence/Services/Voic
 import {
   ControllerActionContextError,
   ControllerActionContextResolver,
+  makeControllerActionContext,
 } from "../Services/ControllerActionContextResolver.ts";
 
 export const ControllerActionContextResolverLive = Layer.effect(
@@ -63,7 +64,7 @@ export const ControllerActionContextResolverLive = Layer.effect(
           });
         }
 
-        return {
+        return makeControllerActionContext({
           voiceActionId: VoiceActionId.make(action.value.voiceActionId),
           controllerThreadId: action.value.controllerThreadId,
           transportSessionId: action.value.transportSessionId,
@@ -74,7 +75,7 @@ export const ControllerActionContextResolverLive = Layer.effect(
           ),
           transportGeneration: action.value.transportGeneration,
           runtimeInstanceId: VoiceRuntimeInstanceId.make(action.value.transportRuntimeInstanceId),
-        };
+        });
       }),
     });
   }),
