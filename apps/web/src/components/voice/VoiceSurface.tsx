@@ -40,7 +40,12 @@ import { VoiceActionStatusStrip } from "./VoiceActionStatusStrip";
 import { VoiceTargetStrip } from "./VoiceTargetStrip";
 import { VoiceTranscript } from "./VoiceTranscript";
 import { VoicePresence } from "./VoicePresence";
-import { resolveVoiceCallPresentation, resolveVoicePresencePhase } from "./VoiceSurface.logic";
+import {
+  isVoiceCallContextAvailable,
+  resolveVoiceCallContext,
+  resolveVoiceCallPresentation,
+  resolveVoicePresencePhase,
+} from "./VoiceSurface.logic";
 import { voicePhaseStyle } from "./voicePresenceTheme";
 
 type ControllerLookup =
@@ -188,6 +193,7 @@ function VoiceCallSurface(props: {
       readonly takeover: NonNullable<VoiceCallPresence["activeTransportSessionId"]>;
       readonly revision: VoiceCallPresence["revision"];
     },
+    replaceCurrent = false,
   ) => {
     const setup = props.setup;
     if (setup === null || starting) return;
@@ -195,15 +201,16 @@ function VoiceCallSurface(props: {
     setStartError(null);
     let microphoneStream: MediaStream | undefined;
     try {
-      const callContext =
-        context.threadId === null && props.onMaterializeThreadForCall !== undefined
-          ? await props.onMaterializeThreadForCall()
-          : context;
+      const callContext = await resolveVoiceCallContext(context, props.onMaterializeThreadForCall);
       const threadId = callContext.threadId;
       if (threadId === null) {
         throw new Error("This thread could not be created for the Call.");
       }
-      if (voice.state.phase.type === "error" || voice.state.phase.type === "unsupported") {
+      if (
+        replaceCurrent ||
+        voice.state.phase.type === "error" ||
+        voice.state.phase.type === "unsupported"
+      ) {
         await voice.stop();
       }
       microphoneStream = await acquireVoiceMicrophoneStream();
@@ -257,17 +264,8 @@ function VoiceCallSurface(props: {
   };
 
   const moveCallToViewedThread = async () => {
-    if (props.viewedContext.threadId === null || starting) return;
-    setStarting(true);
-    setStartError(null);
-    try {
-      await voice.stop();
-      await startCall(props.viewedContext);
-    } catch (error) {
-      setStartError(errorMessage(error));
-    } finally {
-      setStarting(false);
-    }
+    if (starting) return;
+    await startCall(props.viewedContext, undefined, true);
   };
 
   const continueRemoteCall = async () => {
@@ -318,7 +316,7 @@ function VoiceCallSurface(props: {
             <Button size="xs" variant="ghost" onClick={returnToCallThread}>
               Return
             </Button>
-            {props.viewedContext.threadId !== null && props.setup !== null ? (
+            {props.callAvailable && props.setup !== null ? (
               <Button
                 size="xs"
                 variant="outline"
@@ -483,8 +481,7 @@ export function VoiceSurface({
     voice.state.phase.type !== "idle" &&
     voice.state.phase.type !== "error" &&
     voice.state.phase.type !== "unsupported";
-  const callAvailable =
-    currentContext.threadId !== null || onMaterializeThreadForCall !== undefined;
+  const callAvailable = isVoiceCallContextAvailable(currentContext, onMaterializeThreadForCall);
 
   const loadActiveCall = useCallback(async () => {
     setActiveCall({ type: "loading" });

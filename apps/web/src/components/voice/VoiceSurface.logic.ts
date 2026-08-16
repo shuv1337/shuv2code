@@ -11,6 +11,24 @@ export interface VoiceCallPresentation {
   readonly context: VoiceSurfaceContext;
 }
 
+export type MaterializeVoiceCallContext = () => Promise<VoiceSurfaceContext>;
+
+export function isVoiceCallContextAvailable(
+  context: VoiceSurfaceContext,
+  materialize: MaterializeVoiceCallContext | undefined,
+): boolean {
+  return context.threadId !== null || materialize !== undefined;
+}
+
+export async function resolveVoiceCallContext(
+  context: VoiceSurfaceContext,
+  materialize: MaterializeVoiceCallContext | undefined,
+): Promise<VoiceSurfaceContext> {
+  if (context.threadId !== null) return context;
+  if (materialize !== undefined) return materialize();
+  throw new Error("This thread could not be created for the Call.");
+}
+
 /**
  * Microphone mute controls only local input. Incoming agent audio and its
  * transcript remain live, so speaking must take precedence over muted

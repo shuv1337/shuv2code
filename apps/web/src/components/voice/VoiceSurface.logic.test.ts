@@ -11,7 +11,12 @@ import {
 } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveVoiceCallPresentation, resolveVoicePresencePhase } from "./VoiceSurface.logic";
+import {
+  isVoiceCallContextAvailable,
+  resolveVoiceCallContext,
+  resolveVoiceCallPresentation,
+  resolveVoicePresencePhase,
+} from "./VoiceSurface.logic";
 
 const environmentId = EnvironmentId.make("env-voice");
 const callThreadId = ThreadId.make("thread-call");
@@ -82,6 +87,31 @@ describe("resolveVoiceCallPresentation", () => {
         projectId: ProjectId.make("project-call"),
       },
     });
+  });
+});
+
+describe("draft Call context", () => {
+  const draftContext = {
+    threadId: null,
+    threadTitle: "New thread",
+    projectTitle: "Project",
+    projectId: ProjectId.make("project-draft"),
+  };
+
+  it("offers Call actions when the draft can be materialized", () => {
+    expect(isVoiceCallContextAvailable(draftContext, async () => draftContext)).toBe(true);
+    expect(isVoiceCallContextAvailable(draftContext, undefined)).toBe(false);
+  });
+
+  it("materializes a draft before moving a Call onto it", async () => {
+    const materialized = {
+      ...draftContext,
+      threadId: ThreadId.make("thread-materialized"),
+    };
+
+    await expect(resolveVoiceCallContext(draftContext, async () => materialized)).resolves.toEqual(
+      materialized,
+    );
   });
 });
 
