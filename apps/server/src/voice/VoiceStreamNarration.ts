@@ -21,6 +21,7 @@ export interface VoiceStreamNarrationChunk {
   readonly text: string;
   readonly source: "assistant" | "reasoning-summary";
   readonly turnId: ProviderRuntimeEvent["turnId"] | null;
+  readonly terminal: boolean;
 }
 
 export interface VoiceStreamNarrationUpdate {
@@ -96,6 +97,7 @@ function drainBuffer(
   force: boolean,
   source: VoiceStreamNarrationChunk["source"],
   turnId: ProviderRuntimeEvent["turnId"] | null,
+  terminal: boolean,
 ): { readonly buffer: StreamBuffer; readonly chunks: ReadonlyArray<VoiceStreamNarrationChunk> } {
   let buffer = initial;
   const chunks: Array<VoiceStreamNarrationChunk> = [];
@@ -117,6 +119,7 @@ function drainBuffer(
         text,
         source,
         turnId,
+        terminal,
       });
     }
     if (force) break;
@@ -148,7 +151,7 @@ export function reduceVoiceStreamNarration(
     const appended = appendDelta(state.assistant, event);
     const drained =
       mode === "streaming"
-        ? drainBuffer(appended, false, "assistant", turnId)
+        ? drainBuffer(appended, false, "assistant", turnId, false)
         : { buffer: appended, chunks: [] };
     return {
       state: {
@@ -176,7 +179,7 @@ export function reduceVoiceStreamNarration(
     };
   }
   if (event.type === "item.completed" && event.payload.itemType === "assistant_message") {
-    const drained = drainBuffer(state.assistant, true, "assistant", turnId);
+    const drained = drainBuffer(state.assistant, true, "assistant", turnId, true);
     return {
       state: {
         ...state,
@@ -188,11 +191,11 @@ export function reduceVoiceStreamNarration(
     };
   }
   if (event.type === "turn.completed" || event.type === "turn.aborted") {
-    const assistant = drainBuffer(state.assistant, true, "assistant", turnId);
+    const assistant = drainBuffer(state.assistant, true, "assistant", turnId, true);
     const fallback =
       state.assistantSpokenSinceBoundary || assistant.chunks.length > 0
         ? { buffer: emptyBuffer(), chunks: [] }
-        : drainBuffer(state.reasoningSummary, true, "reasoning-summary", turnId);
+        : drainBuffer(state.reasoningSummary, true, "reasoning-summary", turnId, true);
     return {
       state: initialVoiceStreamNarrationState(),
       chunks: [...assistant.chunks, ...fallback.chunks],

@@ -188,6 +188,82 @@ describe("VoiceSpeechArbiter", () => {
     }),
   );
 
+  it.effect("compacts unsaid narration from one durable turn into one current intent", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const lifecycle = yield* Ref.make<Array<string>>([]);
+      const arbiter = yield* makeVoiceSpeechArbiter(
+        (speech) => Ref.update(sent, (all) => [...all, speech.requestedText]),
+        (event) =>
+          Ref.update(lifecycle, (all) => [
+            ...all,
+            `${event.attempt.attemptId}:${event.kind}:${event.attempt.requestedText}`,
+          ]),
+      );
+      const activeSession = session();
+      const grouped = (id: string, text: string, terminal = false) => ({
+        ...attempt(activeSession, id, "commentary", text),
+        groupId: "thread:turn-1",
+        terminal,
+      });
+
+      yield* arbiter.enqueue(grouped("commentary-1", "I found the first boundary."));
+      yield* arbiter.enqueue(grouped("commentary-2", "I’m checking its state now."));
+      yield* arbiter.enqueue(
+        grouped("commentary-3", "The durable result is Luna on OpenCode.", true),
+      );
+      assert.deepStrictEqual(yield* Ref.get(sent), ["I found the first boundary."]);
+
+      yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-commentary-1"),
+        text: "I found the first boundary.",
+        occurredAt: "2026-08-15T00:00:01.000Z",
+        outputDone: true,
+      });
+      assert.deepStrictEqual(yield* Ref.get(sent), [
+        "I found the first boundary.",
+        "I’m checking its state now. The durable result is Luna on OpenCode.",
+      ]);
+      assert.include(
+        yield* Ref.get(lifecycle),
+        "commentary-2:speech.interrupted:I’m checking its state now.",
+      );
+    }),
+  );
+
+  it.effect("lets a terminal durable answer evict an unsaid rejoin catch-up", () =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make<Array<string>>([]);
+      const arbiter = yield* makeVoiceSpeechArbiter((speech) =>
+        Ref.update(sent, (all) => [...all, speech.requestedText]),
+      );
+      const activeSession = session();
+
+      yield* arbiter.enqueue(attempt(activeSession, "active", "authored", "Current thought."));
+      yield* arbiter.enqueue(
+        attempt(activeSession, "catch-up", "catch-up", "While you were away, old state."),
+      );
+      yield* arbiter.enqueue({
+        ...attempt(activeSession, "terminal", "commentary", "The current durable answer is ready."),
+        groupId: "thread:turn-2",
+        terminal: true,
+      });
+      yield* arbiter.observeTranscript({
+        session: activeSession,
+        itemId: VoiceTranscriptItemId.make("provider-current"),
+        text: "Current thought.",
+        occurredAt: "2026-08-15T00:00:01.000Z",
+        outputDone: true,
+      });
+
+      assert.deepStrictEqual(yield* Ref.get(sent), [
+        "Current thought.",
+        "The current durable answer is ready.",
+      ]);
+    }),
+  );
+
   it.effect("does not replay a queued rejoin catch-up after user barge-in", () =>
     Effect.gen(function* () {
       const sent = yield* Ref.make<Array<string>>([]);

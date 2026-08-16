@@ -962,6 +962,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
       readonly source: "authored" | "commentary" | "ambient";
       readonly turnId?: ProviderRuntimeEvent["turnId"] | null;
       readonly attemptId?: string;
+      readonly groupId?: string;
+      readonly terminal?: boolean;
     }) {
       const session = Array.from((yield* transport.getSessions()).values()).find(
         (candidate) =>
@@ -995,6 +997,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
           (Option.isSome(thread) ? (thread.value.latestTurn?.turnId ?? null) : null),
         requestedText: text,
         requestedAt: createdAt,
+        ...(input.groupId === undefined ? {} : { groupId: input.groupId }),
+        ...(input.terminal === undefined ? {} : { terminal: input.terminal }),
       });
       if (accepted && input.source !== "ambient") {
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
@@ -1119,6 +1123,8 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
                 source: "commentary",
                 turnId: chunk.turnId,
                 attemptId: `${session.transportSessionId}:${chunk.key}`,
+                groupId: `thread-call:${owner.threadId}:turn:${chunk.turnId ?? "pending"}`,
+                terminal: chunk.terminal,
               }),
             { discard: true },
           );

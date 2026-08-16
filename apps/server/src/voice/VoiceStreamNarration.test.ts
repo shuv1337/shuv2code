@@ -46,6 +46,7 @@ describe("VoiceStreamNarration", () => {
       second.chunks.map((chunk) => chunk.text),
       ["I found the transport boundary. Now I’m checking the provider-neutral event path."],
     );
+    assert.isFalse(second.chunks[0]?.terminal);
   });
 
   it("holds a reasoning summary until the turn ends without an assistant update", () => {
@@ -104,6 +105,7 @@ describe("VoiceStreamNarration", () => {
       complete.chunks.map((chunk) => chunk.text),
       ["Done with the provider split."],
     );
+    assert.isTrue(complete.chunks[0]?.terminal);
   });
 
   it("buffers assistant commentary until completion in final-only mode", () => {

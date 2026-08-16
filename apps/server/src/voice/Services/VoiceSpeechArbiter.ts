@@ -14,6 +14,10 @@ export interface VoiceSpeechAttempt {
   readonly turnId: TurnId | null;
   readonly requestedText: string;
   readonly requestedAt: string;
+  /** Pending speech with the same group is compacted into one current intent. */
+  readonly groupId?: string;
+  /** A terminal update may evict stale catch-up and progress speech. */
+  readonly terminal?: boolean;
 }
 
 export interface VoiceSpeechCompletion extends VoiceSpeechAttempt {
