@@ -18,8 +18,9 @@ import {
   PhoneOffIcon,
   Settings2Icon,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { usePrimarySettings } from "../../hooks/useSettings";
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
 import {
   acquireVoiceMicrophoneStream,
@@ -27,6 +28,7 @@ import {
 } from "../../voice/voiceMicrophoneAccess";
 import { Button } from "../ui/button";
 import { VoicePresence } from "./VoicePresence";
+import { deriveVoicePresenceIdentity } from "./voicePresenceIdentity";
 import {
   isVoiceCallContextAvailable,
   resolveVoiceCallContext,
@@ -94,6 +96,10 @@ function VoiceCallSurface(props: {
 }) {
   const voice = useVoiceSession();
   const navigate = useNavigate();
+  const presenceSettings = usePrimarySettings((settings) => ({
+    contextTint: settings.voicePresenceContextTint,
+    variation: settings.voicePresenceVariation,
+  }));
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const phase = resolveVoicePresencePhase(
@@ -101,6 +107,28 @@ function VoiceCallSurface(props: {
     voice.state.phase,
     voice.state.muted,
     voice.mediaActivity,
+  );
+  const identity = useMemo(
+    () =>
+      deriveVoicePresenceIdentity({
+        threadId: props.callContext.threadId,
+        providerKey: props.setup?.providerInstanceId ?? null,
+        projectKey:
+          props.callContext.projectId ??
+          props.setup?.hostProjectId ??
+          props.callContext.projectTitle,
+        contextTint: presenceSettings.contextTint,
+        variation: presenceSettings.variation,
+      }),
+    [
+      presenceSettings.contextTint,
+      presenceSettings.variation,
+      props.callContext.projectId,
+      props.callContext.projectTitle,
+      props.callContext.threadId,
+      props.setup?.hostProjectId,
+      props.setup?.providerInstanceId,
+    ],
   );
   const assistantText = latestTranscript(voice.state.transcript, "assistant");
   const userText = latestTranscript(voice.state.transcript, "user");
@@ -210,10 +238,11 @@ function VoiceCallSurface(props: {
   return (
     <div
       className="relative isolate flex min-h-0 flex-1 flex-col overflow-hidden"
-      style={voicePhaseStyle(phase)}
+      style={voicePhaseStyle(phase, identity)}
     >
       <VoicePresence
         phase={phase}
+        identity={identity}
         presented={props.presented}
         activityLevel={voice.activityLevel}
       />

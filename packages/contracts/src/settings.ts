@@ -104,6 +104,9 @@ export const DEFAULT_TERMINAL_FONT_SIZE: TerminalFontSize = 12;
 export const EnvironmentIdentificationMode = Schema.Literals(["artwork", "pill", "none"]);
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
+export const VoicePresenceVariation = Schema.Literals(["subtle", "balanced"]);
+export type VoicePresenceVariation = typeof VoicePresenceVariation.Type;
+export const DEFAULT_VOICE_PRESENCE_VARIATION: VoicePresenceVariation = "balanced";
 
 /**
  * A user-chosen font family (a single name or a comma-separated list). Empty
@@ -203,6 +206,10 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
+  ),
+  voicePresenceContextTint: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  voicePresenceVariation: VoicePresenceVariation.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_VOICE_PRESENCE_VARIATION)),
   ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
@@ -952,6 +959,8 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),
+  voicePresenceContextTint: Schema.optionalKey(Schema.Boolean),
+  voicePresenceVariation: Schema.optionalKey(VoicePresenceVariation),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

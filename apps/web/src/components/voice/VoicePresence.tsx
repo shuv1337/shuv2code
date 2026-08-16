@@ -1,5 +1,9 @@
 import { useEffect, useRef, type RefObject } from "react";
 
+import {
+  DEFAULT_VOICE_PRESENCE_IDENTITY,
+  type VoicePresenceIdentity,
+} from "./voicePresenceIdentity";
 import { VOICE_PHASE_RENDER_STATES, type VoicePresencePhase } from "./voicePresenceTheme";
 import {
   INITIAL_VOICE_PRESENCE_PERFORMANCE_STATE,
@@ -15,6 +19,7 @@ interface VoicePresenceProps {
   readonly phase: VoicePresencePhase;
   readonly presented?: boolean;
   readonly className?: string | undefined;
+  readonly identity?: VoicePresenceIdentity;
   /** Continuously sampled 0..1 audio energy. Kept outside React's render loop. */
   readonly activityLevel?: RefObject<number>;
 }
@@ -34,9 +39,20 @@ const FRAGMENT_SHADER = `
   uniform vec2 u_resolution;
   uniform float u_displayAspect;
   uniform float u_time;
-  uniform vec3 u_accent;
+  uniform vec3 u_primary;
+  uniform vec3 u_secondary;
   uniform float u_energy;
   uniform float u_voice;
+  uniform float u_phaseMix;
+  uniform float u_flowSpeed;
+  uniform float u_vorticity;
+  uniform float u_turbulence;
+  uniform float u_curl;
+  uniform vec2 u_position;
+  uniform float u_scale;
+  uniform float u_tilt;
+  uniform float u_spread;
+  uniform float u_detail;
 
   float hash(vec2 p) {
     p = fract(p * vec2(123.34, 345.45));
@@ -71,56 +87,60 @@ const FRAGMENT_SHADER = `
 
   void main() {
     vec2 uv = gl_FragCoord.xy / u_resolution.xy;
-    vec2 p = vec2((uv.x - 0.5) * u_displayAspect, uv.y - 0.5);
-    float time = u_time * 0.14;
-    float breath = u_voice * 0.026;
+    vec2 p = vec2((uv.x - 0.5) * u_displayAspect, uv.y - 0.5) - u_position;
+    float tiltSin = sin(u_tilt);
+    float tiltCos = cos(u_tilt);
+    p = mat2(tiltCos, -tiltSin, tiltSin, tiltCos) * p / u_scale;
+    vec2 fieldUv = vec2(p.x / u_displayAspect + 0.5, p.y + 0.5);
+    float time = u_time * 0.14 * u_flowSpeed;
+    float breath = u_voice * 0.032;
 
     // Low-frequency advection moves the material continuously without ever resetting its identity.
-    float driftA = fbm(p * 1.34 + vec2(time * 0.11, -time * 0.075));
-    float driftB = fbm(p * 1.91 + vec2(driftA * 1.42, -driftA * 1.16) - time * 0.065);
-    vec2 flow = vec2(driftA - 0.5, driftB - 0.5);
-    vec2 materialUv = p + flow * 0.24;
+    float driftA = fbm(p * (0.8 + u_turbulence * 0.54) + vec2(time * 0.11, -time * 0.075));
+    float driftB = fbm(p * (1.15 + u_turbulence * 0.76) + vec2(driftA * 1.42, -driftA * 1.16) - time * 0.065);
+    vec2 flow = vec2(driftA - 0.5, driftB - 0.5) * u_vorticity;
+    vec2 materialUv = p + flow * (0.12 + u_vorticity * 0.12);
     float mass = fbm(materialUv * 2.6 + vec2(-time * 0.043, time * 0.031));
-    float marble = fbm(materialUv * 5.7 + vec2(mass * 1.36, -driftB * 0.92));
-    float mineralGrain = fbm(materialUv * 11.8 + vec2(marble * 1.08, -mass * 0.72));
+    float marble = fbm(materialUv * (4.5 + u_detail * 1.2) + vec2(mass * 1.36, -driftB * 0.92));
+    float mineralGrain = fbm(materialUv * (7.6 + u_detail * 4.2) + vec2(marble * 1.08, -mass * 0.72));
 
     // Three soft currents cross the field on independent curved paths. Their entry and exit
     // points migrate slowly, preventing one persistent seam or bilateral silhouette.
     float entryA = 0.08 + sin(time * 0.42 + 0.4) * 0.29;
     float exitA = 0.88 + sin(time * 0.31 + 2.1) * 0.31;
-    float centerA = mix(entryA, exitA, uv.y);
-    centerA += sin(uv.y * 3.15 + time * 0.38) * 0.13;
-    centerA += sin(uv.y * 6.4 - time * 0.21) * 0.035 + flow.x * 0.13;
-    centerA += sin(time * 0.24 + 1.7) * sin(uv.y * 3.14159) * 0.19;
+    float centerA = mix(entryA, exitA, fieldUv.y);
+    centerA += sin(fieldUv.y * 3.15 + time * 0.38) * 0.13;
+    centerA += sin(fieldUv.y * 6.4 - time * 0.21) * 0.035 + flow.x * 0.13;
+    centerA += sin(time * 0.24 + 1.7) * sin(fieldUv.y * 3.14159) * 0.19;
 
     float entryB = 1.09 + sin(time * 0.27 + 1.8) * 0.22;
     float exitB = 0.28 + sin(time * 0.37 + 3.4) * 0.28;
-    float centerB = mix(entryB, exitB, uv.y);
-    centerB += sin(uv.y * 4.3 - time * 0.29 + 1.1) * 0.105;
+    float centerB = mix(entryB, exitB, fieldUv.y);
+    centerB += sin(fieldUv.y * 4.3 - time * 0.29 + 1.1) * 0.105;
     centerB += flow.y * 0.12;
-    centerB += cos(time * 0.2 + 0.5) * sin(uv.y * 3.14159) * 0.13;
+    centerB += cos(time * 0.2 + 0.5) * sin(fieldUv.y * 3.14159) * 0.13;
 
-    float centerC = -0.08 + uv.y * 0.38;
-    centerC += sin(uv.y * 2.7 + time * 0.24 + 4.2) * 0.16;
+    float centerC = -0.08 + fieldUv.y * 0.38;
+    centerC += sin(fieldUv.y * 2.7 + time * 0.24 + 4.2) * 0.16;
     centerC += (mass - 0.5) * 0.14;
 
-    float widthA = 0.19 + (mass - 0.5) * 0.085 + breath;
-    float widthB = 0.24 + (driftB - 0.5) * 0.075 + breath * 0.7;
-    float widthC = 0.31 + (driftA - 0.5) * 0.1;
-    float plumeA = exp(-pow(abs(uv.x - centerA) / widthA, 1.72));
-    float plumeB = exp(-pow(abs(uv.x - centerB) / widthB, 1.58));
-    float plumeC = exp(-pow(abs(uv.x - centerC) / widthC, 1.48));
-    float wispCenterA = centerA + sin(uv.y * 7.2 - time * 0.33 + 0.8) * 0.095;
-    float wispCenterB = centerB + sin(uv.y * 5.8 + time * 0.28 + 3.1) * 0.12;
-    float wispA = exp(-pow(abs(uv.x - wispCenterA) / 0.075, 1.48));
-    float wispB = exp(-pow(abs(uv.x - wispCenterB) / 0.105, 1.42));
+    float widthA = (0.19 + (mass - 0.5) * 0.085 + breath) * u_spread;
+    float widthB = (0.24 + (driftB - 0.5) * 0.075 + breath * 0.7) * u_spread;
+    float widthC = (0.31 + (driftA - 0.5) * 0.1) * u_spread;
+    float plumeA = exp(-pow(abs(fieldUv.x - centerA) / widthA, 1.72));
+    float plumeB = exp(-pow(abs(fieldUv.x - centerB) / widthB, 1.58));
+    float plumeC = exp(-pow(abs(fieldUv.x - centerC) / widthC, 1.48));
+    float wispCenterA = centerA + sin(fieldUv.y * 7.2 - time * 0.33 + 0.8) * 0.095;
+    float wispCenterB = centerB + sin(fieldUv.y * 5.8 + time * 0.28 + 3.1) * 0.12;
+    float wispA = exp(-pow(abs(fieldUv.x - wispCenterA) / 0.075, 1.48));
+    float wispB = exp(-pow(abs(fieldUv.x - wispCenterB) / 0.105, 1.42));
 
-    float arcRadius = 0.39 + sin(time * 0.19 + 0.7) * 0.08;
+    float arcRadius = (0.39 + sin(time * 0.19 + 0.7) * 0.08) * u_curl;
     vec2 arcCenter = vec2(
       0.16 + sin(time * 0.23 + 2.6) * 0.18,
       0.43 + cos(time * 0.17) * 0.11
     );
-    vec2 arcPoint = vec2(uv.x, uv.y * 0.82);
+    vec2 arcPoint = vec2(fieldUv.x, fieldUv.y * 0.82);
     float arcDistance = abs(length(arcPoint - arcCenter) - arcRadius);
     float plumeArc = exp(-pow(arcDistance / (0.13 + breath * 0.55), 1.62));
 
@@ -146,16 +166,19 @@ const FRAGMENT_SHADER = `
     float grazing = 0.18 + pow(max(dot(normal, grazingDirection), 0.0), 1.65) * 0.82;
     float mineralVein = pow(1.0 - abs(mineralGrain * 2.0 - 1.0), 5.2);
 
-    vec3 background = vec3(0.021, 0.025, 0.031);
+    float pairVariation = (marble - 0.5) * 0.12 + (fieldUv.y - 0.5) * 0.04;
+    float pairMix = clamp(u_phaseMix + pairVariation, 0.0, 1.0);
+    vec3 pairedAccent = mix(u_primary, u_secondary, pairMix);
+    vec3 background = mix(vec3(0.021, 0.025, 0.031), pairedAccent, 0.016);
     vec3 graphite = vec3(0.145, 0.156, 0.17);
-    vec3 mineral = mix(graphite, u_accent, 0.17);
-    vec3 pearl = mix(vec3(0.78, 0.8, 0.79), u_accent, 0.2);
+    vec3 mineral = mix(graphite, pairedAccent, 0.22);
+    vec3 pearl = mix(vec3(0.78, 0.8, 0.79), mix(u_secondary, u_primary, heart), 0.24);
     vec3 color = background;
 
     color += mineral * (0.07 + mass * 0.19) * grazing;
     color += mineral * atmosphere * (0.11 + marble * 0.14 + u_energy * 0.04);
-    color += u_accent * atmosphere * (0.065 + u_energy * 0.08 + u_voice * 0.055);
-    color += mix(u_accent, pearl, 0.42) * body *
+    color += pairedAccent * atmosphere * (0.065 + u_energy * 0.08 + u_voice * 0.055);
+    color += mix(pairedAccent, pearl, 0.42) * body *
       (0.1 + cloudTexture * 0.12 + u_energy * 0.09 + u_voice * 0.12);
     color += pearl * heart * (0.075 + cloudTexture * 0.1 + u_voice * 0.14);
     color += pearl * silverLining * (0.018 + u_energy * 0.022);
@@ -219,15 +242,18 @@ function createProgram(gl: WebGLRenderingContext) {
 export function VoicePresence({
   phase,
   presented = true,
+  identity = DEFAULT_VOICE_PRESENCE_IDENTITY,
   activityLevel,
   className,
 }: VoicePresenceProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const targetRef = useRef(VOICE_PHASE_RENDER_STATES[phase]);
+  const identityRef = useRef(identity);
   const phaseRef = useRef(phase);
   const presentedRef = useRef(presented);
   const invalidateRef = useRef<(() => void) | null>(null);
   targetRef.current = VOICE_PHASE_RENDER_STATES[phase];
+  identityRef.current = identity;
   phaseRef.current = phase;
   presentedRef.current = presented;
 
@@ -254,21 +280,36 @@ export function VoicePresence({
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
 
-    const positionLocation = gl.getAttribLocation(program, "a_position");
-    gl.enableVertexAttribArray(positionLocation);
-    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+    const vertexPositionLocation = gl.getAttribLocation(program, "a_position");
+    gl.enableVertexAttribArray(vertexPositionLocation);
+    gl.vertexAttribPointer(vertexPositionLocation, 2, gl.FLOAT, false, 0, 0);
 
     const resolutionLocation = gl.getUniformLocation(program, "u_resolution");
     const displayAspectLocation = gl.getUniformLocation(program, "u_displayAspect");
     const timeLocation = gl.getUniformLocation(program, "u_time");
-    const accentLocation = gl.getUniformLocation(program, "u_accent");
+    const primaryLocation = gl.getUniformLocation(program, "u_primary");
+    const secondaryLocation = gl.getUniformLocation(program, "u_secondary");
     const energyLocation = gl.getUniformLocation(program, "u_energy");
     const voiceLocation = gl.getUniformLocation(program, "u_voice");
+    const phaseMixLocation = gl.getUniformLocation(program, "u_phaseMix");
+    const flowSpeedLocation = gl.getUniformLocation(program, "u_flowSpeed");
+    const vorticityLocation = gl.getUniformLocation(program, "u_vorticity");
+    const turbulenceLocation = gl.getUniformLocation(program, "u_turbulence");
+    const curlLocation = gl.getUniformLocation(program, "u_curl");
+    const positionLocation = gl.getUniformLocation(program, "u_position");
+    const scaleLocation = gl.getUniformLocation(program, "u_scale");
+    const tiltLocation = gl.getUniformLocation(program, "u_tilt");
+    const spreadLocation = gl.getUniformLocation(program, "u_spread");
+    const detailLocation = gl.getUniformLocation(program, "u_detail");
     const initial = targetRef.current;
+    const initialIdentity = identityRef.current;
     const current = {
-      accent: [...initial.accent] as [number, number, number],
+      primary: [...initialIdentity.palette.primary] as [number, number, number],
+      secondary: [...initialIdentity.palette.secondary] as [number, number, number],
       energy: initial.energy,
       voice: 0,
+      phaseMix: initial.pairMix,
+      ...initialIdentity.morphology,
     };
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let animationTimer = 0;
@@ -317,11 +358,27 @@ export function VoicePresence({
       if (policy !== "static") elapsedSeconds += deltaSeconds;
 
       const target = targetRef.current;
+      const identityTarget = identityRef.current;
       const blend = policy === "static" ? 1 : 1 - Math.exp(-deltaSeconds / PHASE_EASE_SECONDS);
       current.energy += (target.energy - current.energy) * blend;
-      current.accent[0] += (target.accent[0] - current.accent[0]) * blend;
-      current.accent[1] += (target.accent[1] - current.accent[1]) * blend;
-      current.accent[2] += (target.accent[2] - current.accent[2]) * blend;
+      current.phaseMix += (target.pairMix - current.phaseMix) * blend;
+      current.primary[0] += (identityTarget.palette.primary[0] - current.primary[0]) * blend;
+      current.primary[1] += (identityTarget.palette.primary[1] - current.primary[1]) * blend;
+      current.primary[2] += (identityTarget.palette.primary[2] - current.primary[2]) * blend;
+      current.secondary[0] += (identityTarget.palette.secondary[0] - current.secondary[0]) * blend;
+      current.secondary[1] += (identityTarget.palette.secondary[1] - current.secondary[1]) * blend;
+      current.secondary[2] += (identityTarget.palette.secondary[2] - current.secondary[2]) * blend;
+      const morphology = identityTarget.morphology;
+      current.flowSpeed += (morphology.flowSpeed - current.flowSpeed) * blend;
+      current.vorticity += (morphology.vorticity - current.vorticity) * blend;
+      current.turbulence += (morphology.turbulence - current.turbulence) * blend;
+      current.curl += (morphology.curl - current.curl) * blend;
+      current.positionX += (morphology.positionX - current.positionX) * blend;
+      current.positionY += (morphology.positionY - current.positionY) * blend;
+      current.scale += (morphology.scale - current.scale) * blend;
+      current.tilt += (morphology.tilt - current.tilt) * blend;
+      current.spread += (morphology.spread - current.spread) * blend;
+      current.detail += (morphology.detail - current.detail) * blend;
       const voiceTarget = Math.min(1, Math.max(0, activityLevel?.current ?? 0));
       const voiceEaseSeconds = voiceTarget > current.voice ? 0.09 : 0.52;
       const voiceBlend = policy === "static" ? 1 : 1 - Math.exp(-deltaSeconds / voiceEaseSeconds);
@@ -330,9 +387,20 @@ export function VoicePresence({
       gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
       gl.uniform1f(displayAspectLocation, displayAspect);
       gl.uniform1f(timeLocation, elapsedSeconds);
-      gl.uniform3fv(accentLocation, current.accent);
+      gl.uniform3fv(primaryLocation, current.primary);
+      gl.uniform3fv(secondaryLocation, current.secondary);
       gl.uniform1f(energyLocation, current.energy);
       gl.uniform1f(voiceLocation, current.voice);
+      gl.uniform1f(phaseMixLocation, current.phaseMix);
+      gl.uniform1f(flowSpeedLocation, current.flowSpeed);
+      gl.uniform1f(vorticityLocation, current.vorticity);
+      gl.uniform1f(turbulenceLocation, current.turbulence);
+      gl.uniform1f(curlLocation, current.curl);
+      gl.uniform2f(positionLocation, current.positionX, current.positionY);
+      gl.uniform1f(scaleLocation, current.scale);
+      gl.uniform1f(tiltLocation, current.tilt);
+      gl.uniform1f(spreadLocation, current.spread);
+      gl.uniform1f(detailLocation, current.detail);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       frameDirty = false;
     };
@@ -422,7 +490,7 @@ export function VoicePresence({
 
   useEffect(() => {
     invalidateRef.current?.();
-  }, [phase, presented]);
+  }, [identity, phase, presented]);
 
   return (
     <canvas
