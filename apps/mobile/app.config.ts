@@ -161,7 +161,7 @@ const config: ExpoConfig = {
   slug: "shuv2code",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
-  version: "0.1.1-alpha.1",
+  version: "0.1.1-alpha.2",
   runtimeVersion: {
     // Fingerprint (not appVersion) so an OTA only reaches binaries whose native
     // project — native deps, config plugins, AND patches/ — matches the update.

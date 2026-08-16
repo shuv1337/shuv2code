@@ -10,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopLocalServerAttach from "./DesktopLocalServerAttach.ts";
@@ -104,6 +105,11 @@ const listenApiOnlyServer = Effect.callback<{
       }),
     );
   });
+});
+
+const apiOnlyHttpClient = HttpClient.make((request) => {
+  const status = new URL(request.url).pathname === "/.well-known/shuv2code/environment" ? 200 : 503;
+  return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status })));
 });
 
 describe("discoverReusableLocalServer", () => {
@@ -222,7 +228,9 @@ describe("discoverReusableLocalServer", () => {
       }
     }).pipe(
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici)),
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, Layer.succeed(HttpClient.HttpClient, apiOnlyHttpClient)),
+      ),
     ),
   );
 });

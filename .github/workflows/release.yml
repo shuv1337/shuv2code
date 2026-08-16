@@ -190,6 +190,18 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Install Jujutsu
+        run: |
+          set -euo pipefail
+          archive="jj-v0.40.0-x86_64-unknown-linux-musl.tar.gz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --output "/tmp/${archive}" \
+            "https://github.com/jj-vcs/jj/releases/download/v0.40.0/${archive}"
+          echo "5c8979f46873e052f59bdd9535636dca6e6f9f70571b73f6d63c3b92acfaa037  /tmp/${archive}" | sha256sum --check
+          tar --extract --gzip --file "/tmp/${archive}" --directory /tmp ./jj
+          install /tmp/jj "${RUNNER_TEMP}/jj"
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+
       - name: Align resolved release metadata
         run: node scripts/update-release-package-versions.ts "${{ needs.resolve.outputs.version }}"
 
