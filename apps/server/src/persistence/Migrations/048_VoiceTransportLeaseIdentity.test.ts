@@ -102,7 +102,7 @@ layer("048_VoiceTransportLeaseIdentity", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 42 });
+      yield* runMigrations({ toMigrationInclusive: 48 });
 
       yield* sql`
         INSERT INTO voice_transport_sessions (
