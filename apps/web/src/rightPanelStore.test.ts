@@ -239,6 +239,10 @@ describe("rightPanelStore", () => {
     expect(
       selectResolvedRightPanelState(store.byThreadKey, store.byEnvironmentId, refOtherEnvironment),
     ).toEqual({ isOpen: false, activeSurfaceId: null, surfaces: [] });
+    expect(selectActiveRightPanelSurface(store.byThreadKey, refA, store.byEnvironmentId)).toEqual({
+      id: "voice",
+      kind: "voice",
+    });
   });
 
   it("drops the retired Voice mode while migrating environment state", () => {

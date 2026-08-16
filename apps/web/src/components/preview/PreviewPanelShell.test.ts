@@ -2,7 +2,11 @@ import { jsx } from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { getPreviewPanelMaxWidth, PreviewPanelShell } from "./PreviewPanelShell";
+import {
+  getPreviewPanelMaxWidth,
+  PreviewPanelShell,
+  resolvePreviewPanelLayoutContainer,
+} from "./PreviewPanelShell";
 
 describe("getPreviewPanelMaxWidth", () => {
   it("allows the panel to use 70% of an ultra-wide viewport without a pixel ceiling", () => {
@@ -45,5 +49,24 @@ describe("getPreviewPanelMaxWidth", () => {
 
   it("stays at the panel minimum even when the row is narrower than the reservation", () => {
     expect(getPreviewPanelMaxWidth(1_512, 300)).toBe(360);
+  });
+
+  it("measures through display-contents lifecycle wrappers", () => {
+    const layoutRow = { parentElement: null } as unknown as HTMLElement;
+    const lifecycleWrapper = { parentElement: layoutRow } as unknown as HTMLElement;
+    const panel = { parentElement: lifecycleWrapper } as unknown as HTMLElement;
+
+    expect(
+      resolvePreviewPanelLayoutContainer(panel, (element) =>
+        element === lifecycleWrapper ? "contents" : "flex",
+      ),
+    ).toBe(layoutRow);
+  });
+
+  it("keeps an ordinary flex parent as the measurement container", () => {
+    const layoutRow = { parentElement: null } as unknown as HTMLElement;
+    const panel = { parentElement: layoutRow } as unknown as HTMLElement;
+
+    expect(resolvePreviewPanelLayoutContainer(panel, () => "flex")).toBe(layoutRow);
   });
 });

@@ -900,7 +900,7 @@ export function selectActiveRightPanelSurface(
 ): RightPanelSurface | null {
   const state = selectResolvedRightPanelState(byThreadKey, byEnvironmentId, ref);
   if (!state.isOpen) return null;
-  return selectSelectedRightPanelSurface(byThreadKey, ref);
+  return state.surfaces.find((surface) => surface.id === state.activeSurfaceId) ?? null;
 }
 
 /** The selected surface even while the panel is hidden, so a layout control can restore it. */

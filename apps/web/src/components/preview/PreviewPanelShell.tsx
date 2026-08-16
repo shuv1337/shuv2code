@@ -45,6 +45,26 @@ export function getPreviewPanelMaxWidth(viewportWidth: number, containerWidth?: 
 }
 
 /**
+ * Find the layout box that actually contains the inline panel.
+ *
+ * Voice keeps the panel mounted beneath a `display: contents` wrapper so its
+ * live session survives presentation changes. That wrapper has no box and
+ * therefore reports a zero width; treating it as the flex row clamps the
+ * panel to its minimum and makes the resize handle appear broken.
+ */
+export function resolvePreviewPanelLayoutContainer(
+  host: Pick<HTMLElement, "parentElement"> | null,
+  readDisplay: (element: HTMLElement) => string = (element) =>
+    window.getComputedStyle(element).display,
+): HTMLElement | null {
+  let container = host?.parentElement ?? null;
+  while (container?.parentElement && readDisplay(container) === "contents") {
+    container = container.parentElement;
+  }
+  return container;
+}
+
+/**
  * Shell for the preview panel. In inline mode the panel is user-resizable
  * via a drag handle on the left edge; width persists per browser. In
  * sheet/sidebar modes the parent owns the size.
@@ -130,7 +150,7 @@ function useClampedMaxWidth(hostRef: RefObject<HTMLDivElement | null>, enabled: 
   }, []);
   useLayoutEffect(() => {
     if (!enabled) return;
-    const parent = hostRef.current?.parentElement;
+    const parent = resolvePreviewPanelLayoutContainer(hostRef.current);
     if (!parent) return;
     // Measure before first paint: the persisted width must be clamped
     // against the row on the initial render, not one observer tick later

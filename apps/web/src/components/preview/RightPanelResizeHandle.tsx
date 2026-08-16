@@ -20,7 +20,7 @@ export function RightPanelResizeHandle({ handlers, className }: Props) {
       role="separator"
       aria-orientation="vertical"
       className={cn(
-        "group absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize select-none",
+        "group absolute inset-y-0 -left-1 z-20 w-2 touch-none cursor-col-resize select-none [-webkit-app-region:no-drag]",
         className,
       )}
       {...handlers}
