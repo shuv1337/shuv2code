@@ -87,6 +87,7 @@ export interface VoiceSurfaceProps {
   readonly environmentId: EnvironmentId;
   readonly currentContext: VoiceSurfaceContext;
   readonly setup: VoiceSurfaceSetup | null;
+  readonly onMaterializeThreadForCall?: () => Promise<VoiceSurfaceContext>;
   readonly presented?: boolean;
 }
 
@@ -154,6 +155,7 @@ function VoiceCallSurface(props: {
   readonly callAvailable: boolean;
   readonly remoteCall: VoiceCallPresence | null;
   readonly presented: boolean;
+  readonly onMaterializeThreadForCall?: () => Promise<VoiceSurfaceContext>;
   readonly onControllerMode: () => void;
 }) {
   const voice = useVoiceSession();
@@ -187,13 +189,20 @@ function VoiceCallSurface(props: {
       readonly revision: VoiceCallPresence["revision"];
     },
   ) => {
-    const threadId = context.threadId;
     const setup = props.setup;
-    if (threadId === null || setup === null || starting) return;
+    if (setup === null || starting) return;
     setStarting(true);
     setStartError(null);
     let microphoneStream: MediaStream | undefined;
     try {
+      const callContext =
+        context.threadId === null && props.onMaterializeThreadForCall !== undefined
+          ? await props.onMaterializeThreadForCall()
+          : context;
+      const threadId = callContext.threadId;
+      if (threadId === null) {
+        throw new Error("This thread could not be created for the Call.");
+      }
       if (voice.state.phase.type === "error" || voice.state.phase.type === "unsupported") {
         await voice.stop();
       }
@@ -205,7 +214,7 @@ function VoiceCallSurface(props: {
         owner: {
           kind: "thread-call",
           threadId,
-          threadTitle: context.threadTitle,
+          threadTitle: callContext.threadTitle,
         },
         hostProjectId: setup.hostProjectId,
         providerInstanceId: setup.providerInstanceId,
@@ -448,6 +457,7 @@ export function VoiceSurface({
   environmentId,
   currentContext,
   setup,
+  onMaterializeThreadForCall,
   presented = true,
 }: VoiceSurfaceProps) {
   const voice = useVoiceSession();
@@ -473,7 +483,8 @@ export function VoiceSurface({
     voice.state.phase.type !== "idle" &&
     voice.state.phase.type !== "error" &&
     voice.state.phase.type !== "unsupported";
-  const callAvailable = currentContext.threadId !== null;
+  const callAvailable =
+    currentContext.threadId !== null || onMaterializeThreadForCall !== undefined;
 
   const loadActiveCall = useCallback(async () => {
     setActiveCall({ type: "loading" });
@@ -687,6 +698,7 @@ export function VoiceSurface({
           callAvailable={callAvailable}
           remoteCall={remoteCall}
           presented={presented}
+          onMaterializeThreadForCall={onMaterializeThreadForCall}
           onControllerMode={() => setMode(environmentId, "controller")}
         />
       ) : (

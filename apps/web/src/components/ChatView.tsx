@@ -6185,6 +6185,55 @@ function ChatViewContent(props: ChatViewProps) {
     void onRevertToTurnCountRef.current(targetTurnCount);
   }, []);
 
+  const materializeThreadForVoiceCall = useCallback(async () => {
+    if (!activeThread || !activeProject) {
+      throw new Error("Choose a project before starting a Call.");
+    }
+    if (!isLocalDraftThread) {
+      return {
+        threadId: activeThread.id,
+        threadTitle: activeThread.title,
+        projectTitle: activeProject.title,
+        projectId: activeProject.id,
+      };
+    }
+    const createResult = await createThread({
+      environmentId,
+      input: {
+        threadId: activeThread.id,
+        projectId: activeProject.id,
+        title: activeThread.title,
+        modelSelection: activeThread.modelSelection,
+        runtimeMode,
+        interactionMode,
+        branch: activeThreadBranch,
+        worktreePath: activeThread.worktreePath,
+        createdAt: activeThread.createdAt,
+      },
+    });
+    if (createResult._tag === "Failure") {
+      const error = squashAtomCommandFailure(createResult);
+      throw error instanceof Error
+        ? error
+        : new Error("The new thread could not be created for the Call.");
+    }
+    return {
+      threadId: activeThread.id,
+      threadTitle: activeThread.title,
+      projectTitle: activeProject.title,
+      projectId: activeProject.id,
+    };
+  }, [
+    activeProject,
+    activeThread,
+    activeThreadBranch,
+    createThread,
+    environmentId,
+    interactionMode,
+    isLocalDraftThread,
+    runtimeMode,
+  ]);
+
   // Empty state: no active thread
   if (!activeThread) {
     return <NoActiveThreadState />;
@@ -6232,6 +6281,7 @@ function ChatViewContent(props: ChatViewProps) {
         ...(activeProject === null ? {} : { projectId: activeProject.id }),
       },
       setup: voiceSurfaceSetup,
+      ...(isLocalDraftThread ? { onMaterializeThreadForCall: materializeThreadForVoiceCall } : {}),
     }),
     [
       activeProject?.title,
@@ -6239,6 +6289,8 @@ function ChatViewContent(props: ChatViewProps) {
       activeThread.environmentId,
       activeThread.id,
       activeThread.title,
+      isLocalDraftThread,
+      materializeThreadForVoiceCall,
       isServerThread,
       voiceSurfaceSetup,
     ],
