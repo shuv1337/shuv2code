@@ -55,9 +55,7 @@ export interface DurableThreadActionContext extends ThreadControlActionContextBa
   readonly providerRequestId: string;
 }
 
-export type ControllerActionContext =
-  | VoiceControllerActionContext
-  | DurableThreadActionContext;
+export type ControllerActionContext = VoiceControllerActionContext | DurableThreadActionContext;
 
 export type ThreadControlPhase =
   | "waiting_for_approval"
@@ -108,6 +106,7 @@ export interface ThreadControlGetInput {
   readonly grant: ThreadControlGrant;
   readonly threadId: ThreadId;
   readonly includeUntrustedExcerpt?: boolean | undefined;
+  readonly includeUntrustedContext?: boolean | undefined;
 }
 
 export interface ThreadControlGetResult {
@@ -121,6 +120,13 @@ export interface ThreadControlGetResult {
   readonly untrustedTargetContent?: {
     readonly marker: "untrusted-target-content";
     readonly text: string;
+  };
+  readonly untrustedTargetContext?: {
+    readonly marker: "untrusted-target-context";
+    readonly messages: ReadonlyArray<{
+      readonly role: "user" | "assistant";
+      readonly text: string;
+    }>;
   };
 }
 

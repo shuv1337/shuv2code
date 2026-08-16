@@ -76,6 +76,14 @@ export type ThreadListInput = typeof ThreadListInput.Type;
 
 export const ThreadGetInput = Schema.Struct({
   threadId: ThreadIdInput,
+  includeUntrustedContext: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "When true, include a bounded recent user/assistant conversation explicitly marked as untrusted target data.",
+    }),
+  ).annotate({
+    description: "Include bounded recent conversation as untrusted target data.",
+  }),
   includeUntrustedExcerpt: Schema.optional(
     Schema.Boolean.annotate({
       description:
