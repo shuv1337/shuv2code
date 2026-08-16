@@ -239,26 +239,17 @@ describe("rightPanelStore", () => {
     expect(
       selectResolvedRightPanelState(store.byThreadKey, store.byEnvironmentId, refOtherEnvironment),
     ).toEqual({ isOpen: false, activeSurfaceId: null, surfaces: [] });
-    expect(store.byEnvironmentId[refA.environmentId]?.voiceMode).toBe("controller");
   });
 
-  it("persists Voice mode per environment without changing panel visibility", () => {
-    useRightPanelStore.getState().openVoice(refA.environmentId);
-    useRightPanelStore.getState().setVoiceMode(refA.environmentId, "call");
-
-    const store = useRightPanelStore.getState();
-    expect(store.byEnvironmentId[refA.environmentId]).toEqual({
-      voicePresent: true,
-      voiceActive: true,
-      voiceMode: "call",
-    });
-    expect(store.byEnvironmentId[refOtherEnvironment.environmentId]).toBeUndefined();
-
-    useRightPanelStore.getState().close(refA);
-    expect(useRightPanelStore.getState().byEnvironmentId[refA.environmentId]).toEqual({
-      voicePresent: true,
-      voiceActive: false,
-      voiceMode: "call",
+  it("drops the retired Voice mode while migrating environment state", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byEnvironmentId: {
+          "env-1": { voicePresent: true, voiceActive: false, voiceMode: "controller" },
+        },
+      }).byEnvironmentId,
+    ).toEqual({
+      "env-1": { voicePresent: true, voiceActive: false },
     });
   });
 
@@ -288,7 +279,7 @@ describe("rightPanelStore", () => {
     );
   });
 
-  it("closes Voice without deleting the underlying environment surface state", () => {
+  it("closes Voice without deleting its environment-level surface state", () => {
     useRightPanelStore.getState().open(refA, "agents");
     useRightPanelStore.getState().openVoice(refA.environmentId);
     useRightPanelStore.getState().close(refA);
@@ -300,7 +291,6 @@ describe("rightPanelStore", () => {
     expect(closed.byEnvironmentId[refA.environmentId]).toEqual({
       voicePresent: true,
       voiceActive: false,
-      voiceMode: "controller",
     });
 
     useRightPanelStore.getState().activateSurface(refA, "voice");

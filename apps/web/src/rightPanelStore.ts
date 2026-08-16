@@ -4,8 +4,8 @@
  * This is intentionally a shallow workspace model: it owns an ordered set of
  * surface descriptors and the active surface, while each feature continues to
  * own its durable resource state. Voice is pinned at environment scope so the
- * same controller thread remains available while navigating between ordinary
- * threads. Browser surfaces point at preview tab ids,
+ * the active Call remains available while navigating between ordinary threads.
+ * Browser surfaces point at preview tab ids,
  * terminal surfaces point at terminal session ids, file surfaces point at
  * workspace paths, and diff/files remain singleton surfaces.
  */
@@ -29,8 +29,6 @@ export const RIGHT_PANEL_KINDS = [
   "agents",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
-export type VoiceSurfaceMode = "controller" | "call";
-
 export type RightPanelSurface =
   | { id: "voice"; kind: "voice" }
   | { id: `browser:${string}`; kind: "preview"; resourceId: string }
@@ -72,7 +70,7 @@ export type RightPanelSurface =
   | { id: "agents"; kind: "agents" };
 
 const RIGHT_PANEL_STORAGE_KEY = "shuv2code:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 8;
+const RIGHT_PANEL_STORAGE_VERSION = 9;
 
 export interface ThreadRightPanelState {
   isOpen: boolean;
@@ -83,14 +81,12 @@ export interface ThreadRightPanelState {
 export interface EnvironmentRightPanelState {
   voicePresent: boolean;
   voiceActive: boolean;
-  voiceMode: VoiceSurfaceMode;
 }
 
 interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
   byEnvironmentId: Record<string, EnvironmentRightPanelState>;
   openVoice: (environmentId: EnvironmentId) => void;
-  setVoiceMode: (environmentId: EnvironmentId, mode: VoiceSurfaceMode) => void;
   open: (
     ref: ScopedThreadRef,
     kind: Exclude<RightPanelKind, "voice" | "file" | "terminal" | "pull-request">,
@@ -137,7 +133,6 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
 const EMPTY_ENVIRONMENT_STATE: EnvironmentRightPanelState = {
   voicePresent: false,
   voiceActive: false,
-  voiceMode: "controller",
 };
 
 const VOICE_SURFACE: RightPanelSurface = { id: "voice", kind: "voice" };
@@ -416,7 +411,6 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
             const migrated: EnvironmentRightPanelState = {
               voicePresent: true,
               voiceActive: environmentState.voiceActive === true,
-              voiceMode: environmentState.voiceMode === "call" ? "call" : "controller",
             };
             return [[environmentId, migrated] as const];
           }),
@@ -437,12 +431,6 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             voicePresent: true,
             voiceActive: true,
           })),
-        })),
-      setVoiceMode: (environmentId, voiceMode) =>
-        set((state) => ({
-          byEnvironmentId: updateEnvironment(state.byEnvironmentId, environmentId, (current) =>
-            current.voiceMode === voiceMode ? current : { ...current, voiceMode },
-          ),
         })),
       open: (ref, kind) =>
         set((state) => ({
@@ -638,7 +626,6 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               byEnvironmentId: updateEnvironment(state.byEnvironmentId, ref.environmentId, () => ({
                 voicePresent: true,
                 voiceActive: true,
-                voiceMode: state.byEnvironmentId[ref.environmentId]?.voiceMode ?? "controller",
               })),
               byThreadKey: updateThread(
                 state.byThreadKey,

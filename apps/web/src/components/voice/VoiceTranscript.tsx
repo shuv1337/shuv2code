@@ -22,7 +22,7 @@ export function VoiceTranscript(props: {
             className={item.final ? "text-foreground" : "text-muted-foreground"}
             aria-hidden={!item.final}
           >
-            <span className="font-medium">{item.speaker === "user" ? "You" : "Controller"}:</span>{" "}
+            <span className="font-medium">{item.speaker === "user" ? "You" : "Agent"}:</span>{" "}
             {item.text}
           </p>
         ))
