@@ -34,6 +34,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
@@ -356,6 +357,66 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(createInput?.options.settingSources, ["user", "project", "local"]);
       assert.equal(createInput?.options.permissionMode, "bypassPermissions");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("passes ordinary and durable controller MCP servers to Claude", () => {
+    const harness = makeHarness();
+    const threadId = ThreadId.make("thread-claude-controller-mcp");
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const base = {
+        environmentId: "environment-test" as never,
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      };
+      McpProviderSession.setMcpProviderSession({
+        ...base,
+        credentialId: "standard-credential",
+        providerSessionId: "standard-session",
+        profile: { kind: "standard-provider" },
+        endpoint: "http://127.0.0.1/mcp",
+        authorizationHeader: "Bearer standard-token",
+      });
+      McpProviderSession.setMcpProviderSession({
+        ...base,
+        credentialId: "controller-credential",
+        providerSessionId: "controller-session",
+        profile: {
+          kind: "durable-thread-controller",
+          controllerThreadId: threadId,
+          providerIdentity: undefined,
+          authorizedRuntimeCeiling: "full-access",
+          controlEnabled: true,
+        },
+        endpoint: "http://127.0.0.1/mcp/controller",
+        authorizationHeader: "Bearer controller-token",
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      assert.deepEqual(harness.getLastCreateQueryInput()?.options.mcpServers, {
+        shuv2code: {
+          type: "http",
+          url: "http://127.0.0.1/mcp",
+          headers: { Authorization: "Bearer standard-token" },
+        },
+        shuv2code_controller: {
+          type: "http",
+          url: "http://127.0.0.1/mcp/controller",
+          headers: { Authorization: "Bearer controller-token" },
+        },
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
