@@ -112,14 +112,14 @@ function runAdoptedToolCompletion(input: {
         NodeAssert.equal(event.payload.title, input.expectedTitle);
       }
     }
-  }).pipe(
-    Effect.provide(OpenCodeRuntimeTestDoubleLayer),
-    Effect.provide(ServerConfig.layerTest(process.cwd(), process.cwd())),
-    Effect.provide(NodeServices.layer),
-  );
+  }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer));
 }
 
 const OpenCodeRuntimeTestDoubleLayer = Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble);
+const OpenCodeV2AdapterTestLayer = Layer.merge(
+  OpenCodeRuntimeTestDoubleLayer,
+  ServerConfig.layerTest(process.cwd(), process.cwd()).pipe(Layer.provideMerge(NodeServices.layer)),
+);
 
 describe("OpenCodeV2Adapter interruption", () => {
   it.effect("cancels pending forms and accepts a new turn after interruption", () =>
@@ -191,11 +191,7 @@ describe("OpenCodeV2Adapter interruption", () => {
         modelSelection,
       });
       NodeAssert.deepEqual(promptCalls, ["first", "second"]);
-    }).pipe(
-      Effect.provide(OpenCodeRuntimeTestDoubleLayer),
-      Effect.provide(ServerConfig.layerTest(process.cwd(), process.cwd())),
-      Effect.provide(NodeServices.layer),
-    ),
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
   );
 });
 
