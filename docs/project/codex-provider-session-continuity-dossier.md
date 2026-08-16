@@ -246,7 +246,7 @@ File:
 Relevant logic near lines 693–700 of the observed baseline revision:
 
 ```ts
-const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+const persistedBinding = Option.getOrUndefined(yield * directory.getBinding(threadId));
 const effectiveResumeCursor =
   input.recoveryPolicy === "forbid"
     ? undefined
@@ -259,12 +259,14 @@ const effectiveResumeCursor =
 The effective cursor is then passed to the adapter near lines 764–770:
 
 ```ts
-const session = yield* adapter.startSession({
-  ...input,
-  providerInstanceId: resolvedInstanceId,
-  ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-  ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
-});
+const session =
+  yield *
+  adapter.startSession({
+    ...input,
+    providerInstanceId: resolvedInstanceId,
+    ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+    ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
+  });
 ```
 
 Meaning in plain English:
@@ -289,7 +291,7 @@ client.request("thread/resume", {
 `makeCodexSessionRuntime()` supplies:
 
 ```ts
-resumeThreadId: readResumeCursorThreadId(options.resumeCursor)
+resumeThreadId: readResumeCursorThreadId(options.resumeCursor);
 ```
 
 The session is not returned as ready until the thread-open request resolves.
@@ -376,15 +378,10 @@ Representative old flow:
 ```ts
 const shouldBootstrap =
   previousMessages.length > 0 &&
-  (sessionInfo.continuityState === "new" ||
-    sessionInfo.continuityState === "fallback_new");
+  (sessionInfo.continuityState === "new" || sessionInfo.continuityState === "fallback_new");
 
 const input = shouldBootstrap
-  ? buildBootstrapInput(
-      previousMessages,
-      trimmed,
-      PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
-    ).text
+  ? buildBootstrapInput(previousMessages, trimmed, PROVIDER_SEND_TURN_MAX_INPUT_CHARS).text
   : trimmed;
 ```
 
@@ -496,9 +493,7 @@ Among broader provider work, this commit added the automatic fallback from an ex
 ```ts
 const effectiveResumeCursor =
   input.resumeCursor ??
-  (persistedBinding?.provider === input.provider
-    ? persistedBinding.resumeCursor
-    : undefined);
+  (persistedBinding?.provider === input.provider ? persistedBinding.resumeCursor : undefined);
 ```
 
 Interpretation:
