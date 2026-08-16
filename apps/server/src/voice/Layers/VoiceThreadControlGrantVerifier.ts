@@ -91,6 +91,12 @@ export const makeVoiceThreadControlGrantVerifier = Effect.fn(
     authorization: ThreadControlAuthorization,
     action: ControllerActionContext,
   ) {
+    if (action.adapterKind !== "voice-controller") {
+      return yield* new ThreadControlError({
+        code: "controller_mismatch",
+        message: "The mutation action is not owned by the Voice adapter.",
+      });
+    }
     if (action.controllerThreadId !== authorization.controllerThreadId) {
       return yield* new ThreadControlError({
         code: "controller_mismatch",

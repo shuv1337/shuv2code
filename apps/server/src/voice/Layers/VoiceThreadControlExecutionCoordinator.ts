@@ -12,6 +12,7 @@ import {
 import {
   ThreadControlError,
   type ControllerActionContext,
+  type VoiceControllerActionContext,
   type ThreadControlAuthorization,
 } from "../../orchestration/Services/ThreadControlService.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
@@ -19,8 +20,20 @@ import { VoiceControllerBindingRepository } from "../../persistence/Services/Voi
 import { VoiceControllerMutationRepository } from "../../persistence/Services/VoiceControllerMutations.ts";
 import { reconcileVoiceMutationOutcomes } from "../VoiceMutationOutcomeReconciler.ts";
 
-const operationId = (action: ControllerActionContext, operation: string): string =>
+const operationId = (action: VoiceControllerActionContext, operation: string): string =>
   `voice:${action.voiceActionId}:${operation}`;
+
+const requireVoiceAction = (
+  action: ControllerActionContext,
+): Effect.Effect<VoiceControllerActionContext, ThreadControlError> =>
+  action.adapterKind === "voice-controller"
+    ? Effect.succeed(action)
+    : Effect.fail(
+        new ThreadControlError({
+          code: "controller_mismatch",
+          message: "The mutation action is not owned by the Voice adapter.",
+        }),
+      );
 
 export const makeVoiceThreadControlExecutionCoordinator = Effect.fn(
   "VoiceThreadControlExecutionCoordinator.make",
@@ -73,18 +86,19 @@ export const makeVoiceThreadControlExecutionCoordinator = Effect.fn(
   const execute: ThreadControlExecutionCoordinator["Service"]["execute"] = Effect.fn(
     "VoiceThreadControlExecutionCoordinator.execute",
   )(function* (input) {
+    const action = yield* requireVoiceAction(input.action);
     const claimedAt = yield* DateTime.now;
     const claimedAtIso = DateTime.formatIso(claimedAt);
-    const mutationKey = `voice:${input.action.voiceActionId}:thread-control`;
+    const mutationKey = `voice:${action.voiceActionId}:thread-control`;
     const canonicalRequestHash = yield* requestHash(input.canonicalRequest);
     const claimed = yield* mutations
       .claimOrReplay({
-        voiceActionId: input.action.voiceActionId,
+        voiceActionId: action.voiceActionId,
         mutationKey,
         toolName: input.toolName,
         semanticSlot: input.semanticSlot,
         canonicalRequestHash,
-        operationId: operationId(input.action, input.operation),
+        operationId: operationId(action, input.operation),
         providerCreationId: input.providerCreationId,
         bindingGeneration: input.authorization.bindingGeneration,
         controlEpoch: input.authorization.controlEpoch,
@@ -121,7 +135,7 @@ export const makeVoiceThreadControlExecutionCoordinator = Effect.fn(
     const claimOwner = `${mutationKey}:dispatcher`;
     const dispatchClaimed = yield* mutations
       .claimDispatch({
-        voiceActionId: input.action.voiceActionId,
+        voiceActionId: action.voiceActionId,
         claimOwner,
         claimExpiresAt: DateTime.formatIso(DateTime.add(claimedAt, { minutes: 1 })),
         claimedAt: claimedAtIso,
@@ -147,7 +161,7 @@ export const makeVoiceThreadControlExecutionCoordinator = Effect.fn(
       Effect.tapError(() =>
         mutations
           .releaseClaim({
-            voiceActionId: input.action.voiceActionId,
+            voiceActionId: action.voiceActionId,
             claimOwner,
             mayHavePersistedIntents: false,
             updatedAt: DateTime.formatIso(claimedAt),
@@ -164,7 +178,7 @@ export const makeVoiceThreadControlExecutionCoordinator = Effect.fn(
       releaseClaim: (mayHavePersistedIntents) =>
         mutations
           .releaseClaim({
-            voiceActionId: input.action.voiceActionId,
+            voiceActionId: action.voiceActionId,
             claimOwner,
             mayHavePersistedIntents,
             updatedAt: DateTime.formatIso(claimedAt),
@@ -175,7 +189,7 @@ export const makeVoiceThreadControlExecutionCoordinator = Effect.fn(
           const dispatchedAt = DateTime.formatIso(yield* DateTime.now);
           return yield* mutations
             .markDispatched({
-              voiceActionId: input.action.voiceActionId,
+              voiceActionId: action.voiceActionId,
               claimOwner,
               dispatchedAt,
             })
@@ -194,7 +208,7 @@ export const makeVoiceThreadControlExecutionCoordinator = Effect.fn(
           Effect.catchCause((cause) =>
             Effect.logWarning("voice mutation post-dispatch outcome reconciliation failed", {
               voiceActionId: input.action.voiceActionId,
-              operationId: operationId(input.action, input.operation),
+              operationId: operationId(action, input.operation),
               cause,
             }),
           ),

@@ -27,15 +27,18 @@ export interface ThreadControlAuthorization {
   readonly canControl: boolean;
 }
 
-export interface ControllerActionContext {
-  readonly adapterKind: "voice-controller";
+interface ThreadControlActionContextBase {
   readonly actionId: string;
   readonly operationIdPrefix: string;
   readonly createdThreadId: ThreadId;
   readonly providerCreationId: string;
   readonly actorProvenance: Readonly<Record<string, unknown>>;
-  readonly voiceActionId: VoiceActionId;
   readonly controllerThreadId: ThreadId;
+}
+
+export interface VoiceControllerActionContext extends ThreadControlActionContextBase {
+  readonly adapterKind: "voice-controller";
+  readonly voiceActionId: VoiceActionId;
   readonly transportSessionId: string;
   readonly controllerCodexProviderThreadId: string;
   readonly controllerProviderTurnId: TurnId;
@@ -43,6 +46,18 @@ export interface ControllerActionContext {
   readonly transportGeneration: number;
   readonly runtimeInstanceId: VoiceRuntimeInstanceId;
 }
+
+export interface DurableThreadActionContext extends ThreadControlActionContextBase {
+  readonly adapterKind: "durable-thread";
+  readonly credentialId: string;
+  readonly providerSessionId: string;
+  readonly providerTurnId: string;
+  readonly providerRequestId: string;
+}
+
+export type ControllerActionContext =
+  | VoiceControllerActionContext
+  | DurableThreadActionContext;
 
 export type ThreadControlPhase =
   | "waiting_for_approval"
