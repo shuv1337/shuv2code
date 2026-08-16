@@ -24,7 +24,7 @@ import {
   AuthWebSocketTicketResult,
   ServerAuthSessionMethod,
 } from "./auth.ts";
-import { AuthSessionId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { AuthSessionId, IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   ClientOrchestrationCommand,
@@ -32,6 +32,7 @@ import {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
+  RuntimeMode,
 } from "./orchestration.ts";
 import {
   PullRequestDiffInput,
@@ -497,6 +498,21 @@ const EnvironmentOrchestrationThreadSnapshotQuery = {
   beforeCursor: Schema.optional(TrimmedNonEmptyString),
 };
 
+export const EnvironmentThreadControlGrantState = Schema.Struct({
+  threadId: ThreadId,
+  granted: Schema.Boolean,
+  authorizedRuntimeCeiling: Schema.NullOr(RuntimeMode),
+  controlEnabled: Schema.Boolean,
+  updatedAt: Schema.NullOr(IsoDateTime),
+});
+export type EnvironmentThreadControlGrantState = typeof EnvironmentThreadControlGrantState.Type;
+
+export const EnvironmentThreadControlGrantRequest = Schema.Struct({
+  authorizedRuntimeCeiling: RuntimeMode,
+  controlEnabled: Schema.Boolean,
+});
+export type EnvironmentThreadControlGrantRequest = typeof EnvironmentThreadControlGrantRequest.Type;
+
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
   .add(
     HttpApiEndpoint.get("snapshot", "/api/orchestration/snapshot", {
@@ -528,6 +544,43 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       success: DispatchResult,
       error: EnvironmentOrchestrationDispatchErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "threadControlGrant",
+      "/api/orchestration/threads/:threadId/control-grant",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        success: EnvironmentThreadControlGrantState,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.put(
+      "setThreadControlGrant",
+      "/api/orchestration/threads/:threadId/control-grant",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        payload: EnvironmentThreadControlGrantRequest,
+        success: EnvironmentThreadControlGrantState,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.delete(
+      "revokeThreadControlGrant",
+      "/api/orchestration/threads/:threadId/control-grant",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        success: EnvironmentThreadControlGrantState,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
 /** Large, compressible pull-request payloads travel over HTTP rather than the RPC socket. */

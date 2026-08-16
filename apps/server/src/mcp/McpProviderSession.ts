@@ -37,6 +37,20 @@ export function clearMcpProviderSession(threadId: ThreadId): void {
   sessionsByThread.delete(threadId);
 }
 
+export function clearMcpProviderSessionProfile(
+  threadId: ThreadId,
+  profileKind: McpCredentialProfile["kind"],
+): void {
+  const current = sessionsByThread.get(threadId);
+  if (!current) return;
+  const next = current.filter((entry) => entry.profile.kind !== profileKind);
+  if (next.length === 0) {
+    sessionsByThread.delete(threadId);
+    return;
+  }
+  sessionsByThread.set(threadId, next);
+}
+
 export function clearAllMcpProviderSessions(): void {
   sessionsByThread.clear();
 }

@@ -253,3 +253,29 @@ it.effect("replaces only the matching profile for a thread", () =>
     expect(yield* registry.resolve(token(controller), "voice-controller")).toBeDefined();
   }),
 );
+
+it.effect("revokes one thread profile without disturbing its ordinary credential", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const threadId = ThreadId.make("selective-profile-revocation");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const standard = yield* registry.issue({ threadId, providerInstanceId });
+    const controller = yield* registry.issue({
+      threadId,
+      providerInstanceId,
+      profile: {
+        kind: "durable-thread-controller",
+        controllerThreadId: threadId,
+        authorizedRuntimeCeiling: "full-access",
+        controlEnabled: true,
+      },
+    });
+    const token = (issued: McpSessionRegistry.McpIssuedCredential) =>
+      issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    yield* registry.revokeThreadProfile(threadId, "durable-thread-controller");
+
+    expect(yield* registry.resolve(token(controller))).toBeUndefined();
+    expect(yield* registry.resolve(token(standard), "standard-provider")).toBeDefined();
+  }),
+);

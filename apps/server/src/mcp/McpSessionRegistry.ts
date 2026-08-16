@@ -81,6 +81,10 @@ export interface McpSessionRegistryShape {
   readonly touch: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeCredential: (credentialId: string) => Effect.Effect<void>;
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
+  readonly revokeThreadProfile: (
+    threadId: ThreadId,
+    profileKind: McpInvocationContext.McpCredentialProfile["kind"],
+  ) => Effect.Effect<void>;
   readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeAll: Effect.Effect<void>;
 }
@@ -293,10 +297,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           if (!entry) return [false, { records }] as const;
           const [tokenHash, record] = entry;
           const profile = record.scope.profile;
-          if (
-            profile.kind !== "voice-controller" &&
-            profile.kind !== "durable-thread-controller"
-          ) {
+          if (profile.kind !== "voice-controller" && profile.kind !== "durable-thread-controller") {
             return [false, { records }] as const;
           }
           const currentProviderThreadId =
@@ -349,6 +350,14 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         yield* revokeWhere((record) => record.scope.providerSessionId === providerSessionId);
       },
     ),
+    revokeThreadProfile: Effect.fn("McpSessionRegistry.revokeThreadProfile")(
+      function* (threadId, profileKind) {
+        yield* revokeWhere(
+          (record) =>
+            record.scope.threadId === threadId && record.scope.profile.kind === profileKind,
+        );
+      },
+    ),
     revokeThread: Effect.fn("McpSessionRegistry.revokeThread")(function* (threadId) {
       yield* revokeWhere((record) => record.scope.threadId === threadId);
     }),
@@ -392,6 +401,14 @@ export const touchActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
 
 export const revokeActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeThread(threadId) : Effect.void;
+
+export const revokeActiveMcpThreadProfile = (
+  threadId: ThreadId,
+  profileKind: McpInvocationContext.McpCredentialProfile["kind"],
+): Effect.Effect<void> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.revokeThreadProfile(threadId, profileKind)
+    : Effect.void;
 
 export const bindActiveControllerMcpProviderIdentity = (
   credentialId: string,
