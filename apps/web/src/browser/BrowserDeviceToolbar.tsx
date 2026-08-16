@@ -10,7 +10,7 @@ import {
   PREVIEW_VIEWPORT_PRESETS,
   resolvePreviewViewport,
 } from "@shuv2code/shared/previewViewport";
-import { Link2, X } from "lucide-react";
+import { Link2, Unlink2, X } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
@@ -313,7 +313,11 @@ export function BrowserDeviceToolbar({
         onPointerDown={(event) => event.preventDefault()}
         onClick={toggleAspectRatio}
       >
-        <Link2 className={cn(aspectRatio !== null && "text-foreground")} />
+        {aspectRatio === null ? (
+          <Unlink2 className={cn(aspectRatio !== null && "text-foreground")} />
+        ) : (
+          <Link2 className={cn(aspectRatio !== null && "text-foreground")} />
+        )}
       </Button>
       <Button
         variant="ghost"

@@ -10,6 +10,7 @@
     "dev:web": "node scripts/dev-runner.ts dev:web",
     "dev:marketing": "vp run --filter @shuv2code/marketing dev",
     "dev:desktop": "node scripts/dev-runner.ts dev:desktop",
+    "migrate-dev-db": "node apps/server/scripts/migrate-dev-db.ts",
     "start": "vp run --filter shuv2code start",
     "start:desktop": "vp run --filter @shuv2code/desktop start",
     "start:marketing": "vp run --filter @shuv2code/marketing preview",

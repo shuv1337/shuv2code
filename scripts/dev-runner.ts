@@ -340,6 +340,14 @@ export function createDevRunnerEnv({
       delete output.SHUV2CODE_HOME;
     }
 
+    // A dev-runner server is never launcher-managed. When the shell that runs
+    // this script was itself spawned by the machine's managed shuv2code service (an
+    // agent working inside shuv2code), these leak through and the child server
+    // fails startup with "The service launcher started a different shuv2code version"
+    // (serviceLauncherClient.ts resolveStartup).
+    delete output.T3_SERVICE_LAUNCHER_CONTEXT;
+    delete output.T3_BOOT_SERVICE_UNIT;
+
     if (!isDesktopMode) {
       output.SHUV2CODE_PORT = String(serverPort);
       // HOST is Vite's own bind address, and the desktop branch below is the
@@ -779,6 +787,14 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
           // explicit --dev-url still wins.
           if (input.devUrl === undefined) {
             env.VITE_DEV_SERVER_URL = shared.url;
+          }
+          // A shared origin serves a remote browser, where unbundled dev's
+          // per-module requests each pay a tailnet round trip — a cold module
+          // graph takes minutes to first paint. Bundled dev collapses that to
+          // a few chunk requests. Only defaulted, so SHUV2CODE_BUNDLED_DEV=0
+          // still opts a --share run back out.
+          if (env.SHUV2CODE_BUNDLED_DEV === undefined) {
+            env.SHUV2CODE_BUNDLED_DEV = "1";
           }
           yield* Effect.logInfo(`[dev-runner] shared on tailnet: ${shared.url}`);
         }

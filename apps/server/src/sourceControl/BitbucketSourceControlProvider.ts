@@ -196,7 +196,7 @@ export const makeDiscovery = Effect.gen(function* () {
     kind: "bitbucket",
     label: "Bitbucket",
     installHint:
-      "Set SHUV2CODE_BITBUCKET_EMAIL and SHUV2CODE_BITBUCKET_API_TOKEN on the server (use a Bitbucket API token with pull request and repository scopes).",
+      "Set SHUV2CODE_BITBUCKET_EMAIL and SHUV2CODE_BITBUCKET_API_TOKEN on the server (use a Bitbucket API token with pull request, repository, and user read scopes).",
     probeAuth: bitbucket.probeAuth,
   } satisfies SourceControlApiDiscoverySpec;
 });

@@ -112,7 +112,9 @@ describe("OpenCodeV2TextGeneration", () => {
       Effect.ensuring(
         Effect.gen(function* () {
           events?.end();
-          yield* Effect.promise(() => new Promise<void>((resolve) => server.close(resolve)));
+          yield* Effect.promise(
+            () => new Promise<void>((resolve) => server.close(() => resolve())),
+          );
         }),
       ),
     );

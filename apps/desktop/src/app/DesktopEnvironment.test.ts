@@ -68,6 +68,7 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.browserArtifactsDir, "/tmp/shuv2code/userdata/browser-artifacts");
       assert.equal(environment.rootDir, "/repo");
       assert.equal(environment.appRoot, "/repo");
+      assert.equal(environment.serverRoot, "/repo");
       assert.equal(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assert.equal(environment.backendCwd, "/repo");
       assert.equal(environment.appUserModelId, "dev.shuv.shuv2code.dev");
@@ -98,6 +99,24 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.logDir, "/tmp/shuv2code/userdata/logs");
       assert.equal(environment.browserArtifactsDir, "/tmp/shuv2code/userdata/browser-artifacts");
       assert.equal(environment.serverSettingsPath, "/tmp/shuv2code/userdata/settings.json");
+    }),
+  );
+
+  it.effect("uses the packaged Windows server sidecar as the backend root", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment({
+        platform: "win32",
+        isPackaged: true,
+        appPath: "/install/resources/app.asar",
+        resourcesPath: "/install/resources",
+      });
+
+      assert.equal(environment.appRoot, "/install/resources/app.asar");
+      assert.equal(environment.serverRoot, "/install/resources/server.asar");
+      assert.equal(
+        environment.backendEntryPath,
+        "/install/resources/server.asar/apps/server/dist/bin.mjs",
+      );
     }),
   );
 

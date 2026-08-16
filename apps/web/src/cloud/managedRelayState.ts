@@ -1,10 +1,16 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   createManagedRelayQueryManager,
+  deregisterManagedRelayEnvironment,
   ManagedRelay,
   managedRelaySessionAtom,
   readManagedRelaySnapshotState,
 } from "@shuv2code/client-runtime/relay";
+import {
+  createAtomCommandScheduler,
+  createRuntimeCommand,
+} from "@shuv2code/client-runtime/state/runtime";
+import type { EnvironmentId } from "@shuv2code/contracts";
 import type {
   RelayClientDeviceRecord,
   RelayClientEnvironmentRecord,
@@ -28,6 +34,22 @@ const managedRelayAtomRuntime = Atom.runtime(
 );
 
 export const managedRelayQueryManager = createManagedRelayQueryManager(managedRelayAtomRuntime);
+
+const managedRelayMutationScheduler = createAtomCommandScheduler();
+
+export const deregisterManagedRelayEnvironmentCommand = createRuntimeCommand(
+  managedRelayAtomRuntime,
+  {
+    label: "web:managed-relay:deregister-environment",
+    scheduler: managedRelayMutationScheduler,
+    concurrency: {
+      mode: "serial",
+      key: (input: { readonly accountId: string; readonly environmentId: EnvironmentId }) =>
+        input.accountId,
+    },
+    execute: (input, registry) => deregisterManagedRelayEnvironment(registry, input),
+  },
+);
 
 const EMPTY_ENVIRONMENTS_ATOM = Atom.make(
   AsyncResult.success<ReadonlyArray<RelayClientEnvironmentRecord>>([]),

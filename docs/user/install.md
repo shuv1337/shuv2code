@@ -26,7 +26,7 @@ registry.
 Windows:
 
 ```bash
-winget install shuv2code.T3Code
+winget install shuv2code.Shuv2Code
 ```
 
 macOS:
@@ -37,8 +37,16 @@ brew install --cask shuv2code
 
 Arch Linux:
 
+Stable:
+
 ```bash
 yay -S shuv2code-bin
+```
+
+Nightly:
+
+```bash
+yay -S shuv2code-nightly-bin
 ```
 
 ## Providers

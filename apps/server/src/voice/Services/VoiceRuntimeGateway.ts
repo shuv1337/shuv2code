@@ -198,4 +198,4 @@ export interface VoiceRuntimeGatewayShape {
 export class VoiceRuntimeGateway extends Context.Service<
   VoiceRuntimeGateway,
   VoiceRuntimeGatewayShape
->()("@shuv2code/voice/Services/VoiceRuntimeGateway") {}
+>()("shuv2code/voice/Services/VoiceRuntimeGateway") {}

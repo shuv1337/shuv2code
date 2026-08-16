@@ -4,6 +4,7 @@
 
 - Keep local verification focused on the files and packages changed. Run the smallest relevant test set; do not run the full workspace test suite as a routine completion step.
   - Use `vp test run <test-files>` for focused built-in Vite+ tests. Use `vp run test` only when the affected package specifically requires its `test` script.
+  - If the global `vp` command is not on `PATH`, use the repository-local `./node_modules/.bin/vp` with the same arguments after dependencies are installed.
   - Backend changes must include and run focused tests for the changed behavior.
   - Run targeted formatting, lint, and type checks for the affected scope when available.
 - Do not run repo-wide `vp check`, `vp run typecheck`, `vp run test`, or equivalent full-suite commands locally unless the user explicitly requests them. PR/`main` CI is a lean personal-project gate (brand/schema/icons + `vp check` only). Deeper monorepo verification (typecheck, full tests, release-smoke, resource-monitor cargo checks) runs on the manual release workflow `verify` job, not on every PR.
@@ -20,7 +21,7 @@
 ## Dev Servers
 
 - In a linked git worktree, dev state defaults to that worktree's gitignored `.shuv2code`. This deliberately outranks an ambient `SHUV2CODE_HOME`, which could otherwise select the installed app's live `~/.shuv2code/userdata` database. An explicit `--home-dir` still wins.
-- Start the web stack with `vp run dev`. Add `--share` when someone needs to open it from another device on the tailnet.
+- Start the web stack with `vp run dev`. Add `--share` when someone needs to open it from another device on the tailnet. Hand over the full pairing URL (token included), never the bare origin; if the token got consumed, mint a fresh one with `node apps/server/src/bin.ts pair` — note it carries standard scopes, while the startup URL carries admin scopes (needed for Settings → Connections management).
 - Browser dev is single-origin: Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` to the backend. Do not set `VITE_HTTP_URL` or `VITE_WS_URL` for `dev`/`dev:web`.
 - Worktree paths supply stable preferred port offsets. Read the actual server and web ports from the `[dev-runner]` line because occupied ports can still shift them.
 - Before handing off a `--share` URL, open its origin in a controlled browser and confirm the app loads. A successful curl is insufficient because browsers reject some otherwise reachable ports.

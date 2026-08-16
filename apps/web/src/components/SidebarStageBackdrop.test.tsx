@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   resolveEnvironmentIdentificationPillLabel,
   resolveSidebarStageBackdropVariant,
+  resolveSidebarStageFocusRingOffsetClass,
   StageBackdropArt,
   StageBackdropButtonArt,
 } from "./SidebarStageBackdrop";
@@ -23,13 +24,22 @@ describe("SidebarStageBackdrop", () => {
     expect(resolveEnvironmentIdentificationPillLabel("Alpha")).toBeNull();
   });
 
+  it("matches the focus-ring offset to each artwork palette", () => {
+    expect(resolveSidebarStageFocusRingOffsetClass("nightly")).toBe(
+      "focus-visible:ring-offset-(--stage-night-bottom)",
+    );
+    expect(resolveSidebarStageFocusRingOffsetClass("dev")).toBe(
+      "focus-visible:ring-offset-(--stage-art-bottom)",
+    );
+  });
+
   it.each(["nightly", "dev"] as const)(
     "uses unique SVG definition ids when %s artwork is rendered more than once",
     (variant) => {
       const markup = renderToStaticMarkup(
         <>
           <StageBackdropArt variant={variant} />
-          <StageBackdropButtonArt variant={variant} />
+          <StageBackdropArt variant={variant} />
         </>,
       );
       const ids = Array.from(markup.matchAll(/\sid="([^"]+)"/g), (match) => match[1]);

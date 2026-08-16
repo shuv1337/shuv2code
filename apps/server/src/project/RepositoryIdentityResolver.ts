@@ -27,7 +27,7 @@ export class RepositoryIdentityResolver extends Context.Service<
   {
     readonly resolve: (cwd: string) => Effect.Effect<RepositoryIdentity | null>;
   }
->()("@shuv2code/project/RepositoryIdentityResolver") {}
+>()("shuv2code/project/RepositoryIdentityResolver") {}
 
 function parseRemoteFetchUrls(stdout: string): Map<string, string> {
   const remotes = new Map<string, string>();

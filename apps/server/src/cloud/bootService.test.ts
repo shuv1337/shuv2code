@@ -15,7 +15,11 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as ProcessRunner from "../processRunner.ts";
 import * as BootService from "./bootService.ts";
 import { pinnedRuntimePaths } from "./pinnedRuntime.ts";
-import { parseServiceState } from "./serviceProtocol.ts";
+import {
+  parseServiceState,
+  SERVICE_LAUNCHER_PROTOCOL,
+  serviceStateHasPendingUpdate,
+} from "./serviceProtocol.ts";
 
 it("keeps systemd pinned to the stable launcher rather than a versioned server", () => {
   const unit = BootService.renderBootServiceUnit({
@@ -29,8 +33,20 @@ it("keeps systemd pinned to the stable launcher rather than a versioned server",
   expect(unit).toContain(
     "ExecStart=/usr/bin/node /home/theo/.shuv2code/runtime/service-launcher.mjs",
   );
-  expect(unit).toContain("KillMode=control-group");
+  expect(unit).toContain("KillMode=mixed");
   expect(unit).not.toContain("versions/1.2.3");
+});
+
+it("survives the kernel OOM-killing a greedy agent child", () => {
+  const unit = BootService.renderBootServiceUnit({
+    nodePath: "/usr/bin/node",
+    launcherPath: "/home/theo/.shuv2code/runtime/service-launcher.mjs",
+    baseDir: "/home/theo/.shuv2code",
+    logPath: "/home/theo/.shuv2code/userdata/logs/boot-service.log",
+    unitPath: "/home/theo/.config/systemd/user/shuv2code.service",
+  });
+
+  expect(unit).toContain("OOMPolicy=continue");
 });
 
 const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
@@ -67,6 +83,8 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
           timedOut: false,
           stdoutTruncated: false,
           stderrTruncated: false,
+          stdoutInvalidUtf8: false,
+          stderrInvalidUtf8: false,
         };
       }),
   });
@@ -99,15 +117,24 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const plan = yield* service.install;
 
       expect(parseServiceState(yield* fs.readFileString(statePath))).toEqual({
-        protocol: 1,
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
         activeVersion: "1.2.3",
       });
       expect(yield* fs.readFileString(plan.launcherPath)).toBe("export {};\n");
       expect((yield* service.status).current).toBe(true);
-      yield* fs.writeFileString(
-        statePath,
-        '{"protocol":1,"activeVersion":"1.2.3","update":{"id":"u","fromVersion":"1.2.3","targetVersion":"1.2.4","status":"pending"}}',
-      );
+      // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed launcher-owned test document.
+      const pendingState = JSON.stringify({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: "1.2.3",
+        update: {
+          id: "u",
+          fromVersion: "1.2.3",
+          targetVersion: "1.2.4",
+          dbPath: "/tmp/state.sqlite",
+          status: "pending",
+        },
+      });
+      yield* fs.writeFileString(statePath, pendingState);
       expect((yield* service.status).current).toBe(false);
       expect(yield* service.uninstall).toBe(true);
       expect((yield* service.status).installed).toBe(false);
@@ -138,6 +165,33 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       expect(commands.filter((command) => command.startsWith("systemctl "))).toEqual([
         "systemctl --user stop shuv2code.service",
         "systemctl --user daemon-reload",
+        "systemctl --user restart shuv2code.service",
+      ]);
+    }),
+  );
+
+  it.effect("restarts without overwriting a pending remote update", () =>
+    Effect.gen(function* () {
+      const { service, fs, statePath, commands } = yield* makeHarness();
+      yield* service.install;
+      // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed launcher-owned test document.
+      const pendingState = JSON.stringify({
+        protocol: SERVICE_LAUNCHER_PROTOCOL - 1,
+        activeVersion: "1.2.3",
+        update: {
+          id: "remote-update",
+          fromVersion: "1.2.3",
+          targetVersion: "1.2.4",
+          status: "pending",
+        },
+      });
+      yield* fs.writeFileString(statePath, pendingState);
+      commands.length = 0;
+
+      expect((yield* service.install.pipe(Effect.flip))._tag).toBe("BootServiceUpdatePendingError");
+      expect(serviceStateHasPendingUpdate(yield* fs.readFileString(statePath))).toBe(true);
+      expect(commands.filter((command) => command.startsWith("systemctl "))).toEqual([
+        "systemctl --user stop shuv2code.service",
         "systemctl --user restart shuv2code.service",
       ]);
     }),

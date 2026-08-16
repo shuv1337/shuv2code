@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
 import { sanitizeProviderObservabilityEvent } from "./RealtimeObservability.ts";
 
 const secret = "VOICE_SECRET_SHOULD_NEVER_CROSS_OBSERVABILITY";
-const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 describe("RealtimeObservability", () => {
   it("drops every high-risk native and canonical realtime payload class", () => {

@@ -101,7 +101,7 @@ export class WorkspaceEntries extends Context.Service<
     ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceEntriesError>;
     readonly refresh: (cwd: string) => Effect.Effect<void>;
   }
->()("@shuv2code/workspace/WorkspaceEntries") {}
+>()("shuv2code/workspace/WorkspaceEntries") {}
 
 function expandHomePath(input: string, path: Path.Path): string {
   if (input === "~") {
@@ -245,7 +245,7 @@ export const make = Effect.gen(function* () {
       });
       return yield* Effect.gen(function* () {
         const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
-        return yield* searchIndex.search(normalizedQuery, input.limit, input.kind);
+        return yield* searchIndex.search(normalizedQuery, input.limit, input.kind, input.imageOnly);
       }).pipe(
         Effect.provide(
           workspaceSearchIndexes.get(

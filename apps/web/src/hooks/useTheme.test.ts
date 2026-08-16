@@ -80,6 +80,18 @@ describe("theme failure handling", () => {
     }
   });
 
+  it("reads the persisted Plum Chat theme preference", async () => {
+    vi.stubGlobal("window", {
+      localStorage: createStorage({
+        getItem: () => "plum-chat",
+      }),
+    });
+
+    const { readThemePreference } = await import("./useTheme");
+
+    expect(readThemePreference()).toBe("plum-chat");
+  });
+
   it("falls back during initial theme application and logs only safe attributes", async () => {
     const cause = new Error("private browsing storage failure");
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -114,9 +126,10 @@ describe("theme failure handling", () => {
 
   it("retries a failed storage read only after a relevant storage event", async () => {
     const cause = new Error("persistent storage failure");
-    const getItem = vi.fn(() => {
+    const themeGetItem = vi.fn((): string | null => {
       throw cause;
     });
+    const getItem = vi.fn((key: string) => (key === "shuv2code:theme" ? themeGetItem() : null));
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     let readSnapshot: (() => unknown) | undefined;
     let subscribeToTheme: ((listener: () => void) => () => void) | undefined;
@@ -151,14 +164,14 @@ describe("theme failure handling", () => {
     readSnapshot?.();
     readSnapshot?.();
 
-    expect(getItem).toHaveBeenCalledTimes(1);
+    expect(themeGetItem).toHaveBeenCalledTimes(1);
     expect(errorLog).toHaveBeenCalledTimes(1);
 
     const unsubscribe = subscribeToTheme?.(() => undefined);
     storageHandler?.({ key: "shuv2code:theme" } as StorageEvent);
     readSnapshot?.();
 
-    expect(getItem).toHaveBeenCalledTimes(2);
+    expect(themeGetItem).toHaveBeenCalledTimes(2);
     expect(errorLog).toHaveBeenCalledTimes(2);
     unsubscribe?.();
   });

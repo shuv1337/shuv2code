@@ -196,4 +196,4 @@ export interface ThreadControlServiceShape {
 export class ThreadControlService extends Context.Service<
   ThreadControlService,
   ThreadControlServiceShape
->()("@shuv2code/orchestration/Services/ThreadControlService") {}
+>()("shuv2code/orchestration/Services/ThreadControlService") {}

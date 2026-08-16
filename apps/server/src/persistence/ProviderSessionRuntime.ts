@@ -106,7 +106,7 @@ export class ProviderSessionRuntimeRepository extends Context.Service<
       readonly toProviderName: string;
     }) => Effect.Effect<void, ProviderSessionRuntimeRepositoryError>;
   }
->()("@shuv2code/persistence/ProviderSessionRuntime/ProviderSessionRuntimeRepository") {}
+>()("shuv2code/persistence/ProviderSessionRuntime/ProviderSessionRuntimeRepository") {}
 
 const ProviderSessionRuntimeDbRowSchema = ProviderSessionRuntime.mapFields(
   Struct.assign({

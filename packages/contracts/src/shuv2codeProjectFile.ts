@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
+import { ThreadEnvMode } from "./environment.ts";
 import { ProjectScriptIcon } from "./orchestration.ts";
 
 /** File name of the checked-in shuv2code project file, resolved at the workspace root. */
@@ -72,6 +73,12 @@ export const Shuv2CodeProjectFile = Schema.Struct({
       },
       SHUV2CODE_PROJECT_FILE_PATH_MAX_LENGTH,
     ),
+  ),
+  defaultThreadEnvMode: Schema.optionalKey(
+    ThreadEnvMode.annotate({
+      description:
+        'Where new threads start for this repository: "worktree" for a fresh git worktree, "local" for the current checkout. A per-project setting in shuv2code overrides this; when neither is set, the global default applies.',
+    }),
   ),
   scripts: Schema.optionalKey(
     Schema.Array(Shuv2CodeProjectFileScript)

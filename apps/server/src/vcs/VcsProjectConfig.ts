@@ -63,7 +63,7 @@ export class VcsProjectConfig extends Context.Service<
       input: VcsProjectConfigSetInput,
     ) => Effect.Effect<void, VcsProjectConfigError>;
   }
->()("@shuv2code/vcs/VcsProjectConfig") {}
+>()("shuv2code/vcs/VcsProjectConfig") {}
 
 function configuredKind(config: ProjectVcsConfigFile): VcsDriverKindType | "auto" {
   return config.vcs?.kind ?? config.vcsKind ?? "auto";

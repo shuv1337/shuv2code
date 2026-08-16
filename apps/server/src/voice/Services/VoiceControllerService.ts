@@ -57,4 +57,4 @@ export interface VoiceControllerServiceShape {
 export class VoiceControllerService extends Context.Service<
   VoiceControllerService,
   VoiceControllerServiceShape
->()("@shuv2code/voice/Services/VoiceControllerService") {}
+>()("shuv2code/voice/Services/VoiceControllerService") {}

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildShuv2CodeProjectFileJsonSchema,
+  parseShuv2CodeProjectFile,
   Shuv2CodeProjectFileFromJson,
 } from "./shuv2codeProjectFile.ts";
 
@@ -30,9 +31,15 @@ describe("buildShuv2CodeProjectFileJsonSchema", () => {
       required?: ReadonlyArray<string>;
     };
 
-    expect(Object.keys(schema.properties).sort()).toEqual(["$schema", "iconPath", "scripts"]);
+    expect(Object.keys(schema.properties).sort()).toEqual([
+      "$schema",
+      "defaultThreadEnvMode",
+      "iconPath",
+      "scripts",
+    ]);
     expect(schema.required).toBeUndefined();
     expect(schema.properties.iconPath?.description).toContain("Workspace-relative path");
+    expect(schema.properties.defaultThreadEnvMode?.description).toContain("new threads start");
 
     const script = schema.properties.scripts?.items;
     expect(script?.required).toEqual(["name", "command"]);
@@ -68,5 +75,18 @@ describe("Shuv2CodeProjectFileFromJson", () => {
 
   it("fails on malformed JSON", () => {
     expect(() => decodeJson("{ not json")).toThrow();
+  });
+});
+
+describe("parseShuv2CodeProjectFile", () => {
+  it("returns the decoded file for valid contents", () => {
+    expect(parseShuv2CodeProjectFile('{ "defaultThreadEnvMode": "worktree" }')).toEqual({
+      defaultThreadEnvMode: "worktree",
+    });
+  });
+
+  it("returns null for malformed or invalid contents", () => {
+    expect(parseShuv2CodeProjectFile("{ not json")).toBeNull();
+    expect(parseShuv2CodeProjectFile('{ "defaultThreadEnvMode": "spaceship" }')).toBeNull();
   });
 });

@@ -102,4 +102,4 @@ export interface VoiceControllerActionRepositoryShape {
 export class VoiceControllerActionRepository extends Context.Service<
   VoiceControllerActionRepository,
   VoiceControllerActionRepositoryShape
->()("@shuv2code/persistence/Services/VoiceControllerActions/VoiceControllerActionRepository") {}
+>()("shuv2code/persistence/Services/VoiceControllerActions/VoiceControllerActionRepository") {}

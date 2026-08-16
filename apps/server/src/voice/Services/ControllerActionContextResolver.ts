@@ -45,7 +45,7 @@ export interface ControllerActionContextResolverShape {
 export class ControllerActionContextResolver extends Context.Service<
   ControllerActionContextResolver,
   ControllerActionContextResolverShape
->()("@shuv2code/voice/Services/ControllerActionContextResolver") {}
+>()("shuv2code/voice/Services/ControllerActionContextResolver") {}
 
 export function makeControllerActionContext(input: {
   readonly voiceActionId: VoiceActionId;

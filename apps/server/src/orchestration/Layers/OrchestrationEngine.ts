@@ -36,6 +36,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
+  OrchestrationCommandIdConflictError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
@@ -52,6 +53,7 @@ import {
 const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
   OrchestrationCommandPreviouslyRejectedError,
 );
+const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdConflictError);
 const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvariantError);
 
 interface CommandEnvelope {
@@ -217,6 +219,21 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         });
         if (Option.isSome(existingReceipt)) {
           const receipt = existingReceipt.value;
+          // A receipt only proves this exact command was handled. Replaying it
+          // for a command aimed at another aggregate would report success for
+          // work that never happened.
+          if (
+            receipt.aggregateKind !== aggregateRef.aggregateKind ||
+            receipt.aggregateId !== aggregateRef.aggregateId
+          ) {
+            return yield* new OrchestrationCommandIdConflictError({
+              commandId: envelope.command.commandId,
+              receiptAggregateKind: receipt.aggregateKind,
+              receiptAggregateId: receipt.aggregateId,
+              commandAggregateKind: aggregateRef.aggregateKind,
+              commandAggregateId: aggregateRef.aggregateId,
+            });
+          }
           const conflicts =
             (receipt.commandType != null && receipt.commandType !== envelope.command.type) ||
             (receipt.canonicalCommandHash != null &&
@@ -376,7 +393,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
 
           const error = Cause.squash(exit.cause) as OrchestrationDispatchError;
-          if (!isOrchestrationCommandPreviouslyRejectedError(error)) {
+          if (
+            !isOrchestrationCommandPreviouslyRejectedError(error) &&
+            !isOrchestrationCommandIdConflictError(error)
+          ) {
             yield* foldUnseenPersistedEvents.pipe(
               Effect.catch(() =>
                 Effect.logWarning(
@@ -450,6 +470,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     get streamDomainEvents(): OrchestrationEngineShape["streamDomainEvents"] {
       return Stream.fromPubSub(eventPubSub);
     },
+    subscribeDomainEvents: PubSub.subscribe(eventPubSub).pipe(Effect.map(Stream.fromSubscription)),
     // The command read model's snapshotSequence tracks the latest committed
     // event sequence (updated on the worker fiber). A plain property read is a
     // consistent, committed value — reassignment of `commandReadModel` is

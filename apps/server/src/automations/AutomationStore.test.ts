@@ -21,6 +21,7 @@ const encodeLegacyAutomationList = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ automations: Schema.Array(ProjectAutomation) })),
 );
 const encodeAutomationList = Schema.encodeSync(Schema.fromJsonString(AutomationListResult));
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const storeLayer = it.layer(
   AutomationStoreLive.layer.pipe(
@@ -373,7 +374,7 @@ storeLayer("AutomationStore", (it) => {
 
       const adversarialModel = "m".repeat(200_000);
       const adversarialOption = "o".repeat(500_000);
-      const adversarialModelSelection = JSON.stringify({
+      const adversarialModelSelection = encodeUnknownJson({
         instanceId: "codex",
         model: adversarialModel,
         options: [{ id: "payload", value: adversarialOption }],

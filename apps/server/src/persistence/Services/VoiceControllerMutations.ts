@@ -142,4 +142,4 @@ export interface VoiceControllerMutationRepositoryShape {
 export class VoiceControllerMutationRepository extends Context.Service<
   VoiceControllerMutationRepository,
   VoiceControllerMutationRepositoryShape
->()("@shuv2code/persistence/Services/VoiceControllerMutations/VoiceControllerMutationRepository") {}
+>()("shuv2code/persistence/Services/VoiceControllerMutations/VoiceControllerMutationRepository") {}

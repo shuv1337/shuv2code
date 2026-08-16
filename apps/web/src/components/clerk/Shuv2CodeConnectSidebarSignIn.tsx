@@ -1,9 +1,10 @@
 import { UserButton, useAuth } from "@clerk/react";
-import { LogInIcon, SmartphoneIcon } from "lucide-react";
+import { LogInIcon, ServerIcon, SmartphoneIcon } from "lucide-react";
 
 import { hasCloudPublicConfig } from "../../cloud/publicConfig";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { MobileClientsUserProfilePage } from "./MobileClientsUserProfilePage";
+import { Shuv2CodeConnectUserProfilePage } from "./Shuv2CodeConnectUserProfilePage";
 import { useShuv2CodeConnectAuthPrompt } from "./useShuv2CodeConnectAuthPrompt";
 
 export function Shuv2CodeConnectSidebarSignIn() {
@@ -38,6 +39,13 @@ function ConfiguredShuv2CodeConnectSidebarAvatar() {
         url="mobile-clients"
       >
         <MobileClientsUserProfilePage />
+      </UserButton.UserProfilePage>
+      <UserButton.UserProfilePage
+        label="shuv2code connect"
+        labelIcon={<ServerIcon className="size-4" />}
+        url="shuv2code-connect"
+      >
+        <Shuv2CodeConnectUserProfilePage />
       </UserButton.UserProfilePage>
     </UserButton>
   );

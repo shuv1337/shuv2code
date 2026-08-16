@@ -30,10 +30,13 @@ npx shuv2code@latest service uninstall
 ```
 
 Updating restarts shuv2code briefly. Let active agent work and terminal commands finish first.
+If a remote update is already in progress, wait for it to finish before retrying a local update.
 
 The systemd unit runs a small stable launcher. Exact shuv2code versions are installed separately, so
-a failed remote candidate can return to the previous version without rewriting the unit. Releases
-that change the database must be installed with the local `service update` command above.
+a failed remote candidate can return to the previous version without rewriting the unit. The
+launcher snapshots the database before a remote candidate starts, so database updates roll back
+with the server version. An older launcher may require one local `service update` before this is
+available.
 
 ## Using It with shuv2code connect
 

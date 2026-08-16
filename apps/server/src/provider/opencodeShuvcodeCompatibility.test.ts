@@ -61,7 +61,10 @@ describe("shuvcode OpenCode V2 fork compatibility", () => {
       binaryPath: "shuvcode",
     });
     NodeAssert.equal(bareCommand.packageName, "shuvcode");
-    NodeAssert.equal(bareCommand.update?.command, "npm install -g shuvcode@latest");
+    NodeAssert.equal(
+      bareCommand.update?.command,
+      "npm install -g --allow-scripts=shuvcode shuvcode@latest",
+    );
 
     const bunGlobal = resolvePackageManagedProviderMaintenance(OPENCODE_MAINTENANCE_DEFINITION, {
       binaryPath: "/home/user/.bun/bin/shuvcode",
@@ -74,7 +77,10 @@ describe("shuvcode OpenCode V2 fork compatibility", () => {
       resolvedCommandPath: "/home/user/.npm-global/bin/shuvcode",
       realCommandPath: "/home/user/.npm-global/lib/node_modules/shuvcode/bin/launcher.mjs",
     });
-    NodeAssert.equal(npmGlobal.update?.command, "npm install -g shuvcode@latest");
+    NodeAssert.equal(
+      npmGlobal.update?.command,
+      "npm install -g --allow-scripts=shuvcode shuvcode@latest",
+    );
   });
 
   it("keeps version advisories on shuvcode for manual installs without an update command", () => {

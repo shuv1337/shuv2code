@@ -249,6 +249,7 @@ describe("authenticated voice RPC vertical integration", () => {
           readEvents: () => Stream.empty,
           dispatch: () => Effect.succeed({ sequence: 1 }),
           streamDomainEvents: Stream.empty,
+          subscribeDomainEvents: Effect.succeed(Stream.empty),
           latestSequence: Effect.succeed(1),
         });
         const settingsContext = yield* Layer.build(
