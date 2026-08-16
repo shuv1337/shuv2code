@@ -27,6 +27,16 @@ const makeRepo = Effect.gen(function* () {
   yield* fileSystem.makeDirectory(cwd);
   const driver = yield* VcsDriver.VcsDriver;
   yield* driver.initRepository({ cwd, kind: "jj" });
+  yield* driver.execute({
+    operation: "JjVcsDriver.runtime.configureUserName",
+    cwd,
+    args: ["config", "set", "--repo", "user.name", "JJ Test"],
+  });
+  yield* driver.execute({
+    operation: "JjVcsDriver.runtime.configureUserEmail",
+    cwd,
+    args: ["config", "set", "--repo", "user.email", "jj@test.invalid"],
+  });
   return { cwd, driver, root };
 });
 
