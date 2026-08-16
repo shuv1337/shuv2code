@@ -11,10 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import {
-  ControllerMcpRequestContext,
-  McpInvocationContext,
-} from "../../mcp/McpInvocationContext.ts";
+import { ThreadControlInvocationResolver } from "../../orchestration/Services/ThreadControlInvocationResolver.ts";
 import { __testing as threadHandlerTesting } from "../../mcp/toolkits/threads/handlers.ts";
 import { VoiceControllerActionRepositoryLive } from "../../persistence/Layers/VoiceControllerActions.ts";
 import { VoiceControllerBindingRepositoryLive } from "../../persistence/Layers/VoiceControllerBindings.ts";
@@ -24,6 +21,7 @@ import { VoiceControllerActionRepository } from "../../persistence/Services/Voic
 import { VoiceControllerBindingRepository } from "../../persistence/Services/VoiceControllerBindings.ts";
 import { VoiceTransportSessionRepository } from "../../persistence/Services/VoiceTransportSessions.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import { makeVoiceThreadControlInvocationResolver } from "../VoiceThreadControlInvocationResolver.ts";
 import { ControllerActionContextResolverLive } from "./ControllerActionContextResolver.ts";
 import { ControllerActionContextResolver } from "../Services/ControllerActionContextResolver.ts";
 
@@ -167,18 +165,30 @@ const invocation = {
 };
 
 const provideMcpRequest = <A, E, R>(effect: Effect.Effect<A, E, R>, turnId: string | undefined) =>
-  effect.pipe(
-    Effect.provideService(McpInvocationContext, invocation),
-    Effect.provideService(ControllerMcpRequestContext, {
-      turnMetadata:
-        turnId === undefined
-          ? undefined
-          : {
-              turnId,
-              sessionId: providerThreadId,
-              threadId: ThreadId.make(providerThreadId),
-            },
-    }),
+  Effect.gen(function* () {
+    const actionResolver = yield* ControllerActionContextResolver;
+    const bindingRepository = yield* VoiceControllerBindingRepository;
+    const settingsService = yield* ServerSettings.ServerSettingsService;
+    const invocationResolver = makeVoiceThreadControlInvocationResolver({
+      invocation,
+      request: {
+        turnMetadata:
+          turnId === undefined
+            ? undefined
+            : {
+                turnId,
+                sessionId: providerThreadId,
+                threadId: ThreadId.make(providerThreadId),
+              },
+      },
+      settingsService,
+      bindingRepository,
+      actionResolver,
+    });
+    return yield* effect.pipe(
+      Effect.provideService(ThreadControlInvocationResolver, invocationResolver),
+    );
+  }).pipe(
     Effect.provide(
       ServerSettings.layerTest({
         enableVoiceThreadRead: true,
@@ -270,7 +280,7 @@ layer("ControllerActionContextResolverLive", (it) => {
         undefined,
       ).pipe(Effect.flip);
       expect(proactiveError).toMatchObject({
-        _tag: "ControllerActionContextError",
+        _tag: "ThreadControlInvocationError",
         code: "action_not_found",
       });
     }),

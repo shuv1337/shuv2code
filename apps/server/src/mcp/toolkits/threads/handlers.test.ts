@@ -9,11 +9,14 @@ import {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
+import { ThreadControlInvocationResolver } from "../../../orchestration/Services/ThreadControlInvocationResolver.ts";
+import { ThreadControlService } from "../../../orchestration/Services/ThreadControlService.ts";
 import { VoiceControllerBindingRepository } from "../../../persistence/Services/VoiceControllerBindings.ts";
 import { VoiceControllerBinding } from "../../../persistence/VoiceControlModels.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
-import { McpInvocationContext } from "../../McpInvocationContext.ts";
-import { __testing } from "./handlers.ts";
+import { ControllerActionContextResolver } from "../../../voice/Services/ControllerActionContextResolver.ts";
+import { makeVoiceThreadControlInvocationResolver } from "../../../voice/VoiceThreadControlInvocationResolver.ts";
+import { threadListHandler } from "./handlers.ts";
 
 const environmentId = EnvironmentId.make("environment-controller-handler-test");
 const controllerThreadId = ThreadId.make("controller-thread-handler-test");
@@ -69,13 +72,17 @@ const makeBindings = (controlEpoch: number, bindingGeneration: number) =>
     deleteResetting: () => Effect.die("unused"),
   });
 
-const provideAuthorizationServices = <A, E, R>(
-  effect: Effect.Effect<A, E, R>,
-  bindings: VoiceControllerBindingRepository["Service"],
-) =>
-  effect.pipe(
-    Effect.provideService(McpInvocationContext, invocation),
-    Effect.provideService(VoiceControllerBindingRepository, bindings),
+const makeResolver = (bindings: VoiceControllerBindingRepository["Service"]) =>
+  Effect.gen(function* () {
+    const settingsService = yield* ServerSettings.ServerSettingsService;
+    return makeVoiceThreadControlInvocationResolver({
+      invocation,
+      request: { turnMetadata: undefined },
+      settingsService,
+      bindingRepository: bindings,
+      actionResolver: ControllerActionContextResolver.of({ resolve: () => Effect.die("unused") }),
+    });
+  }).pipe(
     Effect.provide(
       ServerSettings.layerTest({
         enableVoiceThreadRead: true,
@@ -86,10 +93,8 @@ const provideAuthorizationServices = <A, E, R>(
 
 it.effect("passes the live binding generation into thread-control authorization", () =>
   Effect.gen(function* () {
-    const authorization = yield* provideAuthorizationServices(
-      __testing.resolveAuthorization("read"),
-      makeBindings(6, 23),
-    );
+    const resolver = yield* makeResolver(makeBindings(6, 23));
+    const authorization = yield* resolver.resolveAuthorization("read");
 
     expect(authorization.bindingGeneration).toBe(23);
     expect(authorization.controlEpoch).toBe(6);
@@ -101,19 +106,58 @@ it.effect("passes the live binding generation into thread-control authorization"
 
 it.effect("allows reads but rejects mutations from a stale control epoch", () =>
   Effect.gen(function* () {
-    const bindings = makeBindings(7, 24);
-    const readAuthorization = yield* provideAuthorizationServices(
-      __testing.resolveAuthorization("read"),
-      bindings,
-    );
+    const resolver = yield* makeResolver(makeBindings(7, 24));
+    const readAuthorization = yield* resolver.resolveAuthorization("read");
     expect(readAuthorization.bindingGeneration).toBe(24);
     expect(readAuthorization.canControl).toBe(false);
 
-    const error = yield* provideAuthorizationServices(
-      Effect.flip(__testing.resolveAuthorization("control")),
-      bindings,
-    );
+    const error = yield* Effect.flip(resolver.resolveAuthorization("control"));
     expect(error.code).toBe("control_disabled");
     expect(error.message).toContain("stale control epoch");
+  }),
+);
+
+it.effect("runs the canonical thread toolkit against an app-level invocation resolver", () =>
+  Effect.gen(function* () {
+    const authorization = {
+      environmentId,
+      controllerThreadId,
+      providerInstanceId,
+      authorizedRuntimeCeiling: "approval-required" as const,
+      liveControllerRuntimeMode: "approval-required" as const,
+      bindingGeneration: 1,
+      controlEpoch: 1,
+      canRead: true,
+      canControl: false,
+    };
+    const resolver = ThreadControlInvocationResolver.of({
+      resolveAuthorization: () => Effect.succeed(authorization),
+      resolveMutation: () => Effect.die("unused"),
+    });
+    const threadControl = ThreadControlService.of({
+      list: (input) =>
+        Effect.succeed({
+          snapshotSequence: input.authorization.bindingGeneration,
+          projects: [],
+          threads: [],
+          nextCursor: null,
+        }),
+      get: () => Effect.die("unused"),
+      create: () => Effect.die("unused"),
+      send: () => Effect.die("unused"),
+      interrupt: () => Effect.die("unused"),
+    });
+
+    const result = yield* threadListHandler({}).pipe(
+      Effect.provideService(ThreadControlInvocationResolver, resolver),
+      Effect.provideService(ThreadControlService, threadControl),
+    );
+
+    expect(result).toEqual({
+      snapshotSequence: 1,
+      projects: [],
+      threads: [],
+      nextCursor: null,
+    });
   }),
 );

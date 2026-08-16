@@ -18,15 +18,16 @@ import { Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
+import { ThreadControlInvocationResolver } from "../orchestration/Services/ThreadControlInvocationResolver.ts";
 import { ThreadControlService } from "../orchestration/Services/ThreadControlService.ts";
 import { VoiceControllerBindingRepository } from "../persistence/Services/VoiceControllerBindings.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ControllerActionContextResolver } from "../voice/Services/ControllerActionContextResolver.ts";
+import { makeVoiceThreadControlInvocationResolver } from "../voice/VoiceThreadControlInvocationResolver.ts";
 import {
   type CodexControllerTurnMetadata,
+  type ControllerMcpRequestScope,
   type McpInvocationScope,
-  ControllerMcpRequestContext,
-  McpInvocationContext,
 } from "./McpInvocationContext.ts";
 import { McpSessionRegistry } from "./McpSessionRegistry.ts";
 import { isControllerThreadHandlerName, threadHandlers } from "./toolkits/threads/handlers.ts";
@@ -338,20 +339,17 @@ const makeControllerMcpRequestHandler = (services: {
       }
 
       const webRequest = yield* HttpServerRequest.toWeb(request);
-      const runTool = (
-        name: string,
-        input: unknown,
-        requestContext: {
-          readonly turnMetadata: CodexControllerTurnMetadata | undefined;
-        },
-      ) =>
-        runPromise(
+      const runTool = (name: string, input: unknown, requestContext: ControllerMcpRequestScope) => {
+        const invocationResolver = makeVoiceThreadControlInvocationResolver({
+          invocation,
+          request: requestContext,
+          settingsService,
+          bindingRepository,
+          actionResolver,
+        });
+        return runPromise(
           decodeAndRunThreadTool(name, input).pipe(
-            Effect.provideService(McpInvocationContext, invocation),
-            Effect.provideService(ControllerMcpRequestContext, requestContext),
-            Effect.provideService(ServerSettings.ServerSettingsService, settingsService),
-            Effect.provideService(VoiceControllerBindingRepository, bindingRepository),
-            Effect.provideService(ControllerActionContextResolver, actionResolver),
+            Effect.provideService(ThreadControlInvocationResolver, invocationResolver),
             Effect.provideService(ThreadControlService, threadControl),
             Effect.matchCause({
               onFailure: sanitizedFailure,
@@ -359,6 +357,7 @@ const makeControllerMcpRequestHandler = (services: {
             }),
           ),
         );
+      };
       const response = yield* Effect.tryPromise({
         try: async () => {
           const transport = new WebStandardStreamableHTTPServerTransport({

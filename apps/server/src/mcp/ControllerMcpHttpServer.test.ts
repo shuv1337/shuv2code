@@ -220,7 +220,7 @@ it.effect("serves only the five controller tools and enforces profile and turn m
           isError: true,
           structuredContent: {
             error: {
-              _tag: "ControllerActionContextError",
+              _tag: "ThreadControlInvocationError",
               code: "action_not_found",
             },
           },
