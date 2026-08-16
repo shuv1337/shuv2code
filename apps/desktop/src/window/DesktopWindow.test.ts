@@ -1155,6 +1155,39 @@ describe("DesktopWindow", () => {
     }),
   );
 
+  it.effect("recovers renderer crashes according to the startup-shell lifecycle", () =>
+    Effect.gen(function* () {
+      const main = makeFakeBrowserWindow();
+      const scenario = yield* makeMainWindowScenario([main.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+
+        yield* desktopWindow.showStartupShell;
+        const renderProcessGone = main.webContentsListeners.get("render-process-gone");
+        if (!renderProcessGone) {
+          return yield* Effect.die("renderer crash listener was not registered");
+        }
+
+        renderProcessGone({}, { reason: "crashed", exitCode: 1 });
+        yield* TestClock.adjust(500);
+        yield* Effect.yieldNow;
+
+        assert.equal(main.loadURL.mock.calls.length, 2);
+        assert.match(String(main.loadURL.mock.calls[1]), /^data:text\/html/);
+
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        assert.deepEqual(main.loadURL.mock.calls[2], ["shuv2code-dev://app/"]);
+
+        renderProcessGone({}, { reason: "crashed", exitCode: 1 });
+        yield* TestClock.adjust(500);
+        yield* Effect.yieldNow;
+
+        assert.deepEqual(main.loadURL.mock.calls[3], ["shuv2code-dev://app/"]);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
   it.effect("keeps retrying shell-to-application navigation after repeated rejection", () =>
     Effect.gen(function* () {
       let applicationLoadAttempts = 0;
