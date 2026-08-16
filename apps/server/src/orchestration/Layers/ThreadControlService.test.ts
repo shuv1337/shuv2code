@@ -6,6 +6,7 @@ import * as Exit from "effect/Exit";
 
 import {
   boundedUntrustedThreadContext,
+  isAvailableThreadControlSource,
   validateInterruptTargetPrecondition,
   validateSendTargetPrecondition,
 } from "./ThreadControlService.ts";
@@ -28,6 +29,37 @@ const failureCode = <A>(effect: Effect.Effect<A, { readonly code: string }>) =>
   );
 
 describe("ThreadControlService exact target preconditions", () => {
+  it("accepts ordinary durable threads as controller sources but never transport threads", () => {
+    const available = { deletedAt: null, archivedAt: null };
+    assert.isTrue(isAvailableThreadControlSource({ ...available, purpose: "standard" }));
+    assert.isTrue(isAvailableThreadControlSource({ ...available, purpose: "voice-controller" }));
+    assert.isFalse(isAvailableThreadControlSource({ ...available, purpose: "voice-transport" }));
+    assert.isFalse(
+      isAvailableThreadControlSource({
+        purpose: "standard",
+        deletedAt: "2026-08-16T00:00:00.000Z",
+        archivedAt: null,
+      }),
+    );
+  });
+
+  it("bounds recent user and assistant context in chronological order", () => {
+    const context = boundedUntrustedThreadContext([
+      { role: "system", text: "hidden" },
+      { role: "user", text: "first" },
+      { role: "assistant", text: "draft", streaming: true },
+      { role: "assistant", text: "second" },
+      { role: "user", text: "x".repeat(5_000) },
+    ]);
+
+    assert.deepStrictEqual(context.slice(0, 2), [
+      { role: "user", text: "first" },
+      { role: "assistant", text: "second" },
+    ]);
+    assert.strictEqual(context[2]?.role, "user");
+    assert.strictEqual(context[2]?.text.length, 4_000);
+  });
+
   it.effect("distinguishes idle starts from exact-turn steering", () =>
     Effect.gen(function* () {
       const liveTurn = TurnId.make("turn-live");

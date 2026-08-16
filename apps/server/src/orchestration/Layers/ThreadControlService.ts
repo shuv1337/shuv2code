@@ -2,6 +2,7 @@ import {
   CommandId,
   MessageId,
   ModelSelection,
+  type OrchestrationThread,
   ThreadId,
   type OrchestrationThreadShell,
   type RuntimeMode,
@@ -33,6 +34,14 @@ const RUNTIME_MODE_RANK: Readonly<Record<RuntimeMode, number>> = {
   auto: 2,
   "full-access": 3,
 };
+
+export function isAvailableThreadControlSource(
+  thread: Pick<OrchestrationThread, "purpose" | "deletedAt" | "archivedAt">,
+): boolean {
+  return (
+    thread.purpose !== "voice-transport" && thread.deletedAt === null && thread.archivedAt === null
+  );
+}
 
 function shellPhaseOf(thread: OrchestrationThreadShell): ThreadControlPhase {
   const session = thread.session;
@@ -180,7 +189,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
     if (threadId === authorization.controllerThreadId) {
       return yield* new ThreadControlError({
         code: "controller_target_forbidden",
-        message: "A voice controller cannot target itself.",
+        message: "A controller thread cannot target itself.",
       });
     }
     const snapshot = yield* projection.getThreadDetailSnapshot(threadId).pipe(
@@ -202,7 +211,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
     if (snapshot.value.thread.purpose !== "standard") {
       return yield* new ThreadControlError({
         code: "controller_target_forbidden",
-        message: "Voice controllers may target only standard threads.",
+        message: "Controller threads may target only standard threads.",
       });
     }
     if (snapshot.value.thread.deletedAt !== null || snapshot.value.thread.archivedAt !== null) {
@@ -228,10 +237,10 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
               }),
           ),
         );
-      if (Option.isNone(controller) || controller.value.purpose !== "voice-controller") {
+      if (Option.isNone(controller) || !isAvailableThreadControlSource(controller.value)) {
         return yield* new ThreadControlError({
           code: "controller_mismatch",
-          message: "The designated controller could not be verified.",
+          message: "The designated controller thread is unavailable.",
         });
       }
       return RUNTIME_MODE_RANK[authorization.authorizedRuntimeCeiling] <=
@@ -432,10 +441,10 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
             }),
         ),
       );
-    if (Option.isNone(controller) || controller.value.purpose !== "voice-controller") {
+    if (Option.isNone(controller) || !isAvailableThreadControlSource(controller.value)) {
       return yield* new ThreadControlError({
         code: "controller_mismatch",
-        message: "The designated controller could not be verified.",
+        message: "The designated controller thread is unavailable.",
       });
     }
     const baseModel = controller.value.modelSelection;
@@ -448,7 +457,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
     if (input.model !== undefined && input.model !== baseModel.model) {
       return yield* new ThreadControlError({
         code: "invalid_model",
-        message: "Voice-created threads must use the live controller model.",
+        message: "Controller-created threads must use the source thread model.",
       });
     }
     const modelSelection = ModelSelection.make({
