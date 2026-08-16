@@ -115,6 +115,7 @@ import * as AutomationStore from "./automations/AutomationStore.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
 import { ThreadControlServiceLive } from "./orchestration/Layers/ThreadControlService.ts";
 import { VoiceControlPersistenceLayerLive } from "./persistence/Layers/VoiceControl.ts";
+import { ThreadControlGrantRepositoryLive } from "./persistence/Layers/ThreadControlGrants.ts";
 import { ControllerActionContextResolverLive } from "./voice/Layers/ControllerActionContextResolver.ts";
 import { VoiceThreadControlExecutionCoordinatorLive } from "./voice/Layers/VoiceThreadControlExecutionCoordinator.ts";
 import { VoiceThreadControlGrantVerifierLive } from "./voice/Layers/VoiceThreadControlGrantVerifier.ts";
@@ -257,7 +258,9 @@ const PlatformServicesLive = Layer.unwrap(
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
-  Layer.provideMerge(ProviderCommandReactorLive),
+  Layer.provideMerge(
+    ProviderCommandReactorLive.pipe(Layer.provideMerge(ThreadControlGrantRepositoryLive)),
+  ),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
   Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
