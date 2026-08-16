@@ -30,6 +30,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -691,6 +692,8 @@ terminalPersistence.layer("ProviderServiceLive terminal persistence", (it) => {
       terminalPersistence.codex.updateSession(threadId, (current) => ({
         ...current,
         status: "ready",
+        // Adapter sessions clear a completed turn by omitting activeTurnId;
+        // ProviderService normalizes the persisted runtime field to null.
         activeTurnId: undefined,
         updatedAt: "2026-01-01T00:00:01.000Z",
       }));
@@ -706,22 +709,16 @@ terminalPersistence.layer("ProviderServiceLive terminal persistence", (it) => {
       });
       yield* advanceTestClock(50);
 
-      const settledRuntime = yield* runtimeRepository.getByThreadId({ threadId });
-      assert.equal(Option.isSome(settledRuntime), true);
-      if (Option.isSome(settledRuntime)) {
-        const payload = settledRuntime.value.runtimePayload;
-        assert.equal(
-          payload !== null && typeof payload === "object" && !Array.isArray(payload),
-          true,
-        );
-        if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
-          assert.equal("activeTurnId" in payload ? payload.activeTurnId : undefined, null);
-          assert.equal(
-            "lastRuntimeEvent" in payload ? payload.lastRuntimeEvent : undefined,
-            "provider.turn.completed",
-          );
-        }
+      const settledRuntime = Option.getOrThrowWith(
+        yield* runtimeRepository.getByThreadId({ threadId }),
+        () => new Error("expected a persisted runtime after terminal settlement"),
+      );
+      const payload = settledRuntime.runtimePayload;
+      if (!Predicate.isObject(payload)) {
+        return yield* Effect.die("expected the persisted runtime payload to be an object");
       }
+      assert.equal(payload.activeTurnId, null);
+      assert.equal(payload.lastRuntimeEvent, "provider.turn.completed");
 
       terminalPersistence.codex.readThread.mockClear();
       yield* provider.sendTurn({
