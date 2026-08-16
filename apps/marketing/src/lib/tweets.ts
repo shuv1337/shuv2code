@@ -5,4 +5,4 @@ export type Tweet = {
   link: string;
 };
 
-export const tweets = [] satisfies Tweet[];
+export const tweets: Tweet[] = [];
