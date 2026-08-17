@@ -203,6 +203,22 @@ describe("VoiceSessionController", () => {
     expect(
       parseRealtimeVoiceDataChannelEvent(
         JSON.stringify({
+          type: "turn.done",
+          turn_id: "frameless-assistant-turn",
+          role: "assistant",
+          transcript: "The current Frameless response is complete.",
+        }),
+      ),
+    ).toEqual({
+      type: "transcript.done",
+      itemId: "frameless-assistant-turn",
+      role: "assistant",
+      text: "The current Frameless response is complete.",
+      outputDone: true,
+    });
+    expect(
+      parseRealtimeVoiceDataChannelEvent(
+        JSON.stringify({
           type: "response.created",
           response: { id: "response-started" },
         }),

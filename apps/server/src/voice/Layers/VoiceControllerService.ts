@@ -691,6 +691,48 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     };
   });
 
+  const prepareThreadCall: VoiceControllerService["Service"]["prepareThreadCall"] = Effect.fn(
+    "VoiceControllerService.prepareThreadCall",
+  )(function* (input) {
+    const policy = yield* currentPolicy;
+    if (!policy.realtime || !policy.read) {
+      return yield* voiceError("feature_disabled", "Realtime voice is disabled.", false);
+    }
+    const threadSnapshot = yield* projection
+      .getThreadDetailSnapshot(input.threadId)
+      .pipe(
+        Effect.mapError(mapInternalError("internal_error", "The Call thread could not be read.")),
+      );
+    if (
+      Option.isNone(threadSnapshot) ||
+      threadSnapshot.value.thread.purpose !== "standard" ||
+      threadSnapshot.value.thread.archivedAt !== null ||
+      threadSnapshot.value.thread.deletedAt !== null
+    ) {
+      return yield* voiceError(
+        "controller_not_found",
+        "The thread is not available for a direct voice call.",
+        false,
+      );
+    }
+    const thread = threadSnapshot.value.thread;
+    if (runtime.prepareThreadCall === undefined) {
+      return { state: "ready", threadId: thread.id, historyMode: "not-applicable" };
+    }
+    const prepared = yield* runtime
+      .prepareThreadCall({
+        threadId: thread.id,
+        providerInstanceId: thread.modelSelection.instanceId,
+        action: input.migrationApproval === "approved" ? "migrate" : "inspect",
+      })
+      .pipe(
+        Effect.mapError(
+          mapInternalError("internal_error", "The Call thread could not be prepared."),
+        ),
+      );
+    return { ...prepared, threadId: thread.id };
+  });
+
   const startUnlocked: VoiceControllerService["Service"]["start"] = Effect.fn(
     "VoiceControllerService.start",
   )(function* (input) {
@@ -1362,6 +1404,12 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         });
         return;
       case "transport.transcript.done":
+        if (session.fence.owner?.kind === "thread-call" && event.role === "user") {
+          // The active Call client's WebRTC data channel is authoritative for
+          // user finals. The provider runtime mirrors the same utterance with
+          // a different item identity and must not trigger barge-in twice.
+          return;
+        }
         yield* actionRunner.ingestTranscriptDone(session, {
           type: "transcript.done",
           itemId: VoiceTranscriptItemId.make(event.itemId),
@@ -1504,6 +1552,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     ensureController,
     resetController,
     listVoices,
+    prepareThreadCall,
     start,
     ingestRealtimeEvent,
     appendAudio,

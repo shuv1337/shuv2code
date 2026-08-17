@@ -370,16 +370,17 @@ export function parseRealtimeVoiceDataChannelEvent(
       };
     }
     if (message.type === "turn.done") {
-      const turn = message.turn;
-      const role = isRecord(turn) ? turn.role : undefined;
+      const turn = isRecord(message.turn) ? message.turn : message;
+      const role = turn.role;
       const turnId =
-        isRecord(turn) && typeof turn.id === "string" && turn.id.length > 0
+        typeof turn.id === "string" && turn.id.length > 0
           ? turn.id
-          : role === "user" || role === "assistant"
-            ? `live-${role}`
-            : "";
+          : typeof message.turn_id === "string" && message.turn_id.length > 0
+            ? message.turn_id
+            : role === "user" || role === "assistant"
+              ? `live-${role}`
+              : "";
       if (
-        !isRecord(turn) ||
         turnId.length === 0 ||
         turnId.length > 256 ||
         (role !== "user" && role !== "assistant") ||

@@ -41,6 +41,18 @@ import {
 } from "./voiceControllerShared.ts";
 import { VoiceCallBridgeLive } from "./VoiceCallBridge.ts";
 
+const sameTranscriptText = (left: string, right: string): boolean =>
+  left
+    .trim()
+    .replaceAll(/[.,!?;:]+/g, "")
+    .replaceAll(/\s+/g, " ")
+    .toLowerCase() ===
+  right
+    .trim()
+    .replaceAll(/[.,!?;:]+/g, "")
+    .replaceAll(/\s+/g, " ")
+    .toLowerCase();
+
 export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionRunner.make")(
   function* () {
     const crypto = yield* Crypto.Crypto;
@@ -148,6 +160,19 @@ export const makeVoiceControllerActionRunner = Effect.fn("VoiceControllerActionR
             "The provider replayed a transcript item with different text.",
             false,
           );
+        }
+        if (event.role === "user") {
+          const lastFinalTranscript = session.history.findLast(
+            (entry) => entry.payload.type === "transcript.done",
+          );
+          if (
+            prior !== undefined ||
+            (lastFinalTranscript?.payload.type === "transcript.done" &&
+              lastFinalTranscript.payload.role === "user" &&
+              sameTranscriptText(lastFinalTranscript.payload.text, event.text))
+          ) {
+            return { accepted: true };
+          }
         }
         if (event.role === "user") {
           yield* speechArbiter.observeUserSpeech(session);
