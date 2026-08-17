@@ -14,6 +14,7 @@ import {
   type VoicePresencePerformanceState,
   type VoicePresenceRenderPolicy,
 } from "./voicePresenceRenderPolicy";
+import { voicePresenceIdentityMorphProgress } from "./voicePresenceTransition";
 
 interface VoicePresenceProps {
   readonly phase: VoicePresencePhase;
@@ -249,11 +250,15 @@ export function VoicePresence({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const targetRef = useRef(VOICE_PHASE_RENDER_STATES[phase]);
   const identityRef = useRef(identity);
+  const identityChangedAtRef = useRef(performance.now());
   const phaseRef = useRef(phase);
   const presentedRef = useRef(presented);
   const invalidateRef = useRef<(() => void) | null>(null);
   targetRef.current = VOICE_PHASE_RENDER_STATES[phase];
-  identityRef.current = identity;
+  if (identityRef.current !== identity) {
+    identityRef.current = identity;
+    identityChangedAtRef.current = performance.now();
+  }
   phaseRef.current = phase;
   presentedRef.current = presented;
 
@@ -311,6 +316,23 @@ export function VoicePresence({
       phaseMix: initial.pairMix,
       ...initialIdentity.morphology,
     };
+    let lastIdentityTarget = initialIdentity;
+    let identityTransitionStartedAt = 0;
+    let identityTransitionFrom = {
+      primary: [...current.primary] as [number, number, number],
+      secondary: [...current.secondary] as [number, number, number],
+      flowSpeed: current.flowSpeed,
+      vorticity: current.vorticity,
+      turbulence: current.turbulence,
+      curl: current.curl,
+      positionX: current.positionX,
+      positionY: current.positionY,
+      scale: current.scale,
+      tilt: current.tilt,
+      spread: current.spread,
+      detail: current.detail,
+    };
+    let identityTransitionActive = false;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let animationTimer = 0;
     let lastAnimationTick = 0;
@@ -362,23 +384,82 @@ export function VoicePresence({
       const blend = policy === "static" ? 1 : 1 - Math.exp(-deltaSeconds / PHASE_EASE_SECONDS);
       current.energy += (target.energy - current.energy) * blend;
       current.phaseMix += (target.pairMix - current.phaseMix) * blend;
-      current.primary[0] += (identityTarget.palette.primary[0] - current.primary[0]) * blend;
-      current.primary[1] += (identityTarget.palette.primary[1] - current.primary[1]) * blend;
-      current.primary[2] += (identityTarget.palette.primary[2] - current.primary[2]) * blend;
-      current.secondary[0] += (identityTarget.palette.secondary[0] - current.secondary[0]) * blend;
-      current.secondary[1] += (identityTarget.palette.secondary[1] - current.secondary[1]) * blend;
-      current.secondary[2] += (identityTarget.palette.secondary[2] - current.secondary[2]) * blend;
+      if (identityTarget !== lastIdentityTarget) {
+        lastIdentityTarget = identityTarget;
+        identityTransitionStartedAt = identityChangedAtRef.current;
+        identityTransitionFrom = {
+          primary: [...current.primary],
+          secondary: [...current.secondary],
+          flowSpeed: current.flowSpeed,
+          vorticity: current.vorticity,
+          turbulence: current.turbulence,
+          curl: current.curl,
+          positionX: current.positionX,
+          positionY: current.positionY,
+          scale: current.scale,
+          tilt: current.tilt,
+          spread: current.spread,
+          detail: current.detail,
+        };
+        identityTransitionActive = true;
+      }
+      const identityProgress =
+        policy === "static" || !identityTransitionActive
+          ? 1
+          : voicePresenceIdentityMorphProgress(now - identityTransitionStartedAt);
+      current.primary[0] =
+        identityTransitionFrom.primary[0] +
+        (identityTarget.palette.primary[0] - identityTransitionFrom.primary[0]) * identityProgress;
+      current.primary[1] =
+        identityTransitionFrom.primary[1] +
+        (identityTarget.palette.primary[1] - identityTransitionFrom.primary[1]) * identityProgress;
+      current.primary[2] =
+        identityTransitionFrom.primary[2] +
+        (identityTarget.palette.primary[2] - identityTransitionFrom.primary[2]) * identityProgress;
+      current.secondary[0] =
+        identityTransitionFrom.secondary[0] +
+        (identityTarget.palette.secondary[0] - identityTransitionFrom.secondary[0]) *
+          identityProgress;
+      current.secondary[1] =
+        identityTransitionFrom.secondary[1] +
+        (identityTarget.palette.secondary[1] - identityTransitionFrom.secondary[1]) *
+          identityProgress;
+      current.secondary[2] =
+        identityTransitionFrom.secondary[2] +
+        (identityTarget.palette.secondary[2] - identityTransitionFrom.secondary[2]) *
+          identityProgress;
       const morphology = identityTarget.morphology;
-      current.flowSpeed += (morphology.flowSpeed - current.flowSpeed) * blend;
-      current.vorticity += (morphology.vorticity - current.vorticity) * blend;
-      current.turbulence += (morphology.turbulence - current.turbulence) * blend;
-      current.curl += (morphology.curl - current.curl) * blend;
-      current.positionX += (morphology.positionX - current.positionX) * blend;
-      current.positionY += (morphology.positionY - current.positionY) * blend;
-      current.scale += (morphology.scale - current.scale) * blend;
-      current.tilt += (morphology.tilt - current.tilt) * blend;
-      current.spread += (morphology.spread - current.spread) * blend;
-      current.detail += (morphology.detail - current.detail) * blend;
+      current.flowSpeed =
+        identityTransitionFrom.flowSpeed +
+        (morphology.flowSpeed - identityTransitionFrom.flowSpeed) * identityProgress;
+      current.vorticity =
+        identityTransitionFrom.vorticity +
+        (morphology.vorticity - identityTransitionFrom.vorticity) * identityProgress;
+      current.turbulence =
+        identityTransitionFrom.turbulence +
+        (morphology.turbulence - identityTransitionFrom.turbulence) * identityProgress;
+      current.curl =
+        identityTransitionFrom.curl +
+        (morphology.curl - identityTransitionFrom.curl) * identityProgress;
+      current.positionX =
+        identityTransitionFrom.positionX +
+        (morphology.positionX - identityTransitionFrom.positionX) * identityProgress;
+      current.positionY =
+        identityTransitionFrom.positionY +
+        (morphology.positionY - identityTransitionFrom.positionY) * identityProgress;
+      current.scale =
+        identityTransitionFrom.scale +
+        (morphology.scale - identityTransitionFrom.scale) * identityProgress;
+      current.tilt =
+        identityTransitionFrom.tilt +
+        (morphology.tilt - identityTransitionFrom.tilt) * identityProgress;
+      current.spread =
+        identityTransitionFrom.spread +
+        (morphology.spread - identityTransitionFrom.spread) * identityProgress;
+      current.detail =
+        identityTransitionFrom.detail +
+        (morphology.detail - identityTransitionFrom.detail) * identityProgress;
+      if (identityProgress >= 1) identityTransitionActive = false;
       const voiceTarget = Math.min(1, Math.max(0, activityLevel?.current ?? 0));
       const voiceEaseSeconds = voiceTarget > current.voice ? 0.09 : 0.52;
       const voiceBlend = policy === "static" ? 1 : 1 - Math.exp(-deltaSeconds / voiceEaseSeconds);
