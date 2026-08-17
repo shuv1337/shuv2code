@@ -228,10 +228,16 @@ const makeBinaryPathSetting = (fallback: string) =>
     Schema.withDecodingDefault(Effect.succeed(fallback)),
   );
 
-export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch";
+export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch" | "select";
+
+export interface ProviderSettingsFormOption {
+  readonly label: string;
+  readonly value: string;
+}
 
 export interface ProviderSettingsFormAnnotation {
   readonly control?: ProviderSettingsFormControl | undefined;
+  readonly options?: readonly ProviderSettingsFormOption[] | undefined;
   readonly placeholder?: string | undefined;
   readonly hidden?: boolean | undefined;
   readonly clearWhenEmpty?: "omit" | "persist" | undefined;
@@ -305,6 +311,21 @@ export const CodexSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    historyMode: Schema.Literals(["legacy", "paginated"]).pipe(
+      Schema.withDecodingDefault(Effect.succeed("legacy" as const)),
+      Schema.annotateKey({
+        title: "Thread history",
+        description:
+          "Storage mode for newly created threads. Paginated is experimental and requires a compatible Codex version.",
+        providerSettingsForm: {
+          control: "select",
+          options: [
+            { label: "Legacy", value: "legacy" },
+            { label: "Paginated (experimental)", value: "paginated" },
+          ],
+        },
+      }),
+    ),
     launchArgs: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
@@ -318,7 +339,7 @@ export const CodexSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "historyMode", "launchArgs"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;
@@ -764,6 +785,7 @@ const CodexSettingsPatch = Schema.Struct({
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),
   shadowHomePath: Schema.optionalKey(TrimmedString),
+  historyMode: Schema.optionalKey(Schema.Literals(["legacy", "paginated"])),
   launchArgs: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });

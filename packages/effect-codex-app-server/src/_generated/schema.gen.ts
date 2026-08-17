@@ -45245,6 +45245,7 @@ export type V2ThreadStartParams = {
   readonly serviceTier?: string | null;
   readonly sessionStartSource?: V2ThreadStartParams__ThreadStartSource | null;
   readonly threadSource?: V2ThreadStartParams__ThreadSource | null;
+  readonly historyMode?: "legacy" | "paginated" | null;
 };
 export const V2ThreadStartParams = Schema.Struct({
   approvalPolicy: Schema.optionalKey(
@@ -45278,6 +45279,11 @@ export const V2ThreadStartParams = Schema.Struct({
   threadSource: Schema.optionalKey(
     Schema.Union([V2ThreadStartParams__ThreadSource, Schema.Null]).annotate({
       description: "Optional client-supplied analytics source classification for this thread.",
+    }),
+  ),
+  historyMode: Schema.optionalKey(
+    Schema.Union([Schema.Literals(["legacy", "paginated"]), Schema.Null]).annotate({
+      description: "Persisted thread history contract to use for this new thread.",
     }),
   ),
 }).annotate({ title: "ThreadStartParams" });
