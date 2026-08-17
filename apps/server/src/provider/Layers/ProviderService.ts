@@ -391,8 +391,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           eventType: canonicalEvent.type,
         }).pipe(
           Effect.andThen(publishRuntimeEvent(canonicalEvent)),
-          // Keep the durable OpenCode/shuvcode resume cursor in sync when a
-          // turn settles so a later restart does not re-open a finished turn.
+          // Keep durable provider state in sync when a turn settles so the
+          // next idle send does not need a full history read to reconcile a
+          // stale active turn. This also preserves the latest resume cursor.
           Effect.andThen(
             (canonicalEvent.type === "turn.completed" || canonicalEvent.type === "turn.aborted") &&
               canonicalEvent.threadId !== undefined
