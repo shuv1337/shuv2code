@@ -18,6 +18,7 @@ import {
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
   resolveSidebarThreadStatus,
+  shouldShowSidebarThreadError,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   searchSidebarThreadsByTitle,
@@ -713,6 +714,24 @@ describe("resolveSidebarThreadStatus", () => {
         session: { ...session, status: "ready" as const, lastError: "persisted" },
       }),
     ).toBe("ready");
+  });
+
+  it("shows the error detail only while the session is currently failed", () => {
+    expect(
+      shouldShowSidebarThreadError({
+        session: { ...session, status: "error" as const, lastError: "boom" },
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowSidebarThreadError({
+        session: { ...session, status: "running" as const, lastError: "stale" },
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowSidebarThreadError({
+        session: { ...session, status: "ready" as const, lastError: "stale" },
+      }),
+    ).toBe(false);
   });
 
   it("defaults to ready with no session", () => {

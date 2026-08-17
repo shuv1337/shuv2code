@@ -487,6 +487,12 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   return "ready";
 }
 
+export function shouldShowSidebarThreadError(
+  thread: Pick<SidebarThreadSummary, "session">,
+): boolean {
+  return thread.session?.status === "error" && Boolean(thread.session.lastError);
+}
+
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not
     poison the whole ordering, so it sinks to the epoch instead. */
 export function parseTimestampMs(isoDate: string): number {
