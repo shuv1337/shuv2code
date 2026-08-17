@@ -23,6 +23,7 @@ import {
 } from "@shuv2code/contracts";
 import { createModelSelection } from "@shuv2code/shared/model";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
@@ -77,6 +78,7 @@ const runtimeMock = {
     sessionDirectoryById: new Map<string, string>(),
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
+    mcpAddCalls: [] as Array<unknown>,
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -100,6 +102,7 @@ const runtimeMock = {
     this.state.sessionDirectoryById.clear();
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
+    this.state.mcpAddCalls.length = 0;
   },
 };
 
@@ -239,6 +242,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             }
           })(),
         }),
+      },
+      mcp: {
+        add: async (input: unknown) => {
+          runtimeMock.state.mcpAddCalls.push(input);
+          return { data: true };
+        },
       },
     }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () =>
@@ -406,6 +415,81 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         yield* adapter.capabilities.hasDurableSessionRecovery!(session.resumeCursor),
         false,
       );
+    }).pipe(Effect.provide(adapterLayer));
+  });
+
+  it.effect("registers ordinary and durable controller MCP servers for a local runtime", () => {
+    const adapterLayer = Layer.effect(
+      OpenCodeAdapter,
+      makeOpenCodeAdapter(localOpenCodeAdapterTestSettings),
+    ).pipe(
+      Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-local-controller-mcp");
+      const base = {
+        environmentId: "environment-test" as never,
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("opencode"),
+      };
+      McpProviderSession.setMcpProviderSession({
+        ...base,
+        credentialId: "standard-credential",
+        providerSessionId: "standard-session",
+        profile: { kind: "standard-provider" },
+        endpoint: "http://127.0.0.1/mcp",
+        authorizationHeader: "Bearer standard-token",
+      });
+      McpProviderSession.setMcpProviderSession({
+        ...base,
+        credentialId: "controller-credential",
+        providerSessionId: "controller-session",
+        profile: {
+          kind: "durable-thread-controller",
+          controllerThreadId: threadId,
+          providerIdentity: undefined,
+          authorizedRuntimeCeiling: "full-access",
+          controlEnabled: true,
+        },
+        endpoint: "http://127.0.0.1/mcp/controller",
+        authorizationHeader: "Bearer controller-token",
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      NodeAssert.deepEqual(runtimeMock.state.mcpAddCalls, [
+        {
+          name: "shuv2code",
+          config: {
+            type: "remote",
+            url: "http://127.0.0.1/mcp",
+            headers: { Authorization: "Bearer standard-token" },
+            oauth: false,
+          },
+        },
+        {
+          name: "shuv2code_controller",
+          config: {
+            type: "remote",
+            url: "http://127.0.0.1/mcp/controller",
+            headers: { Authorization: "Bearer controller-token" },
+            oauth: false,
+          },
+        },
+      ]);
     }).pipe(Effect.provide(adapterLayer));
   });
 

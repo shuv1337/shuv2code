@@ -1461,20 +1461,25 @@ export function makeOpenCodeAdapter(
                 protocol: server.protocol,
                 ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
               });
-              const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-              if (mcpSession && !server.external) {
-                yield* runOpenCodeSdk("mcp.add", () =>
-                  client.mcp.add({
-                    name: "shuv2code",
-                    config: {
-                      type: "remote",
-                      url: mcpSession.endpoint,
-                      headers: {
-                        Authorization: mcpSession.authorizationHeader,
-                      },
-                      oauth: false,
-                    },
-                  }),
+              const mcpSessions = McpProviderSession.readMcpProviderSessions(input.threadId);
+              if (!server.external) {
+                yield* Effect.forEach(
+                  mcpSessions,
+                  (mcpSession) =>
+                    runOpenCodeSdk("mcp.add", () =>
+                      client.mcp.add({
+                        name: McpProviderSession.getMcpProviderSessionName(mcpSession),
+                        config: {
+                          type: "remote",
+                          url: mcpSession.endpoint,
+                          headers: {
+                            Authorization: mcpSession.authorizationHeader,
+                          },
+                          oauth: false,
+                        },
+                      }),
+                    ),
+                  { discard: true },
                 );
               }
               // Resume: re-adopt the session named by the durable cursor —

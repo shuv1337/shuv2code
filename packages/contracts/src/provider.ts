@@ -81,6 +81,18 @@ export const ProviderSessionStartInput = Schema.Struct({
     }),
   ),
   /**
+   * Trusted, explicit grant that exposes application thread-control tools to
+   * this ordinary durable thread. Absence means the provider receives no
+   * thread read or control capability.
+   */
+  threadControlGrant: Schema.optional(
+    Schema.Struct({
+      controllerThreadId: ThreadId,
+      authorizedRuntimeCeiling: RuntimeMode,
+      controlEnabled: Schema.Boolean,
+    }),
+  ),
+  /**
    * Trusted server-generated runtime identity used by managed voice
    * controller/transport sessions. Provider RPC callers must not derive this
    * value from model or client input.

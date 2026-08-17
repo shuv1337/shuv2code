@@ -76,6 +76,14 @@ export type ThreadListInput = typeof ThreadListInput.Type;
 
 export const ThreadGetInput = Schema.Struct({
   threadId: ThreadIdInput,
+  includeUntrustedContext: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "When true, include a bounded recent user/assistant conversation explicitly marked as untrusted target data.",
+    }),
+  ).annotate({
+    description: "Include bounded recent conversation as untrusted target data.",
+  }),
   includeUntrustedExcerpt: Schema.optional(
     Schema.Boolean.annotate({
       description:
@@ -96,7 +104,7 @@ export const ThreadCreateInput = Schema.Struct({
   ).annotate({ description: "Optional short display title for the new standard thread." }),
   model: Schema.optional(
     describedTrimmedString(
-      "Optional model ID advertised by the controller's bound Codex provider instance.",
+      "Optional model ID advertised by the controller thread's bound provider instance.",
       256,
     ),
   ).annotate({
@@ -139,7 +147,7 @@ const ControllerToolFailure = Schema.Unknown;
 
 export const ThreadListTool = Tool.make("thread_list", {
   description:
-    "List authorized active projects, including projects with zero threads, and a bounded inventory of managed Codex threads with exact IDs and authoritative phases.",
+    "List authorized active projects, including projects with zero threads, and a bounded inventory of managed threads with exact IDs and authoritative phases.",
   parameters: ThreadListInput,
   success: ControllerToolSuccess,
   failure: ControllerToolFailure,
@@ -165,7 +173,7 @@ export const ThreadGetTool = Tool.make("thread_get", {
 
 export const ThreadCreateTool = Tool.make("thread_create", {
   description:
-    "Create exactly one standard managed Codex thread in an exact project and start its required initial instruction under the controller's server-enforced permission ceiling.",
+    "Create exactly one standard managed thread in an exact project and start its required initial instruction under the controller's server-enforced permission ceiling.",
   parameters: ThreadCreateInput,
   success: ControllerToolSuccess,
   failure: ControllerToolFailure,

@@ -113,9 +113,12 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadControlService } from "./orchestration/Services/ThreadControlService.ts";
+import { ThreadControlExecutionCoordinator } from "./orchestration/Services/ThreadControlExecutionCoordinator.ts";
+import { ThreadControlGrantVerifier } from "./orchestration/Services/ThreadControlGrantVerifier.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import { VoiceControllerBindingRepository } from "./persistence/Services/VoiceControllerBindings.ts";
+import { ThreadControlGrantRepository } from "./persistence/Services/ThreadControlGrants.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -885,6 +888,26 @@ const buildAppUnderTest = (options?: {
     );
 
     const appLayer = servedRoutesLayer.pipe(
+      Layer.provide(
+        Layer.succeed(ThreadControlGrantRepository, {
+          getByThreadId: () => Effect.succeed(Option.none()),
+          upsert: () => Effect.void,
+          revoke: () => Effect.succeed(false),
+        }),
+      ),
+      Layer.provide(
+        Layer.succeed(ThreadControlGrantVerifier, {
+          authorize: () => Effect.void,
+          validateMutation: () => Effect.void,
+        }),
+      ),
+      Layer.provide(
+        Layer.succeed(ThreadControlExecutionCoordinator, {
+          execute: () => Effect.die("Thread control execution not stubbed in this test"),
+          setActiveTarget: () => Effect.void,
+          clearActiveTargetIfMatching: () => Effect.void,
+        }),
+      ),
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(UsageService.layerTest),
       Layer.provide(
@@ -1010,6 +1033,7 @@ const buildAppUnderTest = (options?: {
       Layer.provideMerge(ServerSecretStore.layer),
       Layer.provide(workspaceAndProjectServicesLayer),
       Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provide(layerConfig),
     );
 

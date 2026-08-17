@@ -463,6 +463,51 @@ validationLayer("CodexAdapterLive validation", (it) => {
         );
       }),
   );
+
+  it.effect("attaches an explicit durable controller MCP session to an ordinary thread", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("durable-controller-codex");
+      McpProviderSession.setMcpProviderSession({
+        credentialId: "durable-controller-credential",
+        environmentId: "environment-test" as never,
+        threadId,
+        providerSessionId: "pending-durable-controller-session",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        profile: {
+          kind: "durable-thread-controller",
+          controllerThreadId: threadId,
+          providerIdentity: { providerThreadId: "provider-thread-1" },
+          authorizedRuntimeCeiling: "approval-required",
+          controlEnabled: true,
+        },
+        endpoint: "http://127.0.0.1/mcp/controller",
+        authorizationHeader: "Bearer durable-controller-token",
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "approval-required",
+      });
+
+      NodeAssert.deepStrictEqual(
+        validationRuntimeFactory.factory.mock.calls[0]?.[0].appServerArgs,
+        [
+          "-c",
+          "mcp_servers.shuv2code_controller.url=http://127.0.0.1/mcp/controller",
+          "-c",
+          'mcp_servers.shuv2code_controller.bearer_token_env_var="SHUV2CODE_CONTROLLER_MCP_BEARER_TOKEN"',
+          "-c",
+          'mcp_servers.shuv2code_controller.default_tools_approval_mode="approve"',
+        ],
+      );
+    }),
+  );
 });
 
 const sessionRuntimeFactory = makeRuntimeFactory();

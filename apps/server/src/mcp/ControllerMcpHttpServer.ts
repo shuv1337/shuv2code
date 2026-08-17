@@ -11,6 +11,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { ThreadId } from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -18,15 +19,22 @@ import { Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
+import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
+import { makeDurableThreadControlInvocationResolver } from "../orchestration/DurableThreadControlInvocationResolver.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadControlInvocationResolver } from "../orchestration/Services/ThreadControlInvocationResolver.ts";
+import { ThreadControlExecutionCoordinator } from "../orchestration/Services/ThreadControlExecutionCoordinator.ts";
+import { ThreadControlGrantVerifier } from "../orchestration/Services/ThreadControlGrantVerifier.ts";
 import { ThreadControlService } from "../orchestration/Services/ThreadControlService.ts";
 import { VoiceControllerBindingRepository } from "../persistence/Services/VoiceControllerBindings.ts";
+import { ThreadControlGrantRepository } from "../persistence/Services/ThreadControlGrants.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ControllerActionContextResolver } from "../voice/Services/ControllerActionContextResolver.ts";
+import { makeVoiceThreadControlInvocationResolver } from "../voice/VoiceThreadControlInvocationResolver.ts";
 import {
   type CodexControllerTurnMetadata,
+  type ControllerMcpRequestScope,
   type McpInvocationScope,
-  ControllerMcpRequestContext,
-  McpInvocationContext,
 } from "./McpInvocationContext.ts";
 import { McpSessionRegistry } from "./McpSessionRegistry.ts";
 import { isControllerThreadHandlerName, threadHandlers } from "./toolkits/threads/handlers.ts";
@@ -76,11 +84,14 @@ export function extractControllerTurnMetadata(
     return { _tag: "missing" };
   }
   const profile = invocation.profile;
-  if (profile.kind !== "voice-controller") {
+  if (profile.kind !== "voice-controller" && profile.kind !== "durable-thread-controller") {
     throw new McpError(ErrorCode.InvalidRequest, "Controller credential required.");
   }
-  const providerIdentity = profile.providerIdentity;
-  if (providerIdentity === undefined) {
+  const providerThreadId =
+    profile.kind === "voice-controller"
+      ? profile.providerIdentity?.codexProviderThreadId
+      : profile.providerIdentity?.providerThreadId;
+  if (providerThreadId === undefined) {
     throw new McpError(
       ErrorCode.InvalidRequest,
       "Controller credential is not bound to a Codex provider identity.",
@@ -95,10 +106,7 @@ export function extractControllerTurnMetadata(
   } catch {
     throw new McpError(ErrorCode.InvalidParams, "Invalid Codex controller turn metadata.");
   }
-  if (
-    decoded.session_id !== providerIdentity.codexProviderThreadId ||
-    decoded.thread_id !== providerIdentity.codexProviderThreadId
-  ) {
+  if (decoded.session_id !== providerThreadId || decoded.thread_id !== providerThreadId) {
     throw new McpError(
       ErrorCode.InvalidParams,
       "Codex controller turn metadata does not match this credential.",
@@ -253,6 +261,7 @@ const makeControllerSdkServer = (
     input: unknown,
     requestContext: {
       readonly turnMetadata: CodexControllerTurnMetadata | undefined;
+      readonly requestId: string;
     },
   ) => Promise<CallToolResult>,
 ) => {
@@ -268,10 +277,11 @@ const makeControllerSdkServer = (
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [...ControllerThreadToolDescriptors],
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const extraction = extractControllerTurnMetadata(request.params._meta, invocation);
     const requestContext = {
       turnMetadata: extraction._tag === "valid" ? extraction.metadata : undefined,
+      requestId: String(extra.requestId),
     };
     return runTool(request.params.name, request.params.arguments ?? {}, requestContext);
   });
@@ -308,57 +318,85 @@ const makeControllerMcpRequestHandler = (services: {
   readonly bindingRepository: VoiceControllerBindingRepository["Service"];
   readonly actionResolver: ControllerActionContextResolver["Service"];
   readonly threadControl: ThreadControlService["Service"];
+  readonly verifier: ThreadControlGrantVerifier["Service"];
+  readonly execution: ThreadControlExecutionCoordinator["Service"];
+  readonly currentEnvironmentId: import("@shuv2code/contracts").EnvironmentId;
+  readonly projection: ProjectionSnapshotQuery["Service"];
+  readonly threadControlGrants: ThreadControlGrantRepository["Service"];
+  readonly crypto: Crypto.Crypto;
 }) =>
   Effect.withFiber((fiber) => {
     const runPromise = Effect.runPromiseWith(fiber.context);
     return Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
-      const { registry, settingsService, bindingRepository, actionResolver, threadControl } =
-        services;
+      const {
+        registry,
+        settingsService,
+        bindingRepository,
+        actionResolver,
+        threadControl,
+        verifier,
+        execution,
+        currentEnvironmentId,
+        projection,
+        threadControlGrants,
+        crypto,
+      } = services;
       const authorization = request.headers.authorization;
       const rawToken =
         authorization?.startsWith("Bearer ") === true
           ? authorization.slice("Bearer ".length).trim()
           : "";
       if (rawToken.length === 0) return unauthorized("missing");
-      const invocation = yield* registry.resolve(rawToken, "voice-controller");
+      const invocation = yield* registry.resolve(rawToken);
       if (invocation === undefined) return unauthorized("invalid");
       const profile = invocation.profile;
-      if (profile.kind !== "voice-controller") {
+      if (profile.kind !== "voice-controller" && profile.kind !== "durable-thread-controller") {
         return unauthorized("wrong_profile");
       }
       if (profile.providerIdentity === undefined) {
         return unauthorized("unbound");
       }
 
-      const settings = yield* settingsService.getSettings;
-      if (!ServerSettings.resolveVoiceControlPolicy(settings).read) {
-        yield* registry.revokeCredential(invocation.credentialId);
-        return readDisabled;
+      if (profile.kind === "voice-controller") {
+        const settings = yield* settingsService.getSettings;
+        if (!ServerSettings.resolveVoiceControlPolicy(settings).read) {
+          yield* registry.revokeCredential(invocation.credentialId);
+          return readDisabled;
+        }
       }
 
       const webRequest = yield* HttpServerRequest.toWeb(request);
-      const runTool = (
-        name: string,
-        input: unknown,
-        requestContext: {
-          readonly turnMetadata: CodexControllerTurnMetadata | undefined;
-        },
-      ) =>
-        runPromise(
-          decodeAndRunThreadTool(name, input).pipe(
-            Effect.provideService(McpInvocationContext, invocation),
-            Effect.provideService(ControllerMcpRequestContext, requestContext),
-            Effect.provideService(ServerSettings.ServerSettingsService, settingsService),
-            Effect.provideService(VoiceControllerBindingRepository, bindingRepository),
-            Effect.provideService(ControllerActionContextResolver, actionResolver),
-            Effect.provideService(ThreadControlService, threadControl),
+      const runTool = (name: string, input: unknown, requestContext: ControllerMcpRequestScope) => {
+        return runPromise(
+          Effect.gen(function* () {
+            const invocationResolver =
+              profile.kind === "voice-controller"
+                ? makeVoiceThreadControlInvocationResolver({
+                    invocation,
+                    request: requestContext,
+                    settingsService,
+                    bindingRepository,
+                    actionResolver,
+                    verifier,
+                    execution,
+                  })
+                : makeDurableThreadControlInvocationResolver(
+                    { invocation, request: requestContext },
+                    { currentEnvironmentId, projection, threadControlGrants, crypto },
+                  );
+            return yield* decodeAndRunThreadTool(name, input).pipe(
+              Effect.provideService(ThreadControlInvocationResolver, invocationResolver),
+              Effect.provideService(ThreadControlService, threadControl),
+            );
+          }).pipe(
             Effect.matchCause({
               onFailure: sanitizedFailure,
               onSuccess: successfulResult,
             }),
           ),
         );
+      };
       const response = yield* Effect.tryPromise({
         try: async () => {
           const transport = new WebStandardStreamableHTTPServerTransport({
@@ -400,12 +438,25 @@ export const layer = Layer.unwrap(
     const bindingRepository = yield* VoiceControllerBindingRepository;
     const actionResolver = yield* ControllerActionContextResolver;
     const threadControl = yield* ThreadControlService;
+    const verifier = yield* ThreadControlGrantVerifier;
+    const execution = yield* ThreadControlExecutionCoordinator;
+    const environment = yield* ServerEnvironment;
+    const currentEnvironmentId = yield* environment.getEnvironmentId;
+    const projection = yield* ProjectionSnapshotQuery;
+    const threadControlGrants = yield* ThreadControlGrantRepository;
+    const crypto = yield* Crypto.Crypto;
     const handler = makeControllerMcpRequestHandler({
       registry,
       settingsService,
       bindingRepository,
       actionResolver,
       threadControl,
+      verifier,
+      execution,
+      currentEnvironmentId,
+      projection,
+      threadControlGrants,
+      crypto,
     });
     return Layer.mergeAll(
       HttpRouter.add("POST", CONTROLLER_MCP_PATH, handler),

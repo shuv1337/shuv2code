@@ -41,6 +41,7 @@ import { ProviderAdapterRequestError, ProviderValidationError } from "../../prov
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { ThreadControlGrantRepository } from "../../persistence/Services/ThreadControlGrants.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -174,6 +175,10 @@ describe("ProviderCommandReactor", () => {
     readonly providerEffectTimeout?: Duration.Input;
     readonly providerEffectRecoveryDispatchFailures?: number;
     readonly captureLogs?: boolean;
+    readonly durableControlGrant?: {
+      readonly authorizedRuntimeCeiling: "approval-required" | "auto-accept-edits";
+      readonly controlEnabled: boolean;
+    };
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
@@ -444,6 +449,24 @@ describe("ProviderCommandReactor", () => {
       }),
     ).pipe(Layer.provide(orchestrationLayer));
     const layer = ProviderCommandReactorLive.pipe(
+      Layer.provideMerge(
+        Layer.succeed(
+          ThreadControlGrantRepository,
+          ThreadControlGrantRepository.of({
+            getByThreadId: (threadId) =>
+              input?.durableControlGrant === undefined
+                ? Effect.succeedNone
+                : Effect.succeedSome({
+                    threadId,
+                    ...input.durableControlGrant,
+                    createdAt: now,
+                    updatedAt: now,
+                  }),
+            upsert: () => Effect.die("unused"),
+            revoke: () => Effect.die("unused"),
+          }),
+        ),
+      ),
       Layer.provideMerge(reactorOrchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
@@ -628,6 +651,42 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("reattaches a persisted durable controller grant when starting its provider session", async () => {
+    const harness = await createHarness({
+      durableControlGrant: {
+        authorizedRuntimeCeiling: "auto-accept-edits",
+        controlEnabled: true,
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-controller-turn-start"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("controller-user-message"),
+          role: "user",
+          text: "Manage the other threads.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      threadControlGrant: {
+        controllerThreadId: ThreadId.make("thread-1"),
+        authorizedRuntimeCeiling: "auto-accept-edits",
+        controlEnabled: true,
+      },
+    });
   });
 
   effectIt.effect("projects starting before a slow provider session finishes", () =>
