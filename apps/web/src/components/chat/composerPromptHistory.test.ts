@@ -8,11 +8,13 @@ import {
   type ReviewCommentContext,
 } from "../../reviewCommentContext";
 import {
+  canBrowseComposerPromptHistory,
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
   FILE_ONLY_BOOTSTRAP_PROMPT,
   isComposerPromptHistoryBlankHardEdge,
   isComposerPromptHistoryPositionValid,
   projectComposerPromptHistory,
+  reconcileComposerPromptHistoryBrowse,
   stepComposerPromptHistory,
 } from "./composerPromptHistory";
 
@@ -223,5 +225,130 @@ describe("stepComposerPromptHistory", () => {
     expect(stepComposerPromptHistory(entries.slice(0, 2), 2, "newer")).toEqual({ kind: "draft" });
     expect(stepComposerPromptHistory(entries.slice(0, 2), 2, "older")).toEqual({ kind: "draft" });
     expect(stepComposerPromptHistory(entries, -1, "newer")).toEqual({ kind: "draft" });
+  });
+});
+
+describe("canBrowseComposerPromptHistory", () => {
+  const eligibility = {
+    direction: "older" as const,
+    value: "draft",
+    cursor: 0,
+    isVisualEdge: true,
+    isMobileViewport: false,
+    hasModifier: false,
+    isComposing: false,
+    keyCode: 38,
+    isBlocked: false,
+    hasTerminalContexts: false,
+    hasActiveTrigger: false,
+    hasActiveBrowse: false,
+    isSelectionCollapsed: true,
+  };
+
+  it("accepts unmodified desktop arrows only at the matching visual and logical edge", () => {
+    expect(canBrowseComposerPromptHistory(eligibility)).toBe(true);
+    expect(
+      canBrowseComposerPromptHistory({
+        ...eligibility,
+        direction: "newer",
+        cursor: eligibility.value.length,
+        keyCode: 40,
+      }),
+    ).toBe(true);
+    expect(canBrowseComposerPromptHistory({ ...eligibility, isVisualEdge: false })).toBe(false);
+  });
+
+  it("keeps multiline navigation inside the editor until the caret reaches the outer line", () => {
+    const value = "top line\nbottom line";
+
+    expect(canBrowseComposerPromptHistory({ ...eligibility, value, cursor: 4 })).toBe(true);
+    expect(canBrowseComposerPromptHistory({ ...eligibility, value, cursor: 12 })).toBe(false);
+    expect(
+      canBrowseComposerPromptHistory({
+        ...eligibility,
+        direction: "newer",
+        value,
+        cursor: 4,
+        keyCode: 40,
+      }),
+    ).toBe(false);
+    expect(
+      canBrowseComposerPromptHistory({
+        ...eligibility,
+        direction: "newer",
+        value,
+        cursor: value.length,
+        keyCode: 40,
+      }),
+    ).toBe(true);
+  });
+
+  it("leaves mobile, modified, composing, selected, and blocked arrows to the editor", () => {
+    const rejectedOverrides = [
+      { isMobileViewport: true },
+      { hasModifier: true },
+      { isComposing: true },
+      { keyCode: 229 },
+      { isBlocked: true },
+      { hasTerminalContexts: true },
+      { isSelectionCollapsed: false },
+      { hasActiveTrigger: true },
+    ];
+
+    for (const override of rejectedOverrides) {
+      expect(canBrowseComposerPromptHistory({ ...eligibility, ...override })).toBe(false);
+    }
+    expect(
+      canBrowseComposerPromptHistory({
+        ...eligibility,
+        hasActiveTrigger: true,
+        hasActiveBrowse: true,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("reconcileComposerPromptHistoryBrowse", () => {
+  const target = "environment:thread-1";
+  const browse = {
+    target,
+    index: 1,
+    draft: "unfinished draft",
+    recalledValue: "newest prompt",
+  };
+  const entries = ["oldest prompt", "newest prompt"];
+
+  it("keeps an unchanged recalled prompt active", () => {
+    expect(reconcileComposerPromptHistoryBrowse(browse, target, "newest prompt", entries)).toBe(
+      "keep",
+    );
+  });
+
+  it("discards the captured draft once the recalled prompt is edited", () => {
+    expect(
+      reconcileComposerPromptHistoryBrowse(browse, target, "newest prompt, edited", entries),
+    ).toBe("discard");
+  });
+
+  it("restores the captured draft when the composer switches threads", () => {
+    expect(
+      reconcileComposerPromptHistoryBrowse(
+        browse,
+        "environment:thread-2",
+        "other thread draft",
+        entries,
+      ),
+    ).toBe("restore");
+  });
+
+  it("restores the captured draft if the recalled timeline entry disappears", () => {
+    expect(
+      reconcileComposerPromptHistoryBrowse(browse, target, "newest prompt", ["oldest prompt"]),
+    ).toBe("restore");
+  });
+
+  it("returns from the newest recalled prompt to the original draft on ArrowDown", () => {
+    expect(stepComposerPromptHistory(entries, browse.index, "newer")).toEqual({ kind: "draft" });
+    expect(browse.draft).toBe("unfinished draft");
   });
 });
