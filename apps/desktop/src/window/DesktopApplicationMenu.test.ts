@@ -71,12 +71,11 @@ const desktopUpdatesLayer = Layer.succeed(DesktopUpdates.DesktopUpdates, {
 
 const makeDesktopWindowLayer = (selectedAction: Deferred.Deferred<string>) =>
   Layer.succeed(DesktopWindow.DesktopWindow, {
-    createMain: Effect.die("unexpected createMain"),
     ensureMain: Effect.die("unexpected ensureMain"),
     revealOrCreateMain: Effect.die("unexpected revealOrCreateMain"),
     activate: Effect.void,
     createMainIfBackendReady: Effect.void,
-    showConnectingSplash: Effect.void,
+    showStartupShell: Effect.void,
     handleBackendReady: () => Effect.void,
     handleBackendNotReady: Effect.void,
     flushMainWindowBounds: Effect.void,

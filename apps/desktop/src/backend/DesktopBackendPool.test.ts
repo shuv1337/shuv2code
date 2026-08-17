@@ -83,12 +83,11 @@ function makePoolLayer(
         DesktopAppSettings.layerTest(),
         ElectronDialog.layer,
         Layer.succeed(DesktopWindow.DesktopWindow, {
-          createMain: Effect.die("unexpected window create"),
           ensureMain: Effect.die("unexpected window ensure"),
           revealOrCreateMain: Effect.die("unexpected window reveal"),
           activate: Effect.die("unexpected window activate"),
           createMainIfBackendReady: Effect.die("unexpected window create"),
-          showConnectingSplash: Effect.void,
+          showStartupShell: Effect.void,
           handleBackendReady: () => Effect.void,
           handleBackendNotReady: Effect.void,
           flushMainWindowBounds: Effect.void,
