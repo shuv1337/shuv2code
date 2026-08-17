@@ -63,6 +63,18 @@ describe("getPreviewPanelMaxWidth", () => {
     ).toBe(layoutRow);
   });
 
+  it("measures through hidden lifecycle wrappers before Voice opens", () => {
+    const layoutRow = { parentElement: null } as unknown as HTMLElement;
+    const lifecycleWrapper = { parentElement: layoutRow } as unknown as HTMLElement;
+    const panel = { parentElement: lifecycleWrapper } as unknown as HTMLElement;
+
+    expect(
+      resolvePreviewPanelLayoutContainer(panel, (element) =>
+        element === lifecycleWrapper ? "none" : "flex",
+      ),
+    ).toBe(layoutRow);
+  });
+
   it("keeps an ordinary flex parent as the measurement container", () => {
     const layoutRow = { parentElement: null } as unknown as HTMLElement;
     const panel = { parentElement: layoutRow } as unknown as HTMLElement;

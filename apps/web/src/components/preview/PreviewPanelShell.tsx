@@ -47,10 +47,11 @@ export function getPreviewPanelMaxWidth(viewportWidth: number, containerWidth?: 
 /**
  * Find the layout box that actually contains the inline panel.
  *
- * Voice keeps the panel mounted beneath a `display: contents` wrapper so its
- * live session survives presentation changes. That wrapper has no box and
- * therefore reports a zero width; treating it as the flex row clamps the
- * panel to its minimum and makes the resize handle appear broken.
+ * Voice keeps the panel mounted beneath a lifecycle wrapper so its live
+ * session survives presentation changes. The wrapper is `display: none`
+ * while closed and `display: contents` while open. Neither state contributes
+ * a layout box, so treating the wrapper as the flex row reports zero width,
+ * clamps the panel to its minimum, and makes the resize handle appear broken.
  */
 export function resolvePreviewPanelLayoutContainer(
   host: Pick<HTMLElement, "parentElement"> | null,
@@ -58,7 +59,10 @@ export function resolvePreviewPanelLayoutContainer(
     window.getComputedStyle(element).display,
 ): HTMLElement | null {
   let container = host?.parentElement ?? null;
-  while (container?.parentElement && readDisplay(container) === "contents") {
+  while (
+    container?.parentElement &&
+    (readDisplay(container) === "contents" || readDisplay(container) === "none")
+  ) {
     container = container.parentElement;
   }
   return container;
