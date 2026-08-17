@@ -225,6 +225,7 @@ export const makeVoiceCallBridge = Effect.fn("VoiceCallBridge.make")(function* (
 
     return yield* utteranceMutex.withPermits(1)(
       Effect.gen(function* () {
+        const pending = (yield* Ref.get(pendingUsersRef)).get(input.session.transportSessionId);
         yield* Ref.update(pendingUsersRef, (all) => {
           const next = new Map(all);
           next.delete(input.session.transportSessionId);
@@ -241,6 +242,12 @@ export const makeVoiceCallBridge = Effect.fn("VoiceCallBridge.make")(function* (
           }
           return { accepted: true, commandId: processed.commandId };
         }
+
+        const latestActiveUserText = input.activeTranscript
+          .findLast((entry) => entry.role === "user" && entry.text.trim().length > 0)
+          ?.text.trim();
+        const durableText = pending?.text ?? latestActiveUserText ?? text;
+        const occurredAt = pending?.occurredAt ?? input.occurredAt;
 
         const thread = yield* projection
           .getThreadDetailById(owner.threadId)
@@ -272,10 +279,10 @@ export const makeVoiceCallBridge = Effect.fn("VoiceCallBridge.make")(function* (
                   message: {
                     messageId: identity.messageId,
                     role: "user",
-                    text,
+                    text: durableText,
                     attachments: [],
                   },
-                  createdAt: input.occurredAt,
+                  createdAt: occurredAt,
                 }
               : {
                   type: "thread.turn.start",
@@ -284,14 +291,14 @@ export const makeVoiceCallBridge = Effect.fn("VoiceCallBridge.make")(function* (
                   message: {
                     messageId: identity.messageId,
                     role: "user",
-                    text,
+                    text: durableText,
                     attachments: [],
                   },
                   modelSelection: thread.value.modelSelection,
                   runtimeMode: thread.value.runtimeMode,
                   interactionMode: thread.value.interactionMode,
                   expectedTurnId: null,
-                  createdAt: input.occurredAt,
+                  createdAt: occurredAt,
                 },
             {
               actorProvenance: {

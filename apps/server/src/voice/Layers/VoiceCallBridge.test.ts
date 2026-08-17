@@ -239,6 +239,76 @@ describe("VoiceCallBridge", () => {
     ),
   );
 
+  it.effect("preserves the finalized user transcript when a handoff condenses it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = yield* makeTestLayer;
+        const bridge = yield* VoiceCallBridge.pipe(Effect.provide(test.layer));
+        const finalizedText =
+          "Keep my complete spoken request in the durable thread, including this detail.";
+        yield* bridge.ingestTranscript({
+          session: callSession,
+          itemId: VoiceTranscriptItemId.make("user-transcript-1"),
+          role: "user",
+          text: finalizedText,
+          occurredAt: now,
+          activeTranscript: [{ role: "user", text: finalizedText }],
+        });
+
+        yield* bridge.delegateUtterance({
+          session: callSession,
+          itemId: VoiceTranscriptItemId.make("handoff-item-1"),
+          text: "Handle the request.",
+          occurredAt: "2026-08-14T00:00:02.000Z",
+          activeTranscript: [
+            { role: "user", text: finalizedText },
+            { role: "assistant", text: "I’ll take that into the thread." },
+          ],
+        });
+
+        const commands = yield* Ref.get(test.commands);
+        assert.strictEqual(commands.length, 1);
+        const command = commands[0];
+        assert.isDefined(command);
+        assert.strictEqual(command.type, "thread.turn.start");
+        if (command.type !== "thread.turn.start") return;
+        assert.strictEqual(command.message.text, finalizedText);
+        assert.strictEqual(command.createdAt, now);
+      }),
+    ),
+  );
+
+  it.effect("uses the latest active user transcript when handoff arrives before finalization", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = yield* makeTestLayer;
+        const bridge = yield* VoiceCallBridge.pipe(Effect.provide(test.layer));
+        const finalizedText = "This is the complete user utterance from active transcript.";
+
+        yield* bridge.delegateUtterance({
+          session: callSession,
+          itemId: VoiceTranscriptItemId.make("handoff-item-2"),
+          text: "Condensed instruction.",
+          occurredAt: now,
+          activeTranscript: [
+            { role: "user", text: "An older request." },
+            { role: "assistant", text: "That one is done." },
+            { role: "user", text: finalizedText },
+            { role: "assistant", text: "I’ll delegate it." },
+          ],
+        });
+
+        const commands = yield* Ref.get(test.commands);
+        assert.strictEqual(commands.length, 1);
+        const command = commands[0];
+        assert.isDefined(command);
+        assert.strictEqual(command.type, "thread.turn.start");
+        if (command.type !== "thread.turn.start") return;
+        assert.strictEqual(command.message.text, finalizedText);
+      }),
+    ),
+  );
+
   it.effect("does not route Controller transcripts through the Call bridge", () =>
     Effect.scoped(
       Effect.gen(function* () {
