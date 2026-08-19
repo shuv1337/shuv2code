@@ -1,5 +1,11 @@
 import * as Schema from "effect/Schema";
-import { type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { getLocalStorageItem, setLocalStorageItem } from "./useLocalStorage";
 
@@ -70,6 +76,7 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
     pending: number;
     rafId: number | null;
     target: HTMLElement;
+    removeWindowListeners: (() => void) | null;
   } | null>(null);
 
   const releasePointer = useCallback((pointerId: number) => {
@@ -78,6 +85,7 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
     if (state.rafId !== null) {
       cancelAnimationFrame(state.rafId);
     }
+    state.removeWindowListeners?.();
     try {
       if (state.target.hasPointerCapture(pointerId)) {
         state.target.releasePointerCapture(pointerId);
@@ -90,37 +98,19 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
     dragStateRef.current = null;
   }, []);
 
-  const onPointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLElement>) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const target = event.currentTarget;
-      try {
-        target.setPointerCapture(event.pointerId);
-      } catch {
-        return;
-      }
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      dragStateRef.current = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startWidth: clampedWidth,
-        pending: clampedWidth,
-        rafId: null,
-        target,
-      };
+  useEffect(
+    () => () => {
+      const state = dragStateRef.current;
+      if (state) releasePointer(state.pointerId);
     },
-    [clampedWidth],
+    [releasePointer],
   );
 
-  const onPointerMove = useCallback(
-    (event: ReactPointerEvent<HTMLElement>) => {
+  const updatePointer = useCallback(
+    (pointerId: number, clientX: number) => {
       const state = dragStateRef.current;
-      if (!state || state.pointerId !== event.pointerId) return;
-      event.preventDefault();
-      const delta = edge === "left" ? state.startX - event.clientX : event.clientX - state.startX;
+      if (!state || state.pointerId !== pointerId) return;
+      const delta = edge === "left" ? state.startX - clientX : clientX - state.startX;
       state.pending = clamp(state.startWidth + delta);
       if (state.rafId !== null) return;
       state.rafId = requestAnimationFrame(() => {
@@ -133,12 +123,12 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
     [clamp, edge],
   );
 
-  const onPointerUp = useCallback(
-    (event: ReactPointerEvent<HTMLElement>) => {
+  const finishPointer = useCallback(
+    (pointerId: number) => {
       const state = dragStateRef.current;
-      if (!state || state.pointerId !== event.pointerId) return;
+      if (!state || state.pointerId !== pointerId) return;
       const finalWidth = clamp(state.pending);
-      releasePointer(event.pointerId);
+      releasePointer(pointerId);
       // Commit once at drag-end to avoid 60Hz localStorage writes.
       try {
         setLocalStorageItem(storageKey, finalWidth, WidthSchema);
@@ -150,15 +140,88 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
     [clamp, releasePointer, storageKey],
   );
 
-  const onPointerCancel = useCallback(
+  const cancelPointer = useCallback(
+    (pointerId: number) => {
+      const state = dragStateRef.current;
+      if (!state || state.pointerId !== pointerId) return;
+      // Don't persist a cancelled drag; revert to the start width.
+      const startWidth = state.startWidth;
+      releasePointer(pointerId);
+      setWidth(startWidth);
+    },
+    [releasePointer],
+  );
+
+  const onPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const target = event.currentTarget;
+      try {
+        target.setPointerCapture(event.pointerId);
+      } catch {
+        // Electron may decline capture near a native drag region. The
+        // window listeners below still provide a complete drag lifecycle.
+      }
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      const state: NonNullable<typeof dragStateRef.current> = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startWidth: clampedWidth,
+        pending: clampedWidth,
+        rafId: null,
+        target,
+        removeWindowListeners: null,
+      };
+      dragStateRef.current = state;
+
+      const onWindowPointerMove = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== state.pointerId) return;
+        pointerEvent.preventDefault();
+        updatePointer(pointerEvent.pointerId, pointerEvent.clientX);
+      };
+      const onWindowPointerUp = (pointerEvent: PointerEvent) => {
+        finishPointer(pointerEvent.pointerId);
+      };
+      const onWindowPointerCancel = (pointerEvent: PointerEvent) => {
+        cancelPointer(pointerEvent.pointerId);
+      };
+      window.addEventListener("pointermove", onWindowPointerMove, { passive: false });
+      window.addEventListener("pointerup", onWindowPointerUp);
+      window.addEventListener("pointercancel", onWindowPointerCancel);
+      state.removeWindowListeners = () => {
+        window.removeEventListener("pointermove", onWindowPointerMove);
+        window.removeEventListener("pointerup", onWindowPointerUp);
+        window.removeEventListener("pointercancel", onWindowPointerCancel);
+      };
+    },
+    [cancelPointer, clampedWidth, finishPointer, updatePointer],
+  );
+
+  const onPointerMove = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {
       const state = dragStateRef.current;
       if (!state || state.pointerId !== event.pointerId) return;
-      // Don't persist a cancelled drag; revert to the start width.
-      releasePointer(event.pointerId);
-      setWidth(state.startWidth);
+      event.preventDefault();
+      updatePointer(event.pointerId, event.clientX);
     },
-    [releasePointer],
+    [updatePointer],
+  );
+
+  const onPointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      finishPointer(event.pointerId);
+    },
+    [finishPointer],
+  );
+
+  const onPointerCancel = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      cancelPointer(event.pointerId);
+    },
+    [cancelPointer],
   );
 
   return {
