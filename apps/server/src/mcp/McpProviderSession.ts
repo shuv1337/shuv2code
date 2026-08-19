@@ -12,6 +12,39 @@ export interface McpProviderSessionConfig {
   readonly authorizationHeader: string;
 }
 
+export function getMcpProviderSessionName(config: McpProviderSessionConfig): string {
+  return config.profile.kind === "standard-provider" ? "shuv2code" : "shuv2code_controller";
+}
+
+export function toNamedHttpMcpServers(sessions: ReadonlyArray<McpProviderSessionConfig>): Record<
+  string,
+  {
+    readonly type: "http";
+    readonly url: string;
+    readonly headers: { readonly Authorization: string };
+  }
+> {
+  return Object.fromEntries(
+    sessions.map((session) => [
+      getMcpProviderSessionName(session),
+      {
+        type: "http" as const,
+        url: session.endpoint,
+        headers: { Authorization: session.authorizationHeader },
+      },
+    ]),
+  );
+}
+
+export function toAcpHttpMcpServers(sessions: ReadonlyArray<McpProviderSessionConfig>) {
+  return sessions.map((session) => ({
+    type: "http" as const,
+    name: getMcpProviderSessionName(session),
+    url: session.endpoint,
+    headers: [{ name: "Authorization", value: session.authorizationHeader }],
+  }));
+}
+
 const sessionsByThread = new Map<ThreadId, ReadonlyArray<McpProviderSessionConfig>>();
 
 export function setMcpProviderSession(config: McpProviderSessionConfig): void {
@@ -35,6 +68,20 @@ export function readMcpProviderSessions(
 
 export function clearMcpProviderSession(threadId: ThreadId): void {
   sessionsByThread.delete(threadId);
+}
+
+export function clearMcpProviderSessionProfile(
+  threadId: ThreadId,
+  profileKind: McpCredentialProfile["kind"],
+): void {
+  const current = sessionsByThread.get(threadId);
+  if (!current) return;
+  const next = current.filter((entry) => entry.profile.kind !== profileKind);
+  if (next.length === 0) {
+    sessionsByThread.delete(threadId);
+    return;
+  }
+  sessionsByThread.set(threadId, next);
 }
 
 export function clearAllMcpProviderSessions(): void {

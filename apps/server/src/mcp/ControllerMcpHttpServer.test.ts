@@ -15,7 +15,11 @@ import * as Schema from "effect/Schema";
 import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadControlExecutionCoordinator } from "../orchestration/Services/ThreadControlExecutionCoordinator.ts";
+import { ThreadControlGrantVerifier } from "../orchestration/Services/ThreadControlGrantVerifier.ts";
 import { ThreadControlService } from "../orchestration/Services/ThreadControlService.ts";
+import { ThreadControlGrantRepository } from "../persistence/Services/ThreadControlGrants.ts";
 import { VoiceControllerBindingRepository } from "../persistence/Services/VoiceControllerBindings.ts";
 import { VoiceControllerBinding } from "../persistence/VoiceControlModels.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -28,6 +32,7 @@ const controllerThreadId = ThreadId.make("controller-thread-http-test");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const codexProviderThreadId = "codex-provider-thread-http-test";
 let requestedUntrustedContext = false;
+let durableMutationRequestId: string | undefined;
 
 const fakeEnvironment = Layer.succeed(
   ServerEnvironment.ServerEnvironment,
@@ -108,12 +113,28 @@ const threadControl = ThreadControlService.of({
         : {}),
     });
   },
-  create: () => Effect.die("mutation must be rejected before dispatch"),
+  create: (input) => {
+    if (input.action.adapterKind === "durable-thread") {
+      durableMutationRequestId = input.action.providerRequestId;
+    }
+    return Effect.succeed({
+      actionId: input.action.actionId,
+      operationId: `${input.action.operationIdPrefix}:create-start`,
+      targetThreadId: input.action.createdThreadId,
+      disposition: "create" as const,
+      expectedTurnId: null,
+      acceptedTurnId: null,
+      acceptedProjectionSequence: 43,
+      providerConfirmation: "pending" as const,
+    });
+  },
   send: () => Effect.die("unused"),
   interrupt: () => Effect.die("unused"),
 });
 
 const ControllerServices = Layer.mergeAll(
+  fakeEnvironment,
+  NodeServices.layer,
   ServerSettings.layerTest({
     // Availability defaults on does not authorize non-controller sessions.
     enableRealtimeVoice: true,
@@ -126,6 +147,45 @@ const ControllerServices = Layer.mergeAll(
     ControllerActionContextResolver.of({ resolve: () => Effect.die("unused") }),
   ),
   Layer.succeed(ThreadControlService, threadControl),
+  Layer.mock(ThreadControlGrantRepository)({
+    getByThreadId: (threadId) =>
+      Effect.succeed(
+        Option.some({
+          threadId,
+          authorizedRuntimeCeiling: "approval-required",
+          controlEnabled: true,
+          createdAt: "2026-07-30T00:00:00.000Z",
+          updatedAt: "2026-07-30T00:00:00.000Z",
+        }),
+      ),
+  }),
+  Layer.mock(ProjectionSnapshotQuery)({
+    getThreadDetailById: () =>
+      Effect.succeed(
+        Option.some({
+          purpose: "standard",
+          deletedAt: null,
+          archivedAt: null,
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+          runtimeMode: "approval-required",
+        } as never),
+      ),
+  }),
+  Layer.succeed(
+    ThreadControlGrantVerifier,
+    ThreadControlGrantVerifier.of({
+      authorize: () => Effect.void,
+      validateMutation: () => Effect.void,
+    }),
+  ),
+  Layer.succeed(
+    ThreadControlExecutionCoordinator,
+    ThreadControlExecutionCoordinator.of({
+      execute: () => Effect.die("unused"),
+      setActiveTarget: () => Effect.void,
+      clearActiveTargetIfMatching: () => Effect.void,
+    }),
+  ),
 );
 
 const postJsonRpc = (authorizationHeader: string, body: unknown) =>
@@ -178,8 +238,23 @@ it.effect("serves only the five controller tools and enforces profile and turn m
           controlEnabled: true,
         },
       });
+      const durableController = yield* registry.issue({
+        threadId: controllerThreadId,
+        providerInstanceId,
+        profile: {
+          kind: "durable-thread-controller",
+          controllerThreadId,
+          authorizedRuntimeCeiling: "approval-required",
+          controlEnabled: true,
+        },
+      });
       expect(
         yield* registry.bindControllerProviderIdentity(controller.config.credentialId, {
+          codexProviderThreadId,
+        }),
+      ).toBe(true);
+      expect(
+        yield* registry.bindControllerProviderIdentity(durableController.config.credentialId, {
           codexProviderThreadId,
         }),
       ).toBe(true);
@@ -221,6 +296,41 @@ it.effect("serves only the five controller tools and enforces profile and turn m
         "thread_list",
         "thread_send",
       ]);
+
+      const durableRead = yield* postJsonRpc(durableController.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: "durable-read-1",
+        method: "tools/call",
+        params: { name: "thread_list", arguments: {} },
+      });
+      expect(durableRead.status).toBe(200);
+      expect(durableRead.body).toMatchObject({
+        result: { isError: false, structuredContent: { snapshotSequence: 41 } },
+      });
+
+      const durableMutation = yield* postJsonRpc(durableController.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: "durable-mutation-1",
+        method: "tools/call",
+        params: {
+          name: "thread_create",
+          arguments: {
+            projectId: "project-http-test",
+            initialInstruction: "Create a real thread.",
+          },
+          _meta: {
+            "x-codex-turn-metadata": {
+              turn_id: "provider-turn-durable-1",
+              session_id: codexProviderThreadId,
+              thread_id: codexProviderThreadId,
+              turn_started_at_unix_ms: 1_754_000_000_000,
+            },
+          },
+        },
+      });
+      expect(durableMutation.status).toBe(200);
+      expect(durableMutation.body).toMatchObject({ result: { isError: false } });
+      expect(durableMutationRequestId).toBe("durable-mutation-1");
 
       const read = yield* postJsonRpc(controller.config.authorizationHeader, {
         jsonrpc: "2.0",
@@ -283,7 +393,7 @@ it.effect("serves only the five controller tools and enforces profile and turn m
           isError: true,
           structuredContent: {
             error: {
-              _tag: "ControllerActionContextError",
+              _tag: "ThreadControlInvocationError",
               code: "action_not_found",
             },
           },

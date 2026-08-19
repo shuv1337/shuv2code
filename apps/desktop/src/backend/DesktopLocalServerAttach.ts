@@ -1,5 +1,6 @@
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -11,9 +12,10 @@ import { waitForHttpReady } from "@shuv2code/shared/httpReadiness";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 
 const BACKEND_READINESS_PATH = "/.well-known/shuv2code/environment";
-const DEFAULT_ATTACH_PROBE_TIMEOUT = Duration.millis(400);
-const DEFAULT_ATTACH_READINESS_TIMEOUT = Duration.seconds(2);
-const DEFAULT_ATTACH_RENDERER_TIMEOUT = Duration.seconds(1);
+const DEFAULT_ATTACH_PROBE_TIMEOUT = Duration.millis(175);
+const DEFAULT_ATTACH_READINESS_TIMEOUT = Duration.millis(200);
+const DEFAULT_ATTACH_RENDERER_TIMEOUT = Duration.millis(200);
+const DEFAULT_ATTACH_DISCOVERY_TIMEOUT = Duration.millis(500);
 
 const PersistedServerRuntimeState = Schema.Struct({
   version: Schema.Literal(1),
@@ -119,54 +121,90 @@ const candidateOrigins = (input: {
   return [...origins];
 };
 
+const discoverReusableLocalServerUnbounded = Effect.fn(
+  "desktop.discoverReusableLocalServerUnbounded",
+)(function* (): Effect.fn.Return<
+  Option.Option<DiscoveredLocalServer>,
+  never,
+  DesktopEnvironment.DesktopEnvironment | FileSystem.FileSystem | HttpClient.HttpClient
+> {
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const stateDirs = [
+    ...new Set([
+      environment.stateDir,
+      environment.path.join(environment.baseDir, "userdata"),
+      environment.path.join(environment.baseDir, "dev"),
+    ]),
+  ];
+
+  const candidates: Array<{
+    readonly origin: string;
+    readonly bootstrapToken: string;
+  }> = [];
+  const seenOrigins = new Set<string>();
+  for (const stateDir of stateDirs) {
+    const attachPath = environment.path.join(stateDir, "local-desktop-attach.json");
+    const runtimeStatePath = environment.path.join(stateDir, "server-runtime.json");
+    const attach = yield* readJsonFileOptional(attachPath, decodePersistedLocalDesktopAttach);
+    if (Option.isNone(attach)) continue;
+
+    const runtime = yield* readJsonFileOptional(
+      runtimeStatePath,
+      decodePersistedServerRuntimeState,
+    );
+    for (const origin of candidateOrigins({
+      configuredPort: environment.configuredBackendPort,
+      runtimeOrigin: Option.map(runtime, (value) => value.origin),
+      runtimePort: Option.map(runtime, (value) => value.port),
+    })) {
+      if (seenOrigins.has(origin)) continue;
+      seenOrigins.add(origin);
+      candidates.push({ origin, bootstrapToken: attach.value.credential });
+    }
+  }
+
+  if (candidates.length === 0) return Option.none();
+  const probeCandidate = Effect.fn("desktop.probeReusableLocalServerCandidate")(function* ({
+    origin,
+    bootstrapToken,
+  }: (typeof candidates)[number]) {
+    if (!(yield* probeReadyOrigin(origin))) return Option.none<DiscoveredLocalServer>();
+    if (!(yield* probeUsableRendererOrigin(origin))) return Option.none<DiscoveredLocalServer>();
+    const httpBaseUrl = new URL(origin.endsWith("/") ? origin : `${origin}/`);
+    const port = Number(httpBaseUrl.port || (httpBaseUrl.protocol === "https:" ? 443 : 80));
+    if (!Number.isFinite(port) || port <= 0) return Option.none<DiscoveredLocalServer>();
+    return Option.some({
+      httpBaseUrl,
+      port,
+      bootstrapToken,
+      origin: httpBaseUrl.origin,
+    } satisfies DiscoveredLocalServer);
+  });
+  const discoverByPriority = Effect.scoped(
+    Effect.gen(function* () {
+      const probes = [];
+      for (const candidate of candidates) {
+        probes.push(yield* Effect.forkScoped(probeCandidate(candidate)));
+      }
+      for (const probe of probes) {
+        const result = yield* Fiber.join(probe);
+        if (Option.isSome(result)) return result;
+      }
+      return Option.none<DiscoveredLocalServer>();
+    }),
+  );
+  return yield* discoverByPriority;
+});
+
 export const discoverReusableLocalServer = Effect.fn("desktop.discoverReusableLocalServer")(
   function* (): Effect.fn.Return<
     Option.Option<DiscoveredLocalServer>,
     never,
     DesktopEnvironment.DesktopEnvironment | FileSystem.FileSystem | HttpClient.HttpClient
   > {
-    const environment = yield* DesktopEnvironment.DesktopEnvironment;
-    const stateDirs = [
-      ...new Set([
-        environment.stateDir,
-        environment.path.join(environment.baseDir, "userdata"),
-        environment.path.join(environment.baseDir, "dev"),
-      ]),
-    ];
-
-    for (const stateDir of stateDirs) {
-      const attachPath = environment.path.join(stateDir, "local-desktop-attach.json");
-      const runtimeStatePath = environment.path.join(stateDir, "server-runtime.json");
-      const attach = yield* readJsonFileOptional(attachPath, decodePersistedLocalDesktopAttach);
-      if (Option.isNone(attach)) continue;
-
-      const runtime = yield* readJsonFileOptional(
-        runtimeStatePath,
-        decodePersistedServerRuntimeState,
-      );
-      const origins = candidateOrigins({
-        configuredPort: environment.configuredBackendPort,
-        runtimeOrigin: Option.map(runtime, (value) => value.origin),
-        runtimePort: Option.map(runtime, (value) => value.port),
-      });
-
-      for (const origin of origins) {
-        const ready = yield* probeReadyOrigin(origin);
-        if (!ready) continue;
-        const rendererReady = yield* probeUsableRendererOrigin(origin);
-        if (!rendererReady) continue;
-        const httpBaseUrl = new URL(origin.endsWith("/") ? origin : `${origin}/`);
-        const port = Number(httpBaseUrl.port || (httpBaseUrl.protocol === "https:" ? 443 : 80));
-        if (!Number.isFinite(port) || port <= 0) continue;
-        return Option.some({
-          httpBaseUrl,
-          port,
-          bootstrapToken: attach.value.credential,
-          origin: httpBaseUrl.origin,
-        });
-      }
-    }
-
-    return Option.none();
+    const discovered = yield* discoverReusableLocalServerUnbounded().pipe(
+      Effect.timeoutOption(DEFAULT_ATTACH_DISCOVERY_TIMEOUT),
+    );
+    return Option.flatten(discovered);
   },
 );

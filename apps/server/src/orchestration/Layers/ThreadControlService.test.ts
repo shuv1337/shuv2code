@@ -6,10 +6,11 @@ import * as Exit from "effect/Exit";
 
 import {
   boundedUntrustedThreadContext,
-  completeClaimedMutationDispatch,
+  isAvailableThreadControlSource,
   validateInterruptTargetPrecondition,
   validateSendTargetPrecondition,
 } from "./ThreadControlService.ts";
+import { completeClaimedMutationDispatch } from "../Services/ThreadControlExecutionCoordinator.ts";
 import { ThreadControlError } from "../Services/ThreadControlService.ts";
 
 const failureCode = <A>(effect: Effect.Effect<A, { readonly code: string }>) =>
@@ -28,6 +29,20 @@ const failureCode = <A>(effect: Effect.Effect<A, { readonly code: string }>) =>
   );
 
 describe("ThreadControlService exact target preconditions", () => {
+  it("accepts ordinary durable threads as controller sources but never transport threads", () => {
+    const available = { deletedAt: null, archivedAt: null };
+    assert.isTrue(isAvailableThreadControlSource({ ...available, purpose: "standard" }));
+    assert.isTrue(isAvailableThreadControlSource({ ...available, purpose: "voice-controller" }));
+    assert.isFalse(isAvailableThreadControlSource({ ...available, purpose: "voice-transport" }));
+    assert.isFalse(
+      isAvailableThreadControlSource({
+        purpose: "standard",
+        deletedAt: "2026-08-16T00:00:00.000Z",
+        archivedAt: null,
+      }),
+    );
+  });
+
   it("bounds recent user and assistant context in chronological order", () => {
     const context = boundedUntrustedThreadContext([
       { role: "system", text: "hidden" },

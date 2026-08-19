@@ -61,8 +61,7 @@ import Migration0043 from "./Migrations/043_ProjectionTurnsKeysetIndex.ts";
 import Migration0044 from "./Migrations/044_ProjectionThreadsPinOrderKey.ts";
 import Migration0045 from "./Migrations/045_ProjectionProjectsDefaultThreadEnvMode.ts";
 import Migration0046 from "./Migrations/046_ProjectionProjectFaviconPath.ts";
-// Migration 47 is reserved for the independently reviewable thread-control
-// grants change. Voice migrations start at 48 so either PR can land first.
+import Migration0047 from "./Migrations/047_ThreadControlGrants.ts";
 import Migration0048 from "./Migrations/048_VoiceTransportLeaseIdentity.ts";
 import Migration0049 from "./Migrations/049_VoiceSessionOwnership.ts";
 import Migration0050 from "./Migrations/050_VoiceSessionControllerAnchorCompatibility.ts";
@@ -128,6 +127,7 @@ export const migrationEntries = [
   [44, "ProjectionThreadsPinOrderKey", Migration0044],
   [45, "ProjectionProjectsDefaultThreadEnvMode", Migration0045],
   [46, "ProjectionProjectFaviconPath", Migration0046],
+  [47, "ThreadControlGrants", Migration0047],
   [48, "VoiceTransportLeaseIdentity", Migration0048],
   [49, "VoiceSessionOwnership", Migration0049],
   [50, "VoiceSessionControllerAnchorCompatibility", Migration0050],

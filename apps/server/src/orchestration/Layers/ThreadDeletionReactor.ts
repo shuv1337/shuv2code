@@ -5,6 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import { ThreadControlGrantRepository } from "../../persistence/Services/ThreadControlGrants.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -41,6 +43,24 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager.TerminalManager;
+  const threadControlGrants = yield* ThreadControlGrantRepository;
+
+  const revokeThreadControlGrant = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+    logCleanupCauseUnlessInterrupted({
+      effect: threadControlGrants.revoke(threadId).pipe(Effect.asVoid),
+      message: "thread deletion cleanup skipped controller grant revocation",
+      threadId,
+    });
+
+  const revokeThreadControlProfile = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+    logCleanupCauseUnlessInterrupted({
+      effect: McpSessionRegistry.revokeActiveMcpThreadProfile(
+        threadId,
+        "durable-thread-controller",
+      ),
+      message: "thread deletion cleanup skipped controller MCP profile revocation",
+      threadId,
+    });
 
   const stopProviderSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     logCleanupCauseUnlessInterrupted({
@@ -60,6 +80,8 @@ const make = Effect.gen(function* () {
     event: ThreadDeletedEvent,
   ) {
     const { threadId } = event.payload;
+    yield* revokeThreadControlGrant(threadId);
+    yield* revokeThreadControlProfile(threadId);
     yield* stopProviderSession(threadId);
     yield* closeThreadTerminals(threadId);
   });

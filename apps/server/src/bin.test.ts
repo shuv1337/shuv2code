@@ -7,8 +7,12 @@ import * as NodePath from "node:path";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   CommandId,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
   EnvironmentOrchestrationHttpApi,
+  ProjectId,
   ProviderInstanceId,
   ThreadId,
 } from "@shuv2code/contracts";
@@ -32,6 +36,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import { ThreadControlGrantRepositoryLive } from "./persistence/Layers/ThreadControlGrants.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import {
   makePersistedServerRuntimeState,
@@ -113,11 +118,16 @@ const readPersistedSnapshot = (baseDir: string) =>
     }).pipe(Effect.provide(makeProjectPersistenceLayer(config)));
   });
 
-const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Effect<A, E, R>) =>
+const withLiveProjectCliServer = <A, E, R>(
+  baseDir: string,
+  run: (origin: string) => Effect.Effect<A, E, R>,
+) =>
   Effect.gen(function* () {
     const config = yield* makeCliTestServerConfig(baseDir);
     const routesLayer = HttpApiBuilder.layer(ProjectCliHttpApi).pipe(
-      Layer.provide(orchestrationHttpApiLayer),
+      Layer.provide(
+        orchestrationHttpApiLayer.pipe(Layer.provideMerge(ThreadControlGrantRepositoryLive)),
+      ),
       Layer.provide(environmentAuthenticatedAuthLayer),
     );
     const appLayer = HttpRouter.serve(routesLayer, {
@@ -155,7 +165,7 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
             port: address.port,
           }),
         });
-        return yield* run();
+        return yield* run(`http://127.0.0.1:${address.port}`);
       }).pipe(Effect.provide(Layer.mergeAll(appLayer, NodeServices.layer))),
     );
   });
@@ -573,6 +583,142 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
           );
           assert.isTrue(addedProject !== undefined);
           assert.equal(addedProject?.title, "Live Project");
+        }),
+      );
+    }),
+  );
+
+  it.effect("enforces durable thread-control grants at the authenticated HTTP boundary", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "shuv2code-cli-thread-control-grant-test-"),
+      );
+
+      yield* withLiveProjectCliServer(baseDir, (origin) =>
+        Effect.gen(function* () {
+          const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+          const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+          const createdAt = DateTime.formatIso(yield* DateTime.now);
+          const projectId = ProjectId.make("project-thread-control-http");
+          const ordinaryThreadId = ThreadId.make("thread-control-http-standard");
+          const voiceThreadId = ThreadId.make("thread-control-http-voice");
+
+          yield* engine.dispatch({
+            type: "project.create",
+            commandId: CommandId.make("cmd-thread-control-http-project"),
+            projectId,
+            title: "Thread control HTTP",
+            workspaceRoot: "/tmp/thread-control-http",
+            defaultModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            createdAt,
+          });
+          for (const [threadId, purpose] of [
+            [ordinaryThreadId, "standard"],
+            [voiceThreadId, "voice-transport"],
+          ] as const) {
+            yield* engine.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`cmd-${threadId}`),
+              threadId,
+              projectId,
+              purpose,
+              title: `${purpose} thread`,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              runtimeMode: "approval-required",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+            });
+          }
+
+          const readOnly = yield* environmentAuth.issueSession({
+            scopes: [AuthOrchestrationReadScope],
+          });
+          const operator = yield* environmentAuth.issueSession({
+            scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+          });
+          const grantUrl = `${origin}/api/orchestration/threads/${ordinaryThreadId}/control-grant`;
+          // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed test request fixture.
+          const grantPayload = JSON.stringify({
+            authorizedRuntimeCeiling: "approval-required",
+            controlEnabled: true,
+          });
+          const request = (url: string, token: string, method = "GET", body?: string) =>
+            Effect.promise(() =>
+              // @effect-diagnostics-next-line globalFetchInEffect:off - the live-server integration intentionally crosses Node's HTTP boundary.
+              fetch(url, {
+                method,
+                headers: {
+                  authorization: `Bearer ${token}`,
+                  ...(body === undefined ? {} : { "content-type": "application/json" }),
+                },
+                ...(body === undefined ? {} : { body }),
+              }),
+            );
+          const responseJson = (response: Response) => Effect.promise(() => response.json());
+
+          const denied = yield* request(grantUrl, readOnly.token, "PUT", grantPayload);
+          assert.equal(denied.status, 403);
+          assert.deepInclude(yield* responseJson(denied), {
+            code: "insufficient_scope",
+            requiredScope: AuthOrchestrationOperateScope,
+          });
+
+          const initial = yield* request(grantUrl, operator.token);
+          assert.equal(initial.status, 200);
+          assert.deepInclude(yield* responseJson(initial), {
+            threadId: ordinaryThreadId,
+            granted: false,
+            controlEnabled: false,
+          });
+
+          const granted = yield* request(grantUrl, operator.token, "PUT", grantPayload);
+          assert.equal(granted.status, 200);
+          assert.deepInclude(yield* responseJson(granted), {
+            threadId: ordinaryThreadId,
+            granted: true,
+            authorizedRuntimeCeiling: "approval-required",
+            controlEnabled: true,
+          });
+
+          const revoked = yield* request(grantUrl, operator.token, "DELETE");
+          assert.equal(revoked.status, 200);
+          assert.deepInclude(yield* responseJson(revoked), {
+            threadId: ordinaryThreadId,
+            granted: false,
+            controlEnabled: false,
+          });
+
+          const voiceRejected = yield* request(
+            `${origin}/api/orchestration/threads/${voiceThreadId}/control-grant`,
+            operator.token,
+            "PUT",
+            grantPayload,
+          );
+          assert.equal(voiceRejected.status, 400);
+          assert.deepInclude(yield* responseJson(voiceRejected), {
+            code: "invalid_request",
+            reason: "invalid_command",
+          });
+
+          const missingRejected = yield* request(
+            `${origin}/api/orchestration/threads/missing-thread/control-grant`,
+            operator.token,
+            "PUT",
+            grantPayload,
+          );
+          assert.equal(missingRejected.status, 404);
+          assert.deepInclude(yield* responseJson(missingRejected), {
+            code: "not_found",
+            reason: "thread_not_found",
+          });
         }),
       );
     }),

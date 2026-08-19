@@ -869,6 +869,7 @@ export interface ComposerPromptEditorHandle {
   focus: () => void;
   focusAt: (cursor: number) => void;
   focusAtEnd: () => void;
+  getRootElement: () => HTMLElement | null;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -1692,9 +1693,10 @@ function ComposerPromptEditorInner({
           ),
         );
       },
+      getRootElement: () => editor.getRootElement(),
       readSnapshot,
     }),
-    [focusAt, readSnapshot],
+    [editor, focusAt, readSnapshot],
   );
 
   const handleEditorChange = useCallback((editorState: EditorState) => {

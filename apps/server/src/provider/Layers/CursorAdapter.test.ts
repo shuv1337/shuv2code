@@ -27,6 +27,7 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
@@ -169,6 +170,83 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("registers ordinary and durable controller MCP servers", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-controller-mcp");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-controller-mcp-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const argvLogPath = NodePath.join(tempDir, "argv.txt");
+      yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, argvLogPath),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const base = {
+        environmentId: "environment-test" as never,
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("cursor"),
+      };
+      McpProviderSession.setMcpProviderSession({
+        ...base,
+        credentialId: "standard-credential",
+        providerSessionId: "standard-session",
+        profile: { kind: "standard-provider" },
+        endpoint: "http://127.0.0.1/mcp",
+        authorizationHeader: "Bearer standard-token",
+      });
+      McpProviderSession.setMcpProviderSession({
+        ...base,
+        credentialId: "controller-credential",
+        providerSessionId: "controller-session",
+        profile: {
+          kind: "durable-thread-controller",
+          controllerThreadId: threadId,
+          providerIdentity: undefined,
+          authorizedRuntimeCeiling: "full-access",
+          controlEnabled: true,
+        },
+        endpoint: "http://127.0.0.1/mcp/controller",
+        authorizationHeader: "Bearer controller-token",
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const sessionNew = requests.find((entry) => entry.method === "session/new");
+      if (sessionNew === undefined) {
+        return yield* Effect.die("expected the Cursor ACP session/new request");
+      }
+      assert.deepEqual((sessionNew.params as Record<string, unknown>).mcpServers, [
+        {
+          type: "http",
+          name: "shuv2code",
+          url: "http://127.0.0.1/mcp",
+          headers: [{ name: "Authorization", value: "Bearer standard-token" }],
+        },
+        {
+          type: "http",
+          name: "shuv2code_controller",
+          url: "http://127.0.0.1/mcp/controller",
+          headers: [{ name: "Authorization", value: "Bearer controller-token" }],
+        },
+      ]);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("sends PDF attachments as ACP resource links", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

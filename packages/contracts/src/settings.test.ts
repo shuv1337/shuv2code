@@ -212,6 +212,29 @@ describe("ServerSettings worktree defaults", () => {
   });
 });
 
+describe("Codex thread history mode", () => {
+  it("defaults existing settings to legacy history", () => {
+    expect(decodeServerSettings({}).providers.codex.historyMode).toBe("legacy");
+  });
+
+  it("accepts paginated history in full settings and patches", () => {
+    expect(
+      decodeServerSettings({ providers: { codex: { historyMode: "paginated" } } }).providers.codex
+        .historyMode,
+    ).toBe("paginated");
+    expect(
+      decodeServerSettingsPatch({ providers: { codex: { historyMode: "paginated" } } }).providers
+        ?.codex?.historyMode,
+    ).toBe("paginated");
+  });
+
+  it("rejects unsupported history modes", () => {
+    expect(() =>
+      decodeServerSettingsPatch({ providers: { codex: { historyMode: "automatic" } } }),
+    ).toThrow();
+  });
+});
+
 describe("ServerSettings version control default", () => {
   it("keeps Git as the default for existing users", () => {
     expect(decodeServerSettings({}).defaultVcsKind).toBe("git");

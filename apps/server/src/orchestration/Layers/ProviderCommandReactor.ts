@@ -40,6 +40,7 @@ import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { ThreadControlGrantRepository } from "../../persistence/Services/ThreadControlGrants.ts";
 import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
@@ -386,6 +387,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const threadControlGrants = yield* ThreadControlGrantRepository;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
   const gitWorkflow = yield* GitWorkflowService;
@@ -838,6 +840,9 @@ const make = Effect.gen(function* () {
       thread,
       projects: project ? [project] : [],
     });
+    const durableControlGrant = Option.getOrUndefined(
+      yield* threadControlGrants.getByThreadId(threadId),
+    );
 
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
@@ -853,6 +858,15 @@ const make = Effect.gen(function* () {
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         ...(options?.recoveryPolicy === "forbid" ? { recoveryPolicy: "forbid" as const } : {}),
         ...(options?.threadSource !== undefined ? { threadSource: options.threadSource } : {}),
+        ...(durableControlGrant !== undefined
+          ? {
+              threadControlGrant: {
+                controllerThreadId: durableControlGrant.threadId,
+                authorizedRuntimeCeiling: durableControlGrant.authorizedRuntimeCeiling,
+                controlEnabled: durableControlGrant.controlEnabled,
+              },
+            }
+          : {}),
         runtimeMode: desiredRuntimeMode,
       });
 

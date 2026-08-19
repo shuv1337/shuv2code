@@ -23,6 +23,25 @@ function getOptionValue(
 }
 
 describe("ProviderSessionStartInput", () => {
+  it("decodes an explicit durable thread-control grant", () => {
+    const parsed = decodeProviderSessionStartInput({
+      threadId: "controller-thread",
+      providerInstanceId: "codex",
+      runtimeMode: "approval-required",
+      threadControlGrant: {
+        controllerThreadId: "controller-thread",
+        authorizedRuntimeCeiling: "approval-required",
+        controlEnabled: true,
+      },
+    });
+
+    expect(parsed.threadControlGrant).toEqual({
+      controllerThreadId: "controller-thread",
+      authorizedRuntimeCeiling: "approval-required",
+      controlEnabled: true,
+    });
+  });
+
   it("accepts codex-compatible payloads", () => {
     const parsed = decodeProviderSessionStartInput({
       threadId: "thread-1",
