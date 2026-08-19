@@ -425,7 +425,9 @@ describe("VoiceSpeechArbiter", () => {
 
       yield* TestClock.adjust("45 seconds");
       yield* Effect.yieldNow;
-      assert.strictEqual((yield* arbiter.takeFailure).attemptId, "authored-1");
+      const failure = yield* arbiter.takeFailure;
+      assert.strictEqual(failure.attempt.attemptId, "authored-1");
+      assert.strictEqual(failure.failureReason, "output-timeout");
       assert.deepStrictEqual(yield* Ref.get(sent), ["First."]);
       assert.deepStrictEqual(yield* Ref.get(lifecycle), [
         "authored-1:speech.queued",
@@ -433,6 +435,21 @@ describe("VoiceSpeechArbiter", () => {
         "authored-2:speech.queued",
         "authored-1:speech.failed",
       ]);
+    }),
+  );
+
+  it.effect("reports transport request failures separately from output timeouts", () =>
+    Effect.gen(function* () {
+      const arbiter = yield* makeVoiceSpeechArbiter(() =>
+        Effect.fail({ _tag: "TransportDead" as const }),
+      );
+      const activeSession = session();
+
+      yield* arbiter.enqueue(attempt(activeSession, "authored-1", "authored", "First."));
+
+      const failure = yield* arbiter.takeFailure;
+      assert.strictEqual(failure.attempt.attemptId, "authored-1");
+      assert.strictEqual(failure.failureReason, "transport-request-failed");
     }),
   );
 

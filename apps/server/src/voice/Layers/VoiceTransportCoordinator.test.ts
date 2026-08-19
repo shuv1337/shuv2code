@@ -3,6 +3,7 @@ import {
   boundedCallInitialItems,
   callIdentityInitialItem,
   CALL_REALTIME_PROMPT,
+  sameVoiceTransportGeneration,
 } from "./VoiceTransportCoordinator.ts";
 import { fenceMatches, publicVoiceSessionId } from "./voiceControllerShared.ts";
 import {
@@ -116,6 +117,21 @@ describe("VoiceTransportCoordinator ownership", () => {
     );
     assert.strictEqual(
       fenceMatches(session, { ...fence, environmentId: EnvironmentId.make("other-env") }),
+      false,
+    );
+    assert.strictEqual(sameVoiceTransportGeneration(session, session), true);
+    assert.strictEqual(
+      sameVoiceTransportGeneration({ ...session, transportSessionId: "client:2" }, session),
+      false,
+    );
+    assert.strictEqual(
+      sameVoiceTransportGeneration(
+        {
+          ...session,
+          fence: { ...fence, generation: VoiceGeneration.make(2) },
+        },
+        session,
+      ),
       false,
     );
   });
