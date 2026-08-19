@@ -59,6 +59,8 @@ import {
   WsVoiceAppendAudioRpc,
   WsVoiceEnsureControllerRpc,
   WsVoiceGetControllerRpc,
+  WsVoiceGetControllerHistoryRpc,
+  WsVoiceSetControllerTargetRpc,
   WsVoiceIngestRealtimeEventRpc,
   WsVoiceListVoicesRpc,
   WsVoiceResetControllerRpc,
@@ -200,12 +202,40 @@ const makeVoiceRpcHandlers = (
 ) => {
   const { observeRpcEffect, observeRpcStream } = makeAuthorizedRpcObservers(currentSession);
   return {
+    [WS_METHODS.voiceGetActiveCall]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["getActiveCall"]>[0],
+    ) =>
+      observeRpcEffect(WS_METHODS.voiceGetActiveCall, voiceController.getActiveCall(input), {
+        "rpc.aggregate": "voice",
+      }),
     [WS_METHODS.voiceGetController]: (
       input: Parameters<VoiceController.VoiceControllerService["Service"]["getController"]>[0],
     ) =>
       observeRpcEffect(WS_METHODS.voiceGetController, voiceController.getController(input), {
         "rpc.aggregate": "voice",
       }),
+    [WS_METHODS.voiceGetControllerHistory]: (
+      input: Parameters<
+        VoiceController.VoiceControllerService["Service"]["getControllerHistory"]
+      >[0],
+    ) =>
+      observeRpcEffect(
+        WS_METHODS.voiceGetControllerHistory,
+        voiceController.getControllerHistory(input),
+        {
+          "rpc.aggregate": "voice",
+        },
+      ),
+    [WS_METHODS.voiceSetControllerTarget]: (
+      input: Parameters<
+        VoiceController.VoiceControllerService["Service"]["setControllerTarget"]
+      >[0],
+    ) =>
+      observeRpcEffect(
+        WS_METHODS.voiceSetControllerTarget,
+        voiceController.setControllerTarget(input),
+        { "rpc.aggregate": "voice" },
+      ),
     [WS_METHODS.voiceEnsureController]: (
       input: Parameters<VoiceController.VoiceControllerService["Service"]["ensureController"]>[0],
     ) =>
@@ -266,6 +296,8 @@ const makeVoiceRpcHandlers = (
 /** The production voice RPC subset, exposed for focused in-memory integration tests. */
 export const VoiceWsRpcGroup = RpcGroup.make(
   WsVoiceGetControllerRpc,
+  WsVoiceGetControllerHistoryRpc,
+  WsVoiceSetControllerTargetRpc,
   WsVoiceEnsureControllerRpc,
   WsVoiceListVoicesRpc,
   WsVoiceResetControllerRpc,
@@ -434,6 +466,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
   {
     type:
       | "thread.message-sent"
+      | "thread.voice-exchange-appended"
+      | "thread.voice-speech-appended"
       | "thread.proposed-plan-upserted"
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
@@ -443,6 +477,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
 > {
   return (
     event.type === "thread.message-sent" ||
+    event.type === "thread.voice-exchange-appended" ||
+    event.type === "thread.voice-speech-appended" ||
     event.type === "thread.proposed-plan-upserted" ||
     event.type === "thread.activity-appended" ||
     event.type === "thread.turn-diff-completed" ||

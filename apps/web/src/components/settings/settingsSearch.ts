@@ -210,6 +210,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/speech",
   },
   {
+    id: "call-narration",
+    title: "Call narration",
+    to: "/settings/speech",
+  },
+  {
+    id: "call-appearance",
+    title: "Call appearance",
+    to: "/settings/speech",
+  },
+  {
     id: "source-control",
     title: "Source control",
     to: "/settings/source-control",

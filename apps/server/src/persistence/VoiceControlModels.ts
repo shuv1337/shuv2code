@@ -9,6 +9,11 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
   TurnId,
+  VoiceCallId,
+  VoiceCallRevision,
+  VoiceCallState,
+  VoiceDeviceId,
+  VoiceDeviceKind,
 } from "@shuv2code/contracts";
 import * as Schema from "effect/Schema";
 
@@ -48,6 +53,14 @@ export type VoiceTransportSessionState = typeof VoiceTransportSessionState.Type;
 export const VoiceTransportSession = Schema.Struct({
   transportSessionId: TrimmedNonEmptyString,
   environmentId: EnvironmentId,
+  callId: Schema.optionalKey(Schema.NullOr(VoiceCallId)),
+  deviceId: Schema.optionalKey(Schema.NullOr(VoiceDeviceId)),
+  deviceLabel: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+  deviceKind: Schema.optionalKey(Schema.NullOr(VoiceDeviceKind)),
+  ownerKind: Schema.Literals(["controller", "thread-call", "transcription-test"]),
+  ownerId: TrimmedNonEmptyString,
+  anchorThreadId: Schema.NullOr(ThreadId),
+  /** Compatibility anchor for the Controller coordinator until owner routing is authoritative. */
   controllerThreadId: ThreadId,
   transportThreadId: ThreadId,
   runtimeInstanceId: TrimmedNonEmptyString,
@@ -59,6 +72,53 @@ export const VoiceTransportSession = Schema.Struct({
   closedAt: Schema.NullOr(IsoDateTime),
 });
 export type VoiceTransportSession = typeof VoiceTransportSession.Type;
+
+export const VoiceCallEventKind = Schema.Literals([
+  "listener.attached",
+  "listener.detached",
+  "speech.queued",
+  "speech.started",
+  "speech.completed",
+  "speech.interrupted",
+  "speech.failed",
+]);
+export type VoiceCallEventKind = typeof VoiceCallEventKind.Type;
+
+export const VoiceCall = Schema.Struct({
+  callId: VoiceCallId,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  state: VoiceCallState,
+  activeTransportSessionId: Schema.NullOr(TrimmedNonEmptyString),
+  activeDeviceId: Schema.NullOr(VoiceDeviceId),
+  activeDeviceLabel: Schema.NullOr(TrimmedNonEmptyString),
+  activeDeviceKind: Schema.NullOr(VoiceDeviceKind),
+  revision: VoiceCallRevision,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  endedAt: Schema.NullOr(IsoDateTime),
+});
+export type VoiceCall = typeof VoiceCall.Type;
+
+/**
+ * Provider-neutral, append-only Call lifecycle evidence. Unlike transport
+ * events, these rows survive media generations and app restarts.
+ */
+export const VoiceCallEvent = Schema.Struct({
+  eventId: PositiveInt,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  callId: Schema.NullOr(VoiceCallId),
+  deviceId: Schema.NullOr(VoiceDeviceId),
+  transportSessionId: TrimmedNonEmptyString,
+  generation: PositiveInt,
+  kind: VoiceCallEventKind,
+  correlationId: Schema.NullOr(TrimmedNonEmptyString),
+  threadSnapshotSequence: Schema.NullOr(NonNegativeInt),
+  payload: Schema.Unknown,
+  occurredAt: IsoDateTime,
+});
+export type VoiceCallEvent = typeof VoiceCallEvent.Type;
 
 export const VoiceControllerActionState = Schema.Literals([
   "queued",

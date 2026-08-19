@@ -10,7 +10,6 @@ import type {
   ScopedThreadRef,
   ServerProvider,
   ThreadId,
-  TurnId,
 } from "@shuv2code/contracts";
 import {
   isProviderSendTurnSupportedImageMimeType,
@@ -206,7 +205,6 @@ import {
   BotIcon,
   CircleAlertIcon,
   FileTextIcon,
-  ListTodoIcon,
   PencilRulerIcon,
   type LucideIcon,
   LockIcon,
@@ -3529,6 +3527,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   compact={isComposerPrimaryActionsCompact}
                   environmentId={environmentId}
                   hostProjectId={voiceControlHostProjectId}
+                  {...(activeThreadId === null ? {} : { targetThreadId: activeThreadId })}
                   providerInstanceId={selectedInstanceId}
                   modelSelection={selectedModelSelection}
                   realtimeEnabled={settings.enableRealtimeVoice}

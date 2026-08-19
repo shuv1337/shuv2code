@@ -773,6 +773,10 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
         );
 
         if (shared) {
+          // `tailscale serve` forwards to 127.0.0.1. On hosts where localhost
+          // resolves to ::1, Vite would otherwise be healthy locally while the
+          // shared URL returns 502. Pin only shared browser dev to IPv4 loopback.
+          env.SHUV2CODE_WEB_BIND_HOST = DESKTOP_DEV_LOOPBACK_HOST;
           // The app is reached from the tailnet origin. Vite already allows
           // *.ts.net hosts; the backend needs the origin for credentialed
           // requests that bypass the proxy (desktop renderer, direct calls).

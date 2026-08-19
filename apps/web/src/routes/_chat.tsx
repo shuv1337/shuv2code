@@ -21,6 +21,7 @@ import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { primaryServerKeybindingsAtom } from "~/state/server";
+import { VoiceSurfaceHostProvider } from "../components/voice/VoiceSurfaceHost";
 
 function ChatRouteGlobalShortcuts() {
   const clearSelection = useThreadSelectionStore((state) => state.clearSelection);
@@ -176,10 +177,10 @@ function ChatRouteGlobalShortcuts() {
 
 function ChatRouteLayout() {
   return (
-    <>
+    <VoiceSurfaceHostProvider>
       <ChatRouteGlobalShortcuts />
       <Outlet />
-    </>
+    </VoiceSurfaceHostProvider>
   );
 }
 

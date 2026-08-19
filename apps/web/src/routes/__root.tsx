@@ -13,6 +13,7 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../branding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
+import { PairingRouteSurface } from "../components/auth/PairingRouteSurface";
 import { CommandPalette } from "../components/CommandPalette";
 import { ConfirmDialogHost } from "../components/ConfirmDialogHost";
 import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";
@@ -20,7 +21,6 @@ import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstall
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { SlowRpcRequestToastCoordinator } from "../components/SlowRpcRequestToastCoordinator";
-import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
 import { Button } from "../components/ui/button";
 import {
   AnchoredToastProvider,
@@ -100,6 +100,29 @@ function RootRouteView() {
       window.cancelAnimationFrame(frame);
     };
   }, [pathname]);
+
+  if (import.meta.env.DEV && pathname === "/dev/voice") {
+    if (authGateState.status === "requires-auth") {
+      return (
+        <PairingRouteSurface
+          auth={authGateState.auth}
+          onAuthenticated={() => window.location.reload()}
+          {...(authGateState.errorMessage
+            ? { initialErrorMessage: authGateState.errorMessage }
+            : {})}
+        />
+      );
+    }
+
+    return (
+      <>
+        <DocumentTitleSync />
+        <HostedStaticEnvironmentBootstrap />
+        {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
+        <Outlet />
+      </>
+    );
+  }
 
   if (pathname === "/pair" || pathname === "/connect" || pathname.startsWith("/connect/")) {
     return (

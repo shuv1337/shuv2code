@@ -11,6 +11,7 @@ import {
   type VoiceTargetPhase,
   type VoiceSessionEvent,
   type VoiceSessionFence,
+  type VoiceSessionOwner,
 } from "@shuv2code/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -115,6 +116,10 @@ export function controllerIdentity(binding: {
 
 export function fenceMatches(session: ActiveVoiceSession, fence: VoiceSessionFence): boolean {
   return (
+    (fence.environmentId === undefined || session.environmentId === fence.environmentId) &&
+    (fence.owner === undefined ||
+      (session.fence.owner !== undefined &&
+        voiceSessionOwnersEqual(session.fence.owner, fence.owner))) &&
     session.fence.controllerThreadId === fence.controllerThreadId &&
     session.fence.transportThreadId === fence.transportThreadId &&
     session.fence.clientSessionId === fence.clientSessionId &&
@@ -122,6 +127,25 @@ export function fenceMatches(session: ActiveVoiceSession, fence: VoiceSessionFen
     session.fence.runtimeInstanceId === fence.runtimeInstanceId &&
     session.fence.realtimeSessionId === fence.realtimeSessionId
   );
+}
+
+export function voiceSessionOwnersEqual(
+  left: VoiceSessionOwner,
+  right: VoiceSessionOwner,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  switch (left.kind) {
+    case "controller":
+      return right.kind === "controller" && left.controllerThreadId === right.controllerThreadId;
+    case "thread-call":
+      return right.kind === "thread-call" && left.threadId === right.threadId;
+    case "transcription-test":
+      return (
+        right.kind === "transcription-test" &&
+        left.requestId === right.requestId &&
+        left.providerAnchorThreadId === right.providerAnchorThreadId
+      );
+  }
 }
 
 export const publicVoiceSessionId = (session: {
@@ -149,8 +173,9 @@ export const controllerTranscriptWithActiveTarget = (
   activeTargetThreadId === null
     ? transcript
     : [
-        "Bounded controller state (resolution hint only; server authorization still applies):",
+        "Server-bound controller target (server authorization still applies):",
         `activeTargetThreadId=${JSON.stringify(activeTargetThreadId.slice(0, 256))}`,
+        "If this request depends on the target's conversation or work, call thread_get with this exact ID and includeUntrustedContext=true before answering or acting.",
         "",
         "User request:",
         transcript,
@@ -213,7 +238,10 @@ export const domainEventTargetThreadId = (payload: unknown): ThreadId | undefine
 };
 
 interface VoiceEventSessionState {
-  readonly fence: Pick<VoiceSessionFence, "clientSessionId" | "generation" | "runtimeInstanceId">;
+  readonly fence: Pick<
+    VoiceSessionFence,
+    "environmentId" | "owner" | "clientSessionId" | "generation" | "runtimeInstanceId"
+  >;
   readonly eventCursor: number;
   readonly history: ReadonlyArray<VoiceSessionEvent>;
 }
@@ -239,6 +267,10 @@ export const appendVoiceSessionEvent = Effect.fn("VoiceControllerService.appendV
         if (current === undefined) return undefined;
         const sequence = current.eventCursor + 1;
         const event: VoiceSessionEvent = {
+          ...(current.fence.environmentId === undefined
+            ? {}
+            : { environmentId: current.fence.environmentId }),
+          ...(current.fence.owner === undefined ? {} : { owner: current.fence.owner }),
           clientSessionId: current.fence.clientSessionId,
           generation: current.fence.generation,
           runtimeInstanceId: current.fence.runtimeInstanceId,

@@ -62,6 +62,13 @@ import Migration0044 from "./Migrations/044_ProjectionThreadsPinOrderKey.ts";
 import Migration0045 from "./Migrations/045_ProjectionProjectsDefaultThreadEnvMode.ts";
 import Migration0046 from "./Migrations/046_ProjectionProjectFaviconPath.ts";
 import Migration0047 from "./Migrations/047_ThreadControlGrants.ts";
+import Migration0048 from "./Migrations/048_VoiceTransportLeaseIdentity.ts";
+import Migration0049 from "./Migrations/049_VoiceSessionOwnership.ts";
+import Migration0050 from "./Migrations/050_VoiceSessionControllerAnchorCompatibility.ts";
+import Migration0051 from "./Migrations/051_ProjectionThreadMessageModality.ts";
+import Migration0052 from "./Migrations/052_VoiceCallEvents.ts";
+import Migration0053 from "./Migrations/053_VoiceCallOwnership.ts";
+import Migration0054 from "./Migrations/054_VoiceCallHandoff.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -121,6 +128,13 @@ export const migrationEntries = [
   [45, "ProjectionProjectsDefaultThreadEnvMode", Migration0045],
   [46, "ProjectionProjectFaviconPath", Migration0046],
   [47, "ThreadControlGrants", Migration0047],
+  [48, "VoiceTransportLeaseIdentity", Migration0048],
+  [49, "VoiceSessionOwnership", Migration0049],
+  [50, "VoiceSessionControllerAnchorCompatibility", Migration0050],
+  [51, "ProjectionThreadMessageModality", Migration0051],
+  [52, "VoiceCallEvents", Migration0052],
+  [53, "VoiceCallOwnership", Migration0053],
+  [54, "VoiceCallHandoff", Migration0054],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

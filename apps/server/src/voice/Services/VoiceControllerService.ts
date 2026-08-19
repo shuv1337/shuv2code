@@ -3,14 +3,20 @@ import type {
   VoiceAppendAudioResult,
   VoiceEnsureControllerInput,
   VoiceEnsureControllerResult,
+  VoiceGetActiveCallInput,
+  VoiceGetActiveCallResult,
   VoiceGetControllerInput,
   VoiceGetControllerResult,
+  VoiceGetControllerHistoryInput,
+  VoiceGetControllerHistoryResult,
   VoiceListVoicesInput,
   VoiceListVoicesResult,
   VoiceRealtimeIngressInput,
   VoiceRealtimeIngressResult,
   VoiceResetControllerInput,
   VoiceResetControllerResult,
+  VoiceSetControllerTargetInput,
+  VoiceSetControllerTargetResult,
   VoiceSessionEvent,
   VoiceSessionStartInput,
   VoiceSessionStartResult,
@@ -25,9 +31,18 @@ import type * as Stream from "effect/Stream";
 import type { VoiceControllerError } from "@shuv2code/contracts";
 
 export interface VoiceControllerServiceShape {
+  readonly getActiveCall: (
+    input: VoiceGetActiveCallInput,
+  ) => Effect.Effect<VoiceGetActiveCallResult, VoiceControllerError>;
   readonly getController: (
     input: VoiceGetControllerInput,
   ) => Effect.Effect<VoiceGetControllerResult, VoiceControllerError>;
+  readonly getControllerHistory: (
+    input: VoiceGetControllerHistoryInput,
+  ) => Effect.Effect<VoiceGetControllerHistoryResult, VoiceControllerError>;
+  readonly setControllerTarget: (
+    input: VoiceSetControllerTargetInput,
+  ) => Effect.Effect<VoiceSetControllerTargetResult, VoiceControllerError>;
   readonly ensureController: (
     input: VoiceEnsureControllerInput,
   ) => Effect.Effect<VoiceEnsureControllerResult, VoiceControllerError>;
@@ -52,6 +67,12 @@ export interface VoiceControllerServiceShape {
   readonly subscribe: (
     input: VoiceSubscribeEventsInput,
   ) => Stream.Stream<VoiceSessionEvent, VoiceControllerError>;
+  /** Queue an explicitly model-authored spoken segment on an active direct Call. */
+  readonly speakInThreadCall: (input: {
+    readonly environmentId: import("@shuv2code/contracts").EnvironmentId;
+    readonly threadId: import("@shuv2code/contracts").ThreadId;
+    readonly text: string;
+  }) => Effect.Effect<boolean, VoiceControllerError>;
 }
 
 export class VoiceControllerService extends Context.Service<

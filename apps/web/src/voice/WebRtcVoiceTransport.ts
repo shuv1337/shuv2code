@@ -6,6 +6,9 @@ export interface WebRtcVoiceTransportConnectInput {
   readonly onData: (data: string) => void;
   readonly onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
   readonly onMicrophoneEnded?: () => void;
+  readonly onMicrophoneStream?: (stream: MediaStream) => void | Promise<void>;
+  readonly onRemoteAudioStream?: (stream: MediaStream) => void;
+  readonly playRemoteAudio?: boolean;
 }
 
 export interface WebRtcVoiceTransportDependencies {
@@ -106,6 +109,9 @@ export class WebRtcVoiceTransport {
         microphone.getTracks().forEach((track) => track.stop());
         return;
       }
+      this.#microphone = microphone;
+      await input.onMicrophoneStream?.(microphone);
+      if (this.#closed) return;
 
       const peer = this.#dependencies.createPeerConnection();
       const remoteAudio = this.#dependencies.createAudioElement();
@@ -114,7 +120,6 @@ export class WebRtcVoiceTransport {
       remoteAudio.style.display = "none";
       const dataChannel = peer.createDataChannel("oai-events");
 
-      this.#microphone = microphone;
       this.#peer = peer;
       this.#dataChannel = dataChannel;
       this.#remoteAudio = remoteAudio;
@@ -136,7 +141,9 @@ export class WebRtcVoiceTransport {
         input.onConnectionStateChange?.(peer.connectionState);
       });
       peer.addEventListener("track", (event) => {
+        if (input.playRemoteAudio === false) return;
         const remoteStream = event.streams[0] ?? new MediaStream([event.track]);
+        input.onRemoteAudioStream?.(remoteStream);
         remoteAudio.srcObject = remoteStream;
         void remoteAudio.play().catch((error: unknown) => {
           input.onData(

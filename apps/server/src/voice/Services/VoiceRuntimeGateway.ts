@@ -83,6 +83,15 @@ export type VoiceRuntimeGatewayEvent =
     };
 
 export interface VoiceRuntimeGatewayShape {
+  readonly prepareThreadCall?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly action: "inspect" | "migrate";
+  }) => Effect.Effect<
+    | { readonly state: "ready"; readonly historyMode: "paginated" | "not-applicable" }
+    | { readonly state: "migration-required"; readonly bytesToProcess: number },
+    VoiceRuntimeGatewayError
+  >;
   readonly recoverCreatedSession?: (
     input: ProviderCreationRecoveryInput,
   ) => Effect.Effect<ProviderCreationRecoveryResult, VoiceRuntimeGatewayError>;
@@ -105,8 +114,9 @@ export interface VoiceRuntimeGatewayShape {
     readonly runtimeMode: RuntimeMode;
     /**
      * A newly reserved binding is the only state allowed to create a provider
-     * thread. Every durable binding must recover its exact threadSource so a
-     * stale or missing resume cursor can never create a second controller.
+     * thread. A durable binding resumes its persisted provider cursor when
+     * available, then falls back to exact threadSource discovery only for the
+     * crash window before that cursor could be persisted.
      */
     readonly creationDisposition: "fresh" | "recover";
     readonly bindingGeneration: number;
@@ -133,6 +143,12 @@ export interface VoiceRuntimeGatewayShape {
     readonly offerSdp?: string | undefined;
     readonly voiceId?: string | undefined;
     readonly clientManagedHandoffs: true;
+    readonly prompt?: string | undefined;
+    readonly includeStartupContext?: boolean | undefined;
+    readonly initialItems?: ReadonlyArray<{
+      readonly role: "user" | "developer" | "assistant";
+      readonly text: string;
+    }>;
   }) => Effect.Effect<
     VoiceCodexIdentity & {
       readonly answerSdp: string | null;

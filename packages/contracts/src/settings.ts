@@ -104,6 +104,9 @@ export const DEFAULT_TERMINAL_FONT_SIZE: TerminalFontSize = 12;
 export const EnvironmentIdentificationMode = Schema.Literals(["artwork", "pill", "none"]);
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
+export const VoicePresenceVariation = Schema.Literals(["subtle", "balanced"]);
+export type VoicePresenceVariation = typeof VoicePresenceVariation.Type;
+export const DEFAULT_VOICE_PRESENCE_VARIATION: VoicePresenceVariation = "balanced";
 
 /**
  * A user-chosen font family (a single name or a comma-separated list). Empty
@@ -203,6 +206,10 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
+  ),
+  voicePresenceContextTint: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  voicePresenceVariation: VoicePresenceVariation.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_VOICE_PRESENCE_VARIATION)),
   ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
@@ -593,6 +600,10 @@ export const TextToSpeechSettings = Schema.Struct({
 });
 export type TextToSpeechSettings = typeof TextToSpeechSettings.Type;
 
+export const VoiceNarrationLevel = Schema.Literals(["quiet", "balanced", "conversational"]);
+export type VoiceNarrationLevel = typeof VoiceNarrationLevel.Type;
+export const DEFAULT_VOICE_NARRATION_LEVEL: VoiceNarrationLevel = "balanced";
+
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(30);
 export const DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL = Duration.minutes(5);
 
@@ -646,6 +657,9 @@ export const ServerSettings = Schema.Struct({
   enableRealtimeVoice: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   enableVoiceThreadRead: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   enableVoiceThreadControl: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  voiceNarrationLevel: VoiceNarrationLevel.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_VOICE_NARRATION_LEVEL)),
+  ),
   /**
    * Codex app-server process topology. `per-session` spawns one child per
    * shuv2code provider session (legacy). `shared` uses one supervised process
@@ -834,6 +848,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableRealtimeVoice: Schema.optionalKey(Schema.Boolean),
   enableVoiceThreadRead: Schema.optionalKey(Schema.Boolean),
   enableVoiceThreadControl: Schema.optionalKey(Schema.Boolean),
+  voiceNarrationLevel: Schema.optionalKey(VoiceNarrationLevel),
   codexAppServerTopology: Schema.optionalKey(Schema.Literals(["per-session", "shared"])),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
@@ -944,6 +959,8 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),
+  voicePresenceContextTint: Schema.optionalKey(Schema.Boolean),
+  voicePresenceVariation: Schema.optionalKey(VoicePresenceVariation),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

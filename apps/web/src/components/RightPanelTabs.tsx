@@ -18,12 +18,12 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   ChevronLeft,
   ChevronRight,
-  ClipboardList,
   Bot,
   FileDiff,
   Files,
   GitPullRequest,
   Globe2,
+  MicIcon,
   Plus,
   TerminalSquare,
   X,
@@ -45,7 +45,6 @@ import type { DesktopPreviewOverlay } from "~/previewStateStore";
 import type { RightPanelSurface } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
-import { Button } from "~/components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { Kbd } from "~/components/ui/kbd";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
@@ -84,6 +83,7 @@ interface RightPanelTabsProps {
   onCloseAllSurfaces: () => void;
   onMoveSurface: (surfaceId: string, targetSurfaceId: string) => void;
   onCopyFilePath: (relativePath: string) => void;
+  onAddVoice?: () => void;
   onAddBrowser: () => void;
   onAddTerminal: () => void;
   onAddDiff: () => void;
@@ -138,6 +138,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   diff: "Available for Git repositories.",
   pullRequest: "No pull request on this branch yet.",
   agents: "Available from a thread.",
+  voice: "Available from a thread.",
 } as const;
 
 type TabContextMenuAction =
@@ -185,6 +186,7 @@ function SurfaceMenuItem(props: {
  * surfaces stay visible with a one-line reason.
  */
 function RightPanelEmptyState(props: {
+  onAddVoice?: () => void;
   onAddBrowser: () => void;
   onAddTerminal: () => void;
   onAddDiff: () => void;
@@ -262,6 +264,16 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.agents,
       onClick: props.onAddAgents,
       badgeCount: props.liveAgentCount,
+    },
+    {
+      label: "Voice",
+      description: "Open the persistent environment voice thread.",
+      icon: MicIcon,
+      shortcut: "V",
+      available: props.onAddVoice !== undefined,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.voice,
+      onClick: () => props.onAddVoice?.(),
+      badgeCount: 0,
     },
   ] as const;
 
@@ -442,6 +454,8 @@ function surfaceTitle(
   terminalLabelsById: ReadonlyMap<string, string>,
 ): string {
   switch (surface.kind) {
+    case "voice":
+      return "Voice";
     case "diff":
       return "Diff";
     case "files":
@@ -503,6 +517,8 @@ function SurfaceIcon({
   pullRequestStatuses?: Readonly<Record<string, PullRequestTabStatus>> | undefined;
 }) {
   switch (surface.kind) {
+    case "voice":
+      return <MicIcon className="size-3.5 shrink-0" />;
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       const url = !snapshot || snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
@@ -566,7 +582,7 @@ interface SortableSurfaceTabProps {
 
 function SortableSurfaceTab(props: SortableSurfaceTabProps) {
   const { listeners, setActivatorNodeRef, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: props.surface.id });
+    useSortable({ id: props.surface.id, disabled: props.surface.kind === "voice" });
   const style: CSSProperties = {
     transform: CSS.Translate.toString(transform),
     transition,
@@ -598,12 +614,16 @@ function SortableSurfaceTab(props: SortableSurfaceTabProps) {
                 setActivatorNodeRef(node);
                 props.setButtonRef(props.surface.id, node);
               }}
-              {...listeners}
+              {...(props.surface.kind === "voice" ? {} : listeners)}
               type="button"
               role="tab"
               aria-selected={props.active}
-              aria-roledescription="sortable tab"
-              aria-keyshortcuts="Alt+Shift+ArrowLeft Alt+Shift+ArrowRight"
+              {...(props.surface.kind === "voice"
+                ? {}
+                : {
+                    "aria-roledescription": "sortable tab",
+                    "aria-keyshortcuts": "Alt+Shift+ArrowLeft Alt+Shift+ArrowRight",
+                  })}
               tabIndex={props.tabIndex}
               className="flex min-w-0 flex-1 cursor-default items-center gap-1.5"
               onClick={() => props.onActivate(props.surface)}
@@ -743,9 +763,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       ) {
         event.preventDefault();
         event.stopPropagation();
+        if (surface.kind === "voice") return;
         const targetIndex = surfaceIndex + (event.key === "ArrowLeft" ? -1 : 1);
         const target = props.surfaces[targetIndex];
-        if (!target) return;
+        if (!target || target.kind === "voice") return;
         props.onMoveSurface(surface.id, target.id);
         focusTabSoon(surface.id);
         return;
@@ -808,13 +829,21 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       if (surface.kind === "file") {
         items.push({ id: "copy-path", label: "Copy path" });
       }
+      if (surface.kind !== "voice") {
+        items.push(
+          {
+            id: "move-left",
+            label: "Move left",
+            disabled: surfaceIndex === 0 || props.surfaces[surfaceIndex - 1]?.kind === "voice",
+          },
+          {
+            id: "move-right",
+            label: "Move right",
+            disabled: surfaceIndex >= props.surfaces.length - 1,
+          },
+        );
+      }
       items.push(
-        { id: "move-left", label: "Move left", disabled: surfaceIndex === 0 },
-        {
-          id: "move-right",
-          label: "Move right",
-          disabled: surfaceIndex >= props.surfaces.length - 1,
-        },
         { id: "close", label: "Close" },
         {
           id: "close-others",
@@ -975,6 +1004,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                   </MenuTrigger>
                   <MenuPopup align="start" side="bottom" sideOffset={6} className="min-w-44">
                     <SurfaceMenuItem
+                      available={props.onAddVoice !== undefined}
+                      disabledReason={SURFACE_UNAVAILABLE_HINTS.voice}
+                      onClick={() => props.onAddVoice?.()}
+                    >
+                      <MicIcon />
+                      Voice
+                    </SurfaceMenuItem>
+                    <SurfaceMenuItem
                       available={props.browserAvailable}
                       disabledReason={SURFACE_DISABLED_REASONS.browser}
                       onClick={props.onAddBrowser}
@@ -1049,6 +1086,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       <div className="flex min-h-0 flex-1 flex-col" data-right-panel-surface-content>
         {props.activeSurfaceId === null ? (
           <RightPanelEmptyState
+            {...(props.onAddVoice === undefined ? {} : { onAddVoice: props.onAddVoice })}
             onAddBrowser={props.onAddBrowser}
             onAddTerminal={props.onAddTerminal}
             onAddDiff={props.onAddDiff}

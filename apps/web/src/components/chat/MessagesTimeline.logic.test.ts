@@ -569,6 +569,392 @@ describe("deriveMessagesTimelineRows", () => {
     ).toBeDefined();
   });
 
+  it("preserves assistant exchange boundaries inside one steered provider turn", () => {
+    const timelineEntries = [
+      {
+        id: "user-entry-1",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        message: {
+          id: "user-1" as never,
+          role: "user" as const,
+          text: "Start the audit",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "assistant-entry-1",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:03Z",
+        message: {
+          id: "assistant-1" as never,
+          role: "assistant" as const,
+          text: "I am checking the timeline projection first.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:03Z",
+          updatedAt: "2026-01-01T00:00:03Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "work-entry-1",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:05Z",
+        entry: {
+          id: "work-1",
+          createdAt: "2026-01-01T00:00:05Z",
+          turnId: "turn-1" as never,
+          label: "Read timeline logic",
+          tone: "tool" as const,
+        },
+      },
+      {
+        id: "user-entry-2",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:10Z",
+        message: {
+          id: "user-2" as never,
+          role: "user" as const,
+          text: "Keep going",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:10Z",
+          updatedAt: "2026-01-01T00:00:10Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "assistant-entry-2",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:12Z",
+        message: {
+          id: "assistant-2" as never,
+          role: "assistant" as const,
+          text: "The data is intact; the fold is the problem.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:12Z",
+          updatedAt: "2026-01-01T00:00:12Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "work-entry-2",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:15Z",
+        entry: {
+          id: "work-2",
+          createdAt: "2026-01-01T00:00:15Z",
+          turnId: "turn-1" as never,
+          label: "Compared event boundaries",
+          tone: "tool" as const,
+        },
+      },
+      {
+        id: "user-entry-3",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:20Z",
+        message: {
+          id: "user-3" as never,
+          role: "user" as const,
+          text: "What did you find?",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:20Z",
+          updatedAt: "2026-01-01T00:00:20Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "work-entry-3",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:23Z",
+        entry: {
+          id: "work-3",
+          createdAt: "2026-01-01T00:00:23Z",
+          turnId: "turn-1" as never,
+          label: "Verified the fix",
+          tone: "tool" as const,
+        },
+      },
+      {
+        id: "assistant-final-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:30Z",
+        message: {
+          id: "assistant-final" as never,
+          role: "assistant" as const,
+          text: "The exchange boundaries are restored.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:30Z",
+          updatedAt: "2026-01-01T00:00:32Z",
+          streaming: false,
+        },
+      },
+    ];
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:32Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "user-entry-1",
+      "assistant-entry-1",
+      "turn-fold:turn-1:exchange:user-1",
+      "user-entry-2",
+      "assistant-entry-2",
+      "turn-fold:turn-1:exchange:user-2",
+      "user-entry-3",
+      "turn-fold:turn-1:exchange:user-3",
+      "assistant-final-entry",
+    ]);
+
+    const visibleAssistantRows = rows.filter(
+      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
+        row.kind === "message" && row.message.role === "assistant",
+    );
+    expect(visibleAssistantRows.map((row) => row.message.id)).toEqual([
+      "assistant-1",
+      "assistant-2",
+      "assistant-final",
+    ]);
+    expect(visibleAssistantRows.map((row) => row.showAssistantMeta)).toEqual([false, false, true]);
+  });
+
+  it("keeps interim voice narration folded when the durable turn has a text answer", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry-1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "Start",
+            modality: "voice",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "voice-entry-1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:03Z",
+          message: {
+            id: "voice-1" as never,
+            role: "assistant",
+            text: "I am checking that now.",
+            modality: "voice",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:03Z",
+            updatedAt: "2026-01-01T00:00:03Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "user-entry-2",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:10Z",
+          message: {
+            id: "user-2" as never,
+            role: "user",
+            text: "Continue",
+            modality: "voice",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:10Z",
+            updatedAt: "2026-01-01T00:00:10Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "assistant-final-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:20Z",
+          message: {
+            id: "assistant-final" as never,
+            role: "assistant",
+            text: "Done with the durable result.",
+            modality: "text",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:20Z",
+            updatedAt: "2026-01-01T00:00:22Z",
+            streaming: false,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:22Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "user-entry-1",
+      "turn-fold:turn-1:exchange:user-1",
+      "user-entry-2",
+      "assistant-final-entry",
+    ]);
+  });
+
+  it("folds delayed voice narration while keeping the durable answer terminal", () => {
+    const timelineEntries = [
+      {
+        id: "user-entry",
+        kind: "message",
+        createdAt: "2026-01-01T00:00:00Z",
+        message: {
+          id: "user-1" as never,
+          role: "user",
+          text: "Check the network",
+          modality: "voice",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "assistant-final-entry",
+        kind: "message",
+        createdAt: "2026-01-01T00:00:04Z",
+        message: {
+          id: "assistant-final" as never,
+          role: "assistant",
+          text: "Network summary with detailed output.",
+          modality: "text",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:04Z",
+          updatedAt: "2026-01-01T00:00:22Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "work-entry",
+        kind: "work",
+        createdAt: "2026-01-01T00:00:05Z",
+        entry: {
+          id: "work-1",
+          createdAt: "2026-01-01T00:00:05Z",
+          turnId: "turn-1" as never,
+          label: "Ran command",
+          tone: "tool",
+        },
+      },
+      {
+        id: "voice-speech-entry",
+        kind: "message",
+        createdAt: "2026-01-01T00:00:20Z",
+        message: {
+          id: "voice-speech-1" as never,
+          role: "assistant",
+          text: "I will check the active network interfaces.",
+          modality: "voice",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:20Z",
+          updatedAt: "2026-01-01T00:00:20Z",
+          streaming: false,
+        },
+      },
+    ] satisfies Parameters<typeof deriveMessagesTimelineRows>[0]["timelineEntries"];
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "user-entry",
+      "turn-fold:turn-1",
+      "assistant-final-entry",
+    ]);
+    const finalRow = rows.find((row) => row.id === "assistant-final-entry");
+    expect(finalRow?.kind === "message" && finalRow.showAssistantMeta).toBe(true);
+
+    const expandedRows = deriveMessagesTimelineRows({
+      timelineEntries,
+      expandedTurnIds: new Set(["turn-1" as never]),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(expandedRows.map((row) => row.id)).toEqual([
+      "user-entry",
+      "turn-fold:turn-1",
+      "work-entry",
+      "voice-speech-entry",
+      "assistant-final-entry",
+    ]);
+  });
+
+  it("keeps a voice-only realtime response visible as its terminal answer", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "What is connected?",
+            modality: "voice",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "voice-answer-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:04Z",
+          message: {
+            id: "voice-answer" as never,
+            role: "assistant",
+            text: "The network is connected.",
+            modality: "voice",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:04Z",
+            updatedAt: "2026-01-01T00:00:04Z",
+            streaming: false,
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual(["user-entry", "voice-answer-entry"]);
+    const voiceAnswer = rows.find((row) => row.id === "voice-answer-entry");
+    expect(voiceAnswer?.kind === "message" && voiceAnswer.showAssistantMeta).toBe(true);
+  });
+
   it("derives a sane duration for a steer-superseded turn with one instant commentary message", () => {
     // A steer ends the previous turn early: its only message completes the
     // instant it is created, and trailing work entries land after it. The

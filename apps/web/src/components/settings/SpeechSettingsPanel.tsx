@@ -23,6 +23,7 @@ import {
   textToSpeechApiKeyReplacementPatch,
 } from "./SpeechSettingsPanel.logic";
 import { searchableSetting } from "./settingsSearch";
+import { VoiceAppearanceSettings } from "./VoiceAppearanceSettings";
 import { VoiceControllerSettings } from "./VoiceControllerSettings";
 
 const defaults = DEFAULT_SERVER_SETTINGS.textToSpeech;
@@ -47,6 +48,7 @@ export function SpeechSettingsPanel() {
   return (
     <SettingsPageContainer>
       <VoiceControllerSettings />
+      <VoiceAppearanceSettings />
 
       <SettingsSection
         id={searchableSetting("speech").id}

@@ -118,6 +118,8 @@ const makeVoiceControllerActionRepository = Effect.gen(function* () {
             FROM voice_transport_sessions
             WHERE transport_session_id = ${input.transportSessionId}
               AND environment_id = ${input.environmentId}
+              AND owner_kind = 'controller'
+              AND owner_id = ${input.controllerThreadId}
               AND controller_thread_id = ${input.controllerThreadId}
               AND runtime_instance_id = ${input.transportRuntimeInstanceId}
               AND generation = ${input.transportGeneration}

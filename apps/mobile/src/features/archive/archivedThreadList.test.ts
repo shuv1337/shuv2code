@@ -63,6 +63,39 @@ function makeSnapshot(
 }
 
 describe("buildArchivedThreadGroups", () => {
+  it("hides archived managed Voice threads", () => {
+    const project = makeProject({ id: ProjectId.make("project-1"), title: "shuv2code" });
+    const standard = makeThread({
+      id: ThreadId.make("thread-standard"),
+      projectId: project.id,
+      title: "Standard",
+      purpose: "standard",
+    });
+    const controller = makeThread({
+      id: ThreadId.make("thread-controller"),
+      projectId: project.id,
+      title: "Controller",
+      purpose: "voice-controller",
+    });
+    const transport = makeThread({
+      id: ThreadId.make("thread-transport"),
+      projectId: project.id,
+      title: "Transport",
+      purpose: "voice-transport",
+    });
+
+    const result = buildArchivedThreadGroups({
+      snapshots: [makeSnapshot([project], [standard, controller, transport])],
+      environmentLabels: {},
+      environmentId: null,
+      searchQuery: "",
+      sortOrder: "newest",
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.threads.map((thread) => thread.id)).toEqual([standard.id]);
+  });
+
   it("groups archived threads by project and sorts newest first", () => {
     const project = makeProject({ id: ProjectId.make("project-1"), title: "shuv2code" });
     const older = makeThread({

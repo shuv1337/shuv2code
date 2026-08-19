@@ -14,6 +14,10 @@ describe("VoiceHandoffRequest", () => {
         handoff_id: "handoff-1",
         item_id: "item-1",
         input_transcript: "Create a thread to investigate the failing tests.",
+        active_transcript: [
+          { role: "user", text: "Can you investigate the tests?" },
+          { role: "assistant", text: "Yes, I'll start that now." },
+        ],
         model_supplied_authority: "ignored",
       });
       assert.deepStrictEqual(parsed, {
@@ -21,6 +25,10 @@ describe("VoiceHandoffRequest", () => {
         handoff_id: "handoff-1",
         item_id: "item-1",
         input_transcript: "Create a thread to investigate the failing tests.",
+        active_transcript: [
+          { role: "user", text: "Can you investigate the tests?" },
+          { role: "assistant", text: "Yes, I'll start that now." },
+        ],
       });
     }),
   );

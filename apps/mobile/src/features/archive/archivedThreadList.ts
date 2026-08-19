@@ -1,4 +1,5 @@
 import type { ArchivedSnapshotEntry } from "@shuv2code/client-runtime/state/threads";
+import { isUserFacingThreadShell } from "@shuv2code/client-runtime/state/thread-visibility";
 import {
   scopeProject,
   scopeThreadShell,
@@ -46,7 +47,7 @@ export function buildArchivedThreadGroups(input: {
     const environmentLabel = input.environmentLabels[entry.environmentId] ?? null;
     const threadsByProjectId = new Map<string, EnvironmentThreadShell[]>();
     for (const thread of entry.snapshot.threads) {
-      if (thread.archivedAt === null) {
+      if (thread.archivedAt === null || !isUserFacingThreadShell(thread)) {
         continue;
       }
       const threads = threadsByProjectId.get(thread.projectId) ?? [];

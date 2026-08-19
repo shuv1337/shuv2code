@@ -4,8 +4,10 @@ import {
   AuthOrchestrationReadScope,
   AuthSessionId,
   EnvironmentId,
+  type OrchestrationCommand,
   ProjectId,
   ProviderInstanceId,
+  ThreadId,
   TurnId,
   VoiceClientSessionId,
   VoiceEventSequence,
@@ -35,18 +37,26 @@ import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { VoiceControllerActionRepositoryLive } from "./persistence/Layers/VoiceControllerActions.ts";
 import { VoiceControllerBindingRepositoryLive } from "./persistence/Layers/VoiceControllerBindings.ts";
 import { VoiceControllerMutationRepositoryLive } from "./persistence/Layers/VoiceControllerMutations.ts";
+import { VoiceCallEventRepositoryLive } from "./persistence/Layers/VoiceCallEvents.ts";
+import { VoiceCallRepositoryLive } from "./persistence/Layers/VoiceCalls.ts";
 import { VoiceTransportSessionRepositoryLive } from "./persistence/Layers/VoiceTransportSessions.ts";
 import { VoiceControllerActionRepository } from "./persistence/Services/VoiceControllerActions.ts";
 import { VoiceControllerBindingRepository } from "./persistence/Services/VoiceControllerBindings.ts";
 import { VoiceControllerMutationRepository } from "./persistence/Services/VoiceControllerMutations.ts";
+import { VoiceCallEventRepository } from "./persistence/Services/VoiceCallEvents.ts";
+import { VoiceCallRepository } from "./persistence/Services/VoiceCalls.ts";
 import { VoiceTransportSessionRepository } from "./persistence/Services/VoiceTransportSessions.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import { makeVoiceControllerActionRunner } from "./voice/Layers/VoiceControllerActionRunner.ts";
+import { makeVoiceCallBridge } from "./voice/Layers/VoiceCallBridge.ts";
 import { makeVoiceControllerService } from "./voice/Layers/VoiceControllerService.ts";
 import { makeVoiceTargetMonitor } from "./voice/Layers/VoiceTargetMonitor.ts";
+import { makeVoiceSpeechArbiter } from "./voice/Layers/VoiceSpeechArbiter.ts";
 import { makeVoiceTransportCoordinator } from "./voice/Layers/VoiceTransportCoordinator.ts";
 import { VoiceControllerActionRunner } from "./voice/Services/VoiceControllerActionRunner.ts";
+import { VoiceCallBridge } from "./voice/Services/VoiceCallBridge.ts";
 import { VoiceTargetMonitor } from "./voice/Services/VoiceTargetMonitor.ts";
+import { VoiceSpeechArbiter } from "./voice/Services/VoiceSpeechArbiter.ts";
 import { VoiceTransportCoordinator } from "./voice/Services/VoiceTransportCoordinator.ts";
 import {
   VoiceRuntimeGateway,
@@ -57,6 +67,7 @@ import { makeVoiceWsRpcLayer, VoiceWsRpcGroup } from "./ws.ts";
 
 const environmentId = EnvironmentId.make("voice-rpc-environment");
 const hostProjectId = ProjectId.make("voice-rpc-project");
+const targetThreadId = ThreadId.make("voice-rpc-target");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const modelSelection = {
   instanceId: providerInstanceId,
@@ -80,6 +91,8 @@ const voiceRepositories = Layer.mergeAll(
   VoiceTransportSessionRepositoryLive,
   VoiceControllerActionRepositoryLive,
   VoiceControllerMutationRepositoryLive,
+  VoiceCallEventRepositoryLive,
+  VoiceCallRepositoryLive,
 ).pipe(Layer.provideMerge(SqlitePersistenceMemory), Layer.provide(NodeServices.layer));
 
 const mcpRegistry = McpSessionRegistry.layer.pipe(
@@ -109,6 +122,8 @@ describe("authenticated voice RPC vertical integration", () => {
         const transports = Context.get(repositoryContext, VoiceTransportSessionRepository);
         const actions = Context.get(repositoryContext, VoiceControllerActionRepository);
         const mutations = Context.get(repositoryContext, VoiceControllerMutationRepository);
+        const callEvents = Context.get(repositoryContext, VoiceCallEventRepository);
+        const calls = Context.get(repositoryContext, VoiceCallRepository);
         const runtimeEvents = yield* PubSub.unbounded<VoiceRuntimeGatewayEvent>();
         const controllerStarts: Array<
           Parameters<VoiceRuntimeGatewayShape["startControllerAction"]>[0]
@@ -118,6 +133,9 @@ describe("authenticated voice RPC vertical integration", () => {
         > = [];
         const stoppedTransports: Array<Parameters<VoiceRuntimeGatewayShape["stopTransport"]>[0]> =
           [];
+        const transportStarts: Array<Parameters<VoiceRuntimeGatewayShape["startTransport"]>[0]> =
+          [];
+        const dispatchedCommands: Array<OrchestrationCommand> = [];
         let controllerRuntimeGate:
           | {
               readonly entered: Deferred.Deferred<void>;
@@ -169,6 +187,7 @@ describe("authenticated voice RPC vertical integration", () => {
           stopControllerRuntime: () => Effect.void,
           startTransport: (input) =>
             Effect.gen(function* () {
+              transportStarts.push(input);
               const gate = transportStartGate;
               transportStartGate = undefined;
               if (gate !== undefined) {
@@ -207,12 +226,60 @@ describe("authenticated voice RPC vertical integration", () => {
               status: "completed",
               speakableText: "The requested thread was created.",
             }),
+          readThread: (threadId) =>
+            Effect.succeed({
+              threadId,
+              turns: [
+                {
+                  id: TurnId.make("controller-history-turn-1"),
+                  status: "completed",
+                  items: [
+                    {
+                      id: "controller-history-user-1",
+                      type: "userMessage",
+                      content: [{ type: "text", text: "What is the target doing?" }],
+                    },
+                    {
+                      id: "controller-history-commentary-1",
+                      type: "agentMessage",
+                      phase: "commentary",
+                      text: "I am checking it.",
+                    },
+                    {
+                      id: "controller-history-final-1",
+                      type: "agentMessage",
+                      phase: "final_answer",
+                      text: "It is waiting for approval.",
+                    },
+                  ],
+                },
+              ],
+            }),
           appendTransportText: () => Effect.void,
           appendTransportSpeech: () => Effect.void,
           appendTransportAudio: () => Effect.void,
           streamEvents: Stream.fromPubSub(runtimeEvents),
         });
 
+        const threadDetail = (threadId: ThreadId) =>
+          ({
+            id: threadId,
+            projectId: hostProjectId,
+            title: threadId === targetThreadId ? "Current work" : "Voice controller",
+            modelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            purpose: threadId === targetThreadId ? "standard" : "voice-controller",
+            deletedAt: null,
+            archivedAt: null,
+            messages:
+              threadId === targetThreadId
+                ? [
+                    { role: "user", text: "The provider reconnect is the current task." },
+                    { role: "assistant", text: "I am tracing the provider session." },
+                  ]
+                : [],
+          }) as never;
         const projection = ProjectionSnapshotQuery.of({
           ...({} as ProjectionSnapshotQuery["Service"]),
           getProjectShellById: () =>
@@ -227,16 +294,15 @@ describe("authenticated voice RPC vertical integration", () => {
                 updatedAt: now,
               }),
             ),
-          getThreadDetailById: (threadId) =>
+          getThreadDetailById: (threadId) => Effect.succeed(Option.some(threadDetail(threadId))),
+          getThreadDetailSnapshot: (threadId) =>
             Effect.succeed(
               Option.some({
-                id: threadId,
-                projectId: hostProjectId,
-                title: "Voice controller",
-                modelSelection,
-                runtimeMode: "approval-required",
-              } as never),
+                snapshotSequence: 0,
+                thread: threadDetail(threadId),
+              }),
             ),
+          getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: 0,
@@ -247,7 +313,10 @@ describe("authenticated voice RPC vertical integration", () => {
         });
         const engine = OrchestrationEngineService.of({
           readEvents: () => Stream.empty,
-          dispatch: () => Effect.succeed({ sequence: 1 }),
+          dispatch: (command) => {
+            dispatchedCommands.push(command);
+            return Effect.succeed({ sequence: dispatchedCommands.length });
+          },
           streamDomainEvents: Stream.empty,
           subscribeDomainEvents: Effect.succeed(Stream.empty),
           latestSequence: Effect.succeed(1),
@@ -260,13 +329,33 @@ describe("authenticated voice RPC vertical integration", () => {
           }),
         );
         const settings = Context.get(settingsContext, ServerSettings.ServerSettingsService);
+        let userSpeechObservations = 0;
+        const baseSpeechArbiter = yield* makeVoiceSpeechArbiter((attempt) =>
+          runtime.appendTransportSpeech({
+            transportThreadId: attempt.session.fence.transportThreadId,
+            generation: attempt.session.fence.generation,
+            text: attempt.requestedText,
+          }),
+        );
+        const speechArbiter = VoiceSpeechArbiter.of({
+          ...baseSpeechArbiter,
+          observeUserSpeech: (session) =>
+            Effect.gen(function* () {
+              userSpeechObservations += 1;
+              yield* baseSpeechArbiter.observeUserSpeech(session);
+            }),
+        });
         const transportCoordinator = yield* makeVoiceTransportCoordinator().pipe(
           Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
           Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(ProjectionSnapshotQuery, projection),
           Effect.provideService(VoiceControllerBindingRepository, bindings),
           Effect.provideService(VoiceTransportSessionRepository, transports),
           Effect.provideService(VoiceControllerActionRepository, actions),
+          Effect.provideService(VoiceCallEventRepository, callEvents),
+          Effect.provideService(VoiceCallRepository, calls),
           Effect.provideService(VoiceRuntimeGateway, runtime),
+          Effect.provideService(VoiceSpeechArbiter, speechArbiter),
           Effect.provide(NodeServices.layer),
         );
         const targetMonitor = yield* makeVoiceTargetMonitor().pipe(
@@ -274,7 +363,14 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(VoiceControllerBindingRepository, bindings),
           Effect.provideService(VoiceControllerActionRepository, actions),
           Effect.provideService(VoiceControllerMutationRepository, mutations),
+          Effect.provideService(VoiceCallEventRepository, callEvents),
+          Effect.provideService(VoiceCallRepository, calls),
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
+        );
+        const callBridge = yield* makeVoiceCallBridge().pipe(
+          Effect.provideService(ProjectionSnapshotQuery, projection),
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provide(NodeServices.layer),
         );
         const actionRunner = yield* makeVoiceControllerActionRunner().pipe(
           Effect.provideService(ProjectionSnapshotQuery, projection),
@@ -286,6 +382,8 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(VoiceRuntimeGateway, runtime),
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
           Effect.provideService(VoiceTargetMonitor, targetMonitor),
+          Effect.provideService(VoiceCallBridge, callBridge),
+          Effect.provideService(VoiceSpeechArbiter, speechArbiter),
           Effect.provide(NodeServices.layer),
         );
         const voiceController = yield* makeVoiceControllerService().pipe(
@@ -294,11 +392,14 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provideService(OrchestrationEngineService, engine),
           Effect.provideService(VoiceControllerBindingRepository, bindings),
           Effect.provideService(VoiceControllerMutationRepository, mutations),
+          Effect.provideService(VoiceCallEventRepository, callEvents),
+          Effect.provideService(VoiceCallRepository, calls),
           Effect.provideService(ServerSettings.ServerSettingsService, settings),
           Effect.provideService(VoiceRuntimeGateway, runtime),
           Effect.provideService(VoiceTransportCoordinator, transportCoordinator),
           Effect.provideService(VoiceTargetMonitor, targetMonitor),
           Effect.provideService(VoiceControllerActionRunner, actionRunner),
+          Effect.provideService(VoiceSpeechArbiter, speechArbiter),
           Effect.provide(NodeServices.layer),
         );
 
@@ -357,6 +458,28 @@ describe("authenticated voice RPC vertical integration", () => {
         if (deniedReset._tag !== "EnvironmentAuthorizationError") return assert.fail();
         assert.strictEqual(deniedReset.requiredScope, AuthOrchestrationOperateScope);
 
+        const deniedTarget = yield* Effect.flip(
+          readClient[WS_METHODS.voiceSetControllerTarget]({
+            controllerThreadId,
+            targetThreadId,
+          }),
+        );
+        assert.strictEqual(deniedTarget._tag, "EnvironmentAuthorizationError");
+        if (deniedTarget._tag !== "EnvironmentAuthorizationError") return assert.fail();
+        assert.strictEqual(deniedTarget.requiredScope, AuthOrchestrationOperateScope);
+
+        assert.deepStrictEqual(
+          yield* fullClient[WS_METHODS.voiceSetControllerTarget]({
+            controllerThreadId,
+            targetThreadId,
+          }),
+          { targetThreadId },
+        );
+        assert.strictEqual(
+          Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId)).activeTargetThreadId,
+          targetThreadId,
+        );
+
         const recoveredEnsure = yield* fullClient[WS_METHODS.voiceEnsureController]({
           hostProjectId,
           providerInstanceId,
@@ -389,7 +512,155 @@ describe("authenticated voice RPC vertical integration", () => {
         if (deniedStart._tag !== "EnvironmentAuthorizationError") return assert.fail();
         assert.strictEqual(deniedStart.requiredScope, AuthOrchestrationOperateScope);
 
+        const callClientSessionId = VoiceClientSessionId.make("direct-call-session");
+        const callStarted = yield* fullClient[WS_METHODS.voiceStart]({
+          environmentId,
+          owner: { kind: "thread-call", threadId: targetThreadId },
+          controllerThreadId: targetThreadId,
+          clientSessionId: callClientSessionId,
+          generation,
+          transport: { type: "webrtc", offerSdp: "offer-sdp" },
+          voiceId: "marin",
+        });
+        assert.strictEqual(callStarted.controller, null);
+        assert.deepStrictEqual(callStarted.owner, {
+          kind: "thread-call",
+          threadId: targetThreadId,
+        });
+        const callOwner = { kind: "thread-call" as const, threadId: targetThreadId };
+        assert.strictEqual(callStarted.answerSdp, "answer-sdp");
+        assert.include(transportStarts[0]?.prompt ?? "", "low-latency conversation");
+        assert.isFalse(transportStarts[0]?.includeStartupContext);
+        const initialItems = transportStarts[0]?.initialItems ?? [];
+        assert.lengthOf(initialItems, 3);
+        assert.strictEqual(initialItems[0]?.role, "developer");
+        assert.include(initialItems[0]?.text ?? "", "Authoritative app-owned Call attachment:");
+        assert.include(initialItems[0]?.text ?? "", "Thread ID: voice-rpc-target");
+        assert.include(initialItems[0]?.text ?? "", "Durable provider instance: codex");
+        assert.deepStrictEqual(initialItems.slice(1), [
+          { role: "user", text: "The provider reconnect is the current task." },
+          { role: "assistant", text: "I am tracing the provider session." },
+        ]);
+        assert.lengthOf(controllerRuntimeEnsures, 2);
+        assert.strictEqual(
+          Option.getOrThrow(yield* bindings.getByEnvironmentId(environmentId)).activeTargetThreadId,
+          targetThreadId,
+        );
+        const callFence = {
+          environmentId,
+          owner: callOwner,
+          controllerThreadId: targetThreadId,
+          transportThreadId: callStarted.transportThreadId,
+          clientSessionId: callClientSessionId,
+          generation,
+          runtimeInstanceId: callStarted.runtimeInstanceId,
+          realtimeSessionId: callStarted.realtimeSessionId,
+        };
+        const callTranscript = {
+          ...callFence,
+          event: {
+            type: "transcript.done" as const,
+            itemId: VoiceTranscriptItemId.make("call-utterance-1"),
+            role: "user" as const,
+            text: "Inspect this exact thread.",
+          },
+        };
+        const firstCallIngress =
+          yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent](callTranscript);
+        const replayedCallIngress =
+          yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent](callTranscript);
+        const mirroredCallIngress = yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent]({
+          ...callTranscript,
+          event: {
+            ...callTranscript.event,
+            itemId: VoiceTranscriptItemId.make("call-utterance-provider-mirror"),
+            text: "inspect this exact thread!",
+          },
+        });
+        assert.isTrue(firstCallIngress.accepted);
+        assert.deepStrictEqual(replayedCallIngress, firstCallIngress);
+        assert.deepStrictEqual(mirroredCallIngress, firstCallIngress);
+        assert.strictEqual(userSpeechObservations, 1);
+        yield* PubSub.publish(runtimeEvents, {
+          type: "transport.transcript.done",
+          transportThreadId: callFence.transportThreadId,
+          runtimeInstanceId: callFence.runtimeInstanceId,
+          generation: callFence.generation,
+          realtimeSessionId: callFence.realtimeSessionId,
+          itemId: "call-utterance-runtime-mirror",
+          role: "user",
+          text: "Inspect this exact thread.",
+        });
+        yield* Effect.yieldNow;
+        assert.strictEqual(userSpeechObservations, 1);
+        yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent]({
+          ...callFence,
+          event: {
+            type: "transcript.done",
+            itemId: VoiceTranscriptItemId.make("call-assistant-boundary"),
+            role: "assistant",
+            text: "I heard the first request.",
+          },
+        });
+        yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent]({
+          ...callTranscript,
+          event: {
+            ...callTranscript.event,
+            itemId: VoiceTranscriptItemId.make("call-utterance-2"),
+          },
+        });
+        assert.strictEqual(userSpeechObservations, 2);
+        assert.lengthOf(
+          dispatchedCommands.filter(
+            (command) =>
+              command.type === "thread.turn.start" && command.threadId === targetThreadId,
+          ),
+          0,
+        );
+        const callHandoff = {
+          ...callFence,
+          event: {
+            type: "handoff" as const,
+            handoffId: "call-handoff-1",
+            itemId: "call-handoff-item-1",
+            inputTranscript: "Inspect this exact thread.",
+            activeTranscript: [
+              { role: "user" as const, text: "Inspect this exact thread." },
+              { role: "assistant" as const, text: "I'll take that into the thread." },
+            ],
+          },
+        };
+        assert.isTrue(
+          (yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent](callHandoff)).accepted,
+        );
+        assert.isTrue(
+          (yield* fullClient[WS_METHODS.voiceIngestRealtimeEvent](callHandoff)).accepted,
+        );
+        const callTurns = dispatchedCommands.filter(
+          (command) => command.type === "thread.turn.start" && command.threadId === targetThreadId,
+        );
+        assert.lengthOf(callTurns, 1);
+        if (callTurns[0]?.type !== "thread.turn.start") return assert.fail();
+        assert.strictEqual(callTurns[0].message.text, "Inspect this exact thread.");
+        assert.strictEqual(callTurns[0].expectedTurnId, null);
+        assert.lengthOf(controllerStarts, 0);
+        const callStopped = yield* fullClient[WS_METHODS.voiceStop]({
+          environmentId,
+          owner: callOwner,
+          controllerThreadId: targetThreadId,
+          transportThreadId: callStarted.transportThreadId,
+          clientSessionId: callClientSessionId,
+          generation,
+          runtimeInstanceId: callStarted.runtimeInstanceId,
+          realtimeSessionId: callStarted.realtimeSessionId,
+        });
+        assert.isTrue(callStopped.stopped);
+        assert.strictEqual(yield* transports.getOpenByEnvironmentId(environmentId), Option.none());
+        stoppedTransports.length = 0;
+
         const started = yield* fullClient[WS_METHODS.voiceStart]({
+          environmentId,
+          owner: { kind: "controller", controllerThreadId },
           controllerThreadId,
           clientSessionId,
           generation,
@@ -398,8 +669,30 @@ describe("authenticated voice RPC vertical integration", () => {
         });
         assert.strictEqual(started.answerSdp, "answer-sdp");
         assert.strictEqual(started.eventCursor, VoiceEventSequence.make(1));
+        assert.strictEqual(started.environmentId, environmentId);
+        assert.deepStrictEqual(started.owner, {
+          kind: "controller",
+          controllerThreadId,
+        });
+        const controllerOwner = { kind: "controller" as const, controllerThreadId };
+
+        const wrongOwnerSubscription = yield* Effect.flip(
+          readClient[WS_METHODS.subscribeVoiceEvents]({
+            environmentId,
+            owner: { kind: "thread-call", threadId: targetThreadId },
+            clientSessionId,
+            generation,
+            runtimeInstanceId: started.runtimeInstanceId,
+            afterSequence: VoiceEventSequence.make(0),
+          }).pipe(Stream.runDrain),
+        );
+        assert.strictEqual(wrongOwnerSubscription._tag, "VoiceControllerError");
+        if (wrongOwnerSubscription._tag !== "VoiceControllerError") return assert.fail();
+        assert.strictEqual(wrongOwnerSubscription.code, "session_not_found");
 
         const eventFiber = yield* readClient[WS_METHODS.subscribeVoiceEvents]({
+          environmentId,
+          owner: controllerOwner,
           clientSessionId,
           generation,
           runtimeInstanceId: started.runtimeInstanceId,
@@ -415,6 +708,8 @@ describe("authenticated voice RPC vertical integration", () => {
         yield* Effect.yieldNow;
 
         const runtimeFence = {
+          environmentId,
+          owner: controllerOwner,
           controllerThreadId,
           transportThreadId: started.transportThreadId,
           clientSessionId,
@@ -498,7 +793,9 @@ describe("authenticated voice RPC vertical integration", () => {
         assert.lengthOf(controllerStarts, 1);
         const controllerStart = controllerStarts[0]!;
         assert.strictEqual(controllerStart.recoveryPolicy, "forbid");
-        assert.strictEqual(
+        assert.include(controllerStart.input, 'activeTargetThreadId="voice-rpc-target"');
+        assert.include(controllerStart.input, "includeUntrustedContext=true");
+        assert.include(
           controllerStart.input,
           "Create a real investigation thread and report its status.",
         );
@@ -530,6 +827,17 @@ describe("authenticated voice RPC vertical integration", () => {
         assert.strictEqual(staleStop._tag, "VoiceControllerError");
         if (staleStop._tag !== "VoiceControllerError") return assert.fail();
         assert.strictEqual(staleStop.code, "stale_generation");
+        assert.lengthOf(stoppedTransports, 0);
+
+        const wrongOwnerStop = yield* Effect.flip(
+          fullClient[WS_METHODS.voiceStop]({
+            ...runtimeFence,
+            owner: { kind: "thread-call", threadId: targetThreadId },
+          }),
+        );
+        assert.strictEqual(wrongOwnerStop._tag, "VoiceControllerError");
+        if (wrongOwnerStop._tag !== "VoiceControllerError") return assert.fail();
+        assert.strictEqual(wrongOwnerStop.code, "stale_generation");
         assert.lengthOf(stoppedTransports, 0);
 
         const deniedStop = yield* Effect.flip(
@@ -595,6 +903,19 @@ describe("authenticated voice RPC vertical integration", () => {
           (yield* transportCoordinator.getControllerRuntime(controllerThreadId))?.runtimeInstanceId,
           VoiceRuntimeInstanceId.make("controller-runtime-3"),
         );
+
+        const history = yield* readClient[WS_METHODS.voiceGetControllerHistory]({
+          controllerThreadId,
+        });
+        assert.strictEqual(history.controllerThreadId, controllerThreadId);
+        assert.deepStrictEqual(
+          history.messages.map(({ role, text }) => ({ role, text })),
+          [
+            { role: "user", text: "What is the target doing?" },
+            { role: "assistant", text: "It is waiting for approval." },
+          ],
+        );
+        assert.strictEqual(controllerRuntimeEnsures[4]?.creationDisposition, "recover");
 
         const ensureEntered = yield* Deferred.make<void>();
         const releaseEnsure = yield* Deferred.make<void>();

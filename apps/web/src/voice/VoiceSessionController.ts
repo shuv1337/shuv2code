@@ -1,14 +1,20 @@
 import {
   VoiceClientSessionId,
+  VoiceDeviceId,
   VoiceEventSequence,
   VoiceGeneration,
   VoiceTranscriptItemId,
+  VoiceTranscriptionRequestId,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
   type ProviderInstanceId,
   type RuntimeMode,
+  type ThreadId,
   type VoiceControllerIdentity,
+  type VoiceCallId,
+  type VoiceCallTakeover,
+  type VoiceDeviceIdentity,
   type VoiceEnsureControllerInput,
   type VoiceEnsureControllerResult,
   type VoiceListVoicesInput,
@@ -21,6 +27,7 @@ import {
   type VoiceSessionEvent,
   type VoiceSessionEventPayload,
   type VoiceSessionFence,
+  type VoiceSessionOwner,
   type VoiceSessionStartInput,
   type VoiceSessionStartResult,
   type VoiceSessionStopInput,
@@ -34,6 +41,7 @@ import {
   initialRealtimeVoiceState,
   reduceRealtimeVoiceState,
   type RealtimeVoiceSessionState,
+  type RealtimeVoiceControllerIdentity,
   type RealtimeVoiceStateEvent,
   type RealtimeVoiceTarget,
 } from "@shuv2code/client-runtime/state/realtime-voice";
@@ -58,6 +66,11 @@ export interface VoiceSessionControllerApi {
     environmentId: EnvironmentId,
     input: VoiceListVoicesInput,
   ) => Promise<VoiceListVoicesResult>;
+  readonly setControllerTarget?: (
+    environmentId: EnvironmentId,
+    controllerThreadId: ThreadId,
+    targetThreadId: ThreadId,
+  ) => Promise<ThreadId>;
   readonly start: (
     environmentId: EnvironmentId,
     input: VoiceSessionStartInput,
@@ -85,11 +98,29 @@ export interface VoiceSessionControllerApi {
 export interface StartVoiceSessionInput {
   readonly environmentId: EnvironmentId;
   readonly hostProjectId: ProjectId;
+  readonly targetThreadId?: ThreadId;
+  readonly owner?: {
+    readonly kind: "thread-call";
+    readonly threadId: ThreadId;
+    readonly threadTitle: string;
+  };
+  readonly callId?: VoiceCallId;
+  readonly takeover?: VoiceCallTakeover;
   readonly providerInstanceId: ProviderInstanceId;
   readonly modelSelection?: ModelSelection;
   readonly authorizedRuntimeCeiling: RuntimeMode;
   readonly voiceId?: string;
+  readonly purpose?: "conversation" | "transcription";
   readonly microphoneStream?: MediaStream;
+  readonly onMicrophoneStream?: (stream: MediaStream) => void | Promise<void>;
+  readonly onRemoteAudioStream?: (stream: MediaStream) => void;
+}
+
+export function shouldIngestRealtimeVoiceEvent(
+  purpose: StartVoiceSessionInput["purpose"],
+  event: VoiceRealtimeIngressInput["event"],
+): boolean {
+  return purpose !== "transcription" || event.type !== "handoff";
 }
 
 export interface VoiceSessionControllerDependencies {
@@ -107,6 +138,7 @@ export interface VoiceSessionControllerDependencies {
     }) => void | Promise<void>;
   }) => PcmVoiceTransport;
   readonly createClientSessionId?: () => string;
+  readonly deviceIdentity?: VoiceDeviceIdentity;
   readonly detectSupport?: () => VoiceBrowserSupport;
   readonly scheduleRetry?: (callback: () => void, delayMs: number) => () => void;
 }
@@ -119,9 +151,42 @@ type VoiceClientTranscriptDeltaEvent = {
 };
 
 type VoiceClientDataChannelEvent = VoiceRealtimeIngressEvent | VoiceClientTranscriptDeltaEvent;
+type VoiceClientHandoffEvent = Extract<VoiceRealtimeIngressEvent, { readonly type: "handoff" }>;
+type PendingClientHandoff = {
+  readonly event: VoiceClientHandoffEvent;
+  readonly draft: { readonly id: string; readonly text: string };
+  readonly generation: number;
+  readonly cancelFallback: () => void;
+};
+
+const CLIENT_HANDOFF_TRANSCRIPT_WAIT_MS = 5_000;
 
 function defaultClientSessionId(): string {
   return randomUUID();
+}
+
+function defaultVoiceDeviceIdentity(): VoiceDeviceIdentity {
+  const userAgent = globalThis.navigator?.userAgent ?? "";
+  const kind = /Android|iPhone|iPad|Mobile/i.test(userAgent)
+    ? "mobile"
+    : /Electron/i.test(userAgent)
+      ? "desktop"
+      : "web";
+  let deviceId: string | null = null;
+  try {
+    deviceId = globalThis.localStorage?.getItem("shuv2code.voice.device-id") ?? null;
+    if (deviceId === null) {
+      deviceId = randomUUID();
+      globalThis.localStorage?.setItem("shuv2code.voice.device-id", deviceId);
+    }
+  } catch {
+    deviceId = randomUUID();
+  }
+  return {
+    deviceId: VoiceDeviceId.make(deviceId),
+    label: kind === "mobile" ? "Mobile device" : kind === "desktop" ? "Desktop app" : "Web browser",
+    kind,
+  };
 }
 
 function controllerPresentation(environmentId: EnvironmentId, controller: VoiceControllerIdentity) {
@@ -131,6 +196,26 @@ function controllerPresentation(environmentId: EnvironmentId, controller: VoiceC
     threadId: controller.controllerThreadId,
     title: "Voice controller",
   } as const;
+}
+
+function threadCallPresentation(
+  environmentId: EnvironmentId,
+  projectId: ProjectId,
+  owner: { readonly threadId: ThreadId; readonly threadTitle: string },
+) {
+  return {
+    environmentId,
+    projectId,
+    threadId: owner.threadId,
+    title: owner.threadTitle,
+  } as const;
+}
+
+function compatibilityAnchor(started: VoiceSessionStartResult): ThreadId {
+  if (started.controller !== null) return started.controller.controllerThreadId;
+  if (started.owner?.kind === "thread-call") return started.owner.threadId;
+  if (started.owner?.kind === "transcription-test") return started.owner.providerAnchorThreadId;
+  throw new VoiceSessionError("protocol-violation", "The voice server omitted its session anchor.");
 }
 
 const SERVER_UNSUPPORTED_CODES: ReadonlySet<string> = new Set([
@@ -151,9 +236,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Normalize only the bounded provider events needed by v1. The direct WebRTC
- * data channel is the authoritative source for client-managed v3 handoffs;
- * all other provider payloads stay in the browser and are discarded.
+ * Normalize only the bounded transcript and handoff events used by the
+ * provider's realtime protocols. The direct WebRTC data channel is the
+ * authoritative source for client-managed handoffs; all other provider
+ * payloads stay in the browser and are discarded.
  */
 export function parseRealtimeVoiceDataChannelEvent(
   data: string,
@@ -161,37 +247,143 @@ export function parseRealtimeVoiceDataChannelEvent(
   try {
     const message = JSON.parse(data) as unknown;
     if (!isRecord(message) || typeof message.type !== "string") return undefined;
+    if (
+      message.type === "response.created" ||
+      message.type === "response.output_audio.done" ||
+      message.type === "response.audio.done" ||
+      message.type === "response.done"
+    ) {
+      const response = isRecord(message.response) ? message.response : undefined;
+      const itemId =
+        typeof message.item_id === "string" && message.item_id.length > 0
+          ? message.item_id
+          : typeof message.response_id === "string" && message.response_id.length > 0
+            ? message.response_id
+            : typeof response?.id === "string" && response.id.length > 0
+              ? response.id
+              : "";
+      if (itemId.length === 0 || itemId.length > 256) return undefined;
+      return {
+        type: message.type === "response.created" ? "output.started" : "output.done",
+        itemId: VoiceTranscriptItemId.make(itemId),
+      };
+    }
     if (message.type === "input_transcript.added" || message.type === "output_transcript.added") {
       const item = message.item;
       const role = message.type === "input_transcript.added" ? "user" : "assistant";
       const expectedItemType = role === "user" ? "input_transcript" : "output_transcript";
+      const itemId =
+        isRecord(item) && typeof item.id === "string" && item.id.length > 0
+          ? item.id
+          : typeof message.item_id === "string" && message.item_id.length > 0
+            ? message.item_id
+            : typeof message.turn_id === "string" && message.turn_id.length > 0
+              ? message.turn_id
+              : `live-${role}`;
+      const text =
+        typeof message.text === "string"
+          ? message.text
+          : isRecord(item) && typeof item.text === "string"
+            ? item.text
+            : undefined;
       if (
-        !isRecord(item) ||
-        item.type !== expectedItemType ||
-        typeof item.id !== "string" ||
-        item.id.length === 0 ||
-        item.id.length > 256 ||
-        typeof item.text !== "string" ||
-        item.text.length === 0 ||
-        item.text.length > 16_384
+        (isRecord(item) && typeof item.type === "string" && item.type !== expectedItemType) ||
+        itemId.length > 256 ||
+        typeof text !== "string" ||
+        text.length === 0 ||
+        text.length > 120_000
       ) {
         return undefined;
       }
       return {
         type: "transcript.delta",
-        itemId: VoiceTranscriptItemId.make(item.id),
+        itemId: VoiceTranscriptItemId.make(itemId),
         role,
-        textDelta: item.text,
+        textDelta: text,
+      };
+    }
+    const deltaRole =
+      message.type === "conversation.input_transcript.delta" ||
+      message.type === "conversation.item.input_audio_transcription.delta"
+        ? "user"
+        : message.type === "conversation.output_transcript.delta" ||
+            message.type === "response.output_text.delta" ||
+            message.type === "response.output_audio_transcript.delta" ||
+            message.type === "response.audio.transcript.delta"
+          ? "assistant"
+          : undefined;
+    if (deltaRole !== undefined) {
+      const itemId =
+        typeof message.item_id === "string" && message.item_id.length > 0
+          ? message.item_id
+          : typeof message.response_id === "string" && message.response_id.length > 0
+            ? message.response_id
+            : `live-${deltaRole}`;
+      if (
+        itemId.length > 256 ||
+        typeof message.delta !== "string" ||
+        message.delta.length === 0 ||
+        message.delta.length > 16_384
+      ) {
+        return undefined;
+      }
+      return {
+        type: "transcript.delta",
+        itemId: VoiceTranscriptItemId.make(itemId),
+        role: deltaRole,
+        textDelta: message.delta,
+      };
+    }
+    const done =
+      message.type === "conversation.input_transcript.turn_marked" ||
+      message.type === "conversation.item.input_audio_transcription.completed"
+        ? { role: "user" as const, textField: "transcript" }
+        : message.type === "response.output_audio_transcript.done" ||
+            message.type === "conversation.output_transcript.done"
+          ? { role: "assistant" as const, textField: "transcript" }
+          : message.type === "response.output_text.done"
+            ? { role: "assistant" as const, textField: "text" }
+            : undefined;
+    if (done !== undefined) {
+      const itemId =
+        typeof message.item_id === "string" && message.item_id.length > 0
+          ? message.item_id
+          : typeof message.turn_id === "string" && message.turn_id.length > 0
+            ? message.turn_id
+            : typeof message.response_id === "string" && message.response_id.length > 0
+              ? message.response_id
+              : `live-${done.role}`;
+      const text = message[done.textField];
+      if (
+        itemId.length > 256 ||
+        typeof text !== "string" ||
+        text.length === 0 ||
+        text.length > 120_000
+      ) {
+        return undefined;
+      }
+      return {
+        type: "transcript.done",
+        itemId: VoiceTranscriptItemId.make(itemId),
+        role: done.role,
+        text,
       };
     }
     if (message.type === "turn.done") {
-      const turn = message.turn;
+      const turn = isRecord(message.turn) ? message.turn : message;
+      const role = turn.role;
+      const turnId =
+        typeof turn.id === "string" && turn.id.length > 0
+          ? turn.id
+          : typeof message.turn_id === "string" && message.turn_id.length > 0
+            ? message.turn_id
+            : role === "user" || role === "assistant"
+              ? `live-${role}`
+              : "";
       if (
-        !isRecord(turn) ||
-        typeof turn.id !== "string" ||
-        turn.id.length === 0 ||
-        turn.id.length > 256 ||
-        (turn.role !== "user" && turn.role !== "assistant") ||
+        turnId.length === 0 ||
+        turnId.length > 256 ||
+        (role !== "user" && role !== "assistant") ||
         typeof turn.transcript !== "string" ||
         turn.transcript.length > 120_000
       ) {
@@ -199,9 +391,10 @@ export function parseRealtimeVoiceDataChannelEvent(
       }
       return {
         type: "transcript.done",
-        itemId: VoiceTranscriptItemId.make(turn.id),
-        role: turn.role,
+        itemId: VoiceTranscriptItemId.make(turnId),
+        role,
         text: turn.transcript,
+        ...(role === "assistant" ? { outputDone: true } : {}),
       } as VoiceRealtimeIngressEvent;
     }
     if (message.type !== "delegation.created") return undefined;
@@ -226,11 +419,30 @@ export function parseRealtimeVoiceDataChannelEvent(
       .join("\n")
       .trim();
     if (transcript.length === 0 || transcript.length > 120_000) return undefined;
+    const rawActiveTranscript = Array.isArray(item.active_transcript)
+      ? item.active_transcript
+      : message.active_transcript;
+    const activeTranscript: Array<{ readonly role: "user" | "assistant"; readonly text: string }> =
+      Array.isArray(rawActiveTranscript)
+        ? rawActiveTranscript.flatMap((entry) => {
+            if (
+              !isRecord(entry) ||
+              (entry.role !== "user" && entry.role !== "assistant") ||
+              typeof entry.text !== "string" ||
+              entry.text.length > 16_384
+            ) {
+              return [];
+            }
+            return [{ role: entry.role as "user" | "assistant", text: entry.text }];
+          })
+        : [];
+    if (activeTranscript.length > 64) return undefined;
     return {
       type: "handoff",
       handoffId: item.id,
       itemId: item.id,
       inputTranscript: transcript,
+      ...(activeTranscript.length > 0 ? { activeTranscript } : {}),
     };
   } catch {
     return undefined;
@@ -244,6 +456,7 @@ export class VoiceSessionController {
     VoiceSessionControllerDependencies["createPcmTransport"]
   >;
   readonly #createClientSessionId: () => string;
+  readonly #deviceIdentity: VoiceDeviceIdentity;
   readonly #detectSupport: () => VoiceBrowserSupport;
   readonly #scheduleRetry: (callback: () => void, delayMs: number) => () => void;
   readonly #listeners = new Set<(state: RealtimeVoiceSessionState) => void>();
@@ -252,7 +465,7 @@ export class VoiceSessionController {
   #unsubscribeEvents: (() => void) | null = null;
   #environmentId: EnvironmentId | null = null;
   #startInput: StartVoiceSessionInput | null = null;
-  #controller: VoiceControllerIdentity | null = null;
+  #presentation: RealtimeVoiceControllerIdentity | null = null;
   #fence: VoiceSessionFence | null = null;
   #release = new RealtimeVoiceLeaseRelease();
   #sessionIdentity: { readonly clientSessionId: string; readonly generation: number } | null = null;
@@ -265,7 +478,12 @@ export class VoiceSessionController {
     "user" | "assistant",
     { readonly id: string; readonly text: string }
   >();
-  #clientTranscriptDraftSequence = 0;
+  #clientTranscriptFinalizationQueue = new Map<
+    "user" | "assistant",
+    Array<{ readonly id: string; readonly text: string }>
+  >();
+  #pendingClientHandoffs: Array<PendingClientHandoff> = [];
+  #clientIngressTail: Promise<void> = Promise.resolve();
   #clientTranscriptAuthoritative = false;
   #activeAction: {
     readonly actionId: string;
@@ -280,6 +498,7 @@ export class VoiceSessionController {
     this.#createPcmTransport =
       dependencies.createPcmTransport ?? ((options) => new PcmVoiceTransport(options));
     this.#createClientSessionId = dependencies.createClientSessionId ?? defaultClientSessionId;
+    this.#deviceIdentity = dependencies.deviceIdentity ?? defaultVoiceDeviceIdentity();
     this.#detectSupport = dependencies.detectSupport ?? detectVoiceBrowserSupport;
     this.#scheduleRetry =
       dependencies.scheduleRetry ??
@@ -358,6 +577,7 @@ export class VoiceSessionController {
       clientSessionId: generationIdentity.clientSessionId,
       generation: generationIdentity.generation,
       environmentId: input.environmentId,
+      ...(input.owner === undefined ? {} : { owner: input.owner }),
     });
     if (!support.supported) {
       releaseVoiceMicrophoneStream(microphoneStream);
@@ -376,39 +596,64 @@ export class VoiceSessionController {
     this.#startInput = reconnectInput;
     this.#release = new RealtimeVoiceLeaseRelease();
     try {
-      const ensured = await this.#api.ensureController(input.environmentId, {
-        hostProjectId: input.hostProjectId,
-        providerInstanceId: input.providerInstanceId,
-        ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-        authorizedRuntimeCeiling: input.authorizedRuntimeCeiling,
-      });
+      const threadCallOwner = input.owner?.kind === "thread-call" ? input.owner : null;
+      const isThreadCall = threadCallOwner !== null;
+      const ensured = isThreadCall
+        ? null
+        : await this.#api.ensureController(input.environmentId, {
+            hostProjectId: input.hostProjectId,
+            providerInstanceId: input.providerInstanceId,
+            ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+            authorizedRuntimeCeiling: input.authorizedRuntimeCeiling,
+          });
       if (
         !this.#isCurrentAttempt(generationIdentity.clientSessionId, generationIdentity.generation)
       ) {
         return;
       }
-      this.#controller = ensured.controller;
-      const catalog = await this.#api.listVoices(input.environmentId, {
-        controllerThreadId: ensured.controller.controllerThreadId,
-      });
+      this.#presentation = isThreadCall
+        ? threadCallPresentation(input.environmentId, input.hostProjectId, threadCallOwner)
+        : controllerPresentation(input.environmentId, ensured!.controller);
+      if (
+        !isThreadCall &&
+        input.targetThreadId !== undefined &&
+        this.#api.setControllerTarget !== undefined
+      ) {
+        await this.#api.setControllerTarget(
+          input.environmentId,
+          ensured!.controller.controllerThreadId,
+          input.targetThreadId,
+        );
+      }
       if (
         !this.#isCurrentAttempt(generationIdentity.clientSessionId, generationIdentity.generation)
       ) {
         return;
       }
-      const voiceId = input.voiceId ?? catalog.defaultVoiceId;
-      if (voiceId === null) {
-        throw new VoiceSessionError(
-          "incompatible_version",
-          "Codex realtime did not advertise a default v3-compatible voice.",
-        );
-      }
-      if (!catalog.voices.some((voice) => voice.id === voiceId)) {
-        throw new VoiceSessionError(
-          "voice-unavailable",
-          `The selected realtime voice '${voiceId}' is no longer available.`,
-          true,
-        );
+      let voiceId = input.voiceId;
+      if (!isThreadCall) {
+        const catalog = await this.#api.listVoices(input.environmentId, {
+          controllerThreadId: ensured!.controller.controllerThreadId,
+        });
+        if (
+          !this.#isCurrentAttempt(generationIdentity.clientSessionId, generationIdentity.generation)
+        ) {
+          return;
+        }
+        voiceId = voiceId ?? catalog.defaultVoiceId ?? undefined;
+        if (voiceId === undefined) {
+          throw new VoiceSessionError(
+            "incompatible_version",
+            "Codex realtime did not advertise a default v3-compatible voice.",
+          );
+        }
+        if (!catalog.voices.some((voice) => voice.id === voiceId)) {
+          throw new VoiceSessionError(
+            "voice-unavailable",
+            `The selected realtime voice '${voiceId}' is no longer available.`,
+            true,
+          );
+        }
       }
       this.#dispatch({ type: "permission-requested", generation: generationIdentity.generation });
       if (support.webrtc) {
@@ -420,12 +665,37 @@ export class VoiceSessionController {
           {
             exchangeOffer: async (offerSdp) => {
               this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
+              const owner: VoiceSessionOwner = isThreadCall
+                ? { kind: "thread-call", threadId: threadCallOwner.threadId }
+                : input.purpose === "transcription"
+                  ? {
+                      kind: "transcription-test",
+                      requestId: VoiceTranscriptionRequestId.make(
+                        generationIdentity.clientSessionId,
+                      ),
+                      providerAnchorThreadId: ensured!.controller.controllerThreadId,
+                    }
+                  : {
+                      kind: "controller",
+                      controllerThreadId: ensured!.controller.controllerThreadId,
+                    };
               const started = await this.#api.start(input.environmentId, {
-                controllerThreadId: ensured.controller.controllerThreadId,
+                environmentId: input.environmentId,
+                owner,
+                controllerThreadId: isThreadCall
+                  ? threadCallOwner.threadId
+                  : ensured!.controller.controllerThreadId,
                 clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
                 generation: VoiceGeneration.make(generationIdentity.generation),
+                device: this.#deviceIdentity,
+                ...(input.callId === undefined ? {} : { callId: input.callId }),
+                ...(input.takeover === undefined ? {} : { takeover: input.takeover }),
+                ...(isThreadCall && input.modelSelection !== undefined
+                  ? { transportModelSelection: input.modelSelection }
+                  : {}),
+                purpose: input.purpose ?? "conversation",
                 transport: { type: "webrtc", offerSdp },
-                voiceId,
+                ...(voiceId === undefined ? {} : { voiceId }),
               });
               if (
                 started.clientSessionId !== generationIdentity.clientSessionId ||
@@ -453,6 +723,13 @@ export class VoiceSessionController {
               return started.answerSdp ?? "";
             },
             onData: (data) => this.#handleDataChannelMessage(data, generationIdentity.generation),
+            playRemoteAudio: input.purpose !== "transcription",
+            ...(input.onMicrophoneStream === undefined
+              ? {}
+              : { onMicrophoneStream: input.onMicrophoneStream }),
+            ...(input.onRemoteAudioStream === undefined
+              ? {}
+              : { onRemoteAudioStream: input.onRemoteAudioStream }),
             onMicrophoneEnded: () => {
               void this.#fail(
                 generationIdentity.generation,
@@ -473,10 +750,33 @@ export class VoiceSessionController {
         );
       } else if (support.pcm && this.#api.appendAudio !== undefined) {
         this.#dispatch({ type: "negotiating", generation: generationIdentity.generation });
+        const owner: VoiceSessionOwner = isThreadCall
+          ? { kind: "thread-call", threadId: threadCallOwner.threadId }
+          : input.purpose === "transcription"
+            ? {
+                kind: "transcription-test",
+                requestId: VoiceTranscriptionRequestId.make(generationIdentity.clientSessionId),
+                providerAnchorThreadId: ensured!.controller.controllerThreadId,
+              }
+            : {
+                kind: "controller",
+                controllerThreadId: ensured!.controller.controllerThreadId,
+              };
         const started = await this.#api.start(input.environmentId, {
-          controllerThreadId: ensured.controller.controllerThreadId,
+          environmentId: input.environmentId,
+          owner,
+          controllerThreadId: isThreadCall
+            ? threadCallOwner.threadId
+            : ensured!.controller.controllerThreadId,
           clientSessionId: VoiceClientSessionId.make(generationIdentity.clientSessionId),
           generation: VoiceGeneration.make(generationIdentity.generation),
+          device: this.#deviceIdentity,
+          ...(input.callId === undefined ? {} : { callId: input.callId }),
+          ...(input.takeover === undefined ? {} : { takeover: input.takeover }),
+          ...(isThreadCall && input.modelSelection !== undefined
+            ? { transportModelSelection: input.modelSelection }
+            : {}),
+          purpose: input.purpose ?? "conversation",
           transport: {
             type: "websocket",
             inputAudio: {
@@ -485,7 +785,7 @@ export class VoiceSessionController {
               channels: VOICE_PCM_DEFAULT_CHANNELS,
             },
           },
-          voiceId,
+          ...(voiceId === undefined ? {} : { voiceId }),
         });
         if (
           started.clientSessionId !== generationIdentity.clientSessionId ||
@@ -550,7 +850,7 @@ export class VoiceSessionController {
           generationIdentity.clientSessionId,
           generationIdentity.generation,
         ) ||
-        !this.#controller
+        !this.#presentation
       ) {
         this.#transport?.close();
         this.#transport = null;
@@ -559,7 +859,8 @@ export class VoiceSessionController {
       this.#dispatch({
         type: "connected",
         generation: generationIdentity.generation,
-        controller: controllerPresentation(input.environmentId, this.#controller),
+        controller: this.#presentation,
+        ...(this.#fence?.owner === undefined ? {} : { owner: this.#fence.owner }),
       });
     } catch (error) {
       if (this.#isStoppingOrIdle()) {
@@ -588,7 +889,9 @@ export class VoiceSessionController {
     generation: number,
   ): Promise<void> {
     const fence: VoiceSessionFence = {
-      controllerThreadId: started.controller.controllerThreadId,
+      ...(started.environmentId === undefined ? {} : { environmentId: started.environmentId }),
+      ...(started.owner === undefined ? {} : { owner: started.owner }),
+      controllerThreadId: compatibilityAnchor(started),
       transportThreadId: started.transportThreadId,
       clientSessionId: started.clientSessionId,
       generation: started.generation,
@@ -612,14 +915,26 @@ export class VoiceSessionController {
       throw new VoiceSessionError("stale-generation", "The voice server returned a stale session.");
     }
     this.#fence = {
-      controllerThreadId: started.controller.controllerThreadId,
+      ...(started.environmentId === undefined ? {} : { environmentId: started.environmentId }),
+      ...(started.owner === undefined ? {} : { owner: started.owner }),
+      controllerThreadId: compatibilityAnchor(started),
       transportThreadId: started.transportThreadId,
       clientSessionId: started.clientSessionId,
       generation: started.generation,
       runtimeInstanceId: started.runtimeInstanceId,
       realtimeSessionId: started.realtimeSessionId,
     };
+    if (
+      started.call !== undefined &&
+      started.call !== null &&
+      this.#startInput?.owner !== undefined
+    ) {
+      const { takeover: _takeover, ...startInput } = this.#startInput;
+      this.#startInput = { ...startInput, callId: started.call.callId };
+    }
     this.#subscribeToEvents(environmentId, {
+      ...(started.environmentId === undefined ? {} : { environmentId: started.environmentId }),
+      ...(started.owner === undefined ? {} : { owner: started.owner }),
       clientSessionId: started.clientSessionId,
       generation: started.generation,
       runtimeInstanceId: started.runtimeInstanceId,
@@ -634,11 +949,16 @@ export class VoiceSessionController {
       input,
       (event) => {
         this.#subscriptionRetryAttempt = 0;
-        if (this.#state.phase.type === "reconnecting" && this.#controller && this.#environmentId) {
+        if (
+          this.#state.phase.type === "reconnecting" &&
+          this.#presentation &&
+          this.#environmentId
+        ) {
           this.#dispatch({
             type: "connected",
             generation: this.#state.generation,
-            controller: controllerPresentation(this.#environmentId, this.#controller),
+            controller: this.#presentation,
+            ...(this.#fence?.owner === undefined ? {} : { owner: this.#fence.owner }),
           });
         }
         this.#handleServerEvent(event);
@@ -677,19 +997,112 @@ export class VoiceSessionController {
     ) {
       return;
     }
-    if (event.type === "transcript.delta" || event.type === "transcript.done") {
-      this.#handleClientTranscriptEvent(event, generation);
-      if (event.type === "transcript.delta") {
+    if (
+      this.#startInput?.purpose === "transcription" &&
+      (event.type === "transcript.delta" || event.type === "transcript.done") &&
+      event.role !== "user"
+    ) {
+      return;
+    }
+    let ingressEvent = event;
+    if (this.#startInput?.owner?.kind === "thread-call" && event.type === "handoff") {
+      const draft = this.#clientTranscriptDrafts.get("user");
+      if (draft !== undefined) {
+        this.#clientTranscriptDrafts.delete("user");
+        const pending = this.#clientTranscriptFinalizationQueue.get("user") ?? [];
+        this.#clientTranscriptFinalizationQueue.set("user", [...pending, draft]);
+        const pairedHandoff = {
+          ...event,
+          itemId: draft.id,
+          inputTranscript: draft.text,
+        };
+        const cancelFallback = this.#scheduleRetry(
+          () => this.#flushPendingClientHandoff(draft.id, generation),
+          CLIENT_HANDOFF_TRANSCRIPT_WAIT_MS,
+        );
+        this.#pendingClientHandoffs.push({
+          event: pairedHandoff,
+          draft,
+          generation,
+          cancelFallback,
+        });
         return;
       }
+    }
+    let pairedHandoff: PendingClientHandoff | undefined;
+    if (ingressEvent.type === "transcript.done" && ingressEvent.role === "user") {
+      pairedHandoff = this.#pendingClientHandoffs.shift();
+      if (pairedHandoff !== undefined) {
+        pairedHandoff.cancelFallback();
+        ingressEvent = {
+          ...ingressEvent,
+          itemId: VoiceTranscriptItemId.make(pairedHandoff.draft.id),
+        };
+      }
+    }
+    if (ingressEvent.type === "transcript.delta" || ingressEvent.type === "transcript.done") {
+      this.#handleClientTranscriptEvent(ingressEvent, generation);
+      if (ingressEvent.type === "transcript.delta") {
+        return;
+      }
+    }
+    if (!shouldIngestRealtimeVoiceEvent(this.#startInput?.purpose, ingressEvent)) {
+      return;
     }
     if (this.#api.ingestRealtimeEvent === undefined) {
       return;
     }
-    void this.#api
-      .ingestRealtimeEvent(environmentId, { ...fence, event })
-      .catch((error) =>
-        this.#fail(
+    this.#enqueueRealtimeIngress(
+      pairedHandoff === undefined ? [ingressEvent] : [ingressEvent, pairedHandoff.event],
+      generation,
+    );
+  }
+
+  #flushPendingClientHandoff(draftId: string, generation: number): void {
+    const index = this.#pendingClientHandoffs.findIndex(
+      (pending) => pending.generation === generation && pending.draft.id === draftId,
+    );
+    if (index < 0 || generation !== this.#state.generation) return;
+    const [pending] = this.#pendingClientHandoffs.splice(index, 1);
+    if (pending === undefined) return;
+    const transcript: Extract<VoiceRealtimeIngressEvent, { readonly type: "transcript.done" }> = {
+      type: "transcript.done",
+      itemId: VoiceTranscriptItemId.make(pending.draft.id),
+      role: "user",
+      text: pending.draft.text,
+    };
+    this.#handleClientTranscriptEvent(transcript, generation);
+    this.#enqueueRealtimeIngress([transcript, pending.event], generation);
+  }
+
+  #enqueueRealtimeIngress(
+    events: ReadonlyArray<VoiceRealtimeIngressEvent>,
+    generation: number,
+  ): void {
+    const ingest = async () => {
+      const environmentId = this.#environmentId;
+      const fence = this.#fence;
+      if (
+        environmentId === null ||
+        fence === null ||
+        generation !== this.#state.generation ||
+        this.#api.ingestRealtimeEvent === undefined
+      ) {
+        return;
+      }
+      try {
+        for (const event of events) {
+          await this.#api.ingestRealtimeEvent(environmentId, { ...fence, event });
+        }
+      } catch (error) {
+        const normalized = normalizeVoiceSessionError(error);
+        if (
+          this.#startInput?.owner?.kind === "thread-call" &&
+          normalized.code === "controller_busy"
+        ) {
+          return;
+        }
+        await this.#fail(
           generation,
           new VoiceSessionError(
             "realtime-ingress-failed",
@@ -697,8 +1110,10 @@ export class VoiceSessionController {
             true,
             { cause: error },
           ),
-        ),
-      );
+        );
+      }
+    };
+    this.#clientIngressTail = this.#clientIngressTail.then(ingest, ingest);
   }
 
   #handleClientTranscriptEvent(
@@ -711,9 +1126,7 @@ export class VoiceSessionController {
     if (event.type === "transcript.delta") {
       const current = this.#clientTranscriptDrafts.get(event.role);
       const next = {
-        id:
-          current?.id ??
-          `client:${event.role}:${(this.#clientTranscriptDraftSequence += 1).toString(36)}`,
+        id: current?.id ?? event.itemId,
         text: `${current?.text ?? ""}${event.textDelta}`,
       };
       this.#clientTranscriptDrafts.set(event.role, next);
@@ -730,8 +1143,19 @@ export class VoiceSessionController {
       });
       return;
     }
-    const current = this.#clientTranscriptDrafts.get(event.role);
-    this.#clientTranscriptDrafts.delete(event.role);
+    const pending = this.#clientTranscriptFinalizationQueue.get(event.role);
+    const queued = pending?.[0];
+    if (queued !== undefined && pending !== undefined) {
+      if (pending.length === 1) {
+        this.#clientTranscriptFinalizationQueue.delete(event.role);
+      } else {
+        this.#clientTranscriptFinalizationQueue.set(event.role, pending.slice(1));
+      }
+    }
+    const current = queued ?? this.#clientTranscriptDrafts.get(event.role);
+    if (queued === undefined) {
+      this.#clientTranscriptDrafts.delete(event.role);
+    }
     this.#dispatch({
       type: "transcript-updated",
       generation,
@@ -849,7 +1273,7 @@ export class VoiceSessionController {
         break;
       }
       case "transcript.done":
-        if (this.#clientTranscriptAuthoritative) {
+        if (this.#clientTranscriptAuthoritative && event.payload.source !== "thread") {
           break;
         }
         this.#pendingTranscript.delete(event.payload.itemId);
@@ -876,6 +1300,19 @@ export class VoiceSessionController {
           providerConfirmed:
             event.payload.state === "provider-confirmed" || event.payload.state === "completed",
         };
+        this.#dispatch({
+          type: "controller-action-updated",
+          generation,
+          sequence: event.sequence,
+          action: {
+            actionId: event.payload.voiceActionId,
+            sequence: event.sequence,
+            state: event.payload.state,
+            statusText: event.payload.statusText ?? event.payload.state.replaceAll("-", " "),
+            detailCode: event.payload.detailCode ?? null,
+            occurredAt: event.occurredAt,
+          },
+        });
         if (event.payload.targetThreadId) {
           this.#dispatch({
             type: "target-updated",
@@ -894,6 +1331,10 @@ export class VoiceSessionController {
         });
         break;
       case "session.error":
+        if (event.payload.code === "realtime_speech_stalled" && event.payload.retryable) {
+          void this.reconnect();
+          break;
+        }
         void this.#fail(
           generation,
           new VoiceSessionError(
@@ -1012,10 +1453,12 @@ export class VoiceSessionController {
     this.#releaseBrowserResources();
     this.#pendingTranscript.clear();
     this.#clientTranscriptDrafts.clear();
-    this.#clientTranscriptDraftSequence = 0;
+    this.#clientTranscriptFinalizationQueue.clear();
+    for (const pending of this.#pendingClientHandoffs) pending.cancelFallback();
+    this.#pendingClientHandoffs = [];
     this.#clientTranscriptAuthoritative = false;
     this.#activeAction = null;
-    this.#controller = null;
+    this.#presentation = null;
     this.#environmentId = null;
     this.#fence = null;
     this.#sessionIdentity = null;
@@ -1085,10 +1528,12 @@ export class VoiceSessionController {
     }
     this.#pendingTranscript.clear();
     this.#clientTranscriptDrafts.clear();
-    this.#clientTranscriptDraftSequence = 0;
+    this.#clientTranscriptFinalizationQueue.clear();
+    for (const pending of this.#pendingClientHandoffs) pending.cancelFallback();
+    this.#pendingClientHandoffs = [];
     this.#clientTranscriptAuthoritative = false;
     this.#activeAction = null;
-    this.#controller = null;
+    this.#presentation = null;
     this.#environmentId = null;
     if (!preserveSessionIdentity) {
       this.#sessionIdentity = null;

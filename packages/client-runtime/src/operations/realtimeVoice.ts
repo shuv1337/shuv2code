@@ -3,10 +3,14 @@ import {
   type EnvironmentId,
   type VoiceAppendAudioInput,
   type VoiceEnsureControllerInput,
+  type VoiceGetActiveCallInput,
   type VoiceGetControllerInput,
+  type VoiceGetControllerHistoryInput,
   type VoiceListVoicesInput,
+  type VoicePrepareThreadCallInput,
   type VoiceRealtimeIngressInput,
   type VoiceResetControllerInput,
+  type VoiceSetControllerTargetInput,
   type VoiceSessionStartInput,
   type VoiceSessionStopInput,
   type VoiceSubscribeEventsInput,
@@ -90,11 +94,23 @@ export class RealtimeVoiceLeaseRelease {
 export const ensureVoiceController = (input: VoiceEnsureControllerInput) =>
   request(WS_METHODS.voiceEnsureController, input);
 
+export const getActiveRealtimeVoiceCall = (input: VoiceGetActiveCallInput) =>
+  request(WS_METHODS.voiceGetActiveCall, input);
+
 export const getVoiceController = (input: VoiceGetControllerInput) =>
   request(WS_METHODS.voiceGetController, input);
 
+export const getVoiceControllerHistory = (input: VoiceGetControllerHistoryInput) =>
+  request(WS_METHODS.voiceGetControllerHistory, input);
+
+export const setVoiceControllerTarget = (input: VoiceSetControllerTargetInput) =>
+  request(WS_METHODS.voiceSetControllerTarget, input);
+
 export const listRealtimeVoices = (input: VoiceListVoicesInput) =>
   request(WS_METHODS.voiceListVoices, input);
+
+export const prepareRealtimeVoiceThreadCall = (input: VoicePrepareThreadCallInput) =>
+  request(WS_METHODS.voicePrepareThreadCall, input);
 
 export const startRealtimeVoice = (input: VoiceSessionStartInput) =>
   request(WS_METHODS.voiceStart, input);

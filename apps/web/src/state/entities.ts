@@ -8,6 +8,7 @@ import {
   type EnvironmentThreadStatus,
   mergeEnvironmentThread,
 } from "@shuv2code/client-runtime/state/threads";
+import { isUserFacingThreadShell } from "@shuv2code/client-runtime/state/thread-visibility";
 import type {
   OrchestrationMessage,
   OrchestrationProposedPlan,
@@ -117,7 +118,8 @@ export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {
 }
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
-  return useAtomValue(environmentThreadShells.threadShellsAtom);
+  const threads = useAtomValue(environmentThreadShells.threadShellsAtom);
+  return useMemo(() => threads.filter(isUserFacingThreadShell), [threads]);
 }
 
 export function useAllEnvironmentShellsBootstrapped(): boolean {
@@ -127,8 +129,11 @@ export function useAllEnvironmentShellsBootstrapped(): boolean {
 export function useThreadShellsForProjectRefs(
   refs: ReadonlyArray<ScopedProjectRef>,
 ): ReadonlyArray<EnvironmentThreadShell> {
-  return useAtomValue(environmentThreadShells.threadShellsForProjectRefsAtom(refs));
+  const threads = useAtomValue(environmentThreadShells.threadShellsForProjectRefsAtom(refs));
+  return useMemo(() => threads.filter(isUserFacingThreadShell), [threads]);
 }
+
+export { isUserFacingThreadShell };
 
 export function useProject(ref: ScopedProjectRef | null): EnvironmentProject | null {
   return useAtomValue(ref === null ? EMPTY_PROJECT_ATOM : environmentProjects.projectAtom(ref));

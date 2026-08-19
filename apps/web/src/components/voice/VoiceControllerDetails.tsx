@@ -6,7 +6,19 @@ import type {
 } from "@shuv2code/contracts";
 
 import { cn } from "../../lib/utils";
-import { voiceControllerStateLabel } from "./VoiceControllerManagement.logic";
+
+function voiceControllerStateLabel(state: VoiceControllerIdentity["state"]): string {
+  switch (state) {
+    case "provisioning":
+      return "Starting";
+    case "active":
+      return "Active";
+    case "dormant":
+      return "Ready to reconnect";
+    case "resetting":
+      return "Resetting";
+  }
+}
 
 interface VoiceControllerConfigurationDetailsProps {
   readonly hostProjectId: ProjectId;

@@ -47,6 +47,7 @@ describe("WebRtcVoiceTransport", () => {
       close: vi.fn(),
     });
     const getUserMedia = vi.fn();
+    const onMicrophoneStream = vi.fn();
     const transport = new WebRtcVoiceTransport({
       getUserMedia,
       createPeerConnection: () => peer as unknown as RTCPeerConnection,
@@ -62,9 +63,13 @@ describe("WebRtcVoiceTransport", () => {
         }) as unknown as HTMLAudioElement,
     });
 
-    await transport.connect({ exchangeOffer: async () => "answer", onData: vi.fn() }, stream);
+    await transport.connect(
+      { exchangeOffer: async () => "answer", onData: vi.fn(), onMicrophoneStream },
+      stream,
+    );
 
     expect(getUserMedia).not.toHaveBeenCalled();
+    expect(onMicrophoneStream).toHaveBeenCalledWith(stream);
     expect(peer.addTrack).toHaveBeenCalledWith(track, stream);
     transport.close();
     expect(track.stop).toHaveBeenCalledTimes(1);
@@ -286,5 +291,102 @@ describe("WebRtcVoiceTransport", () => {
         }),
       ),
     );
+  });
+
+  it("does not attach or play remote agent audio when playback is disabled", async () => {
+    const track = { enabled: true, stop: vi.fn(), addEventListener: vi.fn() };
+    const stream = {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+    } as unknown as MediaStream;
+    const dataChannel = Object.assign(new FakeEventTarget(), { close: vi.fn() });
+    const peer = Object.assign(new FakeEventTarget(), {
+      iceGatheringState: "complete",
+      connectionState: "connected",
+      localDescription: null as RTCSessionDescription | null,
+      createDataChannel: () => dataChannel,
+      addTrack: vi.fn(),
+      createOffer: async () => ({ type: "offer", sdp: "offer" }),
+      setLocalDescription: async (description: RTCSessionDescriptionInit) => {
+        peer.localDescription = description as RTCSessionDescription;
+      },
+      setRemoteDescription: vi.fn(),
+      close: vi.fn(),
+    });
+    const audio = {
+      autoplay: false,
+      style: {},
+      setAttribute: vi.fn(),
+      removeAttribute: vi.fn(),
+      play: vi.fn(async () => {}),
+      pause: vi.fn(),
+      srcObject: null,
+    };
+    const transport = new WebRtcVoiceTransport({
+      getUserMedia: vi.fn(),
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      createAudioElement: () => audio as unknown as HTMLAudioElement,
+    });
+
+    await transport.connect(
+      { exchangeOffer: async () => "answer", onData: vi.fn(), playRemoteAudio: false },
+      stream,
+    );
+    peer.dispatch("track", {
+      streams: [{} as MediaStream],
+      track: {} as MediaStreamTrack,
+    });
+
+    expect(audio.srcObject).toBeNull();
+    expect(audio.play).not.toHaveBeenCalled();
+    transport.close();
+  });
+
+  it("exposes the exact remote audio stream used for agent playback", async () => {
+    const track = { enabled: true, stop: vi.fn(), addEventListener: vi.fn() };
+    const microphone = {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+    } as unknown as MediaStream;
+    const dataChannel = Object.assign(new FakeEventTarget(), { close: vi.fn() });
+    const peer = Object.assign(new FakeEventTarget(), {
+      iceGatheringState: "complete",
+      connectionState: "connected",
+      localDescription: null as RTCSessionDescription | null,
+      createDataChannel: () => dataChannel,
+      addTrack: vi.fn(),
+      createOffer: async () => ({ type: "offer", sdp: "offer" }),
+      setLocalDescription: async (description: RTCSessionDescriptionInit) => {
+        peer.localDescription = description as RTCSessionDescription;
+      },
+      setRemoteDescription: vi.fn(),
+      close: vi.fn(),
+    });
+    const audio = {
+      autoplay: false,
+      style: {},
+      setAttribute: vi.fn(),
+      removeAttribute: vi.fn(),
+      play: vi.fn(async () => {}),
+      pause: vi.fn(),
+      srcObject: null,
+    };
+    const remoteStream = {} as MediaStream;
+    const onRemoteAudioStream = vi.fn();
+    const transport = new WebRtcVoiceTransport({
+      getUserMedia: vi.fn(),
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      createAudioElement: () => audio as unknown as HTMLAudioElement,
+    });
+
+    await transport.connect(
+      { exchangeOffer: async () => "answer", onData: vi.fn(), onRemoteAudioStream },
+      microphone,
+    );
+    peer.dispatch("track", { streams: [remoteStream], track: {} as MediaStreamTrack });
+
+    expect(onRemoteAudioStream).toHaveBeenCalledWith(remoteStream);
+    expect(audio.srcObject).toBe(remoteStream);
+    transport.close();
   });
 });

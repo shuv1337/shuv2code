@@ -255,7 +255,7 @@ const makeVoiceControllerBindingRepository = Effect.gen(function* () {
       WHERE environment_id = ${input.environmentId}
         AND controller_thread_id = ${input.controllerThreadId}
         AND control_epoch = ${input.expectedControlEpoch}
-        AND state = 'active'
+        AND state IN ('active', 'dormant')
       RETURNING environment_id
     `.pipe(
       Effect.map((rows) => rows.length === 1),

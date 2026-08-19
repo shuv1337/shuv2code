@@ -28,7 +28,10 @@ const isSingleOriginDev = process.env.SHUV2CODE_SINGLE_ORIGIN_DEV === "1";
 
 const port = Number(process.env.PORT ?? 5733);
 const explicitHost = process.env.HOST?.trim();
-const host = explicitHost || "localhost";
+// A tailnet share forwards to IPv4 loopback. Keep ordinary dev on localhost,
+// but let the runner pin Vite to the same interface when it creates a share.
+const sharedBindHost = process.env.SHUV2CODE_WEB_BIND_HOST?.trim();
+const host = explicitHost || sharedBindHost || "localhost";
 const configuredWsUrl = isSingleOriginDev ? undefined : process.env.VITE_WS_URL?.trim();
 const configuredHttpUrl = isSingleOriginDev ? undefined : process.env.VITE_HTTP_URL?.trim();
 const configuredRelayUrl = repoEnv.VITE_SHUV2CODE_RELAY_URL?.trim() || "";

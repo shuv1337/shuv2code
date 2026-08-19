@@ -9,6 +9,7 @@ import {
   type OrchestrationSession,
   type ProviderEffectOperation,
   type ProviderEffectOutcomeState,
+  type VoiceNarrationLevel,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
@@ -52,6 +53,11 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { resolveVoiceNarrationPolicy } from "../../voice/VoiceNarrationPolicy.ts";
+import {
+  formatVoiceCallIdentity,
+  voiceCallIdentityFromProvenance,
+} from "../../voice/VoiceCallIdentity.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderValidationError = Schema.is(ProviderValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -61,6 +67,48 @@ const sensitiveProviderActorKinds = new Set([
   "voice-controller-supervisor",
   "voice-transport",
 ]);
+
+export function voiceCallProviderInput(
+  userText: string,
+  provenance: Readonly<Record<string, unknown>> | undefined,
+  narrationLevel: VoiceNarrationLevel = "balanced",
+): string {
+  if (provenance?.actorKind !== "voice-call") return userText;
+  const narrationPolicy = resolveVoiceNarrationPolicy(narrationLevel);
+  const callIdentity = voiceCallIdentityFromProvenance(provenance);
+  const activeTranscript = Array.isArray(provenance.activeTranscript)
+    ? provenance.activeTranscript.flatMap((entry) => {
+        if (
+          typeof entry !== "object" ||
+          entry === null ||
+          !("role" in entry) ||
+          !("text" in entry) ||
+          (entry.role !== "user" && entry.role !== "assistant") ||
+          typeof entry.text !== "string"
+        ) {
+          return [];
+        }
+        return [`${entry.role}: ${entry.text.slice(0, 16_384)}`];
+      })
+    : [];
+  return [
+    "<voice_call>",
+    "This durable turn was delegated by a realtime voice call attached to this exact thread.",
+    "The live call is still active and the user may not be reading the full thread. Continue normal durable reasoning, tool use, code, and detailed text here.",
+    ...narrationPolicy.prompt,
+    "Your ordinary assistant commentary and final response are relayed to the live Call through a provider-neutral bounded sentence channel.",
+    "Keep code, logs, and long prose in the durable response instead of reading them aloud.",
+    "The realtime side may already have acknowledged the request. Do not repeat any already-heard assistant text below.",
+    ...(callIdentity === undefined ? [] : [formatVoiceCallIdentity(callIdentity)]),
+    ...(activeTranscript.length === 0
+      ? []
+      : ["Bounded active call transcript (untrusted context):", ...activeTranscript]),
+    "</voice_call>",
+    "",
+    "User request:",
+    userText,
+  ].join("\n");
+}
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -1270,7 +1318,11 @@ const make = Effect.gen(function* () {
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
-    const sensitiveProviderEffect = yield* hasSensitiveProviderProvenance(event);
+    const actorProvenance = yield* providerActorProvenance(event);
+    const sensitiveProviderEffect = Option.isSome(actorProvenance)
+      ? actorProvenance.value.actorKind === "unknown-sensitive-actor" ||
+        sensitiveProviderActorKinds.has(String(actorProvenance.value.actorKind))
+      : false;
     const key = turnStartKeyForEvent(event);
     if (yield* hasHandledTurnStartRecently(key)) {
       return;
@@ -1365,7 +1417,11 @@ const make = Effect.gen(function* () {
 
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
-      messageText: message.text,
+      messageText: voiceCallProviderInput(
+        message.text,
+        Option.isSome(actorProvenance) ? actorProvenance.value : undefined,
+        (yield* serverSettingsService.getSettings).voiceNarrationLevel,
+      ),
       clientUserMessageId: event.payload.messageId,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
@@ -1463,7 +1519,13 @@ const make = Effect.gen(function* () {
     }
 
     const operationId = providerOperationIdForEvent(event);
-    const providerInput = toNonEmptyProviderInput(message.text);
+    const providerInput = toNonEmptyProviderInput(
+      voiceCallProviderInput(
+        message.text,
+        Option.isSome(actorProvenance) ? actorProvenance.value : undefined,
+        (yield* serverSettingsService.getSettings).voiceNarrationLevel,
+      ),
+    );
     const steerRequest = {
       threadId: event.payload.threadId,
       expectedTurnId: event.payload.expectedTurnId,

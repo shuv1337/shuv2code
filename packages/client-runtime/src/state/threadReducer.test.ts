@@ -454,6 +454,83 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("voice messages", () => {
+    it("adds a realtime exchange to the called thread as voice messages", () => {
+      const result = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 9,
+        occurredAt: "2026-04-01T07:00:02.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.voice-exchange-appended",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          turnId: TurnId.make("voice-turn-1"),
+          userMessage: {
+            messageId: MessageId.make("voice-user-1"),
+            text: "What is connected?",
+          },
+          assistantMessage: {
+            messageId: MessageId.make("voice-assistant-1"),
+            text: "I will check.",
+          },
+          createdAt: "2026-04-01T07:00:00.000Z",
+          completedAt: "2026-04-01T07:00:02.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages).toEqual([
+          expect.objectContaining({ role: "user", text: "What is connected?", modality: "voice" }),
+          expect.objectContaining({ role: "assistant", text: "I will check.", modality: "voice" }),
+        ]);
+      }
+    });
+
+    it("adds exact spoken output without replacing the provider turn", () => {
+      const runningThread: OrchestrationThread = {
+        ...baseThread,
+        latestTurn: {
+          turnId: TurnId.make("turn-1"),
+          state: "running",
+          requestedAt: "2026-04-01T07:00:00.000Z",
+          startedAt: "2026-04-01T07:00:00.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        },
+      };
+      const result = applyThreadDetailEvent(runningThread, {
+        ...baseEventFields,
+        sequence: 10,
+        occurredAt: "2026-04-01T07:00:02.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.voice-speech-appended",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          turnId: TurnId.make("turn-1"),
+          messageId: MessageId.make("voice-speech-1"),
+          text: "I am checking the network now.",
+          createdAt: "2026-04-01T07:00:02.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages[0]).toEqual(
+          expect.objectContaining({
+            role: "assistant",
+            text: "I am checking the network now.",
+            modality: "voice",
+            turnId: "turn-1",
+          }),
+        );
+        expect(result.thread.latestTurn).toEqual(runningThread.latestTurn);
+      }
+    });
+  });
+
   describe("thread.session-set", () => {
     it("settles a running latestTurn when the session leaves the running status", () => {
       const threadWithRunningTurn: OrchestrationThread = {

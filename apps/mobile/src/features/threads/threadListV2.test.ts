@@ -278,6 +278,29 @@ describe("buildThreadListV2Items", () => {
     expect(layout.settledCount).toBe(0);
   });
 
+  it("hides managed Voice threads", () => {
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({ id: ThreadId.make("standard"), title: "Standard", purpose: "standard" }),
+        makeThread({
+          id: ThreadId.make("controller"),
+          title: "Controller",
+          purpose: "voice-controller",
+        }),
+        makeThread({
+          id: ThreadId.make("transport"),
+          title: "Transport",
+          purpose: "voice-transport",
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+
+    expect(layout.items.map((item) => item.thread.id)).toEqual(["standard"]);
+  });
+
   it("hides snoozed threads and counts them — visibility parity with web", () => {
     const layout = buildThreadListV2Items({
       threads: [

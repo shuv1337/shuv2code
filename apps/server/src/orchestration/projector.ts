@@ -33,6 +33,8 @@ import {
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadVoiceExchangeAppendedPayload,
+  ThreadVoiceSpeechAppendedPayload,
 } from "./Schemas.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
@@ -546,6 +548,112 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
             updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.voice-exchange-appended":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadVoiceExchangeAppendedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) return nextBase;
+
+        const userMessage = yield* decodeForEvent(
+          OrchestrationMessage,
+          {
+            id: payload.userMessage.messageId,
+            role: "user",
+            text: payload.userMessage.text,
+            turnId: payload.turnId,
+            streaming: false,
+            createdAt: payload.createdAt,
+            updatedAt: payload.completedAt,
+          },
+          event.type,
+          "userMessage",
+        );
+        const assistantMessage = yield* decodeForEvent(
+          OrchestrationMessage,
+          {
+            id: payload.assistantMessage.messageId,
+            role: "assistant",
+            text: payload.assistantMessage.text,
+            turnId: payload.turnId,
+            streaming: false,
+            createdAt: payload.completedAt,
+            updatedAt: payload.completedAt,
+          },
+          event.type,
+          "assistantMessage",
+        );
+        const replacingIds = new Set([userMessage.id, assistantMessage.id]);
+        const messages = [
+          ...thread.messages.filter((message) => !replacingIds.has(message.id)),
+          userMessage,
+          assistantMessage,
+        ].slice(-MAX_THREAD_MESSAGES);
+        const providerTurnIsRunning =
+          thread.session?.status === "running" && thread.session.activeTurnId !== null;
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            messages,
+            latestTurn: providerTurnIsRunning
+              ? thread.latestTurn
+              : {
+                  turnId: payload.turnId,
+                  state: "completed",
+                  requestedAt: payload.createdAt,
+                  startedAt: payload.createdAt,
+                  completedAt: payload.completedAt,
+                  assistantMessageId: payload.assistantMessage.messageId,
+                },
+            updatedAt: payload.completedAt,
+          }),
+        };
+      });
+
+    case "thread.voice-speech-appended":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadVoiceSpeechAppendedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) return nextBase;
+
+        const message = yield* decodeForEvent(
+          OrchestrationMessage,
+          {
+            id: payload.messageId,
+            role: "assistant",
+            text: payload.text,
+            turnId: payload.turnId,
+            streaming: false,
+            createdAt: payload.createdAt,
+            updatedAt: payload.createdAt,
+          },
+          event.type,
+          "message",
+        );
+        const messages = [
+          ...thread.messages.filter((entry) => entry.id !== message.id),
+          message,
+        ].slice(-MAX_THREAD_MESSAGES);
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            messages,
+            updatedAt: payload.createdAt,
           }),
         };
       });

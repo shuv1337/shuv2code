@@ -127,6 +127,7 @@ import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
+  selectResolvedRightPanelState,
   selectThreadRightPanelState,
   type RightPanelSurface,
   updatePullRequestTabStatus,
@@ -157,6 +158,8 @@ import {
   deriveAgentPanelModel,
   foldSubagentActivities,
 } from "@shuv2code/client-runtime/state/subagentRuntime";
+import { VoiceSurface } from "./voice/VoiceSurface";
+import { VoiceSurfaceHostSlot } from "./voice/VoiceSurfaceHost";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -1621,14 +1624,22 @@ function ChatViewContent(props: ChatViewProps) {
   }
   const timelineAnchorMessageId = timelineAnchor.messageId;
   const activeRightPanelKind = useRightPanelStore((state) =>
-    selectActiveRightPanel(state.byThreadKey, activeThreadRef),
+    selectActiveRightPanel(state.byThreadKey, activeThreadRef, state.byEnvironmentId),
   );
   const diffOpen = activeRightPanelKind === "diff";
-  const rightPanelState = useRightPanelStore((state) =>
-    selectThreadRightPanelState(state.byThreadKey, activeThreadRef),
+  const rightPanelStateByThreadKey = useRightPanelStore((state) => state.byThreadKey);
+  const rightPanelStateByEnvironmentId = useRightPanelStore((state) => state.byEnvironmentId);
+  const rightPanelState = useMemo(
+    () =>
+      selectResolvedRightPanelState(
+        rightPanelStateByThreadKey,
+        rightPanelStateByEnvironmentId,
+        activeThreadRef,
+      ),
+    [activeThreadRef, rightPanelStateByEnvironmentId, rightPanelStateByThreadKey],
   );
   const activeRightPanelSurface = useRightPanelStore((state) =>
-    selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef),
+    selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef, state.byEnvironmentId),
   );
   const [pullRequestTabStatuses, setPullRequestTabStatuses] = useState<
     Record<string, PullRequestTabStatus>
@@ -1645,6 +1656,14 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activePullRequestSurfaceId],
   );
+  const voiceSurfacePresent = rightPanelState.surfaces.some((surface) => surface.kind === "voice");
+  // Keep a surface selected inside the hidden panel host so RightPanelTabs keeps
+  // rendering its children while the panel is closed. Voice owns live visual
+  // state that must survive presentation changes; visibility is handled below.
+  const mountedRightPanelSurfaceId =
+    activeRightPanelSurface?.id ??
+    rightPanelState.activeSurfaceId ??
+    (voiceSurfacePresent ? "voice" : null);
   const activeFileSurface =
     activeRightPanelSurface?.kind === "file" ? activeRightPanelSurface : null;
   const activePreviewState = useThreadPreviewState(activeThreadRef);
@@ -3300,6 +3319,10 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     void addBrowserSurface({ threadRef: activeThreadRef, openPreview });
   }, [activeThreadRef, openPreview]);
+  const addVoiceSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().openVoice(activeThreadRef.environmentId);
+  }, [activeThreadRef]);
   const addDiffSurface = useCallback(() => {
     if (!activeThreadRef || !isServerThread || !isGitRepo) return;
     useRightPanelStore.getState().open(activeThreadRef, "diff");
@@ -3524,6 +3547,7 @@ function ChatViewContent(props: ChatViewProps) {
     const nextActiveSurface = selectActiveRightPanelSurface(
       useRightPanelStore.getState().byThreadKey,
       activeThreadRef,
+      useRightPanelStore.getState().byEnvironmentId,
     );
     if (nextActiveSurface?.kind === "preview" && nextActiveSurface.resourceId) {
       setActivePreviewTab(activeThreadRef, nextActiveSurface.resourceId);
@@ -6161,10 +6185,116 @@ function ChatViewContent(props: ChatViewProps) {
     void onRevertToTurnCountRef.current(targetTurnCount);
   }, []);
 
+  const materializeThreadForVoiceCall = useCallback(async () => {
+    if (!activeThread || !activeProject) {
+      throw new Error("Choose a project before starting a Call.");
+    }
+    if (!isLocalDraftThread) {
+      return {
+        threadId: activeThread.id,
+        threadTitle: activeThread.title,
+        projectTitle: activeProject.title,
+        projectId: activeProject.id,
+      };
+    }
+    const createResult = await createThread({
+      environmentId,
+      input: {
+        threadId: activeThread.id,
+        projectId: activeProject.id,
+        title: activeThread.title,
+        modelSelection: activeThread.modelSelection,
+        runtimeMode,
+        interactionMode,
+        branch: activeThreadBranch,
+        worktreePath: activeThread.worktreePath,
+        createdAt: activeThread.createdAt,
+      },
+    });
+    if (createResult._tag === "Failure") {
+      const error = squashAtomCommandFailure(createResult);
+      throw error instanceof Error
+        ? error
+        : new Error("The new thread could not be created for the Call.");
+    }
+    return {
+      threadId: activeThread.id,
+      threadTitle: activeThread.title,
+      projectTitle: activeProject.title,
+      projectId: activeProject.id,
+    };
+  }, [
+    activeProject,
+    activeThread,
+    activeThreadBranch,
+    createThread,
+    environmentId,
+    interactionMode,
+    isLocalDraftThread,
+    runtimeMode,
+  ]);
+
   // Empty state: no active thread
   if (!activeThread) {
     return <NoActiveThreadState />;
   }
+
+  const voiceProvider = providerStatuses.find(
+    (provider) =>
+      provider.driver === "codex" &&
+      provider.enabled &&
+      provider.installed &&
+      provider.availability !== "unavailable",
+  );
+  const voicePreferredModelSelection =
+    voiceProvider && activeThread.modelSelection.instanceId === voiceProvider.instanceId
+      ? activeThread.modelSelection
+      : voiceProvider &&
+          activeProject?.defaultModelSelection?.instanceId === voiceProvider.instanceId
+        ? activeProject.defaultModelSelection
+        : null;
+  const voiceDefaultModel =
+    voiceProvider?.models.find((model) => model.isDefault) ?? voiceProvider?.models[0];
+  const voiceModelSelection =
+    voicePreferredModelSelection ??
+    (voiceProvider && voiceDefaultModel
+      ? createModelSelection(voiceProvider.instanceId, voiceDefaultModel.slug)
+      : null);
+  const voiceSurfaceSetup =
+    activeProject && voiceProvider && voiceModelSelection
+      ? {
+          hostProjectId: activeProject.id,
+          providerInstanceId: voiceProvider.instanceId,
+          modelSelection: voiceModelSelection,
+          realtimeEnabled: settings.enableRealtimeVoice,
+          threadReadEnabled: settings.enableVoiceThreadRead,
+          threadControlEnabled: settings.enableVoiceThreadControl,
+        }
+      : null;
+  const voiceSurfacePresentation = useMemo(
+    () => ({
+      environmentId: activeThread.environmentId,
+      currentContext: {
+        threadId: isServerThread ? activeThread.id : null,
+        threadTitle: activeThread.title,
+        projectTitle: activeProject?.title ?? "Current project",
+        ...(activeProject === null ? {} : { projectId: activeProject.id }),
+      },
+      setup: voiceSurfaceSetup,
+      ...(isLocalDraftThread ? { onMaterializeThreadForCall: materializeThreadForVoiceCall } : {}),
+    }),
+    [
+      activeProject?.title,
+      activeProject?.id,
+      activeThread.environmentId,
+      activeThread.id,
+      activeThread.title,
+      isLocalDraftThread,
+      materializeThreadForVoiceCall,
+      isServerThread,
+      voiceSurfaceSetup,
+    ],
+  );
 
   const panelToggleControls = (
     <PanelLayoutControls
@@ -6202,7 +6332,7 @@ function ChatViewContent(props: ChatViewProps) {
       {panelToggleControls}
     </div>
   );
-  const rightPanelContent = activeThreadRef ? (
+  const activeNonVoiceRightPanelContent = activeThreadRef ? (
     activeRightPanelSurface?.kind === "preview" ? (
       <Suspense fallback={null}>
         <PreviewPanel
@@ -6313,6 +6443,28 @@ function ChatViewContent(props: ChatViewProps) {
         />
       </Suspense>
     ) : null
+  ) : null;
+  const rightPanelContent = activeThreadRef ? (
+    <>
+      {voiceSurfacePresent ? (
+        <div
+          className={activeRightPanelSurface?.kind === "voice" ? "contents" : "hidden"}
+          data-persistent-voice-surface
+        >
+          <VoiceSurfaceHostSlot
+            presentation={voiceSurfacePresentation}
+            presented={rightPanelOpen && activeRightPanelSurface?.kind === "voice"}
+            fallback={
+              <VoiceSurface
+                {...voiceSurfacePresentation}
+                presented={rightPanelOpen && activeRightPanelSurface?.kind === "voice"}
+              />
+            }
+          />
+        </div>
+      ) : null}
+      {activeNonVoiceRightPanelContent}
+    </>
   ) : null;
 
   const workspaceFileDropHandlers = makeWorkspaceFileDropHandlers({
@@ -6744,52 +6896,13 @@ function ChatViewContent(props: ChatViewProps) {
         ))}
       </div>
 
-      {!shouldUseRightPanelSheet && rightPanelOpen && activeThreadRef ? (
-        <RightPanelTabs
-          mode="inline"
-          maximized={rightPanelMaximized}
-          surfaces={rightPanelState.surfaces}
-          activeSurfaceId={activeRightPanelSurface?.id ?? null}
-          pendingSurfaceIds={pendingFileSurfaceIds}
-          previewSessions={activePreviewState.sessions}
-          desktopByTabId={activePreviewState.desktopByTabId}
-          terminalLabelsById={activeTerminalLabelsById}
-          onActivate={activateRightPanelSurface}
-          onCloseSurface={closeRightPanelSurface}
-          onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
-          onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
-          onCloseAllSurfaces={closeAllRightPanelSurfaces}
-          onMoveSurface={moveRightPanelSurface}
-          onCopyFilePath={copyRightPanelFilePath}
-          onAddBrowser={createBrowserSurface}
-          onAddTerminal={addTerminalSurface}
-          onAddDiff={addDiffSurface}
-          onAddFiles={addFilesSurface}
-          onAddPullRequest={addPullRequestSurface}
-          onAddAgents={addAgentsSurface}
-          browserAvailable={isPreviewSupportedInRuntime()}
-          terminalAvailable={activeProject !== null}
-          diffAvailable={isServerThread && isGitRepo}
-          filesAvailable={activeProject !== null}
-          pullRequestAvailable={pullRequestSurfaceAvailable}
-          agentsAvailable
-          pullRequestStatuses={pullRequestTabStatuses}
-          liveAgentCount={agentPanelModel.liveCount}
-        >
-          {rightPanelContent}
-        </RightPanelTabs>
-      ) : null}
-      {shouldUseRightPanelSheet && rightPanelOpen && activeThreadRef ? (
-        <RightPanelSheet open onClose={closePreviewPanel}>
+      {!shouldUseRightPanelSheet && activeThreadRef ? (
+        <div className={rightPanelOpen ? "contents" : "hidden"} aria-hidden={!rightPanelOpen}>
           <RightPanelTabs
-            mode="sheet"
-            // Same effective inset as the closed-state titlebar controls
-            // (pr-3 in the tab bar plus this pixel equals the absolute
-            // right inset plus mr-px), so the cluster does not creep when
-            // the sheet opens.
-            layoutControls={<div className="mr-px flex items-center">{panelToggleControls}</div>}
+            mode="inline"
+            maximized={rightPanelMaximized}
             surfaces={rightPanelState.surfaces}
-            activeSurfaceId={activeRightPanelSurface?.id ?? null}
+            activeSurfaceId={mountedRightPanelSurfaceId}
             pendingSurfaceIds={pendingFileSurfaceIds}
             previewSessions={activePreviewState.sessions}
             desktopByTabId={activePreviewState.desktopByTabId}
@@ -6801,6 +6914,49 @@ function ChatViewContent(props: ChatViewProps) {
             onCloseAllSurfaces={closeAllRightPanelSurfaces}
             onMoveSurface={moveRightPanelSurface}
             onCopyFilePath={copyRightPanelFilePath}
+            onAddVoice={addVoiceSurface}
+            onAddBrowser={createBrowserSurface}
+            onAddTerminal={addTerminalSurface}
+            onAddDiff={addDiffSurface}
+            onAddFiles={addFilesSurface}
+            onAddPullRequest={addPullRequestSurface}
+            onAddAgents={addAgentsSurface}
+            browserAvailable={isPreviewSupportedInRuntime()}
+            terminalAvailable={activeProject !== null}
+            diffAvailable={isServerThread && isGitRepo}
+            filesAvailable={activeProject !== null}
+            pullRequestAvailable={pullRequestSurfaceAvailable}
+            agentsAvailable
+            pullRequestStatuses={pullRequestTabStatuses}
+            liveAgentCount={agentPanelModel.liveCount}
+          >
+            {rightPanelContent}
+          </RightPanelTabs>
+        </div>
+      ) : null}
+      {shouldUseRightPanelSheet && activeThreadRef ? (
+        <RightPanelSheet open={rightPanelOpen} onClose={closePreviewPanel}>
+          <RightPanelTabs
+            mode="sheet"
+            // Same effective inset as the closed-state titlebar controls
+            // (pr-3 in the tab bar plus this pixel equals the absolute
+            // right inset plus mr-px), so the cluster does not creep when
+            // the sheet opens.
+            layoutControls={<div className="mr-px flex items-center">{panelToggleControls}</div>}
+            surfaces={rightPanelState.surfaces}
+            activeSurfaceId={mountedRightPanelSurfaceId}
+            pendingSurfaceIds={pendingFileSurfaceIds}
+            previewSessions={activePreviewState.sessions}
+            desktopByTabId={activePreviewState.desktopByTabId}
+            terminalLabelsById={activeTerminalLabelsById}
+            onActivate={activateRightPanelSurface}
+            onCloseSurface={closeRightPanelSurface}
+            onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
+            onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
+            onCloseAllSurfaces={closeAllRightPanelSurfaces}
+            onMoveSurface={moveRightPanelSurface}
+            onCopyFilePath={copyRightPanelFilePath}
+            onAddVoice={addVoiceSurface}
             onAddBrowser={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}

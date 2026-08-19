@@ -275,10 +275,19 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+/**
+ * The interaction medium that produced a rendered message. Consumers treat a
+ * missing value as ordinary text for compatibility with snapshots written
+ * before native thread calls existed.
+ */
+export const OrchestrationMessageModality = Schema.Literals(["text", "voice"]);
+export type OrchestrationMessageModality = typeof OrchestrationMessageModality.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
+  modality: Schema.optional(OrchestrationMessageModality),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
@@ -1057,6 +1066,33 @@ const ThreadTurnStartRecoverCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadVoiceExchangeAppendCommand = Schema.Struct({
+  type: Schema.Literal("thread.voice.exchange.append"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  userMessage: Schema.Struct({
+    messageId: MessageId,
+    text: Schema.String,
+  }),
+  assistantMessage: Schema.Struct({
+    messageId: MessageId,
+    text: Schema.String,
+  }),
+  createdAt: IsoDateTime,
+  completedAt: IsoDateTime,
+});
+
+const ThreadVoiceSpeechAppendCommand = Schema.Struct({
+  type: Schema.Literal("thread.voice.speech.append"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: Schema.NullOr(TurnId),
+  messageId: MessageId,
+  text: Schema.String,
+  createdAt: IsoDateTime,
+});
+
 const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   type: Schema.Literal("thread.message.assistant.delta"),
   commandId: CommandId,
@@ -1155,6 +1191,8 @@ const ThreadProviderEffectOutcomeSetCommand = Schema.Struct({
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadTurnStartRecoverCommand,
+  ThreadVoiceExchangeAppendCommand,
+  ThreadVoiceSpeechAppendCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
@@ -1191,6 +1229,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
+  "thread.voice-exchange-appended",
+  "thread.voice-speech-appended",
   "thread.turn-start-requested",
   "thread.turn-steer-requested",
   "thread.turn-interrupt-requested",
@@ -1362,6 +1402,29 @@ export const ThreadMessageSentPayload = Schema.Struct({
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+});
+
+export const ThreadVoiceExchangeAppendedPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  userMessage: Schema.Struct({
+    messageId: MessageId,
+    text: Schema.String,
+  }),
+  assistantMessage: Schema.Struct({
+    messageId: MessageId,
+    text: Schema.String,
+  }),
+  createdAt: IsoDateTime,
+  completedAt: IsoDateTime,
+});
+
+export const ThreadVoiceSpeechAppendedPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: Schema.NullOr(TurnId),
+  messageId: MessageId,
+  text: Schema.String,
+  createdAt: IsoDateTime,
 });
 
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
@@ -1567,6 +1630,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.message-sent"),
     payload: ThreadMessageSentPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.voice-exchange-appended"),
+    payload: ThreadVoiceExchangeAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.voice-speech-appended"),
+    payload: ThreadVoiceSpeechAppendedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

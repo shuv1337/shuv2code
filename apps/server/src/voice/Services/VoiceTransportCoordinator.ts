@@ -8,6 +8,7 @@ import type {
   VoiceAppendAudioResult,
   VoiceControllerError,
   VoiceControllerIdentity,
+  VoiceCallPresence,
   VoiceSessionEvent,
   VoiceSessionFence,
   VoiceSessionStartInput,
@@ -35,10 +36,14 @@ export interface ActiveVoiceSession {
   readonly fence: VoiceSessionFence;
   readonly environmentId: EnvironmentId;
   readonly hostProjectId: ProjectId;
-  readonly providerInstanceId: ProviderInstanceId;
-  readonly controller: VoiceControllerIdentity;
-  readonly controllerRuntime: ControllerRuntimeState;
+  /** Provider instance that owns realtime media, not delegated durable work. */
+  readonly transportProviderInstanceId: ProviderInstanceId;
+  readonly transportModelSelection?: ModelSelection;
+  readonly controller: VoiceControllerIdentity | null;
+  readonly controllerRuntime: ControllerRuntimeState | null;
+  readonly call: VoiceCallPresence | null;
   readonly transportType: "webrtc" | "websocket";
+  readonly purpose: "conversation" | "transcription";
   readonly answerSdp: string | null;
   readonly lastAudioSequence: number;
   readonly eventCursor: number;
@@ -65,7 +70,7 @@ export interface VoiceTransportCoordinatorShape {
   readonly stopSession: (session: ActiveVoiceSession) => Effect.Effect<void>;
   readonly stopAll: () => Effect.Effect<void>;
   readonly stopForController: (controllerThreadId: ThreadId) => Effect.Effect<void>;
-  readonly cleanupStaleStartupLease: (controllerThreadId: ThreadId) => Effect.Effect<void>;
+  readonly cleanupStaleStartupLease: (environmentId: EnvironmentId) => Effect.Effect<void>;
   readonly startTransport: (input: {
     readonly start: VoiceSessionStartInput;
     readonly binding: {
@@ -81,6 +86,27 @@ export interface VoiceTransportCoordinatorShape {
     readonly environmentId: EnvironmentId;
     readonly workspaceRoot: string;
     readonly onActivated: (session: ActiveVoiceSession) => Effect.Effect<void>;
+  }) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;
+  readonly startThreadCallTransport: (input: {
+    readonly start: VoiceSessionStartInput & {
+      readonly owner: { readonly kind: "thread-call"; readonly threadId: ThreadId };
+    };
+    readonly environmentId: EnvironmentId;
+    readonly thread: {
+      readonly id: ThreadId;
+      readonly projectId: ProjectId;
+      readonly title: string;
+      readonly modelSelection: ModelSelection;
+      readonly messages: ReadonlyArray<{
+        readonly role: "user" | "assistant" | "system";
+        readonly text: string;
+        readonly streaming: boolean;
+        readonly [key: string]: unknown;
+      }>;
+    };
+    readonly transportModelSelection: ModelSelection;
+    readonly workspaceRoot: string;
+    readonly threadSnapshotSequence: number;
   }) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;
   readonly stop: (
     input: VoiceSessionStopInput,

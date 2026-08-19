@@ -221,16 +221,24 @@ import {
   VoiceControllerError,
   VoiceEnsureControllerInput,
   VoiceEnsureControllerResult,
+  VoiceGetActiveCallInput,
+  VoiceGetActiveCallResult,
   VoiceGetControllerInput,
   VoiceGetControllerResult,
+  VoiceGetControllerHistoryInput,
+  VoiceGetControllerHistoryResult,
   VoiceListVoicesInput,
   VoiceAppendAudioInput,
   VoiceAppendAudioResult,
   VoiceListVoicesResult,
+  VoicePrepareThreadCallInput,
+  VoicePrepareThreadCallResult,
   VoiceRealtimeIngressInput,
   VoiceRealtimeIngressResult,
   VoiceResetControllerInput,
   VoiceResetControllerResult,
+  VoiceSetControllerTargetInput,
+  VoiceSetControllerTargetResult,
   VoiceSessionEvent,
   VoiceSessionStartInput,
   VoiceSessionStartResult,
@@ -338,8 +346,12 @@ export const WS_METHODS = {
 
   // Realtime voice controller
   voiceGetController: "voice.getController",
+  voiceGetActiveCall: "voice.getActiveCall",
+  voiceGetControllerHistory: "voice.getControllerHistory",
+  voiceSetControllerTarget: "voice.setControllerTarget",
   voiceEnsureController: "voice.ensureController",
   voiceListVoices: "voice.listVoices",
+  voicePrepareThreadCall: "voice.prepareThreadCall",
   voiceResetController: "voice.resetController",
   voiceStart: "voice.start",
   voiceIngestRealtimeEvent: "voice.ingestRealtimeEvent",
@@ -602,9 +614,33 @@ export const WsVoiceGetControllerRpc = Rpc.make(WS_METHODS.voiceGetController, {
   error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
 });
 
+export const WsVoiceGetActiveCallRpc = Rpc.make(WS_METHODS.voiceGetActiveCall, {
+  payload: VoiceGetActiveCallInput,
+  success: VoiceGetActiveCallResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoiceGetControllerHistoryRpc = Rpc.make(WS_METHODS.voiceGetControllerHistory, {
+  payload: VoiceGetControllerHistoryInput,
+  success: VoiceGetControllerHistoryResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoiceSetControllerTargetRpc = Rpc.make(WS_METHODS.voiceSetControllerTarget, {
+  payload: VoiceSetControllerTargetInput,
+  success: VoiceSetControllerTargetResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
 export const WsVoiceListVoicesRpc = Rpc.make(WS_METHODS.voiceListVoices, {
   payload: VoiceListVoicesInput,
   success: VoiceListVoicesResult,
+  error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
+});
+
+export const WsVoicePrepareThreadCallRpc = Rpc.make(WS_METHODS.voicePrepareThreadCall, {
+  payload: VoicePrepareThreadCallInput,
+  success: VoicePrepareThreadCallResult,
   error: Schema.Union([VoiceControllerError, EnvironmentAuthorizationError]),
 });
 
@@ -1218,8 +1254,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,
   WsVoiceGetControllerRpc,
+  WsVoiceGetActiveCallRpc,
+  WsVoiceGetControllerHistoryRpc,
+  WsVoiceSetControllerTargetRpc,
   WsVoiceEnsureControllerRpc,
   WsVoiceListVoicesRpc,
+  WsVoicePrepareThreadCallRpc,
   WsVoiceResetControllerRpc,
   WsVoiceStartRpc,
   WsVoiceIngestRealtimeEventRpc,

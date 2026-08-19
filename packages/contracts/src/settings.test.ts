@@ -177,6 +177,29 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   });
 });
 
+describe("Codex thread history mode", () => {
+  it("defaults existing settings to legacy history", () => {
+    expect(decodeServerSettings({}).providers.codex.historyMode).toBe("legacy");
+  });
+
+  it("accepts paginated history in full settings and patches", () => {
+    expect(
+      decodeServerSettings({ providers: { codex: { historyMode: "paginated" } } }).providers.codex
+        .historyMode,
+    ).toBe("paginated");
+    expect(
+      decodeServerSettingsPatch({ providers: { codex: { historyMode: "paginated" } } }).providers
+        ?.codex?.historyMode,
+    ).toBe("paginated");
+  });
+
+  it("rejects unsupported history modes", () => {
+    expect(() =>
+      decodeServerSettingsPatch({ providers: { codex: { historyMode: "automatic" } } }),
+    ).toThrow();
+  });
+});
+
 describe("ServerSettings worktree defaults", () => {
   it("defaults start-from-origin on for legacy configs", () => {
     expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(true);
@@ -258,6 +281,7 @@ describe("ServerSettings voice control policy", () => {
     expect(settings.enableRealtimeVoice).toBe(true);
     expect(settings.enableVoiceThreadRead).toBe(true);
     expect(settings.enableVoiceThreadControl).toBe(true);
+    expect(settings.voiceNarrationLevel).toBe("balanced");
   });
 
   it("accepts independent voice capability patches", () => {
@@ -266,12 +290,27 @@ describe("ServerSettings voice control policy", () => {
         enableRealtimeVoice: true,
         enableVoiceThreadRead: true,
         enableVoiceThreadControl: true,
+        voiceNarrationLevel: "conversational",
       }),
     ).toMatchObject({
       enableRealtimeVoice: true,
       enableVoiceThreadRead: true,
       enableVoiceThreadControl: true,
+      voiceNarrationLevel: "conversational",
     });
+  });
+
+  it.each(["quiet", "balanced", "conversational"] as const)(
+    "accepts the %s narration level",
+    (voiceNarrationLevel) => {
+      expect(decodeServerSettingsPatch({ voiceNarrationLevel }).voiceNarrationLevel).toBe(
+        voiceNarrationLevel,
+      );
+    },
+  );
+
+  it("rejects unknown narration levels", () => {
+    expect(() => decodeServerSettingsPatch({ voiceNarrationLevel: "constant" })).toThrow();
   });
 });
 

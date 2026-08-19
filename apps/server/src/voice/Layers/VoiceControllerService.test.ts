@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  ProviderInstanceId,
   ThreadId,
   VoiceActionId,
   VoiceClientSessionId,
@@ -21,18 +22,113 @@ import {
   appendVoiceSessionEvent,
   claimVoiceTargetPhase,
   confirmedControllerModelSelection,
+  controllerHistoryDisplayText,
+  controllerHistoryMessages,
   controllerTranscriptWithActiveTarget,
+  callCatchUpText,
   controllerActionStartRequest,
   deriveVoiceActionId,
   planVoicePolicyTransition,
   publicVoiceSessionId,
+  requestedThreadCallTransportSelection,
   runSerializedVoiceActions,
   targetThreadIdFromVoiceMutation,
   targetPhaseOf,
+  voiceSessionAcceptsHandoffs,
   voiceTargetStatusText,
 } from "./VoiceControllerService.ts";
 
 describe("VoiceControllerService coordination invariants", () => {
+  it("builds a bounded catch-up from durable assistant output and activity only", () => {
+    const catchUp = callCatchUpText(
+      {
+        latestTurn: {
+          turnId: "turn-1",
+          state: "running",
+          requestedAt: "2026-08-15T20:00:00.000Z",
+          startedAt: "2026-08-15T20:00:00.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        },
+        messages: [
+          {
+            id: "user-1",
+            role: "user",
+            text: "Do the work",
+            turnId: "turn-1",
+            streaming: false,
+            createdAt: "2026-08-15T20:01:00.000Z",
+            updatedAt: "2026-08-15T20:01:00.000Z",
+          },
+          {
+            id: "assistant-1",
+            role: "assistant",
+            text: "I found the lifecycle boundary.",
+            turnId: "turn-1",
+            streaming: false,
+            createdAt: "2026-08-15T20:02:00.000Z",
+            updatedAt: "2026-08-15T20:02:00.000Z",
+          },
+          {
+            id: "voice-1",
+            role: "assistant",
+            text: "Already spoken before detach.",
+            modality: "voice",
+            turnId: "turn-1",
+            streaming: false,
+            createdAt: "2026-08-15T20:03:00.000Z",
+            updatedAt: "2026-08-15T20:03:00.000Z",
+          },
+        ],
+        activities: [
+          {
+            id: "activity-1",
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "The focused check completed.",
+            payload: {},
+            turnId: "turn-1",
+            createdAt: "2026-08-15T20:04:00.000Z",
+          },
+        ],
+      } as never,
+      "2026-08-15T20:00:30.000Z",
+    );
+
+    assert.include(catchUp, "I found the lifecycle boundary.");
+    assert.include(catchUp, "The focused check completed.");
+    assert.notInclude(catchUp, "Do the work");
+    assert.notInclude(catchUp, "Already spoken before detach.");
+  });
+
+  it("keeps direct Call transport selection independent from durable work", () => {
+    const durableSelection = {
+      instanceId: ProviderInstanceId.make("opencode-local"),
+      model: "deepseek-v3",
+    };
+    const transportSelection = {
+      instanceId: ProviderInstanceId.make("codex-voice"),
+      model: "gpt-realtime",
+    };
+
+    assert.deepStrictEqual(
+      requestedThreadCallTransportSelection(
+        { transportModelSelection: transportSelection },
+        durableSelection,
+      ),
+      transportSelection,
+    );
+    assert.deepStrictEqual(
+      requestedThreadCallTransportSelection({}, durableSelection),
+      durableSelection,
+    );
+  });
+
+  it("never hands a transcription-only provider turn to the controller", () => {
+    assert.strictEqual(voiceSessionAcceptsHandoffs({ purpose: "transcription" }), false);
+    assert.strictEqual(voiceSessionAcceptsHandoffs({ purpose: "conversation" }), true);
+  });
+
   it.effect(
     "deduplicates a handoff tuple and binds the exact action id to one no-recovery turn",
     () =>
@@ -152,7 +248,7 @@ describe("VoiceControllerService coordination invariants", () => {
         );
         yield* Effect.forEach(
           Array.from({ length: 64 }, (_, index) => index),
-          (index) =>
+          () =>
             appendVoiceSessionEvent({
               sessionsRef,
               events,
@@ -398,7 +494,7 @@ describe("VoiceControllerService coordination invariants", () => {
     );
   });
 
-  it("rehydrates only a bounded exact active-target hint into controller input", () => {
+  it("rehydrates an exact active target with an explicit context-read instruction", () => {
     assert.strictEqual(
       controllerTranscriptWithActiveTarget("What is its status?", null),
       "What is its status?",
@@ -408,7 +504,63 @@ describe("VoiceControllerService coordination invariants", () => {
       ThreadId.make("target-thread-1"),
     );
     assert.include(transcript, 'activeTargetThreadId="target-thread-1"');
-    assert.include(transcript, "resolution hint only");
+    assert.include(transcript, "includeUntrustedContext=true");
     assert.include(transcript, "What is its status?");
+  });
+
+  it("normalizes provider history into user requests and final controller replies", () => {
+    const turnId = "turn-history-1" as never;
+    const messages = controllerHistoryMessages({
+      threadId: ThreadId.make("voice-controller:history"),
+      turns: [
+        {
+          id: turnId,
+          status: "completed",
+          items: [
+            {
+              id: "user-1",
+              type: "userMessage",
+              content: [
+                {
+                  type: "text",
+                  text: [
+                    "Bounded controller state (resolution hint only; server authorization still applies):",
+                    'activeTargetThreadId="target-thread-1"',
+                    "",
+                    "User request:",
+                    "What is its status?",
+                  ].join("\n"),
+                },
+                { type: "localAudio", path: "/tmp/voice.wav" },
+              ],
+            },
+            {
+              id: "assistant-commentary",
+              type: "agentMessage",
+              phase: "commentary",
+              text: "I am checking the target.",
+            },
+            {
+              id: "assistant-final",
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "It is waiting for approval.",
+            },
+          ],
+        },
+      ],
+    });
+
+    assert.deepStrictEqual(
+      messages.map(({ role, text }) => ({ role, text })),
+      [
+        { role: "user", text: "What is its status?" },
+        { role: "assistant", text: "It is waiting for approval." },
+      ],
+    );
+    assert.strictEqual(
+      controllerHistoryDisplayText("A request without controller context."),
+      "A request without controller context.",
+    );
   });
 });
