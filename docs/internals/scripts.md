@@ -67,6 +67,9 @@ authenticated.
 ## Desktop artifacts
 
 - `vp run dist:desktop:artifact --platform <mac|linux|win> --target <target> --arch <arch>`: Builds a desktop artifact for a specific platform/target/arch.
+  Isolated Jujutsu workspaces resolve the embedded commit hash through `jj log -r @` (or
+  `SHUV2CODE_COMMIT_HASH`). Do not create a second Git worktree just to package: that duplicates
+  the dependency install. Git checkouts still use `git rev-parse`.
 - `vp run dist:desktop:dmg`: Builds a shareable macOS `.dmg` into `./release`. Architecture defaults
   to the host, so this produces an arm64 DMG on Apple Silicon. Use `dist:desktop:dmg:arm64` or
   `dist:desktop:dmg:x64`, or pass `--arch <arm64|x64|universal>`, to force one.

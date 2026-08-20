@@ -469,6 +469,23 @@ export class InlinedExternalPackageError extends Schema.TaggedErrorClass<Inlined
   }
 }
 
+export class DesktopPackagingCommitHashError extends Schema.TaggedErrorClass<DesktopPackagingCommitHashError>()(
+  "DesktopPackagingCommitHashError",
+  {
+    repoRoot: Schema.String,
+    detail: Schema.String,
+  },
+) {
+  override get message(): string {
+    return (
+      `Could not resolve a packaging commit hash from ${this.repoRoot}: ${this.detail} ` +
+      "Do not create a second Git worktree to work around this — that duplicates the dependency " +
+      "install. Set SHUV2CODE_COMMIT_HASH to a 7-40 character hex revision, or package from a " +
+      "workspace where `jj log -r @` or `git rev-parse HEAD` works."
+    );
+  }
+}
+
 export class MissingDesktopBuildInputError extends Schema.TaggedErrorClass<MissingDesktopBuildInputError>()(
   "MissingDesktopBuildInputError",
   {
@@ -679,28 +696,94 @@ const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
   return { stdout, stderr, exitCode } as const;
 });
 
-const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
-  const result = yield* spawnAndCollectOutput(
-    ChildProcess.make("git", ["rev-parse", "--short=12", "HEAD"], {
-      cwd: repoRoot,
-    }),
-  ).pipe(
+const PACKAGING_COMMIT_HASH_PATTERN = /^[0-9a-f]{7,40}$/i;
+
+function normalizePackagingCommitHash(raw: string): string | undefined {
+  const hash = raw.trim().toLowerCase();
+  if (!PACKAGING_COMMIT_HASH_PATTERN.test(hash)) {
+    return undefined;
+  }
+  return hash.length > 12 ? hash.slice(0, 12) : hash;
+}
+
+const readSpawnedRevision = Effect.fn("readSpawnedRevision")(function* (
+  command: ChildProcess.Command,
+) {
+  const result = yield* spawnAndCollectOutput(command).pipe(
     Effect.orElseSucceed(() => ({
       stdout: "",
       stderr: "",
       exitCode: 1,
     })),
   );
-
   if (result.exitCode !== 0) {
-    return "unknown";
+    return undefined;
   }
-  const hash = result.stdout.trim();
-  if (!/^[0-9a-f]{7,40}$/i.test(hash)) {
-    return "unknown";
-  }
-  return hash.toLowerCase();
+  return normalizePackagingCommitHash(result.stdout);
 });
+
+export const resolveDesktopPackagingCommitHash = Effect.fn("resolveDesktopPackagingCommitHash")(
+  function* (repoRoot: string) {
+    const env = yield* Config.all({
+      override: Config.string("SHUV2CODE_COMMIT_HASH").pipe(Config.option),
+    });
+    const override = Option.getOrUndefined(env.override)?.trim();
+    if (override !== undefined && override.length > 0) {
+      const normalized = normalizePackagingCommitHash(override);
+      if (normalized === undefined) {
+        return yield* new DesktopPackagingCommitHashError({
+          repoRoot,
+          detail: `SHUV2CODE_COMMIT_HASH=${JSON.stringify(override)} is not a hex git revision.`,
+        });
+      }
+      return normalized;
+    }
+
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const hasJj = yield* fs.exists(path.join(repoRoot, ".jj"));
+    if (hasJj) {
+      const jjHash = yield* readSpawnedRevision(
+        ChildProcess.make(
+          "jj",
+          [
+            "--ignore-working-copy",
+            "-R",
+            repoRoot,
+            "log",
+            "--no-graph",
+            "-r",
+            "@",
+            "-T",
+            "commit_id",
+          ],
+          { cwd: repoRoot },
+        ),
+      );
+      if (jjHash !== undefined) {
+        return jjHash;
+      }
+    }
+
+    const gitHash = yield* readSpawnedRevision(
+      ChildProcess.make("git", ["rev-parse", "--short=12", "HEAD"], {
+        cwd: repoRoot,
+      }),
+    );
+    if (gitHash !== undefined) {
+      return gitHash;
+    }
+
+    if (hasJj) {
+      return yield* new DesktopPackagingCommitHashError({
+        repoRoot,
+        detail: "`jj log -r @` and `git rev-parse HEAD` both failed in this Jujutsu workspace.",
+      });
+    }
+
+    return "unknown";
+  },
+);
 
 const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -2701,7 +2784,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   const appVersion = options.version ?? serverPackageJson.version;
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
-  const commitHash = yield* resolveGitCommitHash(repoRoot);
+  const commitHash = yield* resolveDesktopPackagingCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
     prefix: `shuv2code-desktop-${options.platform}-stage-`,

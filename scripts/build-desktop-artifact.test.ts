@@ -20,6 +20,7 @@ import {
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
+  DesktopPackagingCommitHashError,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   InvalidMockUpdateServerPortError,
@@ -41,6 +42,7 @@ import {
   resolveDesktopGitHubReleaseType,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
+  resolveDesktopPackagingCommitHash,
   resolveResourceMonitorRustTargets,
   resourceMonitorExecutableName,
   resolveGitHubPublishConfig,
@@ -65,7 +67,7 @@ import {
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@shuv2code/shared/hostProcess";
 
-function mockProcess(exitCode: number) {
+function mockProcess(exitCode: number, stdout = "") {
   return ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(1),
     exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
@@ -73,7 +75,7 @@ function mockProcess(exitCode: number) {
     kill: () => Effect.void,
     unref: Effect.succeed(Effect.void),
     stdin: Sink.drain,
-    stdout: Stream.empty,
+    stdout: stdout.length === 0 ? Stream.empty : Stream.make(new TextEncoder().encode(stdout)),
     stderr: Stream.empty,
     all: Stream.empty,
     getInputFd: () => Sink.drain,
@@ -98,6 +100,28 @@ function iconResizeSpawnerLayer(
         args: childProcess.args,
       });
       return Effect.succeed(mockProcess(exitCodes[commandIndex++] ?? 0));
+    }),
+  );
+}
+
+function packagingCommitHashSpawnerLayer(
+  commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }>,
+  responses: ReadonlyArray<{ readonly exitCode: number; readonly stdout?: string }>,
+) {
+  let commandIndex = 0;
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly command: string;
+        readonly args: ReadonlyArray<string>;
+      };
+      commands.push({
+        command: childProcess.command,
+        args: childProcess.args,
+      });
+      const response = responses[commandIndex++] ?? { exitCode: 1 };
+      return Effect.succeed(mockProcess(response.exitCode, response.stdout ?? ""));
     }),
   );
 }
@@ -1279,6 +1303,122 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.signed, false);
       assert.equal(resolved.verbose, false);
       assert.equal(resolved.mockUpdates, false);
+    }),
+  );
+
+  it.effect("prefers SHUV2CODE_COMMIT_HASH over git and jj in desktop packaging", () =>
+    Effect.gen(function* () {
+      const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
+        [];
+      const hash = yield* resolveDesktopPackagingCommitHash("/unused").pipe(
+        Effect.provide(
+          packagingCommitHashSpawnerLayer(commands, [{ exitCode: 0, stdout: "deadbeef" }]),
+        ),
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: { SHUV2CODE_COMMIT_HASH: "ABCDEF1234567890" },
+            }),
+          ),
+        ),
+      );
+      assert.equal(hash, "abcdef123456");
+      assert.deepEqual(commands, []);
+    }),
+  );
+
+  it.effect("resolves an isolated JJ workspace commit without spawning git", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "shuv2code-desktop-jj-packaging-",
+      });
+      yield* fs.makeDirectory(path.join(repoRoot, ".jj"));
+      const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
+        [];
+      const hash = yield* resolveDesktopPackagingCommitHash(repoRoot).pipe(
+        Effect.provide(
+          packagingCommitHashSpawnerLayer(commands, [
+            { exitCode: 0, stdout: "0123456789abcdef0123456789abcdef01234567\n" },
+          ]),
+        ),
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      );
+      assert.equal(hash, "0123456789ab");
+      assert.equal(commands.length, 1);
+      assert.equal(commands[0]?.command, "jj");
+      assert.deepEqual(commands[0]?.args, [
+        "--ignore-working-copy",
+        "-R",
+        repoRoot,
+        "log",
+        "--no-graph",
+        "-r",
+        "@",
+        "-T",
+        "commit_id",
+      ]);
+    }),
+  );
+
+  it.effect("falls back to git when jj fails in a Jujutsu workspace", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "shuv2code-desktop-jj-git-fallback-",
+      });
+      yield* fs.makeDirectory(path.join(repoRoot, ".jj"));
+      const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
+        [];
+      const hash = yield* resolveDesktopPackagingCommitHash(repoRoot).pipe(
+        Effect.provide(
+          packagingCommitHashSpawnerLayer(commands, [
+            { exitCode: 1 },
+            { exitCode: 0, stdout: "cafebabedead" },
+          ]),
+        ),
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      );
+      assert.equal(hash, "cafebabedead");
+      assert.deepEqual(
+        commands.map((command) => command.command),
+        ["jj", "git"],
+      );
+    }),
+  );
+
+  it.effect("fails closed in a Jujutsu workspace instead of returning unknown", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "shuv2code-desktop-jj-packaging-fail-",
+      });
+      yield* fs.makeDirectory(path.join(repoRoot, ".jj"));
+      const error = yield* Effect.flip(
+        resolveDesktopPackagingCommitHash(repoRoot).pipe(
+          Effect.provide(packagingCommitHashSpawnerLayer([], [{ exitCode: 1 }, { exitCode: 1 }])),
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        ),
+      );
+      assert.instanceOf(error, DesktopPackagingCommitHashError);
+      assert.include(error.message, "Do not create a second Git worktree");
+    }),
+  );
+
+  it.effect("keeps unknown when a git-only checkout cannot resolve HEAD", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const repoRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "shuv2code-desktop-git-unknown-",
+      });
+      const hash = yield* resolveDesktopPackagingCommitHash(repoRoot).pipe(
+        Effect.provide(packagingCommitHashSpawnerLayer([], [{ exitCode: 1 }])),
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      );
+      assert.equal(hash, "unknown");
     }),
   );
 });
