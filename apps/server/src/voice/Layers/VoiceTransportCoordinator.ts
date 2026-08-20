@@ -147,6 +147,17 @@ function callPresence(call: VoiceCall): VoiceCallPresence {
   };
 }
 
+export function sameVoiceTransportGeneration(
+  current: ActiveVoiceSession | undefined,
+  expected: ActiveVoiceSession,
+): boolean {
+  return (
+    current !== undefined &&
+    current.transportSessionId === expected.transportSessionId &&
+    fenceMatches(current, expected.fence)
+  );
+}
+
 export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinator.make")(
   function* () {
     const crypto = yield* Crypto.Crypto;
@@ -424,11 +435,22 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
         updatedAt: now,
         closedAt: now,
       });
-      yield* emit(session.fence.clientSessionId, {
-        type: "session.state",
-        state: "stopped",
+      yield* appendVoiceSessionEvent({
+        sessionsRef,
+        events,
+        mutex: eventMutex,
+        sessionId: session.fence.clientSessionId,
+        occurredAt: now,
+        payload: {
+          type: "session.state",
+          state: "stopped",
+        },
+        acceptSession: (current) => sameVoiceTransportGeneration(current, session),
       });
       yield* Ref.update(sessionsRef, (sessions) => {
+        if (!sameVoiceTransportGeneration(sessions.get(session.fence.clientSessionId), session)) {
+          return sessions;
+        }
         const next = new Map(sessions);
         next.delete(session.fence.clientSessionId);
         return next;

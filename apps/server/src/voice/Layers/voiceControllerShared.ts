@@ -259,12 +259,13 @@ export const appendVoiceSessionEvent = Effect.fn("VoiceControllerService.appendV
     readonly sessionId: string;
     readonly occurredAt: string;
     readonly payload: VoiceSessionEvent["payload"];
+    readonly acceptSession?: (session: Session) => boolean;
   }) {
     return yield* input.mutex.withPermits(1)(
       Effect.gen(function* () {
         const sessions = yield* Ref.get(input.sessionsRef);
         const current = sessions.get(input.sessionId);
-        if (current === undefined) return undefined;
+        if (current === undefined || input.acceptSession?.(current) === false) return undefined;
         const sequence = current.eventCursor + 1;
         const event: VoiceSessionEvent = {
           ...(current.fence.environmentId === undefined

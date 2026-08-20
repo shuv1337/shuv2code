@@ -10,6 +10,8 @@ import {
   type VoiceSpeechAttempt,
   type VoiceSpeechArbiterShape,
   type VoiceSpeechCompletion,
+  type VoiceSpeechFailure,
+  type VoiceSpeechFailureReason,
 } from "../Services/VoiceSpeechArbiter.ts";
 import type { ActiveVoiceSession } from "../Services/VoiceTransportCoordinator.ts";
 import { VoiceRuntimeGateway } from "../Services/VoiceRuntimeGateway.ts";
@@ -104,7 +106,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
   }) => Effect.Effect<void> = () => Effect.void,
 ) {
   const statesRef = yield* Ref.make(new Map<string, CallSpeechState>());
-  const failureQueue = yield* Queue.unbounded<VoiceSpeechAttempt>();
+  const failureQueue = yield* Queue.unbounded<VoiceSpeechFailure>();
   const stateMutex = yield* Semaphore.make(1);
 
   const selectNext = Effect.fn("VoiceSpeechArbiter.selectNext")(function* (
@@ -174,7 +176,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
 
   const failAndSuspend = Effect.fn("VoiceSpeechArbiter.failAndSuspend")(function* (
     attempt: VoiceSpeechAttempt,
-    failureReason: "transport-request-failed" | "output-timeout",
+    failureReason: VoiceSpeechFailureReason,
   ) {
     const suspended = yield* suspendFailedAttempt(attempt);
     if (!suspended) return;
@@ -184,7 +186,7 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
       occurredAt: DateTime.formatIso(yield* DateTime.now),
       failureReason,
     });
-    yield* Queue.offer(failureQueue, attempt);
+    yield* Queue.offer(failureQueue, { attempt, failureReason });
   });
 
   const startNext: (session: ActiveVoiceSession) => Effect.Effect<void> = Effect.fn(
@@ -215,7 +217,10 @@ export const makeVoiceSpeechArbiter = Effect.fn("VoiceSpeechArbiter.make")(funct
       failureReason: "transport-request-failed",
     });
     yield* suspendFailedAttempt(selected);
-    yield* Queue.offer(failureQueue, selected);
+    yield* Queue.offer(failureQueue, {
+      attempt: selected,
+      failureReason: "transport-request-failed",
+    });
   });
 
   const enqueue: VoiceSpeechArbiterShape["enqueue"] = Effect.fn("VoiceSpeechArbiter.enqueue")(

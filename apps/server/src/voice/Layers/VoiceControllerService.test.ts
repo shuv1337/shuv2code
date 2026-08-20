@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   VoiceActionId,
+  VoiceCallId,
   VoiceClientSessionId,
   VoiceGeneration,
   VoiceRuntimeInstanceId,
@@ -25,11 +26,13 @@ import {
   controllerHistoryDisplayText,
   controllerHistoryMessages,
   controllerTranscriptWithActiveTarget,
+  callCatchUpDetachedAt,
   callCatchUpText,
   controllerActionStartRequest,
   deriveVoiceActionId,
   planVoicePolicyTransition,
   publicVoiceSessionId,
+  recoverVoiceSpeechFailure,
   requestedThreadCallTransportSelection,
   runSerializedVoiceActions,
   targetThreadIdFromVoiceMutation,
@@ -39,6 +42,92 @@ import {
 } from "./VoiceControllerService.ts";
 
 describe("VoiceControllerService coordination invariants", () => {
+  it("only resumes catch-up from a detach belonging to the same durable Call", () => {
+    const detached = {
+      callId: VoiceCallId.make("call-1"),
+      kind: "listener.detached" as const,
+      occurredAt: "2026-08-19T20:00:00.000Z",
+    };
+
+    assert.strictEqual(
+      callCatchUpDetachedAt(detached, VoiceCallId.make("call-1")),
+      detached.occurredAt,
+    );
+    assert.isUndefined(callCatchUpDetachedAt(detached, VoiceCallId.make("call-2")));
+    assert.isUndefined(callCatchUpDetachedAt({ ...detached, callId: null }, detached.callId));
+    assert.isUndefined(
+      callCatchUpDetachedAt({ ...detached, kind: "listener.attached" }, detached.callId),
+    );
+  });
+
+  it.effect("tears down a transport request failure after notifying the client", () =>
+    Effect.gen(function* () {
+      const actions = yield* Ref.make<Array<string>>([]);
+      const attempt = { attemptId: "speech-1" } as never;
+
+      yield* recoverVoiceSpeechFailure(
+        { attempt, failureReason: "transport-request-failed" },
+        () => Ref.update(actions, (all) => [...all, "emit-error"]),
+        () => Ref.update(actions, (all) => [...all, "stop-transport"]),
+      );
+
+      assert.deepStrictEqual(yield* Ref.get(actions), ["emit-error", "stop-transport"]);
+    }),
+  );
+
+  it.effect("leaves an output timeout available for late provider recovery", () =>
+    Effect.gen(function* () {
+      const actions = yield* Ref.make<Array<string>>([]);
+      const attempt = { attemptId: "speech-1" } as never;
+
+      yield* recoverVoiceSpeechFailure(
+        { attempt, failureReason: "output-timeout" },
+        () => Ref.update(actions, (all) => [...all, "emit-error"]),
+        () => Ref.update(actions, (all) => [...all, "stop-transport"]),
+      );
+
+      assert.deepStrictEqual(yield* Ref.get(actions), ["emit-error"]);
+    }),
+  );
+
+  it.effect("rejects a session event after the client slot moves to another generation", () =>
+    Effect.gen(function* () {
+      const clientSessionId = VoiceClientSessionId.make("replacement-generation");
+      const runtimeInstanceId = VoiceRuntimeInstanceId.make("runtime-2");
+      const sessionsRef = yield* Ref.make(
+        new Map([
+          [
+            clientSessionId,
+            {
+              fence: {
+                clientSessionId,
+                generation: VoiceGeneration.make(2),
+                runtimeInstanceId,
+              },
+              eventCursor: 0,
+              history: [] as ReadonlyArray<VoiceSessionEvent>,
+            },
+          ],
+        ]),
+      );
+      const events = yield* PubSub.unbounded<VoiceSessionEvent>();
+      const mutex = yield* Semaphore.make(1);
+
+      const appended = yield* appendVoiceSessionEvent({
+        sessionsRef,
+        events,
+        mutex,
+        sessionId: clientSessionId,
+        occurredAt: "2026-08-19T22:00:00.000Z",
+        payload: { type: "session.state", state: "stopped" },
+        acceptSession: (current) => current.fence.generation === VoiceGeneration.make(1),
+      });
+
+      assert.isUndefined(appended);
+      assert.strictEqual((yield* Ref.get(sessionsRef)).get(clientSessionId)?.eventCursor, 0);
+    }),
+  );
+
   it("builds a bounded catch-up from durable assistant output and activity only", () => {
     const catchUp = callCatchUpText(
       {

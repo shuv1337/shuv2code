@@ -26,6 +26,13 @@ export interface VoiceSpeechCompletion extends VoiceSpeechAttempt {
   readonly completedAt: string;
 }
 
+export type VoiceSpeechFailureReason = "transport-request-failed" | "output-timeout";
+
+export interface VoiceSpeechFailure {
+  readonly attempt: VoiceSpeechAttempt;
+  readonly failureReason: VoiceSpeechFailureReason;
+}
+
 export interface VoiceSpeechTranscriptObservation {
   readonly claimed: boolean;
   readonly completion?: VoiceSpeechCompletion;
@@ -34,7 +41,7 @@ export interface VoiceSpeechTranscriptObservation {
 export interface VoiceSpeechArbiterShape {
   readonly enqueue: (attempt: VoiceSpeechAttempt) => Effect.Effect<boolean>;
   /** Blocks until a speech attempt proves the realtime output lifecycle is wedged. */
-  readonly takeFailure: Effect.Effect<VoiceSpeechAttempt>;
+  readonly takeFailure: Effect.Effect<VoiceSpeechFailure>;
   readonly observeOutputStarted: (session: ActiveVoiceSession) => Effect.Effect<void>;
   readonly observeOutputDone: (
     session: ActiveVoiceSession,

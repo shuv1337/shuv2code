@@ -1,6 +1,7 @@
 import {
   CommandId,
   ThreadId,
+  VoiceCallId,
   VoiceControllerHistoryMessageId,
   VoiceTranscriptItemId,
   type ModelSelection,
@@ -28,13 +29,17 @@ import { ProjectionSnapshotQuery } from "../../orchestration/Services/Projection
 import { VoiceControllerBindingRepository } from "../../persistence/Services/VoiceControllerBindings.ts";
 import { VoiceCallEventRepository } from "../../persistence/Services/VoiceCallEvents.ts";
 import { VoiceCallRepository } from "../../persistence/Services/VoiceCalls.ts";
-import type { VoiceCall } from "../../persistence/VoiceControlModels.ts";
+import type { VoiceCall, VoiceCallEvent } from "../../persistence/VoiceControlModels.ts";
 import { VoiceControllerMutationRepository } from "../../persistence/Services/VoiceControllerMutations.ts";
 import { resolveVoiceControlPolicy, ServerSettingsService } from "../../serverSettings.ts";
 import { parseVoiceHandoffRequest } from "../VoiceHandoffRequest.ts";
 import { VoiceControllerService } from "../Services/VoiceControllerService.ts";
 import { VoiceControllerActionRunner } from "../Services/VoiceControllerActionRunner.ts";
-import { VoiceSpeechArbiter } from "../Services/VoiceSpeechArbiter.ts";
+import {
+  VoiceSpeechArbiter,
+  type VoiceSpeechAttempt,
+  type VoiceSpeechFailure,
+} from "../Services/VoiceSpeechArbiter.ts";
 import { VoiceTargetMonitor } from "../Services/VoiceTargetMonitor.ts";
 import {
   type ActiveVoiceSession,
@@ -173,6 +178,32 @@ export function callCatchUpText(
     .join("\n")
     .slice(0, CALL_CATCH_UP_MAX_CHARS);
 }
+
+export function callCatchUpDetachedAt(
+  previousListener: Pick<VoiceCallEvent, "callId" | "kind" | "occurredAt">,
+  activeCallId: VoiceCallId | null | undefined,
+): string | undefined {
+  return previousListener.kind === "listener.detached" &&
+    previousListener.callId !== null &&
+    activeCallId !== null &&
+    activeCallId !== undefined &&
+    previousListener.callId === activeCallId
+    ? previousListener.occurredAt
+    : undefined;
+}
+
+export const recoverVoiceSpeechFailure = Effect.fn("VoiceControllerService.recoverSpeechFailure")(
+  function* (
+    failure: VoiceSpeechFailure,
+    emitRetryableError: (attempt: VoiceSpeechAttempt) => Effect.Effect<unknown>,
+    stopTransport: (attempt: VoiceSpeechAttempt) => Effect.Effect<unknown>,
+  ) {
+    yield* emitRetryableError(failure.attempt);
+    if (failure.failureReason === "transport-request-failed") {
+      yield* stopTransport(failure.attempt);
+    }
+  },
+);
 
 export function controllerHistoryDisplayText(text: string): string {
   const trimmed = text.trim();
@@ -805,10 +836,6 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
             mapInternalError("internal_error", "The previous Call position could not be read."),
           ),
         );
-      const catchUp =
-        Option.isSome(previousListener) && previousListener.value.kind === "listener.detached"
-          ? callCatchUpText(thread, previousListener.value.occurredAt)
-          : undefined;
       const started = yield* transport.startThreadCallTransport({
         start: { ...input, owner: input.owner },
         environmentId,
@@ -817,6 +844,11 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         workspaceRoot: project.value.workspaceRoot,
         threadSnapshotSequence: threadSnapshot.value.snapshotSequence,
       });
+      const catchUpDetachedAt = Option.isSome(previousListener)
+        ? callCatchUpDetachedAt(previousListener.value, started.call?.callId)
+        : undefined;
+      const catchUp =
+        catchUpDetachedAt === undefined ? undefined : callCatchUpText(thread, catchUpDetachedAt);
       if (catchUp !== undefined) {
         const session = yield* transport.getSession(input.clientSessionId);
         if (session !== undefined) {
@@ -1252,14 +1284,22 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     Effect.forkScoped,
   );
   yield* speechArbiter.takeFailure.pipe(
-    Effect.flatMap((attempt) =>
-      transport
-        .emit(attempt.session.fence.clientSessionId, {
-          type: "session.error",
-          code: "realtime_speech_stalled",
-          retryable: true,
-        })
-        .pipe(Effect.ignore),
+    Effect.flatMap((failure) =>
+      recoverVoiceSpeechFailure(
+        failure,
+        (attempt) =>
+          transport
+            .emit(attempt.session.fence.clientSessionId, {
+              type: "session.error",
+              code: "realtime_speech_stalled",
+              retryable: true,
+            })
+            .pipe(Effect.ignore),
+        (attempt) =>
+          transport
+            .stopSession(attempt.session)
+            .pipe(Effect.timeout(CONTROLLER_TEARDOWN_TIMEOUT), Effect.ignore),
+      ),
     ),
     Effect.forever,
     Effect.forkScoped,
