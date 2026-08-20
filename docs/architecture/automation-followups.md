@@ -1,6 +1,6 @@
 # Automation lifecycle follow-ups
 
-Status: discussion draft. This document records unresolved product and lifecycle choices found during review of project automations. It does not define accepted behavior yet.
+Status: discussion draft. This document records unresolved product and lifecycle choices found during review of project automations. It does not define accepted behavior yet. Controller identity and thread-control grants are decided in [Controller identity](./controller-identity.md); automations do not receive those tools by default.
 
 ## Decisions at a glance
 

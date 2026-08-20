@@ -8,7 +8,9 @@ The Voice work is being integrated as a sequence of independently verifiable ver
 
 ## Product model
 
-- **Controller** is an environment-scoped conversation that coordinates work across threads.
+- **Controller** is a durable conversation with an explicit control grant that coordinates work
+  across threads. Voice-hosted Controllers stay out of ordinary lists; granted `standard` threads
+  remain project threads. See [Controller identity](architecture/controller-identity.md).
 - **Call** is speech as a medium for one exact ordinary thread.
 - **Transcription** is a provider operation, not a user-visible conversation.
 - Managed controller and transport records may exist for lifecycle purposes, but they are not ordinary project threads and must not appear in user-facing lists.
@@ -76,9 +78,10 @@ Each phase must:
 
 ## Deferred decisions
 
-The plan deliberately leaves four decisions as review gates rather than burying guesses in implementation:
+The plan deliberately leaves review gates rather than burying guesses in implementation:
 
 - active-turn utterance policy;
 - called-thread archive/delete behavior;
-- Controller restore semantics;
+- Controller restore semantics (accepted in
+  [Controller identity](architecture/controller-identity.md): restore unarchives, resume activates);
 - PCM transport scope for the first native release.
