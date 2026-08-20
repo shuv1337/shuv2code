@@ -12,6 +12,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as JjVcsDriver from "./JjVcsDriver.ts";
+import {
+  advanceBareRemoteBranch,
+  createJjTwoRemoteFixture,
+  JJ_TWO_REMOTE_BOOKMARK,
+} from "./jjMultiRemoteFixture.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 
@@ -522,20 +527,7 @@ it("requires an explicit remote when multiple non-origin remotes exist", () =>
     Effect.gen(function* () {
       const { cwd, driver, root } = yield* makeRepo;
       const ops = requireJjOperations(driver);
-      for (const remoteName of ["alpha", "beta"] as const) {
-        const remotePath = NodePath.join(root, `${remoteName}.git`);
-        NodeChildProcess.execFileSync("git", ["init", "--bare", remotePath], { stdio: "ignore" });
-        yield* driver.execute({
-          operation: `JjVcsDriver.runtime.addRemote.${remoteName}`,
-          cwd,
-          args: ["git", "remote", "add", remoteName, remotePath],
-        });
-      }
-      NodeFS.writeFileSync(NodePath.join(cwd, "ambiguous.txt"), "ambiguous\n");
-      yield* ops.describeChange({ cwd, description: "ambiguous remote" });
-      yield* ops.createRef({ cwd, refName: "main" });
-      const initialLocalCommitId = (yield* ops.status({ cwd })).workingCopy?.commitId;
-      expect(initialLocalCommitId).toBeTruthy();
+      const fixture = yield* createJjTwoRemoteFixture({ cwd, root, driver, ops });
 
       const remotes = yield* driver.listRemotes(cwd);
       expect(remotes.remotes.some((remote) => remote.isPrimary)).toBe(false);
@@ -544,66 +536,37 @@ it("requires an explicit remote when multiple non-origin remotes exist", () =>
         "Choose a remote explicitly",
       );
       expect(
-        (yield* ops.pushBookmark({ cwd, bookmarkName: "main" }).pipe(Effect.flip)).message,
+        (yield* ops.pushBookmark({ cwd, bookmarkName: fixture.bookmarkName }).pipe(Effect.flip))
+          .message,
       ).toContain("Choose a remote explicitly");
 
       expect((yield* ops.fetch({ cwd, remoteName: "alpha" })).remoteName).toBe("alpha");
       expect(
-        (yield* ops.pushBookmark({ cwd, bookmarkName: "main", remoteName: "alpha" })).remoteName,
+        (yield* ops.pushBookmark({
+          cwd,
+          bookmarkName: fixture.bookmarkName,
+          remoteName: "alpha",
+        })).remoteName,
       ).toBe("alpha");
-      NodeChildProcess.execFileSync(
-        "git",
-        [
-          "--git-dir",
-          NodePath.join(root, "beta.git"),
-          "fetch",
-          NodePath.join(root, "alpha.git"),
-          "main:main",
-        ],
-        { stdio: "ignore" },
-      );
-      yield* driver.execute({
-        operation: "JjVcsDriver.runtime.allowCurrentMultiRemoteBookmark",
-        cwd,
-        args: ["config", "set", "--repo", 'revset-aliases."immutable_heads()"', "none()"],
-      });
-      yield* ops.fetch({ cwd, remoteName: "beta" });
-      yield* driver.execute({
-        operation: "JjVcsDriver.runtime.trackBeta",
-        cwd,
-        args: ["bookmark", "track", "main", "--remote", "beta"],
-      });
       expect(
-        (yield* ops.pushBookmark({ cwd, bookmarkName: "main", remoteName: "beta" })).remoteName,
+        (yield* ops.pushBookmark({ cwd, bookmarkName: fixture.bookmarkName, remoteName: "beta" }))
+          .remoteName,
       ).toBe("beta");
 
-      const betaClonePath = NodePath.join(root, "beta-clone");
-      NodeChildProcess.execFileSync(
-        "git",
-        ["clone", "--branch", "main", NodePath.join(root, "beta.git"), betaClonePath],
-        { stdio: "ignore" },
-      );
-      NodeChildProcess.execFileSync("git", ["-C", betaClonePath, "config", "user.name", "JJ Test"]);
-      NodeChildProcess.execFileSync("git", [
-        "-C",
-        betaClonePath,
-        "config",
-        "user.email",
-        "jj@test.invalid",
-      ]);
-      NodeFS.appendFileSync(NodePath.join(betaClonePath, "ambiguous.txt"), "beta\n");
-      NodeChildProcess.execFileSync("git", ["-C", betaClonePath, "add", "ambiguous.txt"]);
-      NodeChildProcess.execFileSync("git", ["-C", betaClonePath, "commit", "-m", "beta advance"], {
-        stdio: "ignore",
-      });
-      NodeChildProcess.execFileSync("git", ["-C", betaClonePath, "push", "origin", "main"], {
-        stdio: "ignore",
+      advanceBareRemoteBranch({
+        root,
+        gitDir: fixture.betaGitDir,
+        cloneName: "beta-clone",
+        branchName: fixture.bookmarkName,
+        relativeFile: "ambiguous.txt",
+        appendText: "beta\n",
+        commitMessage: "beta advance",
       });
 
       yield* ops.startChange({ cwd });
       NodeFS.appendFileSync(NodePath.join(cwd, "ambiguous.txt"), "local\n");
       yield* ops.describeChange({ cwd, description: "local advance" });
-      yield* ops.createRef({ cwd, refName: "main" });
+      yield* ops.createRef({ cwd, refName: JJ_TWO_REMOTE_BOOKMARK });
       const localAdvanceCommitId = (yield* ops.status({ cwd })).workingCopy?.commitId;
       expect(localAdvanceCommitId).toBeTruthy();
       yield* ops.fetch({ cwd, remoteName: "beta" });
@@ -614,14 +577,14 @@ it("requires an explicit remote when multiple non-origin remotes exist", () =>
           "bookmark",
           "set",
           "--allow-backwards",
-          '"main"',
+          `"${JJ_TWO_REMOTE_BOOKMARK}"`,
           "-r",
-          localAdvanceCommitId ?? initialLocalCommitId ?? "",
+          localAdvanceCommitId ?? fixture.initialCommitId,
         ],
       });
 
       const rejectedBetaPush = yield* ops
-        .pushBookmark({ cwd, bookmarkName: "main", remoteName: "beta" })
+        .pushBookmark({ cwd, bookmarkName: fixture.bookmarkName, remoteName: "beta" })
         .pipe(Effect.flip);
       expect(rejectedBetaPush.message).toContain("divergent");
       expect(rejectedBetaPush.message).toContain("beta");
