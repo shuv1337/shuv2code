@@ -75,7 +75,7 @@ long-lived machine.
    required by the target account.
 2. Verify `vp run --filter @shuv2code/mobile config:prod` reports bundle
    identifier `com.shuv2code.app`, the `shuv2code` scheme, and the version
-   declared in `apps/mobile/app.config.ts` (currently `0.1.1-alpha.1`).
+   declared in `apps/mobile/app.config.ts`.
 3. Generate the native iOS project, which Sqim needs as its build input:
 
    ```sh
