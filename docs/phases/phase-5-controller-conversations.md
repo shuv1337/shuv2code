@@ -26,12 +26,17 @@ Inactive Controller conversations retain provider-authoritative history but have
 
 ## Decision required before implementation
 
-Confirm restore behavior. Recommendation:
+Restore versus resume is accepted in
+[Controller identity](../architecture/controller-identity.md):
 
 - **Restore** only removes the archived marker.
 - **Resume** explicitly activates the conversation and replaces the current binding after safe media/runtime teardown.
 
 Keeping these separate avoids an archive-management action unexpectedly taking over the active Controller.
+
+Voice catalog identity stays `voice-controller` projection rows. That purpose is a catalog and
+visibility tag, not the definition of Controller powers: ordinary `standard` threads with an
+explicit control grant are also Controllers and are out of this phase's navigator.
 
 ## Deliverables
 
