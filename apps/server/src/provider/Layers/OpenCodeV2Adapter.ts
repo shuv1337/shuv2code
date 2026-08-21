@@ -155,6 +155,19 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+function openCodeV2ToolCallId(data: Record<string, unknown>): string | undefined {
+  return asString(data.callID) ?? asString(data.id);
+}
+
+function openCodeV2ContentItemId(
+  data: Record<string, unknown>,
+  streamKind: "assistant_text" | "reasoning_text",
+): string {
+  const messageId = asString(data.assistantMessageID) ?? "msg";
+  const ordinal = String(data.ordinal ?? 0);
+  return `${messageId}:${streamKind}:${ordinal}`;
+}
+
 function recoverProjectedToolNames(payload: unknown): Map<string, string> {
   const names = new Map<string, string>();
   const response = asRecord(payload);
@@ -600,10 +613,10 @@ export function makeOpenCodeV2Adapter(
         }
         case "session.text.started":
         case "session.reasoning.started": {
-          const itemId = `${asString(data.assistantMessageID) ?? "msg"}:${String(data.ordinal ?? 0)}`;
           const streamKind = event.type.startsWith("session.reasoning")
             ? "reasoning_text"
             : "assistant_text";
+          const itemId = openCodeV2ContentItemId(data, streamKind);
           yield* emit({
             ...(yield* buildEventBase({
               threadId: context.session.threadId,
@@ -622,7 +635,10 @@ export function makeOpenCodeV2Adapter(
         }
         case "session.text.delta":
         case "session.reasoning.delta": {
-          const itemId = `${asString(data.assistantMessageID) ?? "msg"}:${String(data.ordinal ?? 0)}`;
+          const streamKind = event.type.startsWith("session.reasoning")
+            ? "reasoning_text"
+            : "assistant_text";
+          const itemId = openCodeV2ContentItemId(data, streamKind);
           const delta = asString(data.delta) ?? "";
           if (delta.length === 0) break;
           context.emittedTextByItemId.set(
@@ -639,9 +655,7 @@ export function makeOpenCodeV2Adapter(
             })),
             type: "content.delta",
             payload: {
-              streamKind: event.type.startsWith("session.reasoning")
-                ? "reasoning_text"
-                : "assistant_text",
+              streamKind,
               delta,
             },
           });
@@ -649,7 +663,10 @@ export function makeOpenCodeV2Adapter(
         }
         case "session.text.ended":
         case "session.reasoning.ended": {
-          const itemId = `${asString(data.assistantMessageID) ?? "msg"}:${String(data.ordinal ?? 0)}`;
+          const streamKind = event.type.startsWith("session.reasoning")
+            ? "reasoning_text"
+            : "assistant_text";
+          const itemId = openCodeV2ContentItemId(data, streamKind);
           const fullText = asString(data.text) ?? "";
           const previous = context.emittedTextByItemId.get(itemId) ?? "";
           if (fullText.length > previous.length) {
@@ -663,15 +680,15 @@ export function makeOpenCodeV2Adapter(
               })),
               type: "content.delta",
               payload: {
-                streamKind: event.type.startsWith("session.reasoning")
-                  ? "reasoning_text"
-                  : "assistant_text",
+                streamKind,
                 delta: fullText.slice(previous.length),
               },
             });
           }
-          context.emittedTextByItemId.set(itemId, fullText || previous);
-          if (event.type === "session.text.ended") {
+          const completedText = fullText || previous;
+          context.emittedTextByItemId.set(itemId, completedText);
+          if (event.type === "session.text.ended" || completedText.trim().length > 0) {
+            const reasoning = event.type === "session.reasoning.ended";
             yield* emit({
               ...(yield* buildEventBase({
                 threadId: context.session.threadId,
@@ -682,16 +699,17 @@ export function makeOpenCodeV2Adapter(
               })),
               type: "item.completed",
               payload: {
-                itemType: "assistant_message",
+                itemType: reasoning ? "reasoning" : "assistant_message",
                 status: "completed",
-                ...(fullText ? { detail: fullText } : {}),
+                ...(reasoning ? { title: "Thinking" } : {}),
+                ...(completedText ? { detail: completedText } : {}),
               },
             });
           }
           break;
         }
         case "session.tool.input.started": {
-          const toolId = asString(data.id);
+          const toolId = openCodeV2ToolCallId(data);
           const name = asString(data.name) ?? "tool";
           if (!toolId) break;
           context.toolNameById.set(toolId, name);
@@ -717,7 +735,7 @@ export function makeOpenCodeV2Adapter(
         case "session.tool.progress":
         case "session.tool.success":
         case "session.tool.failed": {
-          const toolId = asString(data.id);
+          const toolId = openCodeV2ToolCallId(data);
           if (!toolId) break;
           const knownName = context.toolNameById.get(toolId);
           const name = knownName ?? asString(data.name) ?? "tool";

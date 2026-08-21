@@ -302,7 +302,7 @@ interface OpenCodeSessionContext {
   readonly messageRoleById: Map<string, "user" | "assistant">;
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
-  readonly completedAssistantPartIds: Set<string>;
+  readonly completedTextPartIds: Set<string>;
   readonly turns: Array<OpenCodeTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
@@ -880,11 +880,12 @@ export function makeOpenCodeAdapter(
       }
 
       if (
-        part.type === "text" &&
+        (part.type === "text" || part.type === "reasoning") &&
         part.time?.end !== undefined &&
-        !context.completedAssistantPartIds.has(part.id)
+        !context.completedTextPartIds.has(part.id)
       ) {
-        context.completedAssistantPartIds.add(part.id);
+        context.completedTextPartIds.add(part.id);
+        const reasoning = part.type === "reasoning";
         yield* emit({
           ...(yield* buildEventBase({
             threadId: context.session.threadId,
@@ -895,9 +896,9 @@ export function makeOpenCodeAdapter(
           })),
           type: "item.completed",
           payload: {
-            itemType: "assistant_message",
+            itemType: reasoning ? "reasoning" : "assistant_message",
             status: "completed",
-            title: "Assistant message",
+            title: reasoning ? "Thinking" : "Assistant message",
             ...(latestText.length > 0 ? { detail: latestText } : {}),
           },
         });
@@ -1652,7 +1653,7 @@ export function makeOpenCodeAdapter(
           partById: new Map(),
           emittedTextByPartId: new Map(),
           messageRoleById: new Map(),
-          completedAssistantPartIds: new Set(),
+          completedTextPartIds: new Set(),
           turns: [],
           activeTurnId: adoptedTurnId,
           activeAgent: undefined,

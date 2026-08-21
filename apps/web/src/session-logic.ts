@@ -286,7 +286,7 @@ export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolea
   // Spawn CTA rows are never neutral-hidden: mid-run they derive from
   // task.progress (tone "thinking") and the neutral filter was swallowing
   // them exactly while the fleet ran — the one moment they matter most.
-  if (entry.agentSpawn !== undefined) {
+  if (entry.agentSpawn !== undefined || entry.sourceActivityKind === "reasoning.completed") {
     return false;
   }
   if (!workLogEntryIsToolLike(entry)) {
@@ -843,7 +843,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     turnId: activity.turnId,
     label: taskLabel || activity.summary,
     tone:
-      activity.kind === "task.progress"
+      activity.kind === "task.progress" || activity.kind === "reasoning.completed"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"
