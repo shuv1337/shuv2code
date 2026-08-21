@@ -121,6 +121,197 @@ const OpenCodeV2AdapterTestLayer = Layer.merge(
   ServerConfig.layerTest(process.cwd(), process.cwd()).pipe(Layer.provideMerge(NodeServices.layer)),
 );
 
+describe("OpenCodeV2Adapter terminal state", () => {
+  it.effect("removes the active turn from the session after successful execution", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-successful-execution");
+      let completeExecution: (() => void) | undefined;
+      const executionCompleted = new Promise<void>((resolve) => {
+        completeExecution = resolve;
+      });
+      const client = {
+        event: {
+          subscribe: () => ({
+            async *[Symbol.asyncIterator]() {
+              yield { type: "server.connected" };
+              await executionCompleted;
+              yield {
+                type: "session.execution.succeeded",
+                data: { sessionID: "ses_successful_execution" },
+              };
+              await new Promise<never>(() => undefined);
+            },
+          }),
+        },
+        session: {
+          create: async () => ({ id: "ses_successful_execution" }),
+          prompt: async () => {
+            completeExecution?.();
+          },
+        },
+        form: { list: async () => [] },
+        permission: { list: async () => [] },
+      } as unknown as OpenCodeV2Client;
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+      const completedEvent = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "complete successfully",
+        attachments: [],
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencodeV2"),
+          model: "openai/gpt-5.6-sol",
+          options: [],
+        },
+      });
+      yield* Fiber.join(completedEvent).pipe(Effect.timeout("1 second"));
+
+      const session = (yield* adapter.listSessions())[0];
+      NodeAssert.equal(session?.status, "ready");
+      NodeAssert.equal(session?.activeTurnId, undefined);
+      NodeAssert.deepEqual(session?.resumeCursor, {
+        kind: "opencode-v2",
+        schemaVersion: 1,
+        sessionId: "ses_successful_execution",
+      });
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
+  );
+
+  it.effect("settles a resumed turn that is no longer active upstream", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-resumed-idle");
+      const client = {
+        event: {
+          subscribe: () => ({
+            async *[Symbol.asyncIterator]() {
+              yield { type: "server.connected" };
+              await new Promise<never>(() => undefined);
+            },
+          }),
+        },
+        session: {
+          get: async () => ({ id: "ses_resumed_idle" }),
+          messages: async () => ({ data: [], cursor: {} }),
+          active: async () => ({}),
+          wait: async () => undefined,
+        },
+        form: { list: async () => [] },
+        permission: { list: async () => [] },
+      } as unknown as OpenCodeV2Client;
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+      const completedEvent = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            event.type === "turn.completed" &&
+            String(event.turnId) === "opencode2-turn-resumed-idle",
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+        resumeCursor: {
+          kind: "opencode-v2",
+          schemaVersion: 1,
+          sessionId: "ses_resumed_idle",
+          activeTurnId: "opencode2-turn-resumed-idle",
+        },
+      });
+
+      yield* Fiber.join(completedEvent).pipe(Effect.timeout("1 second"));
+      NodeAssert.equal(session.status, "ready");
+      NodeAssert.equal(session.activeTurnId, undefined);
+      NodeAssert.deepEqual(session.resumeCursor, {
+        kind: "opencode-v2",
+        schemaVersion: 1,
+        sessionId: "ses_resumed_idle",
+      });
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
+  );
+
+  it.effect("keeps a resumed turn active until the upstream wait completes", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-resumed-running");
+      let finishExecution: (() => void) | undefined;
+      const executionFinished = new Promise<void>((resolve) => {
+        finishExecution = resolve;
+      });
+      const client = {
+        event: {
+          subscribe: () => ({
+            async *[Symbol.asyncIterator]() {
+              yield { type: "server.connected" };
+              await new Promise<never>(() => undefined);
+            },
+          }),
+        },
+        session: {
+          get: async () => ({ id: "ses_resumed_running" }),
+          messages: async () => ({ data: [], cursor: {} }),
+          active: async () => ({ ses_resumed_running: { type: "running" } }),
+          wait: async () => executionFinished,
+        },
+        form: { list: async () => [] },
+        permission: { list: async () => [] },
+      } as unknown as OpenCodeV2Client;
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+      const completedEvent = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            event.type === "turn.completed" &&
+            String(event.turnId) === "opencode2-turn-resumed-running",
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+        resumeCursor: {
+          kind: "opencode-v2",
+          schemaVersion: 1,
+          sessionId: "ses_resumed_running",
+          activeTurnId: "opencode2-turn-resumed-running",
+        },
+      });
+
+      NodeAssert.equal(session.status, "running");
+      NodeAssert.equal(String(session.activeTurnId), "opencode2-turn-resumed-running");
+      finishExecution?.();
+      yield* Fiber.join(completedEvent).pipe(Effect.timeout("1 second"));
+      const settledSession = (yield* adapter.listSessions())[0];
+      NodeAssert.equal(settledSession?.status, "ready");
+      NodeAssert.equal(settledSession?.activeTurnId, undefined);
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
+  );
+});
+
 describe("OpenCodeV2Adapter interruption", () => {
   it.effect("cancels pending forms and accepts a new turn after interruption", () =>
     Effect.gen(function* () {
