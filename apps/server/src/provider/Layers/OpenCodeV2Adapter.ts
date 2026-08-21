@@ -1183,6 +1183,26 @@ export function makeOpenCodeV2Adapter(
         });
       }
       const agent = getModelSelectionStringOptionValue(modelSelection, "agent");
+      const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
+      yield* Effect.tryPromise({
+        try: async () => {
+          if (agent) {
+            await context.client.session.switchAgent(context.openCodeSessionId, agent);
+          }
+          await context.client.session.switchModel(context.openCodeSessionId, {
+            providerID: parsedModel.providerID,
+            id: parsedModel.modelID,
+            ...(variant ? { variant } : {}),
+          });
+        },
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session.switchModel",
+            detail: cause instanceof Error ? cause.message : String(cause),
+            cause,
+          }),
+      });
       context.activeTurnId = turnId;
       context.session = {
         ...context.session,
@@ -1197,11 +1217,7 @@ export function makeOpenCodeV2Adapter(
         payload: { model: context.session.model },
       });
       yield* Effect.tryPromise({
-        try: () =>
-          context.client.session.prompt(context.openCodeSessionId, {
-            text,
-            ...(agent ? { agent } : {}),
-          }),
+        try: () => context.client.session.prompt(context.openCodeSessionId, { text }),
         catch: (cause) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,
