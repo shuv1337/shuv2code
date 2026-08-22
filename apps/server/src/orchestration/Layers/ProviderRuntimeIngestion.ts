@@ -258,20 +258,6 @@ function buildContextWindowActivityPayload(
   return event.payload.usage;
 }
 
-function normalizeRuntimeTurnState(
-  value: string | undefined,
-): "completed" | "failed" | "interrupted" | "cancelled" {
-  switch (value) {
-    case "failed":
-    case "interrupted":
-    case "cancelled":
-    case "completed":
-      return value;
-    default:
-      return "completed";
-  }
-}
-
 function orchestrationSessionStatusFromRuntimeState(
   state: "starting" | "running" | "waiting" | "ready" | "interrupted" | "stopped" | "error",
 ): "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" {
@@ -1603,9 +1589,12 @@ const make = Effect.gen(function* () {
             case "session.exited":
               return "stopped";
             case "turn.completed":
-              return normalizeRuntimeTurnState(event.payload.state) === "failed"
-                ? "error"
-                : "ready";
+              // A provider can fail one execution while keeping its session
+              // alive and reusable (for example Shuvcode's
+              // provider.invalid-output terminal). The failed turn remains in
+              // turn history and carries its error; only an explicit provider
+              // session error should put the whole thread into error state.
+              return "ready";
             case "turn.aborted":
               return "ready";
             case "session.started":
@@ -1631,12 +1620,9 @@ const make = Effect.gen(function* () {
         const lastError =
           event.type === "session.state.changed" && event.payload.state === "error"
             ? (event.payload.reason ?? thread.session?.lastError ?? "Provider session error")
-            : event.type === "turn.completed" &&
-                normalizeRuntimeTurnState(event.payload.state) === "failed"
-              ? (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
-              : status === "ready"
-                ? null
-                : (thread.session?.lastError ?? null);
+            : status === "ready"
+              ? null
+              : (thread.session?.lastError ?? null);
 
         if (shouldApplyThreadLifecycle) {
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {

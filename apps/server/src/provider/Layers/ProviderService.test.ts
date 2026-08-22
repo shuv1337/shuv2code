@@ -2028,7 +2028,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
                     environmentId,
                   },
                 }
-              : requestedProfile;
+              : requestedProfile.kind === "durable-thread-controller"
+                ? { ...requestedProfile, providerIdentity: undefined }
+                : requestedProfile;
           return {
             config: {
               credentialId: `credential-${profile.kind}`,

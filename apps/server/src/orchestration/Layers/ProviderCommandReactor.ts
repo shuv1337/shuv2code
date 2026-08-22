@@ -35,6 +35,8 @@ import { ProviderAdapterRequestError, ProviderValidationError } from "../../prov
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { isThreadControlGrantApproval } from "../../mcp/ThreadControlGrantRequest.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
@@ -918,13 +920,19 @@ const make = Effect.gen(function* () {
         preferredProvider === "claudeAgent" &&
         requestedModelSelection !== undefined &&
         !Equal.equals(previousModelSelection, requestedModelSelection);
+      const shouldRestartForControlGrantAttachment =
+        durableControlGrant?.controlEnabled === true &&
+        !McpProviderSession.readMcpProviderSessions(threadId).some(
+          (session) => session.profile.kind === "durable-thread-controller",
+        );
 
       if (
         !runtimeModeChanged &&
         !cwdChanged &&
         !instanceChanged &&
         !shouldRestartForModelChange &&
-        !shouldRestartForModelSelectionChange
+        !shouldRestartForModelSelectionChange &&
+        !shouldRestartForControlGrantAttachment
       ) {
         return existingSessionThreadId;
       }
@@ -949,6 +957,7 @@ const make = Effect.gen(function* () {
         instanceChanged,
         shouldRestartForModelChange,
         shouldRestartForModelSelectionChange,
+        shouldRestartForControlGrantAttachment,
         hasResumeCursor: resumeCursor !== undefined,
       });
       const restartedSession = yield* startProviderSession(
@@ -1696,6 +1705,71 @@ const make = Effect.gen(function* () {
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
+      return;
+    }
+    const threadControlGrantRequest = thread.activities.find((activity) =>
+      isThreadControlGrantApproval(activity, event.payload.requestId),
+    );
+    const threadControlGrantAlreadyResolved = thread.activities.some((activity) => {
+      if (
+        activity.kind !== "approval.resolved" ||
+        typeof activity.payload !== "object" ||
+        activity.payload === null
+      ) {
+        return false;
+      }
+      return (activity.payload as Record<string, unknown>).requestId === event.payload.requestId;
+    });
+    if (threadControlGrantRequest !== undefined && !threadControlGrantAlreadyResolved) {
+      const approved =
+        event.payload.decision === "accept" || event.payload.decision === "acceptForSession";
+      if (approved) {
+        const existingGrant = yield* threadControlGrants.getByThreadId(event.payload.threadId);
+        yield* threadControlGrants.upsert({
+          threadId: event.payload.threadId,
+          authorizedRuntimeCeiling: thread.runtimeMode,
+          controlEnabled: true,
+          createdAt: Option.match(existingGrant, {
+            onNone: () => event.payload.createdAt,
+            onSome: (grant) => grant.createdAt,
+          }),
+          updatedAt: event.payload.createdAt,
+        });
+        // A previously disabled or narrower credential may still be cached for
+        // the active provider process. Removing the in-memory attachment makes
+        // the next turn restart the provider and issue the newly approved
+        // controller profile instead of mistaking the stale profile for it.
+        McpProviderSession.clearMcpProviderSessionProfile(
+          event.payload.threadId,
+          "durable-thread-controller",
+        );
+      }
+      const [commandId, activityId] = yield* Effect.all([
+        serverCommandId("thread-control-grant-response"),
+        serverEventId(),
+      ]);
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId,
+        threadId: event.payload.threadId,
+        activity: {
+          id: activityId,
+          tone: "approval",
+          kind: "approval.resolved",
+          summary: approved
+            ? "Durable thread-control access granted"
+            : "Durable thread-control access declined",
+          payload: {
+            requestId: event.payload.requestId,
+            requestKind: "thread-control",
+            requestType: "thread_control_grant",
+            decision: event.payload.decision,
+          },
+          turnId: threadControlGrantRequest.turnId,
+          createdAt: event.payload.createdAt,
+        },
+        createdAt: event.payload.createdAt,
+      });
       return;
     }
     const hasSession = thread.session && thread.session.status !== "stopped";

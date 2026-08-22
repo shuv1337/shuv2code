@@ -131,17 +131,34 @@ export function makeDurableThreadControlInvocationResolver(
     yield* readLiveController();
   });
 
+  const readProviderTurnId = Effect.fn("DurableThreadControlInvocationResolver.readProviderTurnId")(
+    function* () {
+      const metadata = input.request.turnMetadata;
+      if (metadata !== undefined) return metadata.turnId;
+
+      // Codex supplies a trusted per-request turn envelope. Other providers call the
+      // same authenticated controller endpoint without that Codex-specific metadata,
+      // so use the active turn from the credential-bound controller thread instead.
+      const controller = yield* readLiveController();
+      const activeTurnId = controller.session?.activeTurnId ?? null;
+      if (controller.session?.status !== "running" || activeTurnId === null) {
+        return undefined;
+      }
+      return String(activeTurnId);
+    },
+  );
+
   const validateMutation: ThreadControlGrantVerifierShape["validateMutation"] = Effect.fn(
     "DurableThreadControlGrantVerifier.validateMutation",
   )(function* (authorization, action) {
-    const metadata = input.request.turnMetadata;
+    const providerTurnId = yield* readProviderTurnId();
     if (
       action.adapterKind !== "durable-thread" ||
       action.controllerThreadId !== authorization.controllerThreadId ||
       action.credentialId !== input.invocation.credentialId ||
       action.providerSessionId !== input.invocation.providerSessionId ||
-      metadata === undefined ||
-      action.providerTurnId !== metadata.turnId ||
+      providerTurnId === undefined ||
+      action.providerTurnId !== providerTurnId ||
       action.providerRequestId !== input.request.requestId
     ) {
       return yield* mismatch(
@@ -194,17 +211,17 @@ export function makeDurableThreadControlInvocationResolver(
   const resolveMutation = Effect.fn("DurableThreadControlInvocationResolver.resolveMutation")(
     function* () {
       const grant = yield* resolveAuthorization("control");
-      const metadata = input.request.turnMetadata;
-      if (metadata === undefined) {
+      const providerTurnId = yield* readProviderTurnId();
+      if (providerTurnId === undefined) {
         return yield* new ThreadControlInvocationError({
           code: "action_not_found",
-          message: "Trusted provider turn metadata is required for controller mutations.",
+          message: "The controller provider session has no active turn for this mutation.",
         });
       }
       const seed = stableStringify([
         input.invocation.credentialId,
         input.invocation.providerSessionId,
-        metadata.turnId,
+        providerTurnId,
         input.request.requestId,
       ]);
       const digest = yield* requestHash(seed);
@@ -220,13 +237,13 @@ export function makeDurableThreadControlInvocationResolver(
           controllerThreadId: grant.authorization.controllerThreadId,
           providerInstanceId: input.invocation.providerInstanceId,
           providerSessionId: input.invocation.providerSessionId,
-          providerTurnId: metadata.turnId,
+          providerTurnId,
           providerRequestHash: digest,
         },
         controllerThreadId: grant.authorization.controllerThreadId,
         credentialId: input.invocation.credentialId,
         providerSessionId: input.invocation.providerSessionId,
-        providerTurnId: metadata.turnId,
+        providerTurnId,
         providerRequestId: input.request.requestId,
       };
       yield* verifier.validateMutation(grant.authorization, action);

@@ -69,6 +69,7 @@ const services = Layer.mergeAll(
           archivedAt: null,
           modelSelection: { instanceId: providerInstanceId, model: "gpt-5.6" },
           runtimeMode: "auto-accept-edits",
+          session: { status: "running", activeTurnId: "turn-live" },
         } as never),
       ),
   }),
@@ -110,6 +111,92 @@ it.effect("derives one stable durable action per provider turn and MCP request",
     });
     expect(replay.action.actionId).toBe(first.action.actionId);
     expect(second.action.actionId).not.toBe(first.action.actionId);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("derives provider-neutral mutations from the credential-bound active turn", () =>
+  Effect.gen(function* () {
+    const projection = yield* ProjectionSnapshotQuery;
+    const crypto = yield* Crypto.Crypto;
+    const resolver = makeDurableThreadControlInvocationResolver(
+      {
+        invocation: {
+          ...invocation,
+          providerInstanceId: ProviderInstanceId.make("opencodeV2"),
+          profile: {
+            kind: "durable-thread-controller",
+            controllerThreadId,
+            providerIdentity: { providerThreadId: "opencode-session-1" },
+            authorizedRuntimeCeiling: "auto-accept-edits",
+            controlEnabled: true,
+          },
+        },
+        request: { requestId: "request-opencode", turnMetadata: undefined },
+      },
+      {
+        currentEnvironmentId: environmentId,
+        projection: {
+          ...projection,
+          getThreadDetailById: () =>
+            Effect.succeed(
+              Option.some({
+                purpose: "standard",
+                deletedAt: null,
+                archivedAt: null,
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("opencodeV2"),
+                  model: "opencode-go/ox-alpha-free",
+                },
+                runtimeMode: "auto-accept-edits",
+                session: { status: "running", activeTurnId: "opencode-turn-1" },
+              } as never),
+            ),
+        },
+        threadControlGrants: makeThreadControlGrants(),
+        crypto,
+      },
+    );
+
+    const mutation = yield* resolver.resolveMutation();
+    expect(mutation.action).toMatchObject({
+      providerTurnId: "opencode-turn-1",
+      providerRequestId: "request-opencode",
+    });
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("rejects provider-neutral mutations when the controller has no active turn", () =>
+  Effect.gen(function* () {
+    const projection = yield* ProjectionSnapshotQuery;
+    const crypto = yield* Crypto.Crypto;
+    const resolver = makeDurableThreadControlInvocationResolver(
+      {
+        invocation,
+        request: { requestId: "request-idle", turnMetadata: undefined },
+      },
+      {
+        currentEnvironmentId: environmentId,
+        projection: {
+          ...projection,
+          getThreadDetailById: () =>
+            Effect.succeed(
+              Option.some({
+                purpose: "standard",
+                deletedAt: null,
+                archivedAt: null,
+                modelSelection: { instanceId: providerInstanceId, model: "gpt-5.6" },
+                runtimeMode: "auto-accept-edits",
+                session: { status: "ready", activeTurnId: null },
+              } as never),
+            ),
+        },
+        threadControlGrants: makeThreadControlGrants(),
+        crypto,
+      },
+    );
+
+    const error = yield* resolver.resolveMutation().pipe(Effect.flip);
+    expect(error).toMatchObject({ code: "action_not_found" });
   }).pipe(Effect.provide(services)),
 );
 

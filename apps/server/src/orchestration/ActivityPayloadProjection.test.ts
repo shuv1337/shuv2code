@@ -263,6 +263,52 @@ describe("projectActivityPayload agent-field survival", () => {
     expect(JSON.stringify(acp.payload).length).toBeLessThan(500);
   });
 
+  it("keeps OpenCode V2 tool names and inputs needed for visible call details", () => {
+    const shell = projectActivityPayload(
+      activity({
+        itemType: "command_execution",
+        status: "completed",
+        data: {
+          tool: "shell",
+          input: { command: "pwd" },
+          sessionID: "ses_private",
+          assistantMessageID: "msg_private",
+          callID: "call_private",
+          content: [{ type: "text", text: "/workspace\n" }],
+        },
+      }),
+    );
+    const execute = projectActivityPayload(
+      activity({
+        itemType: "dynamic_tool_call",
+        status: "completed",
+        data: {
+          tool: "execute",
+          input: { code: "return await tools.shuv2code.thread_control_request({})" },
+          sessionID: "ses_private",
+        },
+      }),
+    );
+
+    expect(shell.payload).toEqual({
+      itemType: "command_execution",
+      status: "completed",
+      data: {
+        tool: "shell",
+        input: { command: "pwd" },
+        rawOutput: { content: "/workspace" },
+      },
+    });
+    expect(execute.payload).toEqual({
+      itemType: "dynamic_tool_call",
+      status: "completed",
+      data: {
+        tool: "execute",
+        input: { code: "return await tools.shuv2code.thread_control_request({})" },
+      },
+    });
+  });
+
   it("slims Codex-shaped mcp_tool_call items to rendered fields plus a result summary", () => {
     const projected = projectActivityPayload(
       activity({

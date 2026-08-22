@@ -638,7 +638,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.activeTurnId).toBe(turnId);
   });
 
-  it("maps turn started/completed events into thread session updates", async () => {
+  it("records a failed turn without poisoning the reusable provider session", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -671,13 +671,10 @@ describe("ProviderRuntimeIngestion", () => {
 
     const thread = await waitForThread(
       harness.readModel,
-      (entry) =>
-        entry.session?.status === "error" &&
-        entry.session?.activeTurnId === null &&
-        entry.session?.lastError === "turn failed",
+      (entry) => entry.session?.status === "ready" && entry.session?.activeTurnId === null,
     );
-    expect(thread.session?.status).toBe("error");
-    expect(thread.session?.lastError).toBe("turn failed");
+    expect(thread.session?.status).toBe("ready");
+    expect(thread.session?.lastError).toBeNull();
   });
 
   it("maps turn.aborted into an interrupted ready turn", async () => {

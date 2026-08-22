@@ -28,4 +28,22 @@ describe("ComposerPendingApprovalPanel", () => {
     expect(markup).toContain("max-w-full");
     expect(markup).toContain("[overflow-wrap:anywhere]");
   });
+
+  it("labels a durable thread-control grant distinctly from a command", () => {
+    const markup = renderToStaticMarkup(
+      <ComposerPendingApprovalPanel
+        approval={{
+          requestId: ApprovalRequestId.make("thread-control-grant:approval-1"),
+          requestKind: "thread-control",
+          createdAt: "2026-08-22T00:00:00.000Z",
+          detail: "Allow this thread to control other threads.",
+        }}
+        pendingCount={1}
+      />,
+    );
+
+    expect(markup).toContain("Durable thread-control access requested");
+    expect(markup).toContain('aria-label="Access requested"');
+    expect(markup).not.toContain("Command approval requested");
+  });
 });

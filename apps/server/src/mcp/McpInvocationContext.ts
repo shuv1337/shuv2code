@@ -10,7 +10,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-export type StandardMcpCapability = "preview" | "automations";
+export type StandardMcpCapability = "preview" | "automations" | "thread-control.request";
 export type ControllerMcpCapability = "threads.read" | "threads.control";
 export type McpCapability = StandardMcpCapability | ControllerMcpCapability;
 
@@ -94,7 +94,7 @@ export class ControllerMcpRequestContext extends Context.Service<
 >()("shuv2code/mcp/McpInvocationContext/ControllerMcpRequestContext") {}
 
 export const requireMcpCapability = Effect.fn("mcp.requireCapability")(function* (
-  capability: StandardMcpCapability,
+  capability: Exclude<StandardMcpCapability, "thread-control.request">,
 ) {
   const invocation = yield* McpInvocationContext;
   if (!invocation.capabilities.has(capability)) {

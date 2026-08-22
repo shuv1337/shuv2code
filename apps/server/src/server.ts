@@ -553,6 +553,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   ),
   Layer.mergeAll(McpHttpServer.layer, ControllerMcpHttpServer.layer).pipe(
     Layer.provide(McpSessionRegistryLayerLive),
+    Layer.provide(ThreadControlGrantRepositoryLive),
   ),
 ).pipe(
   // Both transports consume the same service instance, so caches single-flight across clients

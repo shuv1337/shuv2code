@@ -248,6 +248,27 @@ it.effect("serves only the five controller tools and enforces profile and turn m
           controlEnabled: true,
         },
       });
+      const preBindingList = yield* postJsonRpc(durableController.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: "pre-binding-list",
+        method: "tools/list",
+        params: {},
+      });
+      expect(preBindingList.status).toBe(200);
+      expect(preBindingList.body).toMatchObject({
+        result: { tools: expect.any(Array) },
+      });
+      const preBindingCall = yield* postJsonRpc(durableController.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: "pre-binding-call",
+        method: "tools/call",
+        params: { name: "thread_list", arguments: {} },
+      });
+      expect(preBindingCall.status).toBe(401);
+      expect(preBindingCall.body).toMatchObject({
+        error: "invalid_controller_mcp_credential",
+        reason: "unbound",
+      });
       expect(
         yield* registry.bindControllerProviderIdentity(controller.config.credentialId, {
           codexProviderThreadId,

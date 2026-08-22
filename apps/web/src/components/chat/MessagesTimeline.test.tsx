@@ -243,7 +243,7 @@ describe("MessagesTimeline", () => {
     expect(toolCallExpandedBodyClassName).not.toContain("text-[11px]");
   });
 
-  it("shows provider reasoning in full instead of a collapsed ellipsis preview", () => {
+  it("shows provider reasoning in full with a per-block collapse control", () => {
     const detail =
       "The user is musing about whether a plugin boundary belongs in the host application.";
     const markup = renderToStaticMarkup(
@@ -270,7 +270,39 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-reasoning-summary-visible="true"');
     expect(markup).toContain(detail);
     expect(markup.match(new RegExp(detail, "g"))).toHaveLength(1);
-    expect(markup).not.toContain("aria-expanded");
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain('aria-label="Collapse thinking"');
+  });
+
+  it("shows recovered provider tool input beside generic tool names", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-execute",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "execute-1",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "execute",
+              toolTitle: "execute",
+              toolInput: { code: "return Object.keys(tools);" },
+              detail: "[]",
+              itemType: "dynamic_tool_call",
+              tone: "tool",
+              sourceActivityKind: "tool.completed",
+              toolLifecycleStatus: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Execute");
+    expect(markup).toContain("return Object.keys(tools);");
+    expect(markup).toContain('aria-expanded="false"');
   });
 
   it("uses the larger leading inset only when the top fade is enabled", () => {

@@ -51,7 +51,9 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
 
     const resolved = yield* registry.resolve(token);
     expect(resolved?.threadId).toBe(threadId);
-    expect(resolved?.capabilities).toEqual(new Set(["preview", "automations"]));
+    expect(resolved?.capabilities).toEqual(
+      new Set(["preview", "automations", "thread-control.request"]),
+    );
 
     yield* registry.revokeThread(threadId);
     expect(yield* registry.resolve(token)).toBeUndefined();
@@ -182,7 +184,9 @@ it.effect("never grants threads.read or threads.control to a non-controller prov
     const resolved = yield* registry.resolve(token, "standard-provider");
 
     expect(resolved?.profile.kind).toBe("standard-provider");
-    expect(resolved?.capabilities).toEqual(new Set(["preview", "automations"]));
+    expect(resolved?.capabilities).toEqual(
+      new Set(["preview", "automations", "thread-control.request"]),
+    );
     expect(resolved?.capabilities.has("threads.read")).toBe(false);
     expect(resolved?.capabilities.has("threads.control")).toBe(false);
     expect(yield* registry.resolve(token, "voice-controller")).toBeUndefined();
