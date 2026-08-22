@@ -355,12 +355,24 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
             | { readonly type: "before"; readonly messageID: string };
         },
       ) => data<OpenCodeV2SessionInfo>("POST", sessionPath(sessionID, "/fork"), { body }),
+      switchAgent: (sessionID: string, agent: string) =>
+        request<void>("POST", sessionPath(sessionID, "/agent"), {
+          body: { agent },
+          empty: true,
+        }),
+      switchModel: (
+        sessionID: string,
+        model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+      ) =>
+        request<void>("POST", sessionPath(sessionID, "/model"), {
+          body: { model },
+          empty: true,
+        }),
       prompt: (
         sessionID: string,
         body: {
           readonly text: string;
           readonly files?: ReadonlyArray<{ readonly uri: string; readonly name?: string }>;
-          readonly agent?: string;
         },
       ) => data<unknown>("POST", sessionPath(sessionID, "/prompt"), { body }),
       interrupt: (sessionID: string) =>

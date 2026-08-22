@@ -172,7 +172,7 @@ describe("createOpenCodeV2Client", () => {
     ]);
   });
 
-  it("creates, prompts, interrupts, waits, and forks with live payloads", async () => {
+  it("creates, switches, prompts, interrupts, waits, and forks with live payloads", async () => {
     const seen: Array<{ method?: string; path: string; body?: unknown }> = [];
     const baseUrl = await listen(async (req, res) => {
       const url = new URL(req.url ?? "", "http://localhost");
@@ -191,7 +191,12 @@ describe("createOpenCodeV2Client", () => {
         res.end(JSON.stringify({ data: { id: "pending_1" } }));
         return;
       }
-      if (url.pathname.endsWith("/interrupt") || url.pathname.endsWith("/wait")) {
+      if (
+        url.pathname.endsWith("/agent") ||
+        url.pathname.endsWith("/model") ||
+        url.pathname.endsWith("/interrupt") ||
+        url.pathname.endsWith("/wait")
+      ) {
         res.statusCode = 204;
         res.end();
         return;
@@ -210,6 +215,12 @@ describe("createOpenCodeV2Client", () => {
     });
     const created = await client.session.create({ title: "work" });
     NodeAssert.equal(created.id, "ses_2");
+    await client.session.switchAgent("ses_2", "build");
+    await client.session.switchModel("ses_2", {
+      providerID: "openai",
+      id: "gpt-5.6-sol",
+      variant: "high",
+    });
     await client.session.prompt("ses_2", { text: "hello" });
     await client.session.interrupt("ses_2");
     await client.session.wait("ses_2");
@@ -220,6 +231,8 @@ describe("createOpenCodeV2Client", () => {
       seen.map((entry) => `${entry.method} ${entry.path}`),
       [
         "POST /api/session",
+        "POST /api/session/ses_2/agent",
+        "POST /api/session/ses_2/model",
         "POST /api/session/ses_2/prompt",
         "POST /api/session/ses_2/interrupt",
         "POST /api/session/ses_2/wait",
@@ -227,7 +240,11 @@ describe("createOpenCodeV2Client", () => {
         "GET /api/session/active",
       ],
     );
-    NodeAssert.deepEqual(seen[4]?.body, { boundary: { type: "through" } });
+    NodeAssert.deepEqual(seen[1]?.body, { agent: "build" });
+    NodeAssert.deepEqual(seen[2]?.body, {
+      model: { providerID: "openai", id: "gpt-5.6-sol", variant: "high" },
+    });
+    NodeAssert.deepEqual(seen[6]?.body, { boundary: { type: "through" } });
   });
 
   it("rejects oversized SSE events", async () => {

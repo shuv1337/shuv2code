@@ -312,6 +312,67 @@ describe("OpenCodeV2Adapter terminal state", () => {
   );
 });
 
+describe("OpenCodeV2Adapter model selection", () => {
+  it.effect("switches the upstream session to the selected agent and model before prompting", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-selected-model");
+      const calls: Array<readonly [string, unknown]> = [];
+      const client = {
+        event: {
+          subscribe: () => ({
+            async *[Symbol.asyncIterator]() {
+              yield { type: "server.connected" };
+              await new Promise<never>(() => undefined);
+            },
+          }),
+        },
+        session: {
+          create: async () => ({ id: "ses_selected_model" }),
+          switchAgent: async (_sessionID: string, agent: string) => {
+            calls.push(["agent", agent]);
+          },
+          switchModel: async (_sessionID: string, model: unknown) => {
+            calls.push(["model", model]);
+          },
+          prompt: async (_sessionID: string, body: unknown) => {
+            calls.push(["prompt", body]);
+          },
+        },
+        form: { list: async () => [] },
+        permission: { list: async () => [] },
+      } as unknown as OpenCodeV2Client;
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "use the selected model",
+        attachments: [],
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencodeV2"),
+          model: "openai/gpt-5.6-sol",
+          options: [
+            { id: "variant", value: "high" },
+            { id: "agent", value: "build" },
+          ],
+        },
+      });
+
+      NodeAssert.deepEqual(calls, [
+        ["agent", "build"],
+        ["model", { providerID: "openai", id: "gpt-5.6-sol", variant: "high" }],
+        ["prompt", { text: "use the selected model" }],
+      ]);
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
+  );
+});
+
 describe("OpenCodeV2Adapter interruption", () => {
   it.effect("cancels pending forms and accepts a new turn after interruption", () =>
     Effect.gen(function* () {
@@ -329,6 +390,7 @@ describe("OpenCodeV2Adapter interruption", () => {
         },
         session: {
           create: async () => ({ id: "ses_interrupt_form" }),
+          switchModel: async () => undefined,
           prompt: async (_sessionID: string, input: { readonly text: string }) => {
             promptCalls.push(input.text);
           },
