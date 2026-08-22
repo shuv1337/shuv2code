@@ -143,6 +143,7 @@ import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriver from "./vcs/VcsDriver.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
+import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsChangeRequestService from "./vcs/VcsChangeRequestService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
@@ -606,6 +607,7 @@ const buildAppUnderTest = (options?: {
     const workspaceEntriesLayer = WorkspaceEntries.layer.pipe(
       Layer.provide(WorkspacePaths.layer),
       Layer.provideMerge(vcsDriverRegistryLayer),
+      Layer.provide(VcsProcess.layer),
     );
     const workspaceAndProjectServicesLayer = Layer.mergeAll(
       WorkspacePaths.layer,
@@ -4589,6 +4591,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             cwd: workspaceDir,
             query: "needle",
             limit: 10,
+            includeIgnored: true,
           }),
         ).pipe(Effect.result),
       );
@@ -4818,6 +4821,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             cwd: workspaceDir,
             query: "needle",
             limit: 10,
+            includeIgnored: true,
           }),
         ),
       );
@@ -4847,7 +4851,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           Effect.all({
-            listing: client[WS_METHODS.projectsListEntries]({ cwd: workspaceDir }),
+            listing: client[WS_METHODS.projectsListEntries]({
+              cwd: workspaceDir,
+              includeIgnored: true,
+            }),
             file: client[WS_METHODS.projectsReadFile]({
               cwd: workspaceDir,
               relativePath: "src/index.ts",
@@ -4866,7 +4873,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
-  it.effect("routes websocket rpc projects.searchEntries excludes gitignored files", () =>
+  it.effect("routes websocket rpc projects.searchEntries with ignored files hidden", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -4914,6 +4921,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             cwd: workspaceDir,
             query: "ignored-search-target",
             limit: 10,
+            includeIgnored: false,
           }),
         ),
       );
@@ -4951,10 +4959,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               cwd: invalidWorkspace,
               query: sensitiveQuery,
               limit: 10,
+              includeIgnored: true,
             }).pipe(Effect.result),
-            list: client[WS_METHODS.projectsListEntries]({ cwd: invalidWorkspace }).pipe(
-              Effect.result,
-            ),
+            list: client[WS_METHODS.projectsListEntries]({
+              cwd: invalidWorkspace,
+              includeIgnored: true,
+            }).pipe(Effect.result),
             read: client[WS_METHODS.projectsReadFile]({
               cwd: workspaceDir,
               relativePath: "linked-outside.txt",
@@ -5052,7 +5062,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const wsUrl = yield* getWsServerUrl("/ws");
         return yield* Effect.scoped(
           withWsRpcClient(wsUrl, (client) =>
-            client[WS_METHODS.projectsListEntries]({ cwd: workspaceRoot }).pipe(Effect.result),
+            client[WS_METHODS.projectsListEntries]({
+              cwd: workspaceRoot,
+              includeIgnored: true,
+            }).pipe(Effect.result),
           ),
         );
       }).pipe(Effect.ensuring(fs.chmod(blockedRoot, 0o700).pipe(Effect.ignore)));

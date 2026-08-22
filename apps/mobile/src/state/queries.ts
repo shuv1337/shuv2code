@@ -263,6 +263,7 @@ export function useComposerPathSearch(target: ComposerPathSearchTarget) {
             cwd: debouncedTarget.cwd,
             query: debouncedTarget.query,
             limit: COMPOSER_PATH_SEARCH_LIMIT,
+            includeIgnored: true,
           },
         })
       : null,

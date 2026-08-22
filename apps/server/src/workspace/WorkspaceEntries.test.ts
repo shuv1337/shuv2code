@@ -77,10 +77,14 @@ const searchWorkspaceEntries = (input: {
   query: string;
   limit: number;
   kind?: "file" | "directory";
+  includeIgnored?: boolean;
 }) =>
   Effect.gen(function* () {
     const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-    return yield* workspaceEntries.search(input);
+    return yield* workspaceEntries.search({
+      ...input,
+      includeIgnored: input.includeIgnored ?? true,
+    });
   });
 
 const appendSeparator = (input: string) =>
@@ -104,7 +108,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         yield* writeTextFile(cwd, "node_modules/pkg/index.js");
 
         const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-        const result = yield* workspaceEntries.list({ cwd });
+        const result = yield* workspaceEntries.list({ cwd, includeIgnored: true });
 
         expect(result.entries).toEqual(
           expect.arrayContaining([
@@ -261,7 +265,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
       }),
     );
 
-    it.effect("excludes gitignored paths for git repositories", () =>
+    it.effect("includes gitignored paths for git repositories by default", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTempDir({ prefix: "shuv2code-workspace-gitignore-", git: true });
         yield* writeTextFile(cwd, ".gitignore", ".convex/\nconvex/\nignored.txt\n");
@@ -270,18 +274,113 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         yield* writeTextFile(cwd, ".convex/local-storage/data.json", "{}");
         yield* writeTextFile(cwd, "convex/UOoS-l/convex_local_storage/modules/data.json", "{}");
 
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
         const result = yield* searchWorkspaceEntries({ cwd, query: "", limit: 100 });
+        const listing = yield* workspaceEntries.list({ cwd, includeIgnored: true });
         const paths = result.entries.map((entry) => entry.path);
+        const listedPaths = listing.entries.map((entry) => entry.path);
 
         expect(paths).toContain("src");
         expect(paths).toContain("src/keep.ts");
-        expect(paths).not.toContain("ignored.txt");
-        expect(paths.some((entryPath) => entryPath.startsWith(".convex/"))).toBe(false);
-        expect(paths.some((entryPath) => entryPath.startsWith("convex/"))).toBe(false);
+        expect(paths).toContain("ignored.txt");
+        expect(paths).toContain(".convex/local-storage/data.json");
+        expect(paths).toContain("convex/UOoS-l/convex_local_storage/modules/data.json");
+        expect(listedPaths).toContain("ignored.txt");
+        expect(listedPaths).toContain(".convex/local-storage/data.json");
       }),
     );
 
-    it.effect("excludes tracked paths that match ignore rules", () =>
+    it.effect("expands ignored embedded repositories without duplicate tree paths", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({
+          prefix: "shuv2code-workspace-embedded-repo-",
+          git: true,
+        });
+        const path = yield* Path.Path;
+        const nestedCwd = path.join(cwd, "repos/CozyVTT");
+        yield* writeTextFile(cwd, ".gitignore", "repos/\n");
+        yield* writeTextFile(nestedCwd, "src/App.ts", "export {};");
+        yield* writeTextFile(nestedCwd, ".gitignore", ".env\n");
+        yield* writeTextFile(nestedCwd, ".env", "TOKEN=test");
+        yield* git(nestedCwd, ["init"]);
+        yield* git(nestedCwd, ["add", "src/App.ts", ".gitignore"]);
+
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const listing = yield* workspaceEntries.list({ cwd, includeIgnored: true });
+        const search = yield* searchWorkspaceEntries({ cwd, query: "App.ts", limit: 10 });
+        const treePaths = listing.entries.map((entry) =>
+          entry.kind === "directory" ? `${entry.path}/` : entry.path,
+        );
+
+        expect(listing.entries).toContainEqual({
+          path: "repos/CozyVTT",
+          kind: "directory",
+        });
+        expect(listing.entries).toContainEqual({
+          path: "repos/CozyVTT/src/App.ts",
+          kind: "file",
+        });
+        expect(listing.entries).toContainEqual({
+          path: "repos/CozyVTT/.env",
+          kind: "file",
+        });
+        expect(new Set(treePaths).size).toBe(treePaths.length);
+        expect(search.entries).toContainEqual({
+          path: "repos/CozyVTT/src/App.ts",
+          kind: "file",
+        });
+      }),
+    );
+
+    it.effect("can hide gitignored paths", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({
+          prefix: "shuv2code-workspace-hide-gitignore-",
+          git: true,
+        });
+        yield* writeTextFile(cwd, ".gitignore", "ignored/\n");
+        yield* writeTextFile(cwd, "ignored/nested/repo.ts", "export {};");
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+
+        const result = yield* searchWorkspaceEntries({
+          cwd,
+          query: "",
+          limit: 100,
+          includeIgnored: false,
+        });
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const listing = yield* workspaceEntries.list({ cwd, includeIgnored: false });
+        const paths = result.entries.map((entry) => entry.path);
+
+        expect(paths).toContain("src/keep.ts");
+        expect(paths.some((entryPath) => entryPath.startsWith("ignored"))).toBe(false);
+        expect(listing.entries.some((entry) => entry.path.startsWith("ignored"))).toBe(false);
+      }),
+    );
+
+    it.effect("finds ignored files through path search", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({
+          prefix: "shuv2code-workspace-search-gitignore-",
+          git: true,
+        });
+        yield* writeTextFile(cwd, ".gitignore", "vendor/\n");
+        yield* writeTextFile(cwd, "vendor/inner-repo/src/Agent.ts", "export {};");
+
+        const result = yield* searchWorkspaceEntries({
+          cwd,
+          query: "agent",
+          limit: 10,
+        });
+
+        expect(result.entries).toContainEqual({
+          path: "vendor/inner-repo/src/Agent.ts",
+          kind: "file",
+        });
+      }),
+    );
+
+    it.effect("includes tracked paths that match ignore rules", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTempDir({
           prefix: "shuv2code-workspace-tracked-gitignore-",
@@ -297,7 +396,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
 
         expect(paths).toContain("src");
         expect(paths).toContain("src/keep.ts");
-        expect(paths.some((entryPath) => entryPath.startsWith(".convex/"))).toBe(false);
+        expect(paths).toContain(".convex/local-storage/data.json");
       }),
     );
 
@@ -338,7 +437,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
 
         const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
         const createSpy = vi.spyOn(FileFinder, "create");
-        yield* workspaceEntries.list({ cwd });
+        yield* workspaceEntries.list({ cwd, includeIgnored: true });
         expect(createSpy).toHaveBeenCalledTimes(1);
 
         vi.spyOn(FileFinder.prototype, "scanFiles").mockReturnValueOnce({
@@ -347,7 +446,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         });
         yield* workspaceEntries.refresh(cwd);
 
-        yield* workspaceEntries.list({ cwd });
+        yield* workspaceEntries.list({ cwd, includeIgnored: true });
         expect(createSpy).toHaveBeenCalledTimes(2);
       }),
     );

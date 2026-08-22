@@ -33,6 +33,13 @@ describe("ClientSettings word wrap", () => {
   });
 });
 
+describe("ClientSettings ignored files", () => {
+  it("shows ignored workspace files by default and accepts an explicit opt-out", () => {
+    expect(decodeClientSettings({}).showIgnoredFiles).toBe(true);
+    expect(decodeClientSettingsPatch({ showIgnoredFiles: false }).showIgnoredFiles).toBe(false);
+  });
+});
+
 describe("ClientSettings glass opacity", () => {
   it("defaults to a readable translucent surface", () => {
     expect(decodeClientSettings({}).glassOpacity).toBe(80);
