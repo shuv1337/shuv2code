@@ -382,7 +382,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     ...(taskId ? { taskId } : {}),
     label: taskLabel || activity.summary,
     tone:
-      activity.kind === "task.progress"
+      activity.kind === "task.progress" || activity.kind === "reasoning.completed"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"
@@ -608,7 +608,10 @@ function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
   );
 }
 
-function workEntryStatus(entry: WorkLogEntry): ThreadFeedActivity["status"] {
+function workEntryStatus(entry: DerivedWorkLogEntry): ThreadFeedActivity["status"] {
+  if (entry.activityKind === "reasoning.completed") {
+    return null;
+  }
   if (!workLogEntryIsToolLike(entry)) {
     return null;
   }

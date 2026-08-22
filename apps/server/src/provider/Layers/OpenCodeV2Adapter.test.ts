@@ -49,14 +49,14 @@ const OPEN_CODE_V2_SETTINGS = {
 
 function makeAdoptionClient(input: {
   readonly messages: () => Promise<unknown>;
-  readonly event: OpenCodeV2Event;
+  readonly events: ReadonlyArray<OpenCodeV2Event>;
 }): OpenCodeV2Client {
   return {
     event: {
       subscribe: () => ({
         async *[Symbol.asyncIterator]() {
           yield { type: "server.connected" };
-          yield input.event;
+          yield* input.events;
           await new Promise<never>(() => undefined);
         },
       }),
@@ -79,10 +79,12 @@ function runAdoptedToolCompletion(input: {
     const threadId = ThreadId.make(`thread-${input.expectedTitle}`);
     const client = makeAdoptionClient({
       messages: input.messages,
-      event: {
-        type: "session.tool.success",
-        data: { sessionID: "ses_adopted", id: "call_1" },
-      },
+      events: [
+        {
+          type: "session.tool.success",
+          data: { sessionID: "ses_adopted", callID: "call_1" },
+        },
+      ],
     });
     const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
       clientFactory: () => client,
@@ -484,6 +486,352 @@ describe("OpenCodeV2Adapter adopted tool names", () => {
       expectedTitle: "tool",
       expectedEventCount: 2,
     }),
+  );
+});
+
+describe("OpenCodeV2Adapter tool lifecycle", () => {
+  it.effect("maps the current ShuvCode callID field across a complete tool lifecycle", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-tool-call-id");
+      const client = makeAdoptionClient({
+        messages: async () => ({ data: [], cursor: {} }),
+        events: [
+          {
+            type: "session.tool.input.started",
+            data: {
+              sessionID: "ses_adopted",
+              assistantMessageID: "msg_1",
+              callID: "call_1",
+              name: "bash",
+            },
+          },
+          {
+            type: "session.tool.called",
+            data: {
+              sessionID: "ses_adopted",
+              assistantMessageID: "msg_1",
+              callID: "call_1",
+              input: { command: "pwd" },
+            },
+          },
+          {
+            type: "session.tool.success",
+            data: {
+              sessionID: "ses_adopted",
+              assistantMessageID: "msg_1",
+              callID: "call_1",
+              content: [{ type: "text", text: "/workspace" }],
+            },
+          },
+        ],
+      });
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type.startsWith("item.")),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+        resumeCursor: {
+          kind: "opencode-v2",
+          schemaVersion: 1,
+          sessionId: "ses_adopted",
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.deepEqual(
+        events.map((event) => ({
+          type: event.type,
+          itemId: event.itemId,
+          itemType: "itemType" in event.payload ? event.payload.itemType : undefined,
+          status: "status" in event.payload ? event.payload.status : undefined,
+          title: "title" in event.payload ? event.payload.title : undefined,
+        })),
+        [
+          {
+            type: "item.started",
+            itemId: "call_1",
+            itemType: "command_execution",
+            status: "inProgress",
+            title: "bash",
+          },
+          {
+            type: "item.updated",
+            itemId: "call_1",
+            itemType: "command_execution",
+            status: "inProgress",
+            title: "bash",
+          },
+          {
+            type: "item.completed",
+            itemId: "call_1",
+            itemType: "command_execution",
+            status: "completed",
+            title: "bash",
+          },
+        ],
+      );
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
+  );
+});
+
+describe("OpenCodeV2Adapter reasoning lifecycle", () => {
+  it.effect("keeps reasoning and assistant text distinct and completes plaintext reasoning", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-reasoning");
+      const client = makeAdoptionClient({
+        messages: async () => ({ data: [], cursor: {} }),
+        events: [
+          {
+            type: "session.reasoning.started",
+            data: { sessionID: "ses_reasoning", assistantMessageID: "msg_1", ordinal: 0 },
+          },
+          {
+            type: "session.reasoning.delta",
+            data: {
+              sessionID: "ses_reasoning",
+              assistantMessageID: "msg_1",
+              ordinal: 0,
+              delta: "Inspect",
+            },
+          },
+          {
+            type: "session.reasoning.ended",
+            data: {
+              sessionID: "ses_reasoning",
+              assistantMessageID: "msg_1",
+              ordinal: 0,
+              text: "Inspect adapter",
+              state: { reasoningField: "reasoning_content" },
+            },
+          },
+          {
+            type: "session.text.started",
+            data: { sessionID: "ses_reasoning", assistantMessageID: "msg_1", ordinal: 0 },
+          },
+          {
+            type: "session.text.ended",
+            data: {
+              sessionID: "ses_reasoning",
+              assistantMessageID: "msg_1",
+              ordinal: 0,
+              text: "Done.",
+            },
+          },
+          {
+            type: "session.reasoning.started",
+            data: { sessionID: "ses_reasoning", assistantMessageID: "msg_2", ordinal: 0 },
+          },
+          {
+            type: "session.reasoning.ended",
+            data: {
+              sessionID: "ses_reasoning",
+              assistantMessageID: "msg_2",
+              ordinal: 0,
+              text: "Use the durable full-value boundary.",
+            },
+          },
+        ],
+      });
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            (event.type === "item.started" ||
+              event.type === "content.delta" ||
+              event.type === "item.completed"),
+        ),
+        Stream.take(10),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+        resumeCursor: {
+          kind: "opencode-v2",
+          schemaVersion: 1,
+          sessionId: "ses_reasoning",
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.deepEqual(
+        events.map((event) => ({
+          type: event.type,
+          itemId: event.itemId,
+          itemType: "itemType" in event.payload ? event.payload.itemType : undefined,
+          streamKind: "streamKind" in event.payload ? event.payload.streamKind : undefined,
+          delta: "delta" in event.payload ? event.payload.delta : undefined,
+          detail: "detail" in event.payload ? event.payload.detail : undefined,
+        })),
+        [
+          {
+            type: "item.started",
+            itemId: "msg_1:reasoning_text:0",
+            itemType: "reasoning",
+            streamKind: undefined,
+            delta: undefined,
+            detail: undefined,
+          },
+          {
+            type: "content.delta",
+            itemId: "msg_1:reasoning_text:0",
+            itemType: undefined,
+            streamKind: "reasoning_text",
+            delta: "Inspect",
+            detail: undefined,
+          },
+          {
+            type: "content.delta",
+            itemId: "msg_1:reasoning_text:0",
+            itemType: undefined,
+            streamKind: "reasoning_text",
+            delta: " adapter",
+            detail: undefined,
+          },
+          {
+            type: "item.completed",
+            itemId: "msg_1:reasoning_text:0",
+            itemType: "reasoning",
+            streamKind: undefined,
+            delta: undefined,
+            detail: "Inspect adapter",
+          },
+          {
+            type: "item.started",
+            itemId: "msg_1:assistant_text:0",
+            itemType: "assistant_message",
+            streamKind: undefined,
+            delta: undefined,
+            detail: undefined,
+          },
+          {
+            type: "content.delta",
+            itemId: "msg_1:assistant_text:0",
+            itemType: undefined,
+            streamKind: "assistant_text",
+            delta: "Done.",
+            detail: undefined,
+          },
+          {
+            type: "item.completed",
+            itemId: "msg_1:assistant_text:0",
+            itemType: "assistant_message",
+            streamKind: undefined,
+            delta: undefined,
+            detail: "Done.",
+          },
+          {
+            type: "item.started",
+            itemId: "msg_2:reasoning_text:0",
+            itemType: "reasoning",
+            streamKind: undefined,
+            delta: undefined,
+            detail: undefined,
+          },
+          {
+            type: "content.delta",
+            itemId: "msg_2:reasoning_text:0",
+            itemType: undefined,
+            streamKind: "reasoning_text",
+            delta: "Use the durable full-value boundary.",
+            detail: undefined,
+          },
+          {
+            type: "item.completed",
+            itemId: "msg_2:reasoning_text:0",
+            itemType: "reasoning",
+            streamKind: undefined,
+            delta: undefined,
+            detail: "Use the durable full-value boundary.",
+          },
+        ],
+      );
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
+  );
+
+  it.effect("drops empty encrypted-only reasoning completions", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-encrypted-reasoning");
+      const client = makeAdoptionClient({
+        messages: async () => ({ data: [], cursor: {} }),
+        events: [
+          {
+            type: "session.reasoning.started",
+            data: {
+              sessionID: "ses_encrypted",
+              assistantMessageID: "msg_1",
+              ordinal: 0,
+              state: { reasoningEncryptedContent: "ciphertext" },
+            },
+          },
+          {
+            type: "session.reasoning.ended",
+            data: {
+              sessionID: "ses_encrypted",
+              assistantMessageID: "msg_1",
+              ordinal: 0,
+              text: "",
+              state: { reasoningEncryptedContent: "ciphertext" },
+            },
+          },
+          {
+            type: "session.text.started",
+            data: { sessionID: "ses_encrypted", assistantMessageID: "msg_1", ordinal: 0 },
+          },
+          {
+            type: "session.text.ended",
+            data: {
+              sessionID: "ses_encrypted",
+              assistantMessageID: "msg_1",
+              ordinal: 0,
+              text: "Done.",
+            },
+          },
+        ],
+      });
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "item.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+        resumeCursor: {
+          kind: "opencode-v2",
+          schemaVersion: 1,
+          sessionId: "ses_encrypted",
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.equal(events.length, 1);
+      NodeAssert.equal(events[0]?.type, "item.completed");
+      if (events[0]?.type === "item.completed") {
+        NodeAssert.equal(events[0].payload.itemType, "assistant_message");
+      }
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
   );
 });
 

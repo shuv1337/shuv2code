@@ -151,6 +151,38 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("renders completed provider reasoning as thinking activity", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-reasoning"),
+      projectId: ProjectId.make("project-1"),
+      title: "Reasoning",
+      activities: [
+        makeActivity({
+          id: EventId.make("reasoning-1"),
+          kind: "reasoning.completed",
+          summary: "Thinking",
+          payload: { detail: "Inspect the adapter event boundary." },
+          createdAt: "2026-04-01T00:00:01.000Z",
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    expect(feed).toHaveLength(1);
+    expect(feed[0]).toMatchObject({
+      type: "activity-group",
+      activities: [
+        {
+          id: "reasoning-1",
+          summary: "Thinking",
+          detail: "Inspect the adapter event boundary.",
+          icon: "agent",
+          status: null,
+        },
+      ],
+    });
+  });
+
   it("keeps historic work entries attributed to their turns", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-1"),

@@ -69,6 +69,29 @@ function makeActivity(overrides: {
   };
 }
 
+describe("reasoning work log entries", () => {
+  it("renders completed provider reasoning with thinking tone", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "reasoning-1",
+        kind: "reasoning.completed",
+        summary: "Thinking",
+        tone: "info",
+        payload: { detail: "Inspect the adapter event boundary." },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "reasoning-1",
+      label: "Thinking",
+      tone: "thinking",
+      detail: "Inspect the adapter event boundary.",
+    });
+    expect(workEntryIndicatesToolNeutralStatus(entries[0]!)).toBe(false);
+  });
+});
+
 describe("derivePendingApprovals", () => {
   it("tracks open approvals and removes resolved ones", () => {
     const activities: OrchestrationThreadActivity[] = [

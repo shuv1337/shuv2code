@@ -1480,6 +1480,73 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("completes readable OpenCode reasoning parts for activity ingestion", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-reasoning-summary");
+      const reasoningText = "I should inspect the root manifest before answering.";
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "message.updated",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            info: {
+              id: "msg-reasoning-summary",
+              role: "assistant",
+            },
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            part: {
+              id: "part-reasoning-summary",
+              sessionID: "http://127.0.0.1:9999/session",
+              messageID: "msg-reasoning-summary",
+              type: "reasoning",
+              text: reasoningText,
+              time: { start: 1, end: 2 },
+            },
+            time: 2,
+          },
+        },
+      ];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.take(4),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      const reasoningDelta = events.find(
+        (event) => event.type === "content.delta" && event.payload.streamKind === "reasoning_text",
+      );
+      NodeAssert.equal(
+        reasoningDelta?.type === "content.delta" ? reasoningDelta.payload.delta : undefined,
+        reasoningText,
+      );
+      const completed = events.find(
+        (event) => event.type === "item.completed" && event.payload.itemType === "reasoning",
+      );
+      NodeAssert.equal(
+        completed?.type === "item.completed" ? completed.payload.title : undefined,
+        "Thinking",
+      );
+      NodeAssert.equal(
+        completed?.type === "item.completed" ? completed.payload.detail : undefined,
+        reasoningText,
+      );
+    }),
+  );
+
   it.effect("lets OpenCode own session title generation and emits title metadata updates", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
