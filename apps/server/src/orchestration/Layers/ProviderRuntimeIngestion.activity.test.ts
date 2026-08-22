@@ -170,6 +170,26 @@ describe("runtimeEventToActivities reasoning persistence", () => {
     ]);
   });
 
+  it("preserves completed reasoning beyond the generic tool-detail limit", () => {
+    const detail = "Reasoning summaries are conversation content, not compact tool metadata. "
+      .repeat(4)
+      .trim();
+    expect(detail.length).toBeGreaterThan(180);
+    const event = {
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("evt-long-reasoning"),
+      payload: {
+        itemType: "reasoning",
+        status: "completed",
+        title: "Thinking",
+        detail,
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    expect(runtimeEventToActivities(event)[0]?.payload).toEqual({ detail });
+  });
+
   it("does not persist empty reasoning placeholders", () => {
     const event = {
       ...base,
