@@ -1,5 +1,22 @@
 # AGENTS.md
 
+## JJ and Stacked Pull Requests
+
+- Treat Jujutsu as the sole owner of local history. Build dependent review layers as a linear JJ
+  chain with one bookmark per publishable change, ordered from the trunk-facing change to the tip.
+- Rebase, reorder, and amend layers with `jj`; publish exact bookmarks with `jj git push`. Use
+  `gh stack link --base main --remote origin <bottom> ... <top>` only to create or update GitHub's
+  remote stack relationship. Do not use gh-stack commands that check out, commit, rebase, sync, or
+  otherwise manage the local Git graph.
+- Keep local-only changes outside every published bookmark's ancestry. Before pushing, inspect the
+  explicit JJ graph and dry-run the exact bookmark push.
+- Do not retarget or absorb existing independent pull requests into a stack unless the user asks for
+  that relationship explicitly. New stacked pull requests remain drafts unless the user asks to
+  open them for review.
+- After a lower layer merges or GitHub rebases a remote stack, fetch and reconcile the resulting
+  trunk with JJ before moving or pushing any remaining bookmark. Treat whole-stack merge as a
+  separate, explicit remote mutation.
+
 ## Task Completion Requirements
 
 - Keep local verification focused on the files and packages changed. Run the smallest relevant test set; do not run the full workspace test suite as a routine completion step.
