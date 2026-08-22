@@ -540,7 +540,8 @@ export function makeOpenCodeV2Adapter(
         case "session.execution.succeeded": {
           const completedTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
-          context.session = { ...context.session, status: "ready" };
+          const { activeTurnId: _activeTurnId, ...settledSession } = context.session;
+          context.session = { ...settledSession, status: "ready" };
           writeResume(context, true);
           if (completedTurnId) {
             yield* emit({
@@ -560,7 +561,8 @@ export function makeOpenCodeV2Adapter(
           const failedTurnId = context.activeTurnId;
           const message = sessionErrorMessage(data.error);
           context.activeTurnId = undefined;
-          context.session = { ...context.session, status: "error", lastError: message };
+          const { activeTurnId: _activeTurnId, ...settledSession } = context.session;
+          context.session = { ...settledSession, status: "error", lastError: message };
           writeResume(context, true);
           if (failedTurnId) {
             yield* emit({
@@ -579,7 +581,8 @@ export function makeOpenCodeV2Adapter(
         case "session.execution.interrupted": {
           const interruptedTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
-          context.session = { ...context.session, status: "ready" };
+          const { activeTurnId: _activeTurnId, ...settledSession } = context.session;
+          context.session = { ...settledSession, status: "ready" };
           writeResume(context, true);
           if (interruptedTurnId) {
             yield* emit({
@@ -1012,7 +1015,13 @@ export function makeOpenCodeV2Adapter(
                       cause,
                     }),
                 });
-          return { client, iterator, sessionInfo, toolNameById };
+          return {
+            client,
+            iterator,
+            sessionInfo,
+            toolNameById,
+            adopted: adopted?._tag === "Some",
+          };
         }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
       );
       if (Exit.isFailure(startedExit)) {
@@ -1026,7 +1035,22 @@ export function makeOpenCodeV2Adapter(
       }
 
       const createdAt = yield* nowIso;
-      const adoptedTurnId = resume?.activeTurnId ? TurnId.make(resume.activeTurnId) : undefined;
+      const resumedTurnId =
+        startedExit.value.adopted && resume?.activeTurnId
+          ? TurnId.make(resume.activeTurnId)
+          : undefined;
+      const remoteBusy =
+        resumedTurnId === undefined
+          ? false
+          : yield* Effect.tryPromise(() => startedExit.value.client.session.active()).pipe(
+              Effect.map((activeSessions) => {
+                const type = activeSessions[startedExit.value.sessionInfo.id]?.type;
+                return type === "running";
+              }),
+              Effect.catch(() => Effect.succeed(undefined)),
+            );
+      const adoptedTurnId =
+        resumedTurnId !== undefined && remoteBusy !== false ? resumedTurnId : undefined;
       const session: ProviderSession = {
         provider: PROVIDER,
         providerInstanceId: boundInstanceId,
@@ -1069,6 +1093,48 @@ export function makeOpenCodeV2Adapter(
           detail: "Failed to subscribe to the OpenCode v2 event stream.",
           cause: pumpExit.cause,
         });
+      }
+      if (resumedTurnId !== undefined) {
+        if (adoptedTurnId !== undefined) {
+          yield* Effect.tryPromise(() =>
+            context.client.session.wait(context.openCodeSessionId),
+          ).pipe(
+            Effect.flatMap(() =>
+              Effect.gen(function* () {
+                if ((yield* Ref.get(context.stopped)) || context.activeTurnId !== adoptedTurnId) {
+                  return;
+                }
+                context.activeTurnId = undefined;
+                const { activeTurnId: _activeTurnId, ...settledSession } = context.session;
+                context.session = { ...settledSession, status: "ready" };
+                writeResume(context, true);
+                yield* emit({
+                  ...(yield* buildEventBase({
+                    threadId: input.threadId,
+                    turnId: adoptedTurnId,
+                  })),
+                  type: "turn.completed",
+                  payload: { state: "completed" },
+                });
+              }),
+            ),
+            Effect.catch((cause) =>
+              Effect.logWarning("OpenCode v2 resumed turn reconciler failed", {
+                threadId: input.threadId,
+                sessionId: context.openCodeSessionId,
+                turnId: adoptedTurnId,
+                cause,
+              }),
+            ),
+            Effect.forkIn(context.sessionScope),
+          );
+        } else {
+          yield* emit({
+            ...(yield* buildEventBase({ threadId: input.threadId, turnId: resumedTurnId })),
+            type: "turn.completed",
+            payload: { state: "completed" },
+          });
+        }
       }
       yield* emit({
         ...(yield* buildEventBase({ threadId: input.threadId })),
