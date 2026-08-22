@@ -243,6 +243,36 @@ describe("MessagesTimeline", () => {
     expect(toolCallExpandedBodyClassName).not.toContain("text-[11px]");
   });
 
+  it("shows provider reasoning in full instead of a collapsed ellipsis preview", () => {
+    const detail =
+      "The user is musing about whether a plugin boundary belongs in the host application.";
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-reasoning",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "reasoning-1",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "Thinking",
+              detail,
+              tone: "thinking",
+              sourceActivityKind: "reasoning.completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-reasoning-summary-visible="true"');
+    expect(markup).toContain(detail);
+    expect(markup.match(new RegExp(detail, "g"))).toHaveLength(1);
+    expect(markup).not.toContain("aria-expanded");
+  });
+
   it("uses the larger leading inset only when the top fade is enabled", () => {
     const timelineEntries = [buildUserTimelineEntry("Hello")];
 

@@ -833,7 +833,7 @@ export function runtimeEventToActivities(
             kind: "reasoning.completed",
             summary: event.payload.title ?? "Thinking",
             payload: {
-              detail: truncateDetail(detail),
+              detail,
             },
             turnId: toTurnId(event.turnId) ?? null,
             ...maybeSequence,

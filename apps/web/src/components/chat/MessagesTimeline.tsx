@@ -2450,7 +2450,31 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   if (workEntry.agentSpawn) {
     return <AgentSpawnCtaRow workEntry={workEntry} />;
   }
+  if (workEntry.sourceActivityKind === "reasoning.completed" && workEntry.detail?.trim()) {
+    return <ReasoningWorkEntryRow workEntry={workEntry} />;
+  }
   return <PlainWorkEntryRow workEntry={workEntry} workspaceRoot={workspaceRoot} />;
+});
+
+const ReasoningWorkEntryRow = memo(function ReasoningWorkEntryRow(props: {
+  workEntry: TimelineWorkEntry;
+}) {
+  const detail = props.workEntry.detail?.trim();
+  if (!detail) return null;
+
+  return (
+    <div className="rounded-md px-0.5 py-0.5" data-reasoning-summary-visible="true">
+      <div className="flex items-center gap-1.5 text-[12px] leading-5">
+        <span className="flex size-5 shrink-0 items-center justify-center text-foreground">
+          <BotIcon className="block size-3.5 shrink-0 stroke-[1.8] opacity-80" aria-hidden />
+        </span>
+        <span className="font-medium text-foreground">Thinking</span>
+      </div>
+      <pre className="ms-7 cursor-text whitespace-pre-wrap break-words font-mono text-secondary-label text-[length:var(--font-size-code,0.6875rem)] leading-relaxed select-text">
+        {detail}
+      </pre>
+    </div>
+  );
 });
 
 const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
