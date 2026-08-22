@@ -2130,10 +2130,12 @@ function workToneIcon(tone: TimelineWorkEntry["tone"]): {
 }
 
 function workEntryPreview(
-  workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles">,
+  workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles" | "toolInput">,
   workspaceRoot: string | undefined,
 ) {
   if (workEntry.command) return workEntry.command;
+  const inputPreview = toolInputPreview(workEntry.toolInput);
+  if (inputPreview) return inputPreview;
   if (workEntry.detail) return workEntry.detail;
   if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
   const [firstPath] = workEntry.changedFiles ?? [];
@@ -2142,6 +2144,22 @@ function workEntryPreview(
   return workEntry.changedFiles!.length === 1
     ? displayPath
     : `${displayPath} +${workEntry.changedFiles!.length - 1} more`;
+}
+
+function toolInputPreview(input: unknown): string | null {
+  if (input === undefined || input === null) return null;
+  if (typeof input === "string") return input.trim() || null;
+  if (typeof input === "object" && !Array.isArray(input)) {
+    const record = input as Record<string, unknown>;
+    for (const key of ["command", "code", "path", "query", "url", "prompt", "name"] as const) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.replace(/\s+/g, " ").trim();
+      }
+    }
+  }
+  const formatted = stringifyToolDataForDisplay(input).replace(/\s+/g, " ").trim();
+  return formatted || null;
 }
 
 function workEntryRawCommand(
@@ -2161,6 +2179,9 @@ function buildToolCallExpandedBody(
   const blocks: string[] = [];
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
     blocks.push(`MCP call\n${stringifyToolDataForDisplay(workEntry.toolData)}`);
+  }
+  if (workEntry.toolInput !== undefined && workEntry.command === undefined) {
+    blocks.push(`Input\n${stringifyToolDataForDisplay(workEntry.toolInput)}`);
   }
   const raw = workEntryRawCommand(workEntry);
   if (raw?.trim()) {
@@ -2195,6 +2216,7 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   if (workEntry.requestKind === "command") return "terminal";
   if (workEntry.requestKind === "file-read") return "eye";
   if (workEntry.requestKind === "file-change") return "square-pen";
+  if (workEntry.requestKind === "thread-control") return "wrench";
 
   if (workEntry.itemType === "command_execution" || workEntry.command) {
     return "terminal";
@@ -2460,19 +2482,37 @@ const ReasoningWorkEntryRow = memo(function ReasoningWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
 }) {
   const detail = props.workEntry.detail?.trim();
+  const [expanded, setExpanded] = useState(true);
   if (!detail) return null;
 
   return (
-    <div className="rounded-md px-0.5 py-0.5" data-reasoning-summary-visible="true">
-      <div className="flex items-center gap-1.5 text-[12px] leading-5">
+    <div className="rounded-md px-0.5 py-0.5" data-reasoning-summary-visible={expanded}>
+      <button
+        type="button"
+        className="flex w-full cursor-pointer items-center gap-1.5 rounded-md text-left text-[12px] leading-5 transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        aria-expanded={expanded}
+        aria-label={expanded ? "Collapse thinking" : "Expand thinking"}
+        onClick={() => setExpanded((value) => !value)}
+      >
         <span className="flex size-5 shrink-0 items-center justify-center text-foreground">
           <BotIcon className="block size-3.5 shrink-0 stroke-[1.8] opacity-80" aria-hidden />
         </span>
-        <span className="font-medium text-foreground">Thinking</span>
-      </div>
-      <pre className="ms-7 cursor-text whitespace-pre-wrap break-words font-mono text-secondary-label text-[length:var(--font-size-code,0.6875rem)] leading-relaxed select-text">
-        {detail}
-      </pre>
+        <span className="min-w-0 flex-1 font-medium text-foreground">Thinking</span>
+        <span className="flex size-4 shrink-0 items-center justify-center text-icon-muted">
+          <ChevronDownIcon
+            className={cn(
+              "size-3 shrink-0 opacity-70 transition-transform duration-200",
+              expanded && "rotate-180",
+            )}
+            aria-hidden
+          />
+        </span>
+      </button>
+      {expanded ? (
+        <pre className="ms-7 cursor-text whitespace-pre-wrap break-words font-mono text-secondary-label text-[length:var(--font-size-code,0.6875rem)] leading-relaxed select-text">
+          {detail}
+        </pre>
+      ) : null}
     </div>
   );
 });
@@ -2526,6 +2566,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
     ? {
         role: "button" as const,
         tabIndex: 0 as const,
+        "aria-expanded": expanded,
         "aria-label": displayText,
         onClick: () => setExpanded((v) => !v),
         onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {

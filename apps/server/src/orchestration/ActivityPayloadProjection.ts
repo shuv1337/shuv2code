@@ -398,6 +398,9 @@ function projectAcpContent(value: unknown): Record<string, unknown> | undefined 
   const text = value
     .map((entryValue) => {
       const entry = asRecord(entryValue);
+      if (entry?.type === "text") {
+        return asTrimmedString(entry.text);
+      }
       const content = asRecord(entry?.content);
       return entry?.type === "content" && content?.type === "text"
         ? asTrimmedString(content.text)
@@ -447,6 +450,17 @@ export function projectActivityPayload(
   }
   if ("command" in data) {
     projectedData.command = data.command;
+  }
+  // OpenCode V2 / shuvcode terminal and Code Mode calls put their renderable
+  // invocation details directly on `data` rather than in `data.item`. Keep the
+  // fields the web and mobile work-log renderers use; otherwise the wire
+  // projection turns a complete `{ tool: "shell", input: { command: "pwd" } }`
+  // activity into `data: {}` and leaves users with only a generic "Shell" or
+  // "Execute" row even though persistence still has the full call.
+  for (const key of ["tool", "toolName", "input"] as const) {
+    if (key in data) {
+      projectedData[key] = data[key];
+    }
   }
 
   const changedFiles: string[] = [];

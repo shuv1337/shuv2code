@@ -172,11 +172,14 @@ describe("createOpenCodeV2Client", () => {
     ]);
   });
 
-  it("creates, switches, prompts, interrupts, waits, and forks with live payloads", async () => {
+  it("creates, switches, prompts, recovers, interrupts, waits, and forks with live payloads", async () => {
     const seen: Array<{ method?: string; path: string; body?: unknown }> = [];
     const baseUrl = await listen(async (req, res) => {
       const url = new URL(req.url ?? "", "http://localhost");
-      const body = req.method === "POST" ? JSON.parse((await readBody(req)) || "{}") : undefined;
+      const body =
+        req.method === "POST" || req.method === "PUT"
+          ? JSON.parse((await readBody(req)) || "{}")
+          : undefined;
       seen.push({ ...(req.method ? { method: req.method } : {}), path: url.pathname, body });
       res.setHeader("content-type", "application/json");
       if (url.pathname === "/api/session" || url.pathname.endsWith("/fork")) {
@@ -191,6 +194,10 @@ describe("createOpenCodeV2Client", () => {
         res.end(JSON.stringify({ data: { id: "pending_1" } }));
         return;
       }
+      if (url.pathname.endsWith("/synthetic")) {
+        res.end(JSON.stringify({ data: { id: "pending_recovery" } }));
+        return;
+      }
       if (
         url.pathname.endsWith("/agent") ||
         url.pathname.endsWith("/model") ||
@@ -203,6 +210,12 @@ describe("createOpenCodeV2Client", () => {
       }
       if (url.pathname === "/api/session/active") {
         res.end(JSON.stringify({ data: { ses_2: { type: "running" } } }));
+        return;
+      }
+      if (req.method === "PUT" && url.pathname === "/api/mcp/shuv2code_controller") {
+        NodeAssert.equal(url.searchParams.get("location[directory]"), "/tmp/project");
+        res.statusCode = 204;
+        res.end();
         return;
       }
       res.statusCode = 404;
@@ -222,10 +235,23 @@ describe("createOpenCodeV2Client", () => {
       variant: "high",
     });
     await client.session.prompt("ses_2", { text: "hello" });
+    await client.session.synthetic("ses_2", {
+      text: "continue safely",
+      description: "automatic recovery",
+      metadata: { shuv2code: { attempt: 1 } },
+      delivery: "steer",
+      resume: true,
+    });
     await client.session.interrupt("ses_2");
     await client.session.wait("ses_2");
     await client.session.fork("ses_2", { boundary: { type: "through" } });
     const active = await client.session.active();
+    await client.mcp.add("shuv2code_controller", {
+      type: "remote",
+      url: "http://127.0.0.1:3773/mcp/controller",
+      headers: { Authorization: "Bearer controller-token" },
+      oauth: false,
+    });
     NodeAssert.equal(active.ses_2?.type, "running");
     NodeAssert.deepEqual(
       seen.map((entry) => `${entry.method} ${entry.path}`),
@@ -234,17 +260,38 @@ describe("createOpenCodeV2Client", () => {
         "POST /api/session/ses_2/agent",
         "POST /api/session/ses_2/model",
         "POST /api/session/ses_2/prompt",
+        "POST /api/session/ses_2/synthetic",
         "POST /api/session/ses_2/interrupt",
         "POST /api/session/ses_2/wait",
         "POST /api/session/ses_2/fork",
         "GET /api/session/active",
+        "PUT /api/mcp/shuv2code_controller",
       ],
     );
+    NodeAssert.deepEqual(seen[0]?.body, {
+      location: { directory: "/tmp/project" },
+      title: "work",
+    });
+    NodeAssert.deepEqual(seen[4]?.body, {
+      text: "continue safely",
+      description: "automatic recovery",
+      metadata: { shuv2code: { attempt: 1 } },
+      delivery: "steer",
+      resume: true,
+    });
     NodeAssert.deepEqual(seen[1]?.body, { agent: "build" });
     NodeAssert.deepEqual(seen[2]?.body, {
       model: { providerID: "openai", id: "gpt-5.6-sol", variant: "high" },
     });
-    NodeAssert.deepEqual(seen[6]?.body, { boundary: { type: "through" } });
+    NodeAssert.deepEqual(seen[7]?.body, { boundary: { type: "through" } });
+    NodeAssert.deepEqual(seen[9]?.body, {
+      config: {
+        type: "remote",
+        url: "http://127.0.0.1:3773/mcp/controller",
+        headers: { Authorization: "Bearer controller-token" },
+        oauth: false,
+      },
+    });
   });
 
   it("rejects oversized SSE events", async () => {

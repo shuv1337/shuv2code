@@ -26,14 +26,20 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { getModelSelectionStringOptionValue } from "@shuv2code/shared/model";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
-import { OpenCodeRuntime, parseOpenCodeModelSlug } from "../opencodeRuntime.ts";
+import {
+  OpenCodeRuntime,
+  parseOpenCodeModelSlug,
+  toOpenCodeFileParts,
+} from "../opencodeRuntime.ts";
 import {
   createOpenCodeV2Client,
   type OpenCodeV2Client,
@@ -46,6 +52,7 @@ import { toToolLifecycleItemType } from "./toolLifecycleItemType.ts";
 const PROVIDER = ProviderDriverKind.make("opencodeV2");
 const OPENCODE_V2_RESUME_KIND = "opencode-v2" as const;
 const OPENCODE_V2_RESUME_VERSION = 1 as const;
+const MISSING_TERMINAL_RECOVERY_LIMIT = 2;
 
 export type OpenCodeV2AdapterError =
   | ProviderAdapterProcessError
@@ -133,14 +140,17 @@ interface OpenCodeV2SessionContext {
   session: ProviderSession;
   readonly client: OpenCodeV2Client;
   readonly directory: string;
+  readonly canRegisterMcpServers: boolean;
   readonly openCodeSessionId: string;
   readonly pendingPermissions: Map<string, OpenCodeV2Permission>;
   readonly pendingForms: Map<string, OpenCodeV2Form>;
   readonly seenRequestIds: Set<string>;
   readonly resolvedRequestIds: Set<string>;
   readonly toolNameById: Map<string, string>;
+  readonly toolInputById: Map<string, unknown>;
   readonly emittedTextByItemId: Map<string, string>;
   activeTurnId: TurnId | undefined;
+  missingTerminalRecoveryAttempts: number;
   readonly stopped: Ref.Ref<boolean>;
   readonly sessionScope: Scope.Closeable;
 }
@@ -168,8 +178,13 @@ function openCodeV2ContentItemId(
   return `${messageId}:${streamKind}:${ordinal}`;
 }
 
-function recoverProjectedToolNames(payload: unknown): Map<string, string> {
-  const names = new Map<string, string>();
+interface OpenCodeV2ProjectedTool {
+  readonly name: string;
+  readonly input?: unknown;
+}
+
+function recoverProjectedTools(payload: unknown): Map<string, OpenCodeV2ProjectedTool> {
+  const tools = new Map<string, OpenCodeV2ProjectedTool>();
   const response = asRecord(payload);
   const messages = Array.isArray(response?.data)
     ? response.data
@@ -188,30 +203,56 @@ function recoverProjectedToolNames(payload: unknown): Map<string, string> {
       if (tool?.type !== "tool") continue;
       const id = asString(tool.id) ?? asString(tool.callID);
       const name = asString(tool.name) ?? asString(tool.tool);
-      if (id && name) names.set(id, name);
+      const state = asRecord(tool.state);
+      const input = state?.input ?? tool.input;
+      if (id && name) {
+        tools.set(id, {
+          name,
+          ...(input === undefined ? {} : { input }),
+        });
+      }
     }
   }
-  return names;
+  return tools;
 }
 
-async function recoverAllProjectedToolNames(
+async function recoverAllProjectedTools(
   client: OpenCodeV2Client,
   sessionID: string,
-): Promise<Map<string, string>> {
-  const names = new Map<string, string>();
+): Promise<Map<string, OpenCodeV2ProjectedTool>> {
+  const tools = new Map<string, OpenCodeV2ProjectedTool>();
   const visitedCursors = new Set<string>();
   let cursor: string | undefined;
   for (let pageCount = 0; pageCount < 1_000; pageCount++) {
     const page = await client.session.messages(sessionID, cursor ? { cursor } : undefined);
-    for (const [id, name] of recoverProjectedToolNames(page)) {
-      if (!names.has(id)) names.set(id, name);
+    for (const [id, tool] of recoverProjectedTools(page)) {
+      if (!tools.has(id)) tools.set(id, tool);
     }
     const next = asString(page.cursor?.next);
     if (!next || visitedCursors.has(next)) break;
     visitedCursors.add(next);
     cursor = next;
   }
-  return names;
+  return tools;
+}
+
+async function recoverProjectedTool(
+  client: OpenCodeV2Client,
+  sessionID: string,
+  toolId: string,
+): Promise<OpenCodeV2ProjectedTool | undefined> {
+  const visitedCursors = new Set<string>();
+  let cursor: string | undefined;
+  for (let pageCount = 0; pageCount < 1_000; pageCount++) {
+    const page = await client.session.messages(sessionID, cursor ? { cursor } : undefined);
+    const tool = recoverProjectedTools(page).get(toolId);
+    if (tool) return tool;
+    const next = asString(page.cursor?.next);
+    if (!next || visitedCursors.has(next)) break;
+    visitedCursors.add(next);
+    cursor = next;
+  }
+  return undefined;
 }
 
 function isoFromEpochMs(value: unknown): string | undefined {
@@ -309,7 +350,9 @@ export function toOpenCodeV2FormAnswer(
   return out;
 }
 
-function mapPermissionToRequestType(action: string | undefined): CanonicalRequestType {
+export function mapOpenCodeV2PermissionToRequestType(
+  action: string | undefined,
+): CanonicalRequestType {
   switch (action) {
     case "bash":
     case "shell":
@@ -320,7 +363,7 @@ function mapPermissionToRequestType(action: string | undefined): CanonicalReques
     case "write":
       return "file_change_approval";
     default:
-      return "unknown";
+      return "dynamic_tool_call";
   }
 }
 
@@ -338,6 +381,14 @@ function toPermissionReply(decision: ProviderApprovalDecision): "once" | "always
 function sessionErrorMessage(error: unknown): string {
   const record = asRecord(error);
   return asString(record?.message) ?? "OpenCode v2 session failed.";
+}
+
+function isMissingTerminalFinishError(error: unknown): boolean {
+  const record = asRecord(error);
+  return (
+    record?.type === "provider.invalid-output" &&
+    sessionErrorMessage(error).includes("without a terminal finish event")
+  );
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -499,9 +550,37 @@ export function makeOpenCodeV2Adapter(
         })),
         type: "request.opened",
         payload: {
-          requestType: mapPermissionToRequestType(permission.action),
+          requestType: mapOpenCodeV2PermissionToRequestType(permission.action),
           detail: permission.resources?.join("\n") ?? permission.action,
           args: permission.metadata,
+        },
+      });
+      if (context.session.runtimeMode !== "full-access") return;
+
+      yield* Effect.tryPromise({
+        try: () =>
+          context.client.permission.reply(context.openCodeSessionId, permission.id, "always"),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "permission.reply",
+            detail: cause instanceof Error ? cause.message : String(cause),
+            cause,
+          }),
+      });
+      context.pendingPermissions.delete(permission.id);
+      context.resolvedRequestIds.add(permission.id);
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId: context.activeTurnId,
+          requestId: permission.id,
+          raw,
+        })),
+        type: "request.resolved",
+        payload: {
+          requestType: mapOpenCodeV2PermissionToRequestType(permission.action),
+          decision: "acceptForSession",
         },
       });
     });
@@ -552,6 +631,7 @@ export function makeOpenCodeV2Adapter(
         }
         case "session.execution.succeeded": {
           const completedTurnId = context.activeTurnId;
+          context.missingTerminalRecoveryAttempts = 0;
           context.activeTurnId = undefined;
           const { activeTurnId: _activeTurnId, ...settledSession } = context.session;
           context.session = { ...settledSession, status: "ready" };
@@ -573,9 +653,71 @@ export function makeOpenCodeV2Adapter(
         case "session.execution.failed": {
           const failedTurnId = context.activeTurnId;
           const message = sessionErrorMessage(data.error);
+          if (
+            failedTurnId &&
+            isMissingTerminalFinishError(data.error) &&
+            context.missingTerminalRecoveryAttempts < MISSING_TERMINAL_RECOVERY_LIMIT
+          ) {
+            const attempt = context.missingTerminalRecoveryAttempts + 1;
+            const recovery = yield* Effect.exit(
+              Effect.tryPromise({
+                try: () =>
+                  context.client.session.synthetic(context.openCodeSessionId, {
+                    text: [
+                      "The provider stream ended before sending a terminal finish event.",
+                      "Continue the interrupted response from the current durable session state.",
+                      "Do not repeat completed tool calls or other completed work.",
+                      "If the response was already complete, finish cleanly.",
+                    ].join(" "),
+                    description: "Automatically recover an interrupted provider stream",
+                    metadata: {
+                      shuv2code: {
+                        kind: "provider-stream-recovery",
+                        attempt,
+                      },
+                    },
+                    delivery: "steer",
+                    resume: true,
+                  }),
+                catch: (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "session.synthetic",
+                    detail: cause instanceof Error ? cause.message : String(cause),
+                    cause,
+                  }),
+              }),
+            );
+            if (Exit.isSuccess(recovery)) {
+              context.missingTerminalRecoveryAttempts = attempt;
+              context.session = { ...context.session, status: "running" };
+              writeResume(context);
+              yield* emit({
+                ...(yield* buildEventBase({
+                  threadId: context.session.threadId,
+                  turnId: failedTurnId,
+                  createdAt,
+                  raw: event,
+                })),
+                type: "runtime.warning",
+                payload: {
+                  message: `Provider stream ended early; recovering automatically (${attempt}/${MISSING_TERMINAL_RECOVERY_LIMIT}).`,
+                  detail: data.error,
+                },
+              });
+              break;
+            }
+            yield* Effect.logWarning("OpenCode v2 automatic stream recovery failed", {
+              threadId: context.session.threadId,
+              sessionId: context.openCodeSessionId,
+              attempt,
+              cause: recovery.cause,
+            });
+          }
+          context.missingTerminalRecoveryAttempts = 0;
           context.activeTurnId = undefined;
           const { activeTurnId: _activeTurnId, ...settledSession } = context.session;
-          context.session = { ...settledSession, status: "error", lastError: message };
+          context.session = { ...settledSession, status: "ready" };
           writeResume(context, true);
           if (failedTurnId) {
             yield* emit({
@@ -593,6 +735,7 @@ export function makeOpenCodeV2Adapter(
         }
         case "session.execution.interrupted": {
           const interruptedTurnId = context.activeTurnId;
+          context.missingTerminalRecoveryAttempts = 0;
           context.activeTurnId = undefined;
           const { activeTurnId: _activeTurnId, ...settledSession } = context.session;
           context.session = { ...settledSession, status: "ready" };
@@ -737,10 +880,23 @@ export function makeOpenCodeV2Adapter(
         case "session.tool.failed": {
           const toolId = openCodeV2ToolCallId(data);
           if (!toolId) break;
-          const knownName = context.toolNameById.get(toolId);
-          const name = knownName ?? asString(data.name) ?? "tool";
           const terminal =
             event.type === "session.tool.success" || event.type === "session.tool.failed";
+          const eventInput = data.input;
+          if (eventInput !== undefined) {
+            context.toolInputById.set(toolId, eventInput);
+          }
+          const recovered =
+            terminal && context.toolInputById.get(toolId) === undefined
+              ? yield* Effect.tryPromise(() =>
+                  recoverProjectedTool(context.client, context.openCodeSessionId, toolId),
+                ).pipe(Effect.orElseSucceed(() => undefined))
+              : undefined;
+          if (recovered?.input !== undefined) {
+            context.toolInputById.set(toolId, recovered.input);
+          }
+          const knownName = context.toolNameById.get(toolId);
+          const name = knownName ?? recovered?.name ?? asString(data.name) ?? "tool";
           if (terminal && knownName === undefined) {
             context.toolNameById.set(toolId, name);
             yield* emit({
@@ -778,7 +934,13 @@ export function makeOpenCodeV2Adapter(
                     ? "completed"
                     : "inProgress",
               title: name,
-              data: { tool: name, ...data },
+              data: {
+                tool: name,
+                ...(context.toolInputById.get(toolId) === undefined
+                  ? {}
+                  : { input: context.toolInputById.get(toolId) }),
+                ...data,
+              },
             },
           });
           break;
@@ -809,7 +971,7 @@ export function makeOpenCodeV2Adapter(
             })),
             type: "request.resolved",
             payload: {
-              requestType: mapPermissionToRequestType(existing?.action),
+              requestType: mapOpenCodeV2PermissionToRequestType(existing?.action),
               decision:
                 reply === "always" ? "acceptForSession" : reply === "once" ? "accept" : "decline",
             },
@@ -958,6 +1120,44 @@ export function makeOpenCodeV2Adapter(
         });
       }
       const existing = sessions.get(input.threadId);
+      if (
+        existing?.canRegisterMcpServers === true &&
+        existing.directory === directory &&
+        resume?.sessionId === existing.openCodeSessionId
+      ) {
+        yield* Effect.forEach(
+          McpProviderSession.readMcpProviderSessions(input.threadId),
+          (mcpSession) =>
+            Effect.tryPromise({
+              try: () =>
+                existing.client.mcp.add(McpProviderSession.getMcpProviderSessionName(mcpSession), {
+                  type: "remote",
+                  url: mcpSession.endpoint,
+                  headers: { Authorization: mcpSession.authorizationHeader },
+                  oauth: false,
+                }),
+              catch: (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "mcp.add",
+                  detail: cause instanceof Error ? cause.message : String(cause),
+                  cause,
+                }),
+            }),
+          { discard: true },
+        );
+        const updatedAt = yield* nowIso;
+        existing.session = {
+          ...existing.session,
+          providerThreadId: existing.openCodeSessionId,
+          runtimeMode: input.runtimeMode,
+          cwd: directory,
+          ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
+          updatedAt,
+        };
+        yield* hydratePending(existing);
+        return existing.session;
+      }
       if (existing) {
         yield* Scope.close(existing.sessionScope, Exit.void).pipe(Effect.ignore);
         sessions.delete(input.threadId);
@@ -978,6 +1178,30 @@ export function makeOpenCodeV2Adapter(
             directory,
             ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
           });
+          const mcpSessions = McpProviderSession.readMcpProviderSessions(input.threadId);
+          if (!server.external) {
+            yield* Effect.forEach(
+              mcpSessions,
+              (mcpSession) =>
+                Effect.tryPromise({
+                  try: () =>
+                    client.mcp.add(McpProviderSession.getMcpProviderSessionName(mcpSession), {
+                      type: "remote",
+                      url: mcpSession.endpoint,
+                      headers: { Authorization: mcpSession.authorizationHeader },
+                      oauth: false,
+                    }),
+                  catch: (cause) =>
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "mcp.add",
+                      detail: cause instanceof Error ? cause.message : String(cause),
+                      cause,
+                    }),
+                }),
+              { discard: true },
+            );
+          }
           const controller = new AbortController();
           yield* Scope.addFinalizer(
             sessionScope,
@@ -1014,17 +1238,28 @@ export function makeOpenCodeV2Adapter(
                   }),
               }).pipe(Effect.option)
             : undefined;
-          const toolNameById =
+          const projectedToolsById =
             adopted?._tag === "Some"
               ? yield* Effect.tryPromise(() =>
-                  recoverAllProjectedToolNames(client, adopted.value.id),
-                ).pipe(Effect.orElseSucceed(() => new Map<string, string>()))
-              : new Map<string, string>();
+                  recoverAllProjectedTools(client, adopted.value.id),
+                ).pipe(Effect.orElseSucceed(() => new Map<string, OpenCodeV2ProjectedTool>()))
+              : new Map<string, OpenCodeV2ProjectedTool>();
+          const toolNameById = new Map(
+            [...projectedToolsById].map(([id, tool]) => [id, tool.name] as const),
+          );
+          const toolInputById = new Map(
+            [...projectedToolsById].flatMap(([id, tool]) =>
+              tool.input === undefined ? [] : ([[id, tool.input]] as const),
+            ),
+          );
           const sessionInfo: OpenCodeV2SessionInfo =
             adopted && adopted._tag === "Some"
               ? adopted.value
               : yield* Effect.tryPromise({
-                  try: () => client.session.create({ location: { directory } }),
+                  try: () =>
+                    client.session.create({
+                      location: { directory },
+                    }),
                   catch: (cause) =>
                     new ProviderAdapterRequestError({
                       provider: PROVIDER,
@@ -1037,7 +1272,9 @@ export function makeOpenCodeV2Adapter(
             client,
             iterator,
             sessionInfo,
+            serverExternal: server.external,
             toolNameById,
+            toolInputById,
             adopted: adopted?._tag === "Some",
           };
         }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
@@ -1065,13 +1302,14 @@ export function makeOpenCodeV2Adapter(
                 const type = activeSessions[startedExit.value.sessionInfo.id]?.type;
                 return type === "running";
               }),
-              Effect.catch(() => Effect.succeed(undefined)),
+              Effect.orElseSucceed(() => undefined),
             );
       const adoptedTurnId =
         resumedTurnId !== undefined && remoteBusy !== false ? resumedTurnId : undefined;
       const session: ProviderSession = {
         provider: PROVIDER,
         providerInstanceId: boundInstanceId,
+        providerThreadId: startedExit.value.sessionInfo.id,
         status: adoptedTurnId ? "running" : "ready",
         runtimeMode: input.runtimeMode,
         cwd: directory,
@@ -1089,14 +1327,17 @@ export function makeOpenCodeV2Adapter(
         session,
         client: startedExit.value.client,
         directory,
+        canRegisterMcpServers: !startedExit.value.serverExternal,
         openCodeSessionId: startedExit.value.sessionInfo.id,
         pendingPermissions: new Map(),
         pendingForms: new Map(),
         seenRequestIds: new Set(),
         resolvedRequestIds: new Set(),
         toolNameById: startedExit.value.toolNameById,
+        toolInputById: startedExit.value.toolInputById,
         emittedTextByItemId: new Map(),
         activeTurnId: adoptedTurnId,
+        missingTerminalRecoveryAttempts: 0,
         stopped: yield* Ref.make(false),
         sessionScope,
       };
@@ -1171,7 +1412,9 @@ export function makeOpenCodeV2Adapter(
       "sendTurn",
     )(function* (input) {
       const context = yield* ensureSession(input.threadId);
-      const turnId = context.activeTurnId ?? TurnId.make(`opencode2-turn-${yield* randomUUIDv4}`);
+      const existingTurnId = context.activeTurnId;
+      const turnId = existingTurnId ?? TurnId.make(`opencode2-turn-${yield* randomUUIDv4}`);
+      if (existingTurnId === undefined) context.missingTerminalRecoveryAttempts = 0;
       const modelSelection =
         input.modelSelection ??
         (context.session.model
@@ -1193,11 +1436,22 @@ export function makeOpenCodeV2Adapter(
         });
       }
       const text = input.input?.trim();
-      if (!text) {
+      const files = toOpenCodeFileParts({
+        attachments: input.attachments,
+        resolveAttachmentPath: (attachment) =>
+          resolveAttachmentPath({
+            attachmentsDir: serverConfig.attachmentsDir,
+            attachment,
+          }),
+      }).map((file) => ({
+        uri: file.url,
+        ...(file.filename === undefined ? {} : { name: file.filename }),
+      }));
+      if (!text && files.length === 0) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
           operation: "sendTurn",
-          issue: "OpenCode v2 turns require text input.",
+          issue: "OpenCode v2 turns require text input or at least one attachment.",
         });
       }
       const agent = getModelSelectionStringOptionValue(modelSelection, "agent");
@@ -1235,7 +1489,11 @@ export function makeOpenCodeV2Adapter(
         payload: { model: context.session.model },
       });
       yield* Effect.tryPromise({
-        try: () => context.client.session.prompt(context.openCodeSessionId, { text }),
+        try: () =>
+          context.client.session.prompt(context.openCodeSessionId, {
+            text: text ?? "",
+            ...(files.length > 0 ? { files } : {}),
+          }),
         catch: (cause) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,
@@ -1332,7 +1590,7 @@ export function makeOpenCodeV2Adapter(
           })),
           type: "request.resolved",
           payload: {
-            requestType: mapPermissionToRequestType(permission.action),
+            requestType: mapOpenCodeV2PermissionToRequestType(permission.action),
             decision,
           },
         });

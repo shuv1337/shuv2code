@@ -312,6 +312,29 @@ const readDisabled = HttpServerResponse.jsonUnsafe(
   { status: 403, headers: { "cache-control": "no-store" } },
 );
 
+const PRE_BINDING_MCP_METHODS = new Set([
+  "initialize",
+  "notifications/initialized",
+  "ping",
+  "tools/list",
+]);
+
+const isPreBindingMcpHandshake = (request: Request) =>
+  Effect.tryPromise(() => request.clone().json()).pipe(
+    Effect.map((body) => {
+      const messages = Array.isArray(body) ? body : [body];
+      return (
+        messages.length > 0 &&
+        messages.every((message) => {
+          if (message === null || typeof message !== "object") return false;
+          const method = (message as { readonly method?: unknown }).method;
+          return typeof method === "string" && PRE_BINDING_MCP_METHODS.has(method);
+        })
+      );
+    }),
+    Effect.orElseSucceed(() => false),
+  );
+
 const makeControllerMcpRequestHandler = (services: {
   readonly registry: McpSessionRegistry["Service"];
   readonly settingsService: ServerSettings.ServerSettingsService["Service"];
@@ -354,7 +377,11 @@ const makeControllerMcpRequestHandler = (services: {
       if (profile.kind !== "voice-controller" && profile.kind !== "durable-thread-controller") {
         return unauthorized("wrong_profile");
       }
-      if (profile.providerIdentity === undefined) {
+      const webRequest = yield* HttpServerRequest.toWeb(request);
+      if (
+        profile.providerIdentity === undefined &&
+        !(yield* isPreBindingMcpHandshake(webRequest))
+      ) {
         return unauthorized("unbound");
       }
 
@@ -366,7 +393,6 @@ const makeControllerMcpRequestHandler = (services: {
         }
       }
 
-      const webRequest = yield* HttpServerRequest.toWeb(request);
       const runTool = (name: string, input: unknown, requestContext: ControllerMcpRequestScope) => {
         return runPromise(
           Effect.gen(function* () {

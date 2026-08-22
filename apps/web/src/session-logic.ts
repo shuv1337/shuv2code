@@ -80,6 +80,7 @@ export interface WorkLogEntry {
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
   toolData?: unknown;
+  toolInput?: unknown;
   images?: ReadonlyArray<ToolResultImage>;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
@@ -115,7 +116,7 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
 
 export interface PendingApproval {
   requestId: ApprovalRequestId;
-  requestKind: "command" | "file-read" | "file-change";
+  requestKind: "command" | "file-read" | "file-change" | "thread-control";
   createdAt: string;
   detail?: string;
 }
@@ -364,12 +365,15 @@ function requestKindFromRequestType(requestType: unknown): PendingApproval["requ
     case "command_execution_approval":
     case "exec_command_approval":
     case "dynamic_tool_call":
+    case "unknown":
       return "command";
     case "file_read_approval":
       return "file-read";
     case "file_change_approval":
     case "apply_patch_approval":
       return "file-change";
+    case "thread_control_grant":
+      return "thread-control";
     default:
       return null;
   }
@@ -410,7 +414,8 @@ export function derivePendingApprovals(
       payload &&
       (payload.requestKind === "command" ||
         payload.requestKind === "file-read" ||
-        payload.requestKind === "file-change")
+        payload.requestKind === "file-change" ||
+        payload.requestKind === "thread-control")
         ? payload.requestKind
         : payload
           ? requestKindFromRequestType(payload.requestType)
@@ -810,6 +815,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? (activity.payload as Record<string, unknown>)
       : null;
   const commandPreview = extractToolCommand(payload);
+  const toolInput = extractToolInput(payload);
   const changedFiles = extractChangedFiles(payload);
   const title = extractToolTitle(payload);
   const isTaskActivity =
@@ -860,6 +866,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (commandPreview.rawCommand) {
     entry.rawCommand = commandPreview.rawCommand;
+  }
+  if (toolInput !== undefined) {
+    entry.toolInput = toolInput;
   }
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
@@ -1055,6 +1064,7 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
+  const toolInput = next.toolInput ?? previous.toolInput;
   const images = next.images ?? previous.images;
   return {
     ...previous,
@@ -1070,6 +1080,7 @@ function mergeDerivedWorkLogEntries(
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
     ...(toolData !== undefined ? { toolData } : {}),
+    ...(toolInput !== undefined ? { toolInput } : {}),
     ...(images !== undefined ? { images } : {}),
   };
 }
@@ -1297,11 +1308,15 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
   const item = asRecord(data?.item);
   const itemResult = asRecord(item?.result);
   const itemInput = asRecord(item?.input);
+  const dataInput = asRecord(data?.input);
+  const stateInput = asRecord(asRecord(data?.state)?.input);
   const itemType = asTrimmedString(payload?.itemType);
   const detail = asTrimmedString(payload?.detail);
   const candidates: unknown[] = [
     item?.command,
     itemInput?.command,
+    dataInput?.command,
+    stateInput?.command,
     itemResult?.command,
     data?.command,
     itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
@@ -1322,6 +1337,14 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
     command: null,
     rawCommand: null,
   };
+}
+
+function extractToolInput(payload: Record<string, unknown> | null): unknown {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const itemState = asRecord(item?.state);
+  const state = asRecord(data?.state);
+  return itemState?.input ?? item?.input ?? state?.input ?? data?.input;
 }
 
 function extractToolTitle(payload: Record<string, unknown> | null): string | null {
@@ -1404,6 +1427,11 @@ function extractAcpTextContent(value: unknown): string | null {
   const chunks: string[] = [];
   for (const entryValue of value) {
     const entry = asRecord(entryValue);
+    if (entry?.type === "text") {
+      const text = asTrimmedString(entry.text);
+      if (text) chunks.push(text);
+      continue;
+    }
     if (entry?.type !== "content") {
       continue;
     }
@@ -1417,7 +1445,13 @@ function extractAcpTextContent(value: unknown): string | null {
     }
   }
 
-  return chunks.length > 0 ? chunks.join("\n") : null;
+  if (chunks.length === 0) return null;
+  const joined = chunks.join("\n");
+  const withoutShuvcodeExitStatus = joined.replace(
+    /(?:^|\n)Command exited with code \d+\.\s*$/u,
+    "",
+  );
+  return asTrimmedString(withoutShuvcodeExitStatus);
 }
 
 function extractToolOutput(payload: Record<string, unknown> | null): string | null {
@@ -1514,6 +1548,12 @@ function extractToolDetail(
     return null;
   }
 
+  const output = extractToolOutput(payload);
+  const outputPreview = output ? summarizeToolTextOutput(output) : null;
+  if (outputPreview && normalizePreviewForComparison(outputPreview) !== normalizedHeading) {
+    return outputPreview;
+  }
+
   const rawOutputSummary = summarizeToolRawOutput(payload);
   if (rawOutputSummary) {
     const normalizedRawOutputSummary = normalizePreviewForComparison(rawOutputSummary);
@@ -1561,7 +1601,8 @@ function extractWorkLogRequestKind(
   if (
     payload?.requestKind === "command" ||
     payload?.requestKind === "file-read" ||
-    payload?.requestKind === "file-change"
+    payload?.requestKind === "file-change" ||
+    payload?.requestKind === "thread-control"
   ) {
     return payload.requestKind;
   }

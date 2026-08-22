@@ -93,6 +93,33 @@ describe("reasoning work log entries", () => {
 });
 
 describe("derivePendingApprovals", () => {
+  it("exposes host thread-control grants as actionable approvals", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "thread-control-request",
+        createdAt: "2026-08-22T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Durable thread-control access requested",
+        tone: "approval",
+        payload: {
+          requestId: "thread-control-grant:req-1",
+          requestKind: "thread-control",
+          requestType: "thread_control_grant",
+          detail: "Allow this thread to control other threads.",
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "thread-control-grant:req-1",
+        requestKind: "thread-control",
+        createdAt: "2026-08-22T00:00:01.000Z",
+        detail: "Allow this thread to control other threads.",
+      },
+    ]);
+  });
+
   it("tracks open approvals and removes resolved ones", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -183,6 +210,32 @@ describe("derivePendingApprovals", () => {
         requestKind: "command",
         createdAt: "2026-02-23T00:00:01.000Z",
         detail: "Search the web",
+      },
+    ]);
+  });
+
+  it("keeps unknown provider permissions actionable as generic approvals", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-open-unknown",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Approval requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-unknown",
+          requestType: "unknown",
+          detail: "/outside/workspace/*",
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "req-unknown",
+        requestKind: "command",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        detail: "/outside/workspace/*",
       },
     ]);
   });
@@ -1088,6 +1141,58 @@ describe("deriveWorkLogEntries", () => {
 
     const [entry] = deriveWorkLogEntries(activities);
     expect(entry?.command).toBe("bun run lint");
+  });
+
+  it("extracts Shuvcode V2 command input recovered from the message projection", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "shuvcode-shell",
+        kind: "tool.completed",
+        summary: "shell",
+        payload: {
+          itemType: "command_execution",
+          title: "shell",
+          status: "completed",
+          data: {
+            tool: "shell",
+            input: { command: "rg -n thread_control_request apps/server" },
+            content: [{ type: "text", text: "apps/server/src/mcp/tools.ts:1" }],
+          },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      command: "rg -n thread_control_request apps/server",
+      toolInput: { command: "rg -n thread_control_request apps/server" },
+      detail: "apps/server/src/mcp/tools.ts:1",
+    });
+  });
+
+  it("retains non-command provider tool input for disclosure", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "shuvcode-execute",
+        kind: "tool.completed",
+        summary: "execute",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "execute",
+          status: "completed",
+          data: {
+            tool: "execute",
+            input: { code: "return Object.keys(tools);" },
+            content: [{ type: "text", text: "[]" }],
+          },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      toolTitle: "execute",
+      toolInput: { code: "return Object.keys(tools);" },
+      detail: "[]",
+    });
   });
 
   it("extracts failed tool lifecycle status from item payloads", () => {

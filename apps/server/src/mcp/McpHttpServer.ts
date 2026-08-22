@@ -29,6 +29,8 @@ import {
 } from "./toolkits/preview/handlers.ts";
 import { AutomationToolkitHandlersLive } from "./toolkits/automations/handlers.ts";
 import { AutomationToolkit } from "./toolkits/automations/tools.ts";
+import { ThreadControlGrantRequestToolkitHandlersLive } from "./toolkits/threadControlGrant/handlers.ts";
+import { ThreadControlGrantRequestToolkit } from "./toolkits/threadControlGrant/tools.ts";
 import {
   PreviewSnapshotTool,
   PreviewSnapshotToolkit,
@@ -315,6 +317,10 @@ export const AutomationToolkitRegistrationLive = McpServer.toolkit(AutomationToo
   Layer.provide(AutomationToolkitHandlersLive),
 );
 
+export const ThreadControlGrantRequestToolkitRegistrationLive = McpServer.toolkit(
+  ThreadControlGrantRequestToolkit,
+).pipe(Layer.provide(ThreadControlGrantRequestToolkitHandlersLive));
+
 const McpTransportLive = McpServer.layerHttp({
   name: "shuv2code",
   version: packageJson.version,
@@ -325,4 +331,5 @@ const McpTransportLive = McpServer.layerHttp({
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   AutomationToolkitRegistrationLive,
+  ThreadControlGrantRequestToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

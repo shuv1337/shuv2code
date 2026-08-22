@@ -68,6 +68,13 @@ export interface OpenCodeV2SessionInfo {
   readonly location?: { readonly directory?: string };
 }
 
+export interface OpenCodeV2RemoteMcpConfig {
+  readonly type: "remote";
+  readonly url: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly oauth?: boolean | Readonly<Record<string, unknown>>;
+}
+
 export interface OpenCodeV2ProjectedMessages {
   readonly data?: ReadonlyArray<unknown>;
   readonly items?: ReadonlyArray<unknown>;
@@ -375,6 +382,16 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
           readonly files?: ReadonlyArray<{ readonly uri: string; readonly name?: string }>;
         },
       ) => data<unknown>("POST", sessionPath(sessionID, "/prompt"), { body }),
+      synthetic: (
+        sessionID: string,
+        body: {
+          readonly text: string;
+          readonly description?: string;
+          readonly metadata?: Readonly<Record<string, unknown>>;
+          readonly delivery?: "follow-up" | "steer";
+          readonly resume?: boolean;
+        },
+      ) => data<unknown>("POST", sessionPath(sessionID, "/synthetic"), { body }),
       interrupt: (sessionID: string) =>
         request<void>("POST", sessionPath(sessionID, "/interrupt"), { empty: true }),
       wait: (sessionID: string) =>
@@ -420,6 +437,14 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
             empty: true,
           },
         ),
+    },
+    mcp: {
+      add: (name: string, config: OpenCodeV2RemoteMcpConfig) =>
+        request<void>("PUT", `/api/mcp/${encodeURIComponent(name)}`, {
+          query: { location },
+          body: { config },
+          empty: true,
+        }),
     },
     provider: {
       list: () =>
