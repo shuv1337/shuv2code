@@ -7,7 +7,7 @@ export function resolveVoiceControlHostProjectId(input: {
   readonly providerAvailable: boolean;
   readonly selectedProvider: ProviderDriverKind;
 }): ProjectId | null {
-  if (!input.activeProjectId || !input.providerAvailable || input.selectedProvider !== "codex") {
+  if (!input.activeProjectId || !input.providerAvailable) {
     return null;
   }
   return input.activeProjectId;

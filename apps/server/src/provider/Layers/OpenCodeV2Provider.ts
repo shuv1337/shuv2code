@@ -2,6 +2,7 @@ import {
   type ModelCapabilities,
   type OpenCodeV2Settings,
   type ServerProviderModel,
+  type ServerProviderSkill,
 } from "@shuv2code/contracts";
 import { createModelCapabilities } from "@shuv2code/shared/model";
 import * as Cause from "effect/Cause";
@@ -48,8 +49,39 @@ const V2AgentSchema = Schema.Struct({
   mode: Schema.optionalKey(Schema.String),
   hidden: Schema.optionalKey(Schema.Boolean),
 });
+const V2SkillSchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.optionalKey(Schema.String),
+  description: Schema.optionalKey(Schema.String),
+  location: Schema.String,
+});
 const decodeV2Model = Schema.decodeUnknownOption(V2ModelSchema);
 const decodeV2Agent = Schema.decodeUnknownOption(V2AgentSchema);
+const decodeV2Skill = Schema.decodeUnknownOption(V2SkillSchema);
+
+export function openCodeV2SkillsFromInventory(
+  input: ReadonlyArray<unknown>,
+): ReadonlyArray<ServerProviderSkill> {
+  return input.flatMap((entry) => {
+    const decoded = decodeV2Skill(entry);
+    if (Option.isNone(decoded)) return [];
+    const skill = decoded.value;
+    const name = nonEmptyTrimmed(skill.id);
+    const path = nonEmptyTrimmed(skill.location);
+    if (!name || !path) return [];
+    const displayName = nonEmptyTrimmed(skill.name);
+    const description = nonEmptyTrimmed(skill.description);
+    return [
+      {
+        name,
+        path,
+        enabled: true,
+        ...(displayName && displayName !== name ? { displayName } : {}),
+        ...(description ? { description } : {}),
+      },
+    ];
+  });
+}
 
 export function openCodeV2ModelsFromInventory(input: {
   readonly models: ReadonlyArray<unknown>;
@@ -179,15 +211,28 @@ export const checkOpenCodeV2ProviderStatus = Effect.fn("checkOpenCodeV2ProviderS
           directory: cwd,
           ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
         });
-        const [models, agents] = yield* Effect.tryPromise({
-          try: () => Promise.all([client.model.list(), client.agent.list()]),
-          catch: (cause) => new OpenCodeV2InventoryError({ cause }),
-        }).pipe(Effect.orDie);
-        return openCodeV2ModelsFromInventory({
-          models: models.data,
-          agents: agents.data,
-          customModels: settings.customModels,
-        });
+        const [[models, agents], skills] = yield* Effect.all(
+          [
+            Effect.tryPromise({
+              try: () => Promise.all([client.model.list(), client.agent.list()]),
+              catch: (cause) => new OpenCodeV2InventoryError({ cause }),
+            }).pipe(Effect.orDie),
+            Effect.tryPromise(() => client.skill.list()).pipe(
+              Effect.timeout("2 seconds"),
+              Effect.map((response) => openCodeV2SkillsFromInventory(response.data)),
+              Effect.orElseSucceed((): ReadonlyArray<ServerProviderSkill> => []),
+            ),
+          ],
+          { concurrency: "unbounded" },
+        );
+        return {
+          models: openCodeV2ModelsFromInventory({
+            models: models.data,
+            agents: agents.data,
+            customModels: settings.customModels,
+          }),
+          skills,
+        };
       }),
     ),
   );
@@ -210,7 +255,8 @@ export const checkOpenCodeV2ProviderStatus = Effect.fn("checkOpenCodeV2ProviderS
     presentation: OPENCODE_V2_PRESENTATION,
     enabled: true,
     checkedAt,
-    models: inventoryExit.value,
+    models: inventoryExit.value.models,
+    skills: inventoryExit.value.skills,
     probe: {
       installed: true,
       version: null,

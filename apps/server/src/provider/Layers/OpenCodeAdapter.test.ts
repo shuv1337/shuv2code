@@ -243,6 +243,26 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           })(),
         }),
       },
+      provider: {
+        list: async () => ({
+          data: {
+            all: [
+              {
+                id: "openai",
+                models: {
+                  "gpt-5.6-sol": {
+                    id: "gpt-5.6-sol",
+                    name: "GPT-5.6 Sol",
+                    limit: { context: 258_400, output: 128_000 },
+                  },
+                },
+              },
+            ],
+            connected: ["openai"],
+            default: {},
+          },
+        }),
+      },
       mcp: {
         add: async (input: unknown) => {
           runtimeMock.state.mcpAddCalls.push(input);
@@ -1544,6 +1564,57 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         completed?.type === "item.completed" ? completed.payload.detail : undefined,
         reasoningText,
       );
+    }),
+  );
+
+  it.effect("emits current context usage from assistant message updates", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-context-usage");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "message.updated",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            info: {
+              id: "msg-context-usage",
+              role: "assistant",
+              providerID: "openai",
+              modelID: "gpt-5.6-sol",
+              tokens: {
+                input: 1_000,
+                output: 250,
+                reasoning: 125,
+                cache: { read: 4_000, write: 500 },
+              },
+            },
+          },
+        },
+      ];
+      const usageEventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.threadId === threadId && event.type === "thread.token-usage.updated",
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const events = Array.from(
+        yield* Fiber.join(usageEventFiber).pipe(Effect.timeout("1 second")),
+      );
+      const usageEvent = events[0];
+      NodeAssert.equal(usageEvent?.type, "thread.token-usage.updated");
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        NodeAssert.equal(usageEvent.payload.usage.usedTokens, 5_250);
+        NodeAssert.equal(usageEvent.payload.usage.maxTokens, 258_400);
+      }
     }),
   );
 
