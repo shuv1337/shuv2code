@@ -1495,6 +1495,7 @@ function ChatMarkdown({
             query: workspaceRelativePath,
             limit: WORKSPACE_BASENAME_LOOKUP_LIMIT,
             kind: "file",
+            includeIgnored: getClientSettings().showIgnoredFiles,
           },
         });
         const match =

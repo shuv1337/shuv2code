@@ -2061,6 +2061,30 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          {...searchableSetting("show-ignored-files")}
+          description="Include files matched by Git ignore rules in workspace trees and file search."
+          resetAction={
+            settings.showIgnoredFiles !== DEFAULT_UNIFIED_SETTINGS.showIgnoredFiles ? (
+              <SettingResetButton
+                label="ignored files"
+                onClick={() =>
+                  updateSettings({
+                    showIgnoredFiles: DEFAULT_UNIFIED_SETTINGS.showIgnoredFiles,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.showIgnoredFiles}
+              onCheckedChange={(checked) => updateSettings({ showIgnoredFiles: Boolean(checked) })}
+              aria-label="Show ignored files"
+            />
+          }
+        />
+
+        <SettingsRow
           {...searchableSetting("provider-update-checks")}
           description="Check installed provider CLIs for newer available versions."
           resetAction={

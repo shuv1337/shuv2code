@@ -14,12 +14,22 @@ import * as WorkspacePaths from "./WorkspacePaths.ts";
 
 const ProjectLayer = WorkspaceFileSystem.layer.pipe(
   Layer.provide(WorkspacePaths.layer),
-  Layer.provide(WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer))),
+  Layer.provide(
+    WorkspaceEntries.layer.pipe(
+      Layer.provide(WorkspacePaths.layer),
+      Layer.provide(VcsProcess.layer),
+    ),
+  ),
 );
 
 const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(ProjectLayer),
-  Layer.provideMerge(WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer))),
+  Layer.provideMerge(
+    WorkspaceEntries.layer.pipe(
+      Layer.provide(WorkspacePaths.layer),
+      Layer.provide(VcsProcess.layer),
+    ),
+  ),
   Layer.provideMerge(WorkspacePaths.layer),
   Layer.provideMerge(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
   Layer.provide(
@@ -219,7 +229,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
         const cwd = yield* makeTempDir;
         yield* writeTextFile(cwd, "src/existing.ts", "export {};\n");
 
-        const beforeWrite = yield* workspaceEntries.list({ cwd });
+        const beforeWrite = yield* workspaceEntries.list({ cwd, includeIgnored: true });
         expect(beforeWrite.entries.some((entry) => entry.path === "plans/effect-rpc.md")).toBe(
           false,
         );
@@ -230,7 +240,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
           contents: "# Plan\n",
         });
 
-        const afterWrite = yield* workspaceEntries.list({ cwd });
+        const afterWrite = yield* workspaceEntries.list({ cwd, includeIgnored: true });
         expect(afterWrite.entries).toEqual(
           expect.arrayContaining([expect.objectContaining({ path: "plans/effect-rpc.md" })]),
         );

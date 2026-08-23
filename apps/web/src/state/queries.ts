@@ -30,6 +30,7 @@ import { projectContentSearch, projectEnvironment } from "./projects";
 import { useEnvironmentQuery } from "./query";
 import { useEnvironmentThread } from "./threads";
 import { vcsEnvironment } from "./vcs";
+import { useClientSettings } from "../hooks/useSettings";
 
 const PROJECT_PATH_SEARCH_DEBOUNCE_MS = 120;
 const COMPOSER_PATH_SEARCH_LIMIT = 80;
@@ -238,6 +239,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
 type ProjectPathSearchTarget = ComposerPathSearchTarget & {
   readonly kind?: ProjectEntryKind | undefined;
   readonly imageOnly?: boolean | undefined;
+  readonly includeIgnored?: boolean | undefined;
 };
 
 export function areProjectPathSearchTargetsEqual(
@@ -249,7 +251,8 @@ export function areProjectPathSearchTargetsEqual(
     left.cwd === right.cwd &&
     left.query === right.query &&
     left.kind === right.kind &&
-    left.imageOnly === right.imageOnly
+    left.imageOnly === right.imageOnly &&
+    left.includeIgnored === right.includeIgnored
   );
 }
 
@@ -259,6 +262,7 @@ export function useProjectPathSearch(
   options?: { readonly allowEmptyQuery?: boolean },
 ) {
   const allowEmptyQuery = options?.allowEmptyQuery === true;
+  const includeIgnored = useClientSettings((settings) => settings.showIgnoredFiles);
   const normalizedTarget = useMemo(
     () => ({
       environmentId: target.environmentId,
@@ -266,8 +270,9 @@ export function useProjectPathSearch(
       query: target.query == null ? null : target.query.trim(),
       kind: target.kind,
       imageOnly: target.imageOnly,
+      includeIgnored,
     }),
-    [target.cwd, target.environmentId, target.imageOnly, target.kind, target.query],
+    [includeIgnored, target.cwd, target.environmentId, target.imageOnly, target.kind, target.query],
   );
   const debouncedTarget = useDebouncedValue(normalizedTarget, PROJECT_PATH_SEARCH_DEBOUNCE_MS);
   const result = useEnvironmentQuery(
@@ -281,6 +286,7 @@ export function useProjectPathSearch(
             cwd: debouncedTarget.cwd,
             query: debouncedTarget.query,
             limit,
+            includeIgnored: debouncedTarget.includeIgnored,
             ...(debouncedTarget.kind ? { kind: debouncedTarget.kind } : {}),
             ...(debouncedTarget.imageOnly ? { imageOnly: true } : {}),
           },

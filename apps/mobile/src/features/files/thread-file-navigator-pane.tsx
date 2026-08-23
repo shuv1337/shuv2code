@@ -36,7 +36,7 @@ export function ThreadFileNavigatorPane(props: {
   const entriesQuery = useEnvironmentQuery(
     projectEnvironment.listEntries({
       environmentId: props.environmentId,
-      input: { cwd: props.cwd },
+      input: { cwd: props.cwd, includeIgnored: true },
     }),
   );
   const entriesData = entriesQuery.data as ProjectListEntriesResult | null;

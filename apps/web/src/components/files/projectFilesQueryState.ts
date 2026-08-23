@@ -13,6 +13,7 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { projectEnvironment } from "~/state/projects";
 import { useProjectPathSearch } from "~/state/queries";
 import { executeAtomQuery } from "@shuv2code/client-runtime/state/runtime";
+import { useClientSettings } from "~/hooks/useSettings";
 
 const EMPTY_PROJECT_FILE_PATH = "";
 const EMPTY_PROJECT_FILE_QUERY_ATOM = Atom.make(
@@ -29,8 +30,12 @@ interface ProjectQueryState<A> {
   readonly refresh: () => void;
 }
 
-export function getProjectEntriesQueryAtom(environmentId: EnvironmentId, cwd: string) {
-  return projectEnvironment.listEntries({ environmentId, input: { cwd } });
+export function getProjectEntriesQueryAtom(
+  environmentId: EnvironmentId,
+  cwd: string,
+  includeIgnored = true,
+) {
+  return projectEnvironment.listEntries({ environmentId, input: { cwd, includeIgnored } });
 }
 
 export function getProjectFileQueryAtom(
@@ -125,7 +130,8 @@ export function useProjectEntriesQuery(
   environmentId: EnvironmentId,
   cwd: string,
 ): ProjectQueryState<ProjectListEntriesResult> {
-  const atom = getProjectEntriesQueryAtom(environmentId, cwd);
+  const includeIgnored = useClientSettings((settings) => settings.showIgnoredFiles);
+  const atom = getProjectEntriesQueryAtom(environmentId, cwd, includeIgnored);
   const result = useAtomValue(atom);
   const refreshAtom = useAtomRefresh(atom);
   const refresh = useCallback(() => refreshAtom(), [refreshAtom]);
