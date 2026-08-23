@@ -35,36 +35,32 @@ import {
 describe("resolveVoiceControlHostProjectId", () => {
   const projectId = ProjectId.make("project-1");
 
-  it("exposes voice control for an available Codex project", () => {
-    expect(
-      resolveVoiceControlHostProjectId({
-        activeProjectId: projectId,
-        providerAvailable: true,
-        selectedProvider: ProviderDriverKind.make("codex"),
-      }),
-    ).toBe(projectId);
+  it("exposes voice control for every available provider project", () => {
+    for (const provider of ["codex", "claude", "opencode", "opencodeV2"] as const) {
+      expect(
+        resolveVoiceControlHostProjectId({
+          activeProjectId: projectId,
+          providerAvailable: true,
+          selectedProvider: ProviderDriverKind.make(provider),
+        }),
+        provider,
+      ).toBe(projectId);
+    }
   });
 
-  it("keeps voice control hidden without a project or Codex provider", () => {
+  it("keeps voice control hidden without a project or available provider", () => {
     expect(
       resolveVoiceControlHostProjectId({
         activeProjectId: null,
         providerAvailable: true,
-        selectedProvider: ProviderDriverKind.make("codex"),
-      }),
-    ).toBeNull();
-    expect(
-      resolveVoiceControlHostProjectId({
-        activeProjectId: projectId,
-        providerAvailable: true,
-        selectedProvider: ProviderDriverKind.make("claude"),
+        selectedProvider: ProviderDriverKind.make("opencodeV2"),
       }),
     ).toBeNull();
     expect(
       resolveVoiceControlHostProjectId({
         activeProjectId: projectId,
         providerAvailable: false,
-        selectedProvider: ProviderDriverKind.make("codex"),
+        selectedProvider: ProviderDriverKind.make("opencodeV2"),
       }),
     ).toBeNull();
   });

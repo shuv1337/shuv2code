@@ -503,6 +503,7 @@ describe("OpenCodeV2Adapter terminal state", () => {
         },
         session: {
           create: async () => ({ id: "ses_successful_execution" }),
+          switchModel: async () => undefined,
           prompt: async () => {
             completeExecution?.();
           },
@@ -545,6 +546,102 @@ describe("OpenCodeV2Adapter terminal state", () => {
         schemaVersion: 1,
         sessionId: "ses_successful_execution",
       });
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
+  );
+
+  it.effect("emits current context usage after a successful execution", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-v2-context-usage");
+      let completeExecution: (() => void) | undefined;
+      const executionCompleted = new Promise<void>((resolve) => {
+        completeExecution = resolve;
+      });
+      const client = {
+        event: {
+          subscribe: () => ({
+            async *[Symbol.asyncIterator]() {
+              yield { type: "server.connected" };
+              await executionCompleted;
+              yield {
+                type: "session.execution.succeeded",
+                data: { sessionID: "ses_v2_context_usage" },
+              };
+              await new Promise<never>(() => undefined);
+            },
+          }),
+        },
+        session: {
+          create: async () => ({ id: "ses_v2_context_usage" }),
+          switchModel: async () => undefined,
+          prompt: async () => {
+            completeExecution?.();
+          },
+          messages: async () => ({
+            data: [
+              {
+                type: "assistant",
+                model: { providerID: "openai", id: "gpt-5.6-sol" },
+                tokens: {
+                  input: 1_000,
+                  output: 250,
+                  reasoning: 125,
+                  cache: { read: 4_000, write: 500 },
+                },
+              },
+            ],
+          }),
+        },
+        model: {
+          list: async () => ({
+            data: [
+              {
+                id: "gpt-5.6-sol",
+                providerID: "openai",
+                limit: { context: 258_400 },
+              },
+            ],
+          }),
+        },
+        form: { list: async () => [] },
+        permission: { list: async () => [] },
+      } as unknown as OpenCodeV2Client;
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+      const usageEventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.threadId === threadId && event.type === "thread.token-usage.updated",
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "report context usage",
+        attachments: [],
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencodeV2"),
+          model: "openai/gpt-5.6-sol",
+          options: [],
+        },
+      });
+
+      const events = Array.from(
+        yield* Fiber.join(usageEventFiber).pipe(Effect.timeout("1 second")),
+      );
+      const usageEvent = events[0];
+      NodeAssert.equal(usageEvent?.type, "thread.token-usage.updated");
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        NodeAssert.equal(usageEvent.payload.usage.usedTokens, 5_250);
+        NodeAssert.equal(usageEvent.payload.usage.maxTokens, 258_400);
+      }
     }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
   );
 

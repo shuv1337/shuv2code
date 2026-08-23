@@ -30,6 +30,10 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
+  latestOpenCodeV2ProjectedAssistantUsage,
+  openCodeV2ModelContextLimits,
+} from "../openCodeTokenUsage.ts";
+import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
@@ -149,6 +153,7 @@ interface OpenCodeV2SessionContext {
   readonly toolNameById: Map<string, string>;
   readonly toolInputById: Map<string, unknown>;
   readonly emittedTextByItemId: Map<string, string>;
+  readonly modelContextLimits: ReadonlyMap<string, number>;
   activeTurnId: TurnId | undefined;
   missingTerminalRecoveryAttempts: number;
   readonly stopped: Ref.Ref<boolean>;
@@ -631,6 +636,27 @@ export function makeOpenCodeV2Adapter(
         }
         case "session.execution.succeeded": {
           const completedTurnId = context.activeTurnId;
+          const tokenUsage = yield* Effect.tryPromise(() =>
+            context.client.session.messages(context.openCodeSessionId),
+          ).pipe(
+            Effect.timeout("2 seconds"),
+            Effect.map((messages) =>
+              latestOpenCodeV2ProjectedAssistantUsage(messages, context.modelContextLimits),
+            ),
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (tokenUsage) {
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId: completedTurnId,
+                createdAt,
+                raw: event,
+              })),
+              type: "thread.token-usage.updated",
+              payload: { usage: tokenUsage.usage },
+            });
+          }
           context.missingTerminalRecoveryAttempts = 0;
           context.activeTurnId = undefined;
           const { activeTurnId: _activeTurnId, ...settledSession } = context.session;
@@ -1268,6 +1294,11 @@ export function makeOpenCodeV2Adapter(
                       cause,
                     }),
                 });
+          const modelContextLimits = yield* Effect.tryPromise(() => client.model.list()).pipe(
+            Effect.timeout("2 seconds"),
+            Effect.map(openCodeV2ModelContextLimits),
+            Effect.orElseSucceed(() => new Map<string, number>()),
+          );
           return {
             client,
             iterator,
@@ -1275,6 +1306,7 @@ export function makeOpenCodeV2Adapter(
             serverExternal: server.external,
             toolNameById,
             toolInputById,
+            modelContextLimits,
             adopted: adopted?._tag === "Some",
           };
         }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
@@ -1336,6 +1368,7 @@ export function makeOpenCodeV2Adapter(
         toolNameById: startedExit.value.toolNameById,
         toolInputById: startedExit.value.toolInputById,
         emittedTextByItemId: new Map(),
+        modelContextLimits: startedExit.value.modelContextLimits,
         activeTurnId: adoptedTurnId,
         missingTerminalRecoveryAttempts: 0,
         stopped: yield* Ref.make(false),

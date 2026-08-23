@@ -2,7 +2,10 @@ import * as NodeAssert from "node:assert/strict";
 
 import { describe, it } from "vite-plus/test";
 
-import { openCodeV2ModelsFromInventory } from "./OpenCodeV2Provider.ts";
+import {
+  openCodeV2ModelsFromInventory,
+  openCodeV2SkillsFromInventory,
+} from "./OpenCodeV2Provider.ts";
 
 describe("openCodeV2ModelsFromInventory", () => {
   it("maps native v2 models, variants, agents, and custom models", () => {
@@ -66,5 +69,29 @@ describe("openCodeV2ModelsFromInventory", () => {
       agentDescriptor?.options?.map((option) => option.id),
       ["build"],
     );
+  });
+});
+
+describe("openCodeV2SkillsFromInventory", () => {
+  it("maps native skill IDs for invocation and preserves display metadata", () => {
+    const skills = openCodeV2SkillsFromInventory([
+      {
+        id: "visual-explainer",
+        name: "Visual Explainer",
+        description: "Generate technical diagrams",
+        location: "/home/test/.agents/skills/visual-explainer/SKILL.md",
+      },
+      { id: " malformed ", name: 42, location: null },
+    ]);
+
+    NodeAssert.deepEqual(skills, [
+      {
+        name: "visual-explainer",
+        displayName: "Visual Explainer",
+        description: "Generate technical diagrams",
+        path: "/home/test/.agents/skills/visual-explainer/SKILL.md",
+        enabled: true,
+      },
+    ]);
   });
 });

@@ -28,6 +28,10 @@ import { getModelSelectionStringOptionValue } from "@shuv2code/shared/model";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import {
+  openCodeAssistantUsageFromMessage,
+  openCodeProviderModelContextLimits,
+} from "../openCodeTokenUsage.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { toToolLifecycleItemType } from "./toolLifecycleItemType.ts";
 import {
@@ -303,6 +307,7 @@ interface OpenCodeSessionContext {
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
   readonly completedTextPartIds: Set<string>;
+  readonly modelContextLimits: ReadonlyMap<string, number>;
   readonly turns: Array<OpenCodeTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
@@ -951,6 +956,21 @@ export function makeOpenCodeAdapter(
         case "message.updated": {
           context.messageRoleById.set(event.properties.info.id, event.properties.info.role);
           if (event.properties.info.role === "assistant") {
+            const tokenUsage = openCodeAssistantUsageFromMessage(
+              event.properties.info,
+              context.modelContextLimits,
+            );
+            if (tokenUsage) {
+              yield* emit({
+                ...(yield* buildEventBase({
+                  threadId: context.session.threadId,
+                  turnId,
+                  raw: event,
+                })),
+                type: "thread.token-usage.updated",
+                payload: { usage: tokenUsage.usage },
+              });
+            }
             for (const part of context.partById.values()) {
               if (part.messageID !== event.properties.info.id) {
                 continue;
@@ -1642,6 +1662,14 @@ export function makeOpenCodeAdapter(
           updatedAt: createdAt,
         };
 
+        const modelContextLimits = yield* runOpenCodeSdk("provider.list", () =>
+          started.client.provider.list(),
+        ).pipe(
+          Effect.timeout("2 seconds"),
+          Effect.map((response) => openCodeProviderModelContextLimits(response.data)),
+          Effect.orElseSucceed(() => new Map<string, number>()),
+        );
+
         const context: OpenCodeSessionContext = {
           session,
           client: started.client,
@@ -1654,6 +1682,7 @@ export function makeOpenCodeAdapter(
           emittedTextByPartId: new Map(),
           messageRoleById: new Map(),
           completedTextPartIds: new Set(),
+          modelContextLimits,
           turns: [],
           activeTurnId: adoptedTurnId,
           activeAgent: undefined,
