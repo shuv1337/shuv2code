@@ -28,6 +28,7 @@ import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderR
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { AdeBootstrap } from "./ade/AdeBootstrap.ts";
+import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -300,6 +301,16 @@ const AdeBootstrapLayerLive = AdeBootstrap.bootLive.pipe(
   Layer.provide(PersistenceLayerLive),
 );
 
+// ADE health checker (spec §4.8): shuvcode/Codex/Screenbox probes ticking in
+// the background, feeding the sidebar kernel pills over WS and applying the
+// kernel-down queue-and-alert side effects. Provided (not merged) supervisor:
+// the checker only reads its status.
+const AdeHealthCheckerLayerLive = AdeHealthChecker.tickerLive().pipe(
+  Layer.provideMerge(AdeHealthChecker.layer),
+  Layer.provide(AdeHealthChecker.probesLive),
+  Layer.provide(PersistenceLayerLive),
+);
+
 const VoiceControlPersistenceLive = VoiceControlPersistenceLayerLive.pipe(
   Layer.provide(PersistenceLayerLive),
 );
@@ -465,7 +476,9 @@ const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
-  Layer.provideMerge(Layer.mergeAll(PersistenceLayerLive, AdeBootstrapLayerLive)),
+  Layer.provideMerge(
+    Layer.mergeAll(PersistenceLayerLive, AdeBootstrapLayerLive, AdeHealthCheckerLayerLive),
+  ),
   Layer.provideMerge(Layer.mergeAll(AutomationServiceLayerLive, Keybindings.layer)),
   Layer.provideMerge(ProviderRegistryLive),
   // The instance registry is the new routing keystone — text generation,

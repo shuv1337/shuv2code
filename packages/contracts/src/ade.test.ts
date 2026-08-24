@@ -7,6 +7,7 @@ import {
   Assignment,
   Bot,
   BotExecutionBinding,
+  FleetHealthSnapshot,
   IntegrationCandidate,
   LimitsConfig,
   MemoryDocument,
@@ -29,6 +30,7 @@ const decodeMemoryDocument = Schema.decodeUnknownSync(MemoryDocument);
 const decodeArtifactRef = Schema.decodeUnknownSync(ArtifactRef);
 const decodeAssignment = Schema.decodeUnknownSync(Assignment);
 const decodeLimitsConfig = Schema.decodeUnknownSync(LimitsConfig);
+const decodeFleetHealthSnapshot = Schema.decodeUnknownSync(FleetHealthSnapshot);
 
 it("round-trips a Bot and defaults computerUse to false", () => {
   const bot = roundTrip(Bot, {
@@ -313,4 +315,50 @@ it("round-trips an explicit LimitsConfig", () => {
     maxConcurrentScreenboxDesktops: 1,
     screenboxIdleStopMinutes: 5,
   });
+});
+
+it("round-trips a FleetHealthSnapshot across all pill states", () => {
+  const snapshot = roundTrip(FleetHealthSnapshot, {
+    targets: [
+      {
+        target: "shuvcode",
+        state: "healthy",
+        detail: null,
+        since: "2026-08-24T00:00:00.000Z",
+        checkedAt: "2026-08-24T00:05:00.000Z",
+      },
+      {
+        target: "codex",
+        state: "down",
+        detail: "codex app-server exited (2 consecutive failures)",
+        since: "2026-08-24T00:04:00.000Z",
+        checkedAt: "2026-08-24T00:05:00.000Z",
+      },
+      {
+        target: "screenbox",
+        state: "not-provisioned",
+        detail: "Screenbox runtime is not provisioned",
+        since: "2026-08-24T00:00:00.000Z",
+        checkedAt: "2026-08-24T00:05:00.000Z",
+      },
+    ],
+  });
+  assert.lengthOf(snapshot.targets, 3);
+  assert.strictEqual(snapshot.targets[1]!.state, "down");
+});
+
+it("rejects an unknown health target", () => {
+  assert.throws(() =>
+    decodeFleetHealthSnapshot({
+      targets: [
+        {
+          target: "warp-core",
+          state: "healthy",
+          detail: null,
+          since: "2026-08-24T00:00:00.000Z",
+          checkedAt: "2026-08-24T00:00:00.000Z",
+        },
+      ],
+    }),
+  );
 });
