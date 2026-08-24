@@ -183,6 +183,18 @@ export default Effect.gen(function* () {
         delivery_state IN ('pending', 'delivering', 'delivered', 'not-applicable')
       ),
       delivery_attempt_id TEXT,
+      -- Lease bookkeeping for the claim above: when the current attempt was
+      -- taken and how many attempts it has had. A claimed batch is only ever
+      -- re-driven (never re-keyed), so recovery leases it by age with a
+      -- bounded backoff instead of racing the live sender.
+      delivery_claimed_at TEXT,
+      delivery_attempts INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts >= 0),
+      -- Snapshot of the parental wait the claim was made under. Recovery
+      -- replays exactly what was claimed instead of re-deriving a wait from
+      -- current row shape, which could release a *later* wait over different
+      -- children. Deliberately not a foreign key: it is claim history, and a
+      -- deleted parent simply makes the release match nothing.
+      delivery_parent_assignment_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (recipient_bot_id) REFERENCES ade_bots(bot_id) ON DELETE CASCADE,

@@ -122,6 +122,118 @@ const denied = (reason: string): AdeInlineCheckDecision => ({ allowed: false, re
  * - nobody routes at themselves, at an archived bot, or at a bot that does
  *   not exist.
  */
+export interface AdeRoutingGrants extends AdeToolInlineChecksShape {
+  /**
+   * The bots this caller may see — the same grant table as routing, plus the
+   * caller itself. `fleet_read` uses it so visibility and authority cannot
+   * drift apart.
+   */
+  readonly visibleBots: (callerBotId: BotId) => Effect.Effect<ReadonlyArray<BotRow>>;
+}
+
+/** Build the grant table over one SQL client (used by checks *and* fleet_read). */
+export const makeAdeRoutingGrants = (sql: SqlClient.SqlClient): AdeRoutingGrants => {
+  const readBot = Effect.fn("AdeRoutingGrants.readBot")(function* (botId: string) {
+    const rows = yield* sql<BotRow>`
+      SELECT bot_id, name, structural_role, role_tag, project_id, archived_at
+      FROM ade_bots WHERE bot_id = ${botId}
+    `;
+    return rows[0] ?? null;
+  });
+
+  const sharedSpecialistAllowed = Effect.fn("AdeRoutingGrants.sharedSpecialistAllowed")(function* (
+    projectId: string,
+    specialistBotId: string,
+  ) {
+    const rows = yield* sql<{ shared_specialist_allow_list_json: string }>`
+      SELECT shared_specialist_allow_list_json FROM ade_projects
+      WHERE project_id = ${projectId}
+    `;
+    const raw = rows[0]?.shared_specialist_allow_list_json;
+    if (raw === undefined) return false;
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === "all") return true;
+    return Array.isArray(parsed) && parsed.includes(specialistBotId);
+  });
+
+  const decide = Effect.fn("AdeRoutingGrants.decide")(function* (
+    callerBotId: BotId,
+    target: BotRow,
+  ) {
+    const caller = yield* readBot(callerBotId);
+    if (caller === null) return denied("the calling bot no longer exists");
+    if (caller.archived_at !== null) return denied("the calling bot is archived");
+    if (callerBotId === target.bot_id) return denied("a bot cannot route work at itself");
+    if (target.archived_at !== null) return denied("that bot is archived");
+    if (caller.structural_role === "firstmate") return allowed;
+    if (caller.structural_role === "workspace-specialist") {
+      return denied("workspace specialists do not route work to other bots");
+    }
+    if (caller.project_id === null) {
+      return denied("the calling bot has no project to route within");
+    }
+    if (target.project_id === caller.project_id) return allowed;
+    if (target.structural_role === "workspace-specialist" && target.project_id === null) {
+      return (yield* sharedSpecialistAllowed(caller.project_id, target.bot_id))
+        ? allowed
+        : denied("that shared specialist is not on the project's allow list");
+    }
+    return denied("that bot belongs to another project");
+  });
+
+  const isRoutingTargetAllowed: AdeToolInlineChecksShape["isRoutingTargetAllowed"] = Effect.fn(
+    "AdeRoutingGrants.isRoutingTargetAllowed",
+  )(function* (input: { caller: AdeToolCallContext; targetBotId: BotId }) {
+    const target = yield* readBot(input.targetBotId);
+    if (target === null) return denied("no such bot");
+    return yield* decide(input.caller.botId, target);
+  }, Effect.orDie);
+
+  /**
+   * Ownership only. A settled assignment is deliberately still "owned": the
+   * engine answers a replayed `report_assignment_result` with
+   * `recorded: false` instead of the gate denying it, which is what keeps the
+   * tool idempotent across a restart.
+   */
+  const isAssignmentOwnedBy: AdeToolInlineChecksShape["isAssignmentOwnedBy"] = Effect.fn(
+    "AdeRoutingGrants.isAssignmentOwnedBy",
+  )(function* (input: { caller: AdeToolCallContext; assignmentId: AssignmentId }) {
+    const rows = yield* sql<{ recipient_bot_id: string }>`
+      SELECT recipient_bot_id FROM ade_assignments
+      WHERE assignment_id = ${input.assignmentId}
+    `;
+    const row = rows[0];
+    if (row === undefined) return denied("no such assignment");
+    if (row.recipient_bot_id !== input.caller.botId) {
+      return denied("that assignment belongs to another bot");
+    }
+    return allowed;
+  }, Effect.orDie);
+
+  const visibleBots: AdeRoutingGrants["visibleBots"] = Effect.fn("AdeRoutingGrants.visibleBots")(
+    function* (callerBotId: BotId) {
+      const bots = yield* sql<BotRow>`
+        SELECT bot_id, name, structural_role, role_tag, project_id, archived_at
+        FROM ade_bots WHERE archived_at IS NULL
+        ORDER BY created_at ASC, rowid ASC
+      `;
+      const visible: Array<BotRow> = [];
+      for (const bot of bots) {
+        if (bot.bot_id === callerBotId) {
+          visible.push(bot);
+          continue;
+        }
+        const decision = yield* decide(callerBotId, bot);
+        if (decision.allowed) visible.push(bot);
+      }
+      return visible;
+    },
+    Effect.orDie,
+  );
+
+  return { isRoutingTargetAllowed, isAssignmentOwnedBy, visibleBots };
+};
+
 export class AdeAssignmentInlineChecks extends Context.Service<
   AdeAssignmentInlineChecks,
   AdeToolInlineChecksShape
@@ -131,78 +243,11 @@ export class AdeAssignmentInlineChecks extends Context.Service<
       AdeToolInlineChecks,
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-
-        const readBot = Effect.fn("AdeAssignmentInlineChecks.readBot")(function* (botId: string) {
-          const rows = yield* sql<BotRow>`
-            SELECT bot_id, name, structural_role, role_tag, project_id, archived_at
-            FROM ade_bots WHERE bot_id = ${botId}
-          `;
-          return rows[0] ?? null;
+        const grants = makeAdeRoutingGrants(sql);
+        return AdeToolInlineChecks.of({
+          isRoutingTargetAllowed: grants.isRoutingTargetAllowed,
+          isAssignmentOwnedBy: grants.isAssignmentOwnedBy,
         });
-
-        const sharedSpecialistAllowed = Effect.fn(
-          "AdeAssignmentInlineChecks.sharedSpecialistAllowed",
-        )(function* (projectId: string, specialistBotId: string) {
-          const rows = yield* sql<{ shared_specialist_allow_list_json: string }>`
-            SELECT shared_specialist_allow_list_json FROM ade_projects
-            WHERE project_id = ${projectId}
-          `;
-          const raw = rows[0]?.shared_specialist_allow_list_json;
-          if (raw === undefined) return false;
-          const parsed: unknown = JSON.parse(raw);
-          if (parsed === "all") return true;
-          return Array.isArray(parsed) && parsed.includes(specialistBotId);
-        });
-
-        const isRoutingTargetAllowed: AdeToolInlineChecksShape["isRoutingTargetAllowed"] =
-          Effect.fn("AdeAssignmentInlineChecks.isRoutingTargetAllowed")(function* (input: {
-            caller: AdeToolCallContext;
-            targetBotId: BotId;
-          }) {
-            const caller = yield* readBot(input.caller.botId);
-            if (caller === null) return denied("the calling bot no longer exists");
-            if (caller.archived_at !== null) return denied("the calling bot is archived");
-            if (input.caller.botId === input.targetBotId) {
-              return denied("a bot cannot route work at itself");
-            }
-            const target = yield* readBot(input.targetBotId);
-            if (target === null) return denied("no such bot");
-            if (target.archived_at !== null) return denied("that bot is archived");
-            if (caller.structural_role === "firstmate") return allowed;
-            if (caller.structural_role === "workspace-specialist") {
-              return denied("workspace specialists do not route work to other bots");
-            }
-            if (caller.project_id === null) {
-              return denied("the calling bot has no project to route within");
-            }
-            if (target.project_id === caller.project_id) return allowed;
-            if (target.structural_role === "workspace-specialist" && target.project_id === null) {
-              return (yield* sharedSpecialistAllowed(caller.project_id, target.bot_id))
-                ? allowed
-                : denied("that shared specialist is not on the project's allow list");
-            }
-            return denied("that bot belongs to another project");
-          }, Effect.orDie);
-
-        const isAssignmentOwnedBy: AdeToolInlineChecksShape["isAssignmentOwnedBy"] = Effect.fn(
-          "AdeAssignmentInlineChecks.isAssignmentOwnedBy",
-        )(function* (input: { caller: AdeToolCallContext; assignmentId: AssignmentId }) {
-          const rows = yield* sql<{ recipient_bot_id: string; status: string }>`
-              SELECT recipient_bot_id, status FROM ade_assignments
-              WHERE assignment_id = ${input.assignmentId}
-            `;
-          const row = rows[0];
-          if (row === undefined) return denied("no such assignment");
-          if (row.recipient_bot_id !== input.caller.botId) {
-            return denied("that assignment belongs to another bot");
-          }
-          if (["completed", "failed", "cancelled"].includes(row.status)) {
-            return denied(`that assignment already settled as '${row.status}'`);
-          }
-          return allowed;
-        }, Effect.orDie);
-
-        return AdeToolInlineChecks.of({ isRoutingTargetAllowed, isAssignmentOwnedBy });
       }),
     );
 }
@@ -248,16 +293,17 @@ export class AdeAssignmentToolHandlers extends Context.Service<
       const engine = yield* AdeAssignmentEngine;
       const port = yield* AdeAssignmentKernelPort;
       const sql = yield* SqlClient.SqlClient;
+      const grants = makeAdeRoutingGrants(sql);
 
+      /**
+       * Scoped by the same grant table as routing: a bot reads the fleet it
+       * may act on (plus itself), never the whole roster.
+       */
       const fleetRead: AdeToolHandlersShape["fleetRead"] = Effect.fn(
         "AdeAssignmentToolHandlers.fleetRead",
       )(
         function* (ctx: AdeToolCallContext, input: FleetReadInput) {
-          const bots = yield* sql<BotRow>`
-            SELECT bot_id, name, structural_role, role_tag, project_id, archived_at
-            FROM ade_bots WHERE archived_at IS NULL
-            ORDER BY created_at ASC, rowid ASC
-          `;
+          const bots = yield* grants.visibleBots(ctx.botId);
           const narrowed =
             input.projectId === undefined
               ? bots
@@ -286,7 +332,6 @@ export class AdeAssignmentToolHandlers extends Context.Service<
         },
         Effect.catchTags({
           PersistenceSqlError: (error) => executionError("fleet_read", error.message),
-          SqlError: (error) => executionError("fleet_read", error.message),
         }),
       );
 
@@ -333,7 +378,16 @@ export class AdeAssignmentToolHandlers extends Context.Service<
         }),
       );
 
-      /** Steering never interrupts and never changes assignment status. */
+      /**
+       * Steering never interrupts and never changes assignment status.
+       *
+       * **At-least-once, deliberately**: steering carries no durable record to
+       * dedupe against, so a call replayed after a restart (the gate's
+       * re-request dedupe is in-memory only) can steer the session twice. That
+       * is accepted for V1 — a repeated nudge is low-harm, and inventing a
+       * durable steer log would buy nothing under trusted-host. Assignment
+       * *state* changes stay exactly-once; only this nudge is not.
+       */
       const steerPrimary: AdeToolHandlersShape["steerPrimary"] = Effect.fn(
         "AdeAssignmentToolHandlers.steerPrimary",
       )(
