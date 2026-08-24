@@ -3,6 +3,8 @@ import * as NodeAssert from "node:assert/strict";
 import { it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import { describe } from "vite-plus/test";
 
@@ -12,16 +14,18 @@ import type { AdeCodexToolInvocation } from "./AdeCodexKernelAdapter.ts";
 import {
   ADE_APPROVAL_NAME_PATTERN,
   ADE_BASE_TOOL_NAMES,
-  AdeToolGate,
+  AdeShuvcodeAttachConflictError,
   AdeToolExecutionError,
+  AdeToolGate,
+  AdeToolHandlers,
   adeToolHandlersUnavailable,
   makeAdeToolGate,
   renderAdeToolDenial,
+  sanitizeAdeToolFailureDetail,
   type AdeScreenboxToolPlaneShape,
   type AdeToolCallContext,
   type AdeToolHandlersShape,
   type AdeToolInlineChecksShape,
-  type AdeToolOutcome,
   type AdeToolSessionPrincipal,
 } from "./AdeToolGate.ts";
 import type {
@@ -37,6 +41,9 @@ const BOT_B = BotId.make("bot-beta");
 
 const principalA: AdeToolSessionPrincipal = { botId: BOT_A, purpose: "primary-text" };
 const principalB: AdeToolSessionPrincipal = { botId: BOT_B, purpose: "parallel-work" };
+
+const SESSION_A = KernelSessionId.make("oc-session-a");
+const SESSION_B = KernelSessionId.make("oc-session-b");
 
 const ctxFor = (
   principal: AdeToolSessionPrincipal,
@@ -67,6 +74,12 @@ const noScreenbox: AdeScreenboxToolPlaneShape = {
     Effect.succeed({ eligible: false, reason: "Screenbox runtime is not available" } as const),
   forward: (ctx) => Effect.fail(new AdeToolExecutionError({ tool: ctx.tool, detail: "no" })),
 };
+
+const screenboxDef = (name: string) => ({
+  name,
+  description: `screenbox ${name}`,
+  parameters: { type: "object" } as const,
+});
 
 /** Handlers that echo the structurally resolved caller — attribution probes. */
 const echoHandlers: AdeToolHandlersShape = {
@@ -99,9 +112,16 @@ const makeFakeSeam = Effect.gen(function* () {
   const configured: Array<{ threadId: ThreadId; config: ProviderDynamicToolThreadConfig }> = [];
   const cleared: Array<ThreadId> = [];
   const replyErrors: Array<FakeSeamError> = [];
+  const configureErrors: Array<FakeSeamError> = [];
+  /** Signals injected by configureThread itself — the live-session drain. */
+  const drainOnConfigure: Array<ProviderDynamicToolCall> = [];
   const seam: ProviderDynamicToolsShape<FakeSeamError> = {
     configureThread: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        const nextError = configureErrors.shift();
+        if (nextError !== undefined) {
+          return Effect.fail(nextError);
+        }
         configured.push({
           threadId: input.threadId,
           config: {
@@ -109,6 +129,12 @@ const makeFakeSeam = Effect.gen(function* () {
             ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
           },
         });
+        const drained = drainOnConfigure.splice(0);
+        return Effect.forEach(
+          drained,
+          (call) => Queue.offer(signals, { kind: "requested", call }),
+          { discard: true },
+        );
       }),
     clearThread: (threadId) =>
       Effect.sync(() => {
@@ -134,7 +160,17 @@ const makeFakeSeam = Effect.gen(function* () {
     Queue.offer(signals, { kind: "requested", call }).pipe(Effect.asVoid);
   const cancel = (threadId: ThreadId, callId: string) =>
     Queue.offer(signals, { kind: "cancelled", threadId, callId }).pipe(Effect.asVoid);
-  return { seam, replies, configured, cleared, replyErrors, request, cancel };
+  return {
+    seam,
+    replies,
+    configured,
+    cleared,
+    replyErrors,
+    configureErrors,
+    drainOnConfigure,
+    request,
+    cancel,
+  };
 });
 
 // ---------------------------------------------------------------------------
@@ -142,9 +178,27 @@ const makeFakeSeam = Effect.gen(function* () {
 // ---------------------------------------------------------------------------
 
 describe("AdeToolGate dispatch attribution", () => {
-  it.effect("resolves the same tool name on two codex sessions to distinct bots", () =>
+  it.effect("resolves the same tool name on two overlapping codex sessions to distinct bots", () =>
     Effect.gen(function* () {
-      const gate = makeEchoGate();
+      const release = yield* Deferred.make<void>();
+      const started = yield* Deferred.make<void>();
+      let inFlightCount = 0;
+      const gate = makeAdeToolGate({
+        handlers: {
+          ...adeToolHandlersUnavailable,
+          updateMemory: (ctx) =>
+            Effect.gen(function* () {
+              inFlightCount += 1;
+              if (inFlightCount === 2) {
+                yield* Deferred.succeed(started, undefined);
+              }
+              yield* Deferred.await(release);
+              return `memory:${ctx.botId}:${ctx.engine}:${ctx.sessionId}`;
+            }),
+        },
+        checks: allowAllChecks,
+        screenbox: noScreenbox,
+      });
       const handlerA = gate.makeCodexToolCallHandler(principalA);
       const handlerB = gate.makeCodexToolCallHandler(principalB);
       const invocation = (threadId: string): AdeCodexToolInvocation => ({
@@ -155,8 +209,14 @@ describe("AdeToolGate dispatch attribution", () => {
         namespace: null,
         arguments: { content: "remember this" },
       });
-      const resultA = yield* handlerA(invocation("codex-thread-a"));
-      const resultB = yield* handlerB(invocation("codex-thread-b"));
+      // Both calls are genuinely concurrent: neither completes before both
+      // have entered the handler.
+      const fiberA = yield* Effect.forkChild(handlerA(invocation("codex-thread-a")));
+      const fiberB = yield* Effect.forkChild(handlerB(invocation("codex-thread-b")));
+      yield* Deferred.await(started);
+      yield* Deferred.succeed(release, undefined);
+      const resultA = yield* Fiber.join(fiberA);
+      const resultB = yield* Fiber.join(fiberB);
       NodeAssert.deepEqual(resultA, {
         success: true,
         contentItems: [{ type: "inputText", text: `memory:${BOT_A}:codex:codex-thread-a` }],
@@ -168,39 +228,71 @@ describe("AdeToolGate dispatch attribution", () => {
     }),
   );
 
-  it.effect("resolves the same tool name on two shuvcode threads to distinct bots", () =>
-    Effect.gen(function* () {
-      const gate = makeEchoGate();
-      const fake = yield* makeFakeSeam;
-      const threadA = ThreadId.make("thread-a");
-      const threadB = ThreadId.make("thread-b");
-      yield* gate.attachShuvcodeThread(fake.seam, { threadId: threadA, principal: principalA });
-      yield* gate.attachShuvcodeThread(fake.seam, { threadId: threadB, principal: principalB });
-      yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
-      yield* fake.request({
-        threadId: threadA,
-        callId: "call-a",
-        tool: "update_memory",
-        input: { content: "a" },
-      });
-      yield* fake.request({
-        threadId: threadB,
-        callId: "call-b",
-        tool: "update_memory",
-        input: { content: "b" },
-      });
-      const first = yield* Queue.take(fake.replies);
-      const second = yield* Queue.take(fake.replies);
-      const byCallId = new Map([first, second].map((reply) => [reply.callId, reply]));
-      NodeAssert.deepEqual(byCallId.get("call-a")?.result, {
-        status: "completed",
-        content: `memory:${BOT_A}:shuvcode:${threadA}`,
-      });
-      NodeAssert.deepEqual(byCallId.get("call-b")?.result, {
-        status: "completed",
-        content: `memory:${BOT_B}:shuvcode:${threadB}`,
-      });
-    }),
+  it.effect(
+    "resolves the same tool name on two overlapping shuvcode threads to distinct bots",
+    () =>
+      Effect.gen(function* () {
+        const release = yield* Deferred.make<void>();
+        const started = yield* Deferred.make<void>();
+        let inFlightCount = 0;
+        const gate = makeAdeToolGate({
+          handlers: {
+            ...adeToolHandlersUnavailable,
+            updateMemory: (ctx) =>
+              Effect.gen(function* () {
+                inFlightCount += 1;
+                if (inFlightCount === 2) {
+                  yield* Deferred.succeed(started, undefined);
+                }
+                yield* Deferred.await(release);
+                return `memory:${ctx.botId}:${ctx.engine}:${ctx.sessionId}`;
+              }),
+          },
+          checks: allowAllChecks,
+          screenbox: noScreenbox,
+        });
+        const fake = yield* makeFakeSeam;
+        const threadA = ThreadId.make("thread-a");
+        const threadB = ThreadId.make("thread-b");
+        yield* gate.attachShuvcodeThread(fake.seam, {
+          threadId: threadA,
+          sessionId: SESSION_A,
+          principal: principalA,
+        });
+        yield* gate.attachShuvcodeThread(fake.seam, {
+          threadId: threadB,
+          sessionId: SESSION_B,
+          principal: principalB,
+        });
+        yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
+        yield* fake.request({
+          threadId: threadA,
+          callId: "call-a",
+          tool: "update_memory",
+          input: { content: "a" },
+        });
+        yield* fake.request({
+          threadId: threadB,
+          callId: "call-b",
+          tool: "update_memory",
+          input: { content: "b" },
+        });
+        yield* Deferred.await(started);
+        yield* Deferred.succeed(release, undefined);
+        const first = yield* Queue.take(fake.replies);
+        const second = yield* Queue.take(fake.replies);
+        const byCallId = new Map([first, second].map((reply) => [reply.callId, reply]));
+        // ctx.sessionId is the kernel-native session id supplied at attach —
+        // never the shuv2code ThreadId.
+        NodeAssert.deepEqual(byCallId.get("call-a")?.result, {
+          status: "completed",
+          content: `memory:${BOT_A}:shuvcode:${SESSION_A}`,
+        });
+        NodeAssert.deepEqual(byCallId.get("call-b")?.result, {
+          status: "completed",
+          content: `memory:${BOT_B}:shuvcode:${SESSION_B}`,
+        });
+      }),
   );
 
   it.effect("refuses calls on shuvcode threads the gate never attached", () =>
@@ -248,7 +340,11 @@ describe("AdeToolGate registration", () => {
       const gate = makeEchoGate();
       const fake = yield* makeFakeSeam;
       const threadId = ThreadId.make("thread-a");
-      yield* gate.attachShuvcodeThread(fake.seam, { threadId, principal: principalA });
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
       NodeAssert.equal(fake.configured.length, 1);
       const configuredEntry = fake.configured[0];
       NodeAssert.ok(configuredEntry);
@@ -263,12 +359,115 @@ describe("AdeToolGate registration", () => {
     }),
   );
 
+  it.effect("attributes calls drained by configureThread itself (re-attach path)", () =>
+    Effect.gen(function* () {
+      const gate = makeEchoGate();
+      const fake = yield* makeFakeSeam;
+      const threadId = ThreadId.make("thread-a");
+      yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
+      // The live-session configure drains this pending call into the feed
+      // before attachShuvcodeThread returns — the binding must already exist.
+      fake.drainOnConfigure.push({
+        threadId,
+        callId: "call-drained",
+        tool: "update_memory",
+        input: { content: "restored" },
+      });
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      const reply = yield* Queue.take(fake.replies);
+      NodeAssert.deepEqual(reply.result, {
+        status: "completed",
+        content: `memory:${BOT_A}:shuvcode:${SESSION_A}`,
+      });
+    }),
+  );
+
+  it.effect("rolls the binding back when configureThread fails", () =>
+    Effect.gen(function* () {
+      const gate = makeEchoGate();
+      const fake = yield* makeFakeSeam;
+      const threadId = ThreadId.make("thread-a");
+      fake.configureErrors.push({ status: 500, message: "configure failed" });
+      const attachResult = yield* gate
+        .attachShuvcodeThread(fake.seam, {
+          threadId,
+          sessionId: SESSION_A,
+          principal: principalA,
+        })
+        .pipe(Effect.result);
+      NodeAssert.equal(attachResult._tag, "Failure");
+      // No binding survived: calls on the thread are unattributable.
+      yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
+      yield* fake.request({
+        threadId,
+        callId: "call-1",
+        tool: "update_memory",
+        input: { content: "a" },
+      });
+      const reply = yield* Queue.take(fake.replies);
+      NodeAssert.equal(reply.result.status, "failed");
+      NodeAssert.match(
+        reply.result.status === "failed" ? reply.result.message : "",
+        /ade:unknown-tool/,
+      );
+    }),
+  );
+
+  it.effect("refuses re-attaching a live thread for a different principal", () =>
+    Effect.gen(function* () {
+      const gate = makeEchoGate();
+      const fake = yield* makeFakeSeam;
+      const threadId = ThreadId.make("thread-a");
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      const conflicted = yield* gate
+        .attachShuvcodeThread(fake.seam, {
+          threadId,
+          sessionId: SESSION_B,
+          principal: principalB,
+        })
+        .pipe(Effect.result);
+      NodeAssert.equal(conflicted._tag, "Failure");
+      if (conflicted._tag === "Failure") {
+        const failure = conflicted.failure;
+        NodeAssert.ok("_tag" in failure && failure._tag === "AdeShuvcodeAttachConflictError");
+        const conflict = failure as AdeShuvcodeAttachConflictError;
+        NodeAssert.equal(conflict.attachedBotId, BOT_A);
+        NodeAssert.equal(conflict.requestedBotId, BOT_B);
+      }
+      // Same-principal re-attach (restart path) stays allowed.
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      // After an explicit detach the thread may be re-bound.
+      yield* gate.detachShuvcodeThread(fake.seam, threadId);
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_B,
+        principal: principalB,
+      });
+    }),
+  );
+
   it.effect("detach clears the thread and stops attributing its calls", () =>
     Effect.gen(function* () {
       const gate = makeEchoGate();
       const fake = yield* makeFakeSeam;
       const threadId = ThreadId.make("thread-a");
-      yield* gate.attachShuvcodeThread(fake.seam, { threadId, principal: principalA });
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
       yield* gate.detachShuvcodeThread(fake.seam, threadId);
       NodeAssert.deepEqual(fake.cleared, [threadId]);
       yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
@@ -293,7 +492,10 @@ describe("AdeToolGate inline checks", () => {
     makeAdeToolGate({
       handlers: adeToolHandlersUnavailable,
       checks: denyAllChecks,
-      screenbox: noScreenbox,
+      screenbox: {
+        ...noScreenbox,
+        toolsFor: () => Effect.succeed([screenboxDef("desktop_screenshot")]),
+      },
     });
 
   it.effect("denies routing when the target is not allowed", () =>
@@ -340,7 +542,7 @@ describe("AdeToolGate inline checks", () => {
     }),
   );
 
-  it.effect("denies desktop tools while Screenbox is not eligible (pre-S14 seam)", () =>
+  it.effect("denies catalogued desktop tools while Screenbox is not eligible (pre-S14 seam)", () =>
     Effect.gen(function* () {
       const gate = makeDenyGate();
       const outcome = yield* gate.dispatch(ctxFor(principalA, "desktop_screenshot"), {});
@@ -352,6 +554,41 @@ describe("AdeToolGate inline checks", () => {
           reason: "Screenbox runtime is not available",
         },
       });
+    }),
+  );
+
+  it.effect("denies desktop names outside the sanitized Screenbox catalog before forward", () =>
+    Effect.gen(function* () {
+      const forwarded: Array<string> = [];
+      const gate = makeAdeToolGate({
+        handlers: adeToolHandlersUnavailable,
+        checks: allowAllChecks,
+        screenbox: {
+          // Eligible plane whose catalog carries one valid def and one the
+          // sanitizer drops (invalid name).
+          toolsFor: () =>
+            Effect.succeed([screenboxDef("desktop_click"), screenboxDef("desktop_bad name")]),
+          eligibility: () => Effect.succeed({ eligible: true } as const),
+          forward: (ctx) =>
+            Effect.sync(() => {
+              forwarded.push(ctx.tool);
+              return "forwarded";
+            }),
+        },
+      });
+      // Guessed name never supplied by the seam → unknown-tool, no forward.
+      const guessed = yield* gate.dispatch(ctxFor(principalA, "desktop_shell"), {});
+      NodeAssert.deepEqual(guessed, {
+        _tag: "denied",
+        denial: { _tag: "unknown-tool", tool: "desktop_shell" },
+      });
+      // Sanitizer-dropped def → unknown-tool, no forward.
+      const dropped = yield* gate.dispatch(ctxFor(principalA, "desktop_bad name"), {});
+      NodeAssert.equal(dropped._tag, "denied");
+      // The catalogued def forwards.
+      const ok = yield* gate.dispatch(ctxFor(principalA, "desktop_click"), {});
+      NodeAssert.deepEqual(ok, { _tag: "completed", content: "forwarded" });
+      NodeAssert.deepEqual(forwarded, ["desktop_click"]);
     }),
   );
 
@@ -418,6 +655,72 @@ describe("AdeToolGate inline checks", () => {
       NodeAssert.equal(defect._tag, "failed");
     }),
   );
+
+  it.effect("contains defects thrown by an inline check on both kernel bridges", () =>
+    Effect.gen(function* () {
+      const throwingChecks: AdeToolInlineChecksShape = {
+        ...allowAllChecks,
+        isRoutingTargetAllowed: () =>
+          Effect.sync(() => {
+            throw new Error("checks backend exploded");
+          }),
+      };
+      const gate = makeAdeToolGate({
+        handlers: echoHandlers,
+        checks: throwingChecks,
+        screenbox: noScreenbox,
+      });
+      const input = { recipientBotId: BOT_B, instruction: "go" };
+      // Codex bridge: the handler still resolves to a failed tool result —
+      // the defect never escapes into handleServerRequest.
+      const codexResult = yield* gate.makeCodexToolCallHandler(principalA)({
+        threadId: "codex-thread-a",
+        turnId: "turn-1",
+        callId: "call-1",
+        tool: "create_assignment",
+        namespace: null,
+        arguments: input,
+      });
+      NodeAssert.equal(codexResult.success, false);
+      const firstItem = codexResult.contentItems[0];
+      NodeAssert.ok(firstItem !== undefined && firstItem.type === "inputText");
+      NodeAssert.match(firstItem.text, /\[ade:failed\]/);
+      // shuvcode bridge: the dispatch fiber survives and still settles the
+      // call with a reply (the S4 requested↔reply pairing holds).
+      const fake = yield* makeFakeSeam;
+      const threadId = ThreadId.make("thread-a");
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
+      yield* fake.request({
+        threadId,
+        callId: "call-check-defect",
+        tool: "create_assignment",
+        input,
+      });
+      const reply = yield* Queue.take(fake.replies);
+      NodeAssert.equal(reply.callId, "call-check-defect");
+      NodeAssert.equal(reply.result.status, "failed");
+      NodeAssert.match(
+        reply.result.status === "failed" ? reply.result.message : "",
+        /\[ade:failed\]/,
+      );
+    }),
+  );
+
+  it.effect("bounds and scrubs handler failure detail before it reaches the model", () =>
+    Effect.sync(() => {
+      const noisy = `line1\u0007\u0000${"x".repeat(5_000)}`;
+      const rendered = new AdeToolExecutionError({ tool: "update_memory", detail: noisy }).message;
+      NodeAssert.ok(!rendered.includes("\u0000") && !rendered.includes("\u0007"));
+      NodeAssert.ok(rendered.length < 2_200);
+      NodeAssert.match(rendered, /truncated/);
+      NodeAssert.equal(sanitizeAdeToolFailureDetail("plain"), "plain");
+    }),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -432,10 +735,10 @@ describe("AdeToolGate approval boundary", () => {
       const smugglingScreenbox: AdeScreenboxToolPlaneShape = {
         toolsFor: () =>
           Effect.succeed([
-            { name: "desktop_click", description: "click", parameters: { type: "object" } },
-            { name: "desktop_approve", description: "nope", parameters: { type: "object" } },
-            { name: "prepare_approval", description: "nope", parameters: { type: "object" } },
-            { name: "commit_approval", description: "nope", parameters: { type: "object" } },
+            screenboxDef("desktop_click"),
+            screenboxDef("desktop_approve"),
+            screenboxDef("prepare_approval"),
+            screenboxDef("commit_approval"),
           ]),
         eligibility: () => Effect.succeed({ eligible: true } as const),
         forward: () => Effect.succeed("forwarded"),
@@ -457,6 +760,15 @@ describe("AdeToolGate approval boundary", () => {
       for (const spec of codexSpecs) {
         NodeAssert.doesNotMatch(spec.name, ADE_APPROVAL_NAME_PATTERN);
       }
+      const fake = yield* makeFakeSeam;
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId: ThreadId.make("thread-a"),
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      for (const tool of fake.configured[0]?.config.tools ?? []) {
+        NodeAssert.doesNotMatch(tool.name, ADE_APPROVAL_NAME_PATTERN);
+      }
     }),
   );
 
@@ -467,7 +779,7 @@ describe("AdeToolGate approval boundary", () => {
         handlers: echoHandlers,
         checks: allowAllChecks,
         screenbox: {
-          toolsFor: () => Effect.succeed([]),
+          toolsFor: () => Effect.succeed([screenboxDef("desktop_approve")]),
           eligibility: () => Effect.succeed({ eligible: true } as const),
           forward: (ctx) =>
             Effect.sync(() => {
@@ -525,7 +837,11 @@ describe("AdeToolGate shuvcode loop", () => {
       });
       const fake = yield* makeFakeSeam;
       const threadId = ThreadId.make("thread-a");
-      yield* gate.attachShuvcodeThread(fake.seam, { threadId, principal: principalA });
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
       yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
       yield* fake.request({
         threadId,
@@ -549,7 +865,11 @@ describe("AdeToolGate shuvcode loop", () => {
       const gate = makeEchoGate();
       const fake = yield* makeFakeSeam;
       const threadId = ThreadId.make("thread-a");
-      yield* gate.attachShuvcodeThread(fake.seam, { threadId, principal: principalA });
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
       yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
       fake.replyErrors.push({ status: 409, message: "already settled" });
       yield* fake.request({
@@ -569,34 +889,171 @@ describe("AdeToolGate shuvcode loop", () => {
       NodeAssert.equal(reply.callId, "call-after");
     }),
   );
+
+  it.effect("replays the recorded outcome for a re-requested call instead of re-executing", () =>
+    Effect.gen(function* () {
+      let executions = 0;
+      const gate = makeAdeToolGate({
+        handlers: {
+          ...adeToolHandlersUnavailable,
+          updateMemory: () =>
+            Effect.sync(() => {
+              executions += 1;
+              return `run-${executions}`;
+            }),
+        },
+        checks: allowAllChecks,
+        screenbox: noScreenbox,
+      });
+      const fake = yield* makeFakeSeam;
+      const threadId = ThreadId.make("thread-a");
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
+      // First execution replies but the reply races provider-side
+      // cancellation (benign 409) — provider still considers the call open.
+      fake.replyErrors.push({ status: 409, message: "already settled" });
+      yield* fake.request({
+        threadId,
+        callId: "call-1",
+        tool: "update_memory",
+        input: { content: "a" },
+      });
+      // S4: the still-pending call is re-`requested` on the next attach.
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      yield* fake.request({
+        threadId,
+        callId: "call-1",
+        tool: "update_memory",
+        input: { content: "a" },
+      });
+      const reply = yield* Queue.take(fake.replies);
+      NodeAssert.equal(reply.callId, "call-1");
+      NodeAssert.deepEqual(reply.result, { status: "completed", content: "run-1" });
+      NodeAssert.equal(executions, 1);
+    }),
+  );
+
+  it.effect(
+    "does not execute a previously-run call as a new principal after detach + re-attach",
+    () =>
+      Effect.gen(function* () {
+        const executedBy: Array<string> = [];
+        const gate = makeAdeToolGate({
+          handlers: {
+            ...adeToolHandlersUnavailable,
+            updateMemory: (ctx) =>
+              Effect.sync(() => {
+                executedBy.push(ctx.botId);
+                return `memory:${ctx.botId}`;
+              }),
+          },
+          checks: allowAllChecks,
+          screenbox: noScreenbox,
+        });
+        const fake = yield* makeFakeSeam;
+        const threadId = ThreadId.make("thread-a");
+        yield* gate.attachShuvcodeThread(fake.seam, {
+          threadId,
+          sessionId: SESSION_A,
+          principal: principalA,
+        });
+        yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
+        yield* fake.request({
+          threadId,
+          callId: "call-1",
+          tool: "update_memory",
+          input: { content: "a" },
+        });
+        const firstReply = yield* Queue.take(fake.replies);
+        NodeAssert.deepEqual(firstReply.result, {
+          status: "completed",
+          content: `memory:${BOT_A}`,
+        });
+        // Rebind the thread to a different principal; detach drops the
+        // dedupe memory with the binding, so a re-request executes under the
+        // NEW owner — never replays or re-attributes bot A's execution.
+        yield* gate.detachShuvcodeThread(fake.seam, threadId);
+        yield* gate.attachShuvcodeThread(fake.seam, {
+          threadId,
+          sessionId: SESSION_B,
+          principal: principalB,
+        });
+        yield* fake.request({
+          threadId,
+          callId: "call-2",
+          tool: "update_memory",
+          input: { content: "b" },
+        });
+        const secondReply = yield* Queue.take(fake.replies);
+        NodeAssert.deepEqual(secondReply.result, {
+          status: "completed",
+          content: `memory:${BOT_B}`,
+        });
+        NodeAssert.deepEqual(executedBy, [BOT_A, BOT_B]);
+      }),
+  );
 });
 
 // ---------------------------------------------------------------------------
-// Fail-closed layer wiring
+// Layer wiring
 // ---------------------------------------------------------------------------
 
-describe("AdeToolGate.layerFailClosed", () => {
-  it.effect("denies routing, ownership, and Screenbox by default", () =>
+describe("AdeToolGate layers", () => {
+  it.effect("denies routing, ownership, and unknown desktop names by default", () =>
     Effect.gen(function* () {
       const gate = yield* AdeToolGate;
-      const cases: ReadonlyArray<readonly [string, unknown, AdeToolOutcome["_tag"]]> = [
-        ["create_assignment", { recipientBotId: BOT_B, instruction: "go" }, "denied"],
-        [
-          "report_assignment_result",
-          { assignmentId: "a", status: "failed", summary: "s" },
-          "denied",
-        ],
-        ["desktop_look", {}, "denied"],
-        ["update_memory", { content: "x" }, "denied"],
+      const cases: ReadonlyArray<readonly [string, unknown]> = [
+        ["create_assignment", { recipientBotId: BOT_B, instruction: "go" }],
+        ["report_assignment_result", { assignmentId: "a", status: "failed", summary: "s" }],
+        ["desktop_look", {}],
+        ["update_memory", { content: "x" }],
       ];
-      for (const [tool, input, expected] of cases) {
+      for (const [tool, input] of cases) {
         const outcome = yield* gate.dispatch(ctxFor(principalA, tool), input);
-        NodeAssert.equal(outcome._tag, expected);
+        NodeAssert.equal(outcome._tag, "denied");
         if (outcome._tag === "denied") {
           // Every default denial renders a model-readable message.
           NodeAssert.ok(renderAdeToolDenial(outcome.denial).startsWith("[ade:"));
         }
       }
     }).pipe(Effect.provide(AdeToolGate.layerFailClosed)),
+  );
+
+  it.effect("layerPartial patches stack: S7 and S8 slices compose without reverting", () =>
+    Effect.gen(function* () {
+      const handlers = yield* AdeToolHandlers;
+      const memory = yield* handlers.updateMemory(ctxFor(principalA, "update_memory"), {
+        content: "notes",
+      });
+      NodeAssert.equal(memory, "s8-memory");
+      const fleet = yield* handlers.fleetRead(ctxFor(principalA, "fleet_read"), {});
+      NodeAssert.equal(fleet, "s7-fleet");
+      // Slices neither layer provided stay at the not-yet-available base.
+      const steer = yield* handlers
+        .steerPrimary(ctxFor(principalA, "steer_primary"), {
+          targetBotId: BOT_B,
+          text: "go",
+        })
+        .pipe(Effect.result);
+      NodeAssert.equal(steer._tag, "Failure");
+    }).pipe(
+      Effect.provide(
+        AdeToolHandlers.layerPartial({ updateMemory: () => Effect.succeed("s8-memory") }).pipe(
+          Layer.provide(
+            AdeToolHandlers.layerPartial({ fleetRead: () => Effect.succeed("s7-fleet") }).pipe(
+              Layer.provide(AdeToolHandlers.layerUnavailable),
+            ),
+          ),
+        ),
+      ),
+    ),
   );
 });

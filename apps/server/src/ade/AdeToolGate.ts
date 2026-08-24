@@ -94,6 +94,15 @@ export interface AdeToolCallContext extends AdeToolSessionPrincipal {
  * No bot-reachable surface may name an approval operation. Any tool name
  * matching this pattern is rejected at registration time and treated as
  * unknown at dispatch time — even if a future seam tried to smuggle one in.
+ *
+ * Intent, not mechanism: the structural guarantee is that approvals have no
+ * tool-plane surface at all — captain approvals live on the client surface
+ * (WS + `ade:approve`, ADR §10.4), and the §4.7 two-phase verbal
+ * `prepare_approval`/`commit_approval` pair is a captain-channel voice plane
+ * (S16), deliberately not part of this gate. This denylist is V1
+ * defense-in-depth on top of that absence. It only catches names containing
+ * "approv"; if S14 upstream ever ships approval-adjacent desktop tool names
+ * (e.g. `desktop_authorize`), revisit the pattern alongside that catalog.
  */
 export const ADE_APPROVAL_NAME_PATTERN = /approv/i;
 
@@ -147,9 +156,16 @@ export const renderAdeToolDenial = (denial: AdeToolDenial): string => {
   }
 };
 
+/**
+ * Model-facing rendering of a non-success outcome. `failed` carries the same
+ * machine-greppable `[ade:…]` marker shape as denials.
+ */
 export const renderAdeToolOutcomeFailure = (
   outcome: Exclude<AdeToolOutcome, { _tag: "completed" }>,
-): string => (outcome._tag === "denied" ? renderAdeToolDenial(outcome.denial) : outcome.message);
+): string =>
+  outcome._tag === "denied"
+    ? renderAdeToolDenial(outcome.denial)
+    : `[ade:failed] ${outcome.message}`;
 
 // ---------------------------------------------------------------------------
 // Handler seam errors (S7/S8 handlers fail with these)
@@ -167,7 +183,23 @@ export class AdeToolNotYetAvailableError extends Schema.TaggedErrorClass<AdeTool
   }
 }
 
-/** Domain failure raised by a real handler; `detail` is model-visible. */
+/** Bound on how much handler-supplied failure detail may reach the model. */
+export const ADE_TOOL_FAILURE_DETAIL_MAX_LENGTH = 2_000;
+
+/**
+ * Scrub handler-supplied failure detail before it becomes model-visible:
+ * strip control characters (which can smuggle terminal escapes / protocol
+ * noise into a tool result) and bound the length.
+ */
+export const sanitizeAdeToolFailureDetail = (detail: string): string => {
+  // eslint-disable-next-line no-control-regex -- stripping controls is the point
+  const scrubbed = detail.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ");
+  return scrubbed.length <= ADE_TOOL_FAILURE_DETAIL_MAX_LENGTH
+    ? scrubbed
+    : `${scrubbed.slice(0, ADE_TOOL_FAILURE_DETAIL_MAX_LENGTH)}… (truncated)`;
+};
+
+/** Domain failure raised by a real handler; `detail` is model-visible (scrubbed + bounded). */
 export class AdeToolExecutionError extends Schema.TaggedErrorClass<AdeToolExecutionError>()(
   "AdeToolExecutionError",
   {
@@ -176,7 +208,7 @@ export class AdeToolExecutionError extends Schema.TaggedErrorClass<AdeToolExecut
   },
 ) {
   override get message(): string {
-    return `ADE tool '${this.tool}' failed: ${this.detail}`;
+    return `ADE tool '${this.tool}' failed: ${sanitizeAdeToolFailureDetail(this.detail)}`;
   }
 }
 
@@ -253,14 +285,35 @@ export const adeToolHandlersUnavailable: AdeToolHandlersShape = {
   updateMemory: unavailableHandler(),
 };
 
+/**
+ * Handler seam. Idempotency contract: the gate's shuvcode re-request dedupe
+ * (see `runShuvcodeDispatchLoop`) is **in-memory only** — after a process
+ * restart a re-requested call that already executed will execute again.
+ * Handlers (S7 assignments, S8 memory, S14 Screenbox forward) therefore
+ * remain responsible for their own durable idempotency (e.g. assignment
+ * `idempotencyKey`, last-write-wins memory replace).
+ */
 export class AdeToolHandlers extends Context.Service<AdeToolHandlers, AdeToolHandlersShape>()(
   "shuv2code/ade/AdeToolGate/AdeToolHandlers",
 ) {
   /** Default until S7/S8 land: registration+dispatch work, behavior does not. */
   static readonly layerUnavailable = Layer.succeed(AdeToolHandlers, adeToolHandlersUnavailable);
-  /** Partial override helper so S7/S8 wire only their own handlers. */
-  static layerPartial(overrides: Partial<AdeToolHandlersShape>): Layer.Layer<AdeToolHandlers> {
-    return Layer.succeed(AdeToolHandlers, { ...adeToolHandlersUnavailable, ...overrides });
+  /**
+   * Patch-style partial override: spreads `overrides` over the service
+   * provided underneath, so S7 and S8 each wire only their own slice and the
+   * layers stack (`layerPartial(s7) ∘ layerPartial(s8) ∘ layerUnavailable`)
+   * without reverting each other to not-yet-available.
+   */
+  static layerPartial(
+    overrides: Partial<AdeToolHandlersShape>,
+  ): Layer.Layer<AdeToolHandlers, never, AdeToolHandlers> {
+    return Layer.effect(
+      AdeToolHandlers,
+      Effect.gen(function* () {
+        const base = yield* AdeToolHandlers;
+        return { ...base, ...overrides };
+      }),
+    );
   }
 }
 
@@ -532,8 +585,34 @@ const sanitizeScreenboxDefinitions = (
 
 export interface AdeShuvcodeAttachOptions {
   readonly threadId: ThreadId;
+  /**
+   * The kernel-native session id (shuvcode `openCodeSessionId`) recorded on
+   * the `BotExecutionBinding` — NOT the shuv2code `ThreadId`. S7/S8 binding
+   * lookups key on this, so the caller supplies it from the adapter.
+   */
+  readonly sessionId: KernelSessionId;
   readonly principal: AdeToolSessionPrincipal;
 }
+
+/**
+ * A shuvcode thread is already attached for a different principal. Detach
+ * first; the gate refuses to silently re-attribute a live thread.
+ */
+export class AdeShuvcodeAttachConflictError extends Schema.TaggedErrorClass<AdeShuvcodeAttachConflictError>()(
+  "AdeShuvcodeAttachConflictError",
+  {
+    threadId: Schema.String,
+    attachedBotId: Schema.String,
+    requestedBotId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `shuvcode thread '${this.threadId}' is already attached for bot '${this.attachedBotId}'; refusing re-attach for bot '${this.requestedBotId}'.`;
+  }
+}
+
+/** Bound on remembered executed-call outcomes per thread (re-request dedupe). */
+export const ADE_SETTLED_CALLS_PER_THREAD_LIMIT = 256;
 
 export interface AdeShuvcodeLoopOptions {
   /**
@@ -577,13 +656,18 @@ export interface AdeToolGateShape {
 
   /**
    * Register the principal's catalog on a shuvcode thread and record the
-   * thread → principal binding for dispatch. Call before `startSession`
-   * (including after restarts) so the catalog rides session creation.
+   * thread → binding for dispatch. Call before `startSession` (including
+   * after restarts) so the catalog rides session creation. The binding is
+   * recorded before the seam configure (which may drain pending calls into
+   * the signal feed) and rolled back if the configure fails. Re-attaching
+   * the same principal (restart path) is allowed and fences out dispatches
+   * taken under the previous attach; re-attaching a different principal
+   * fails with `AdeShuvcodeAttachConflictError`.
    */
   readonly attachShuvcodeThread: <E>(
     seam: ProviderDynamicToolsShape<E>,
     options: AdeShuvcodeAttachOptions,
-  ) => Effect.Effect<void, E>;
+  ) => Effect.Effect<void, E | AdeShuvcodeAttachConflictError>;
 
   /** Drop the thread's catalog and binding; interrupts in-flight dispatches. */
   readonly detachShuvcodeThread: <E>(
@@ -594,8 +678,14 @@ export interface AdeToolGateShape {
   /**
    * Own the seam's single-consumer `takeSignal` loop: dispatch `requested`
    * signals (concurrently, one fiber per call), reply through the seam, and
-   * interrupt in-flight dispatches on `cancelled`. Run exactly once per seam;
-   * ends only with its scope.
+   * interrupt in-flight dispatches on `cancelled` (interruption is forked so
+   * a slow finalizer cannot stall the loop). Re-`requested` calls that
+   * already executed replay the recorded outcome instead of re-running the
+   * handler; that dedupe is in-memory only (see `AdeToolHandlers`).
+   *
+   * Run exactly ONCE per seam — `takeSignal` is destructive and there is no
+   * runtime guard against a second concurrent consumer. Ends only with its
+   * scope.
    */
   readonly runShuvcodeDispatchLoop: <E>(
     seam: ProviderDynamicToolsShape<E>,
@@ -729,42 +819,65 @@ export const makeAdeToolGate = (options: MakeAdeToolGateOptions): AdeToolGateSha
       ),
     );
 
-  const dispatch: AdeToolGateShape["dispatch"] = Effect.fn("AdeToolGate.dispatch")(
-    function* (ctx, rawInput) {
-      const tool = ctx.tool;
-      // Approval operations are structurally absent from this plane: even a
-      // name smuggled into a session catalog dispatches as unknown.
-      if (ADE_APPROVAL_NAME_PATTERN.test(tool)) {
+  const dispatchUncontained = Effect.fn("AdeToolGate.dispatch")(function* (
+    ctx: AdeToolCallContext,
+    rawInput: unknown,
+  ): Effect.fn.Return<AdeToolOutcome> {
+    const tool = ctx.tool;
+    // Approval operations are structurally absent from this plane: even a
+    // name smuggled into a session catalog dispatches as unknown.
+    if (ADE_APPROVAL_NAME_PATTERN.test(tool)) {
+      return { _tag: "denied", denial: { _tag: "unknown-tool", tool } } as const;
+    }
+    if (tool.startsWith(ADE_SCREENBOX_TOOL_PREFIX)) {
+      // Resolve against the principal's sanitized Screenbox catalog first:
+      // names the sanitizer dropped — or that the model guessed — must get
+      // the standard unknown-tool denial, never reach eligibility/forward.
+      const screenboxTools = sanitizeScreenboxDefinitions(yield* screenbox.toolsFor(ctx));
+      if (!screenboxTools.some((definition) => definition.name === tool)) {
         return { _tag: "denied", denial: { _tag: "unknown-tool", tool } } as const;
       }
-      if (tool.startsWith(ADE_SCREENBOX_TOOL_PREFIX)) {
-        const eligibility = yield* screenbox.eligibility(ctx);
-        if (!eligibility.eligible) {
-          return {
-            _tag: "denied",
-            denial: { _tag: "screenbox-not-eligible", tool, reason: eligibility.reason },
-          } as const;
-        }
-        return yield* runToTotalOutcome(screenbox.forward(ctx, rawInput), tool);
-      }
-      const spec = ADE_BASE_TOOLS_BY_NAME.get(tool);
-      if (spec === undefined) {
-        return { _tag: "denied", denial: { _tag: "unknown-tool", tool } } as const;
-      }
-      const decoded = yield* spec.decode(rawInput).pipe(Effect.result);
-      if (Result.isFailure(decoded)) {
+      const eligibility = yield* screenbox.eligibility(ctx);
+      if (!eligibility.eligible) {
         return {
           _tag: "denied",
-          denial: { _tag: "invalid-input", tool, issue: decoded.failure.message },
+          denial: { _tag: "screenbox-not-eligible", tool, reason: eligibility.reason },
         } as const;
       }
-      const denial = yield* runInlineCheck(ctx, spec.check, decoded.success);
-      if (denial !== null) {
-        return { _tag: "denied", denial } as const;
-      }
-      return yield* runToTotalOutcome(spec.run(handlers)(ctx, decoded.success), tool);
-    },
-  );
+      return yield* runToTotalOutcome(screenbox.forward(ctx, rawInput), tool);
+    }
+    const spec = ADE_BASE_TOOLS_BY_NAME.get(tool);
+    if (spec === undefined) {
+      return { _tag: "denied", denial: { _tag: "unknown-tool", tool } } as const;
+    }
+    const decoded = yield* spec.decode(rawInput).pipe(Effect.result);
+    if (Result.isFailure(decoded)) {
+      return {
+        _tag: "denied",
+        denial: { _tag: "invalid-input", tool, issue: decoded.failure.message },
+      } as const;
+    }
+    const denial = yield* runInlineCheck(ctx, spec.check, decoded.success);
+    if (denial !== null) {
+      return { _tag: "denied", denial } as const;
+    }
+    return yield* runToTotalOutcome(spec.run(handlers)(ctx, decoded.success), tool);
+  });
+
+  // Total by construction: defects from ANY step — inline checks, Screenbox
+  // eligibility/toolsFor, input decode, handlers — are contained here so both
+  // kernel bridges always settle the call instead of dying mid-request.
+  const dispatch: AdeToolGateShape["dispatch"] = (ctx, rawInput) =>
+    dispatchUncontained(ctx, rawInput).pipe(
+      Effect.catchDefect((defect) =>
+        Effect.logError("ADE tool dispatch defect", { tool: ctx.tool, defect }).pipe(
+          Effect.as<AdeToolOutcome>({
+            _tag: "failed",
+            message: `ADE tool '${ctx.tool}' failed with an internal error.`,
+          }),
+        ),
+      ),
+    );
 
   // -- Codex backend --------------------------------------------------------
 
@@ -797,88 +910,204 @@ export const makeAdeToolGate = (options: MakeAdeToolGateOptions): AdeToolGateSha
 
   // -- shuvcode backend -----------------------------------------------------
 
-  const shuvcodePrincipals = new Map<ThreadId, AdeToolSessionPrincipal>();
+  interface ShuvcodeBinding {
+    readonly principal: AdeToolSessionPrincipal;
+    readonly sessionId: KernelSessionId;
+    /** Fencing token: bumped on every attach, gone on detach. */
+    readonly generation: number;
+  }
+
+  const shuvcodeBindings = new Map<ThreadId, ShuvcodeBinding>();
+  let attachGenerationCounter = 0;
   const inFlight = new Map<string, Fiber.Fiber<void>>();
   const inFlightKey = (threadId: ThreadId, callId: string): string => `${threadId}\n${callId}`;
+  /**
+   * Executed-call outcomes per thread, insertion-ordered and bounded. S4
+   * permits a still-pending call to be re-`requested` after `cancelled` (and
+   * a benign 409 means our reply raced provider-side settlement) — without
+   * this, a re-request would re-execute a call that already ran. In-memory
+   * only: handler idempotency across restarts stays with S7/S8.
+   */
+  const settledCalls = new Map<ThreadId, Map<string, AdeToolOutcome>>();
 
-  const interruptThreadCalls = (threadId: ThreadId): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      const prefix = `${threadId}\n`;
-      // Snapshot: interruption yields, and finalizers mutate the map.
-      const threadCalls = Array.from(inFlight).filter(([key]) => key.startsWith(prefix));
-      for (const [key, fiber] of threadCalls) {
-        inFlight.delete(key);
-        yield* Fiber.interrupt(fiber);
-      }
+  const recordSettledCall = (threadId: ThreadId, callId: string, outcome: AdeToolOutcome): void => {
+    let forThread = settledCalls.get(threadId);
+    if (forThread === undefined) {
+      forThread = new Map();
+      settledCalls.set(threadId, forThread);
+    }
+    while (forThread.size >= ADE_SETTLED_CALLS_PER_THREAD_LIMIT) {
+      const oldest = forThread.keys().next();
+      if (oldest.done === true) break;
+      forThread.delete(oldest.value);
+    }
+    forThread.set(callId, outcome);
+  };
+
+  // Forked interruption: a slow dispatch finalizer must never stall the
+  // caller (detach or the single-consumer signal loop).
+  const interruptInFlightForked = (key: string): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const fiber = inFlight.get(key);
+      if (fiber === undefined) return Effect.void;
+      inFlight.delete(key);
+      return Fiber.interrupt(fiber).pipe(Effect.forkChild, Effect.asVoid);
     });
 
-  const attachShuvcodeThread: AdeToolGateShape["attachShuvcodeThread"] = (seam, options) =>
+  const interruptThreadCalls = (threadId: ThreadId): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const prefix = `${threadId}\n`;
+      const keys = Array.from(inFlight.keys()).filter((key) => key.startsWith(prefix));
+      return Effect.forEach(keys, interruptInFlightForked, { discard: true });
+    });
+
+  const attachShuvcodeThread: AdeToolGateShape["attachShuvcodeThread"] = <E>(
+    seam: ProviderDynamicToolsShape<E>,
+    options: AdeShuvcodeAttachOptions,
+  ) =>
     Effect.gen(function* () {
+      const existing = shuvcodeBindings.get(options.threadId);
+      if (
+        existing !== undefined &&
+        (existing.principal.botId !== options.principal.botId ||
+          existing.principal.purpose !== options.principal.purpose)
+      ) {
+        return yield* new AdeShuvcodeAttachConflictError({
+          threadId: options.threadId,
+          attachedBotId: existing.principal.botId,
+          requestedBotId: options.principal.botId,
+        });
+      }
       const catalog = yield* catalogFor(options.principal);
-      yield* seam.configureThread({
-        threadId: options.threadId,
-        tools: catalog.map((definition) => ({
-          name: definition.name,
-          description: definition.description,
-          parameters: definition.parameters,
-        })),
-        metadata: {
-          "shuv2code/ade": {
-            botId: options.principal.botId,
-            purpose: options.principal.purpose,
-          },
-        },
+      // Record the binding BEFORE configuring: configureThread on a live
+      // session drains provider-side pending calls into the signal feed, and
+      // the loop may dispatch them immediately — they must attribute.
+      attachGenerationCounter += 1;
+      shuvcodeBindings.set(options.threadId, {
+        principal: options.principal,
+        sessionId: options.sessionId,
+        generation: attachGenerationCounter,
       });
-      shuvcodePrincipals.set(options.threadId, options.principal);
+      yield* seam
+        .configureThread({
+          threadId: options.threadId,
+          tools: catalog.map((definition) => ({
+            name: definition.name,
+            description: definition.description,
+            parameters: definition.parameters,
+          })),
+          metadata: {
+            "shuv2code/ade": {
+              botId: options.principal.botId,
+              purpose: options.principal.purpose,
+            },
+          },
+        })
+        .pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              // Roll back to the pre-call state: the prior same-principal
+              // binding on re-attach, or nothing on first attach.
+              if (existing !== undefined) {
+                shuvcodeBindings.set(options.threadId, existing);
+              } else {
+                shuvcodeBindings.delete(options.threadId);
+              }
+            }),
+          ),
+        );
     });
 
   const detachShuvcodeThread: AdeToolGateShape["detachShuvcodeThread"] = (seam, threadId) =>
     Effect.gen(function* () {
-      shuvcodePrincipals.delete(threadId);
+      shuvcodeBindings.delete(threadId);
+      settledCalls.delete(threadId);
       yield* interruptThreadCalls(threadId);
       yield* seam.clearThread(threadId);
     });
 
+  const replyShuvcode = <E>(
+    seam: ProviderDynamicToolsShape<E>,
+    call: ProviderDynamicToolCall,
+    outcome: AdeToolOutcome,
+    isBenignReplyConflict: (error: unknown) => boolean,
+  ): Effect.Effect<void> =>
+    seam
+      .replyToCall({
+        threadId: call.threadId,
+        callId: call.callId,
+        result: shuvcodeResultFor(outcome),
+      })
+      .pipe(
+        Effect.catch((error) =>
+          isBenignReplyConflict(error)
+            ? Effect.void
+            : Effect.logWarning("ADE tool gate failed to reply to a shuvcode tool call", {
+                threadId: call.threadId,
+                callId: call.callId,
+                tool: call.tool,
+                error,
+              }),
+        ),
+        Effect.catchDefect((defect) =>
+          Effect.logError("ADE tool gate reply defect", {
+            threadId: call.threadId,
+            callId: call.callId,
+            defect,
+          }),
+        ),
+      );
+
   const dispatchShuvcodeCall = <E>(
     seam: ProviderDynamicToolsShape<E>,
     call: ProviderDynamicToolCall,
+    takenUnder: ShuvcodeBinding | undefined,
     isBenignReplyConflict: (error: unknown) => boolean,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
-      const principal = shuvcodePrincipals.get(call.threadId);
-      const outcome: AdeToolOutcome =
-        principal === undefined
-          ? // A call on a thread the gate never attached is not attributable
-            // to any bot — refuse it rather than guess.
-            { _tag: "denied", denial: { _tag: "unknown-tool", tool: call.tool } }
-          : yield* dispatch(
-              {
-                ...principal,
-                engine: "shuvcode",
-                sessionId: KernelSessionId.make(call.threadId),
-                tool: call.tool,
-                callId: call.callId,
-              },
-              call.input,
-            );
-      yield* seam
-        .replyToCall({
-          threadId: call.threadId,
-          callId: call.callId,
-          result: shuvcodeResultFor(outcome),
-        })
-        .pipe(
-          Effect.catch((error) =>
-            isBenignReplyConflict(error)
-              ? Effect.void
-              : Effect.logWarning("ADE tool gate failed to reply to a shuvcode tool call", {
-                  threadId: call.threadId,
-                  callId: call.callId,
-                  tool: call.tool,
-                  error,
-                }),
-          ),
+      // Re-request of an already-executed call (post-cancel or post-409
+      // replay): reply with the recorded outcome, never run the handler twice.
+      const priorOutcome = settledCalls.get(call.threadId)?.get(call.callId);
+      if (priorOutcome !== undefined) {
+        return yield* replyShuvcode(seam, call, priorOutcome, isBenignReplyConflict);
+      }
+      if (takenUnder === undefined) {
+        // A call on a thread the gate never attached is not attributable to
+        // any bot — refuse it rather than guess.
+        return yield* replyShuvcode(
+          seam,
+          call,
+          { _tag: "denied", denial: { _tag: "unknown-tool", tool: call.tool } },
+          isBenignReplyConflict,
         );
+      }
+      const current = shuvcodeBindings.get(call.threadId);
+      if (current === undefined || current.generation !== takenUnder.generation) {
+        // Fencing: the attach this call was taken under has been superseded
+        // (detach, or re-attach which re-requests still-pending calls). Drop
+        // without executing; the current attach's drain owns the call now.
+        return yield* replyShuvcode(
+          seam,
+          call,
+          {
+            _tag: "failed",
+            message: `ADE tool call '${call.callId}' was taken under a superseded session attach and was not executed.`,
+          },
+          isBenignReplyConflict,
+        );
+      }
+      const outcome = yield* dispatch(
+        {
+          ...takenUnder.principal,
+          engine: "shuvcode",
+          sessionId: takenUnder.sessionId,
+          tool: call.tool,
+          callId: call.callId,
+        },
+        call.input,
+      );
+      recordSettledCall(call.threadId, call.callId, outcome);
+      yield* replyShuvcode(seam, call, outcome, isBenignReplyConflict);
     });
 
   const runShuvcodeDispatchLoop: AdeToolGateShape["runShuvcodeDispatchLoop"] = <E>(
@@ -889,27 +1118,25 @@ export const makeAdeToolGate = (options: MakeAdeToolGateOptions): AdeToolGateSha
     return Effect.gen(function* () {
       const signal = yield* seam.takeSignal;
       if (signal.kind === "cancelled") {
-        const key = inFlightKey(signal.threadId, signal.callId);
-        const fiber = inFlight.get(key);
-        if (fiber !== undefined) {
-          inFlight.delete(key);
-          yield* Fiber.interrupt(fiber);
-        }
+        yield* interruptInFlightForked(inFlightKey(signal.threadId, signal.callId));
         return;
       }
       const call = signal.call;
       const key = inFlightKey(call.threadId, call.callId);
-      let settled = false;
-      const fiber = yield* dispatchShuvcodeCall(seam, call, isBenignReplyConflict).pipe(
+      // Snapshot the binding at take time; the dispatch fiber re-validates
+      // the generation before executing.
+      const takenUnder = shuvcodeBindings.get(call.threadId);
+      const fiber = yield* dispatchShuvcodeCall(seam, call, takenUnder, isBenignReplyConflict).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            settled = true;
             inFlight.delete(key);
           }),
         ),
         Effect.forkChild,
       );
-      if (!settled) {
+      if (fiber.pollUnsafe() === undefined) {
+        // Only track fibers that are actually still running: a synchronous
+        // completion already ran the ensuring cleanup before this line.
         inFlight.set(key, fiber);
       }
     }).pipe(Effect.forever);
