@@ -143,6 +143,18 @@ export const MemoryDocument = Schema.Struct({
 });
 export type MemoryDocument = typeof MemoryDocument.Type;
 
+/**
+ * ADR §12.3 / §12.4 — bounded outgoing-session summary carried into a
+ * replacement session at rollover (and out of voice calls). Shares the
+ * 16 KB (UTF-16 code units) ceiling ADR §18.1 fixes for result summaries.
+ */
+export const SESSION_ROLLOVER_SUMMARY_MAX_LENGTH = 16_384;
+
+export const SessionRolloverSummary = Schema.String.check(
+  Schema.isMaxLength(SESSION_ROLLOVER_SUMMARY_MAX_LENGTH),
+);
+export type SessionRolloverSummary = typeof SessionRolloverSummary.Type;
+
 export const BotExecutionBindingPurpose = Schema.Literals([
   "primary-text",
   "parallel-work",
