@@ -2,6 +2,7 @@ import * as NodeAssert from "node:assert/strict";
 
 import { it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -9,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 import { BotExecutionBinding, BotExecutionBindingId, BotId } from "@shuv2code/contracts";
 import type * as CodexClient from "effect-codex-app-server/client";
@@ -42,48 +44,69 @@ type ServerNotificationHandler = (
   payload: unknown,
 ) => Effect.Effect<void, CodexErrors.CodexAppServerError>;
 
+type FakeResponse = Effect.Effect<unknown, CodexErrors.CodexAppServerError>;
+
 /**
  * Fake shared-supervisor client: records outgoing requests, answers them from
  * a per-method response table, and lets tests fire server→client requests and
  * notifications through the handlers the adapter registered.
+ *
+ * Dispatch semantics mirror the real transport after the reader-fiber fix:
+ * the transport forks incoming request handling, so `fireServerRequest`
+ * hands the handler effect to the test, which runs it on its own fiber (or
+ * inline when it should complete synchronously). Overrides may return an
+ * Effect to interleave server→client traffic inside a response — the
+ * transport-realistic shape of codex replaying pending requests around
+ * `thread/resume`.
  */
-const makeFakeCodexClient = (overrides: Record<string, (payload: unknown) => unknown> = {}) => {
+const makeFakeCodexClient = (
+  overrides: Record<string, (payload: unknown) => FakeResponse> = {},
+) => {
   const requests: Array<RecordedRequest> = [];
   const requestHandlers = new Map<string, ServerRequestHandler>();
   const notificationHandlers = new Map<string, Array<ServerNotificationHandler>>();
+  const overrideMap: Record<string, (payload: unknown) => FakeResponse> = { ...overrides };
+  let startedThreads = 0;
 
-  const defaultResponse = (method: string, payload: unknown): unknown => {
-    const override = overrides[method];
+  const defaultResponse = (method: string, payload: unknown): FakeResponse => {
+    const override = overrideMap[method];
     if (override) return override(payload);
     switch (method) {
       case "initialize":
-        return { userAgent: "fake-shared-app-server" };
+        return Effect.succeed({ userAgent: "fake-shared-app-server" });
       case "thread/start":
-        return { thread: { id: "codex-thread-1" }, extraneous: "ignored" };
+        startedThreads += 1;
+        return Effect.succeed({
+          thread: { id: `codex-thread-${startedThreads}` },
+          extraneous: "ignored",
+        });
       case "thread/resume":
-        return { thread: { id: (payload as { threadId: string }).threadId } };
+        return Effect.succeed({ thread: { id: (payload as { threadId: string }).threadId } });
       case "thread/fork":
-        return { thread: { id: "codex-thread-fork-1" } };
+        return Effect.succeed({ thread: { id: "codex-thread-fork-1" } });
       case "turn/steer":
-        return { turnId: "turn-steered-1" };
+        return Effect.succeed({ turnId: "turn-steered-1" });
       case "turn/start":
-        return { turn: { id: "turn-1" } };
+        return Effect.succeed({ turn: { id: "turn-1" } });
       default:
-        return {};
+        return Effect.succeed({});
     }
+  };
+
+  const respondTo = (
+    lane: "typed" | "raw",
+    method: string,
+    payload: unknown,
+  ): Effect.Effect<unknown, CodexErrors.CodexAppServerError> => {
+    requests.push({ lane, method, payload });
+    return defaultResponse(method, payload);
   };
 
   const client = {
     raw: {
-      request: (method: string, payload: unknown) => {
-        requests.push({ lane: "raw", method, payload });
-        return Effect.succeed(defaultResponse(method, payload));
-      },
+      request: (method: string, payload: unknown) => respondTo("raw", method, payload),
     },
-    request: (method: string, payload: unknown) => {
-      requests.push({ lane: "typed", method, payload });
-      return Effect.succeed(defaultResponse(method, payload));
-    },
+    request: (method: string, payload: unknown) => respondTo("typed", method, payload),
     notify: () => Effect.void,
     handleServerRequest: (method: string, handler: ServerRequestHandler) =>
       Effect.sync(() => {
@@ -115,17 +138,31 @@ const makeFakeCodexClient = (overrides: Record<string, (payload: unknown) => unk
       handler(payload).pipe(Effect.catch(() => Effect.void)),
     ).pipe(Effect.asVoid);
 
-  return { client, requests, fireServerRequest, fireServerNotification };
+  const setOverride = (method: string, respond: (payload: unknown) => FakeResponse): void => {
+    overrideMap[method] = respond;
+  };
+
+  return { client, requests, fireServerRequest, fireServerNotification, setOverride };
 };
 
-const makeConnection = (harness: ReturnType<typeof makeFakeCodexClient>) =>
+const makeConnection = (
+  harness: ReturnType<typeof makeFakeCodexClient>,
+  options: Parameters<typeof makeAdeCodexKernelConnection>[1] = {},
+) =>
   Effect.gen(function* () {
     const terminated = yield* Deferred.make<CodexErrors.CodexAppServerError>();
-    const connection = yield* makeAdeCodexKernelConnection({
-      client: harness.client,
-      terminated: Deferred.await(terminated),
-    });
-    return connection;
+    const connection = yield* makeAdeCodexKernelConnection(
+      {
+        client: harness.client,
+        terminated: Deferred.await(terminated),
+      },
+      options,
+    );
+    return {
+      connection,
+      terminate: (error: CodexErrors.CodexAppServerError) =>
+        Deferred.succeed(terminated, error).pipe(Effect.asVoid),
+    };
   });
 
 const startDefaultThread = (
@@ -173,7 +210,7 @@ describe("AdeCodexKernelAdapter connection", () => {
   it.effect("starts a thread with dynamicTools, serviceName and threadSource on the raw lane", () =>
     Effect.gen(function* () {
       const harness = makeFakeCodexClient();
-      const connection = yield* makeConnection(harness);
+      const { connection } = yield* makeConnection(harness);
       const session = yield* startDefaultThread(connection);
 
       NodeAssert.equal(session.threadId, "codex-thread-1");
@@ -205,7 +242,7 @@ describe("AdeCodexKernelAdapter connection", () => {
   it.effect("dispatches item/tool/call to the registered session handler", () =>
     Effect.gen(function* () {
       const harness = makeFakeCodexClient();
-      const connection = yield* makeConnection(harness);
+      const { connection } = yield* makeConnection(harness);
       const invocations: Array<AdeCodexToolInvocation> = [];
       yield* startDefaultThread(connection, (invocation) => {
         invocations.push(invocation);
@@ -237,13 +274,13 @@ describe("AdeCodexKernelAdapter connection", () => {
     Effect.gen(function* () {
       // First lifetime: start the thread with dynamicTools.
       const firstHarness = makeFakeCodexClient();
-      const firstConnection = yield* makeConnection(firstHarness);
+      const { connection: firstConnection } = yield* makeConnection(firstHarness);
       const started = yield* startDefaultThread(firstConnection);
 
       // Second lifetime (fresh connection after a restart): resume by the
       // recorded kernel session id.
       const secondHarness = makeFakeCodexClient();
-      const secondConnection = yield* makeConnection(secondHarness);
+      const { connection: secondConnection } = yield* makeConnection(secondHarness);
       const restoredInvocations: Array<AdeCodexToolInvocation> = [];
       const resumed = yield* secondConnection.resumeThread({
         threadId: started.threadId,
@@ -289,7 +326,7 @@ describe("AdeCodexKernelAdapter connection", () => {
   it.effect("injects items into model-visible history via thread/inject_items", () =>
     Effect.gen(function* () {
       const harness = makeFakeCodexClient();
-      const connection = yield* makeConnection(harness);
+      const { connection } = yield* makeConnection(harness);
       const session = yield* startDefaultThread(connection);
 
       const resultItem = {
@@ -312,7 +349,7 @@ describe("AdeCodexKernelAdapter connection", () => {
   it.effect("keeps turn/steer and turn/interrupt distinct operations", () =>
     Effect.gen(function* () {
       const harness = makeFakeCodexClient();
-      const connection = yield* makeConnection(harness);
+      const { connection } = yield* makeConnection(harness);
       const session = yield* startDefaultThread(connection);
 
       const steered = yield* session.steerTurn({
@@ -347,7 +384,7 @@ describe("AdeCodexKernelAdapter connection", () => {
   it.effect("surfaces approval requests as respondable events (Needs You seam)", () =>
     Effect.gen(function* () {
       const harness = makeFakeCodexClient();
-      const connection = yield* makeConnection(harness);
+      const { connection } = yield* makeConnection(harness);
       const session = yield* startDefaultThread(connection);
 
       const approvalFiber = yield* harness
@@ -378,7 +415,7 @@ describe("AdeCodexKernelAdapter connection", () => {
   it.effect("surfaces MCP elicitation requests on the same event seam", () =>
     Effect.gen(function* () {
       const harness = makeFakeCodexClient();
-      const connection = yield* makeConnection(harness);
+      const { connection } = yield* makeConnection(harness);
       const session = yield* startDefaultThread(connection);
 
       const elicitationFiber = yield* harness
@@ -408,7 +445,7 @@ describe("AdeCodexKernelAdapter connection", () => {
   it.effect("delivers thread/status/changed only to the owning session", () =>
     Effect.gen(function* () {
       const harness = makeFakeCodexClient();
-      const connection = yield* makeConnection(harness);
+      const { connection } = yield* makeConnection(harness);
       const session = yield* startDefaultThread(connection);
 
       // Foreign-thread traffic (e.g. a realtime voice thread on another
@@ -438,7 +475,7 @@ describe("AdeCodexKernelAdapter connection", () => {
   it.effect("fails tool calls for unregistered threads instead of guessing", () =>
     Effect.gen(function* () {
       const harness = makeFakeCodexClient();
-      const connection = yield* makeConnection(harness);
+      const { connection } = yield* makeConnection(harness);
       yield* startDefaultThread(connection);
 
       const error = yield* harness
@@ -458,7 +495,7 @@ describe("AdeCodexKernelAdapter connection", () => {
   it.effect("records fork lineage and routes child tool calls to the child handler", () =>
     Effect.gen(function* () {
       const harness = makeFakeCodexClient();
-      const connection = yield* makeConnection(harness);
+      const { connection } = yield* makeConnection(harness);
       const session = yield* startDefaultThread(connection);
 
       const childInvocations: Array<AdeCodexToolInvocation> = [];
@@ -504,7 +541,7 @@ describe("AdeCodexKernelAdapter connection", () => {
       const harness = makeFakeCodexClient();
       const connectionScope = yield* Scope.make();
       const sessionScope = yield* Scope.make();
-      const connection = yield* makeConnection(harness).pipe(
+      const { connection } = yield* makeConnection(harness).pipe(
         Effect.provideService(Scope.Scope, connectionScope),
       );
       yield* startDefaultThread(connection).pipe(Effect.provideService(Scope.Scope, sessionScope));
@@ -522,6 +559,307 @@ describe("AdeCodexKernelAdapter connection", () => {
       NodeAssert.equal(error._tag, "CodexAppServerRequestError");
 
       yield* Scope.close(connectionScope, Exit.void);
+    }),
+  );
+
+  it.effect("fails approval requests for unregistered threads closed", () =>
+    Effect.gen(function* () {
+      const harness = makeFakeCodexClient();
+      const { connection } = yield* makeConnection(harness);
+      yield* startDefaultThread(connection);
+
+      const error = yield* harness
+        .fireServerRequest("item/commandExecution/requestApproval", {
+          threadId: "codex-thread-foreign",
+          turnId: "turn-1",
+          itemId: "item-1",
+          command: "rm -rf build",
+          startedAtMs: 1,
+        })
+        .pipe(Effect.asVoid, Effect.flip);
+
+      NodeAssert.equal(error._tag, "CodexAppServerRequestError");
+    }),
+  );
+
+  it.effect("settles pending approvals as declined when the session scope closes", () =>
+    Effect.gen(function* () {
+      const harness = makeFakeCodexClient();
+      const sessionScope = yield* Scope.make();
+      const { connection } = yield* makeConnection(harness);
+      const session = yield* startDefaultThread(connection).pipe(
+        Effect.provideService(Scope.Scope, sessionScope),
+      );
+
+      const approvalFiber = yield* harness
+        .fireServerRequest("item/commandExecution/requestApproval", {
+          threadId: "codex-thread-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+          command: "rm -rf build",
+          startedAtMs: 1,
+        })
+        .pipe(Effect.forkChild);
+      // The request is pending in the Needs You seam when the session dies.
+      const [event] = yield* session.events.pipe(Stream.take(1), Stream.runCollect);
+      NodeAssert.equal(event?._tag, "approvalRequested");
+
+      yield* Scope.close(sessionScope, Exit.void);
+
+      // The blocked request handler resolves with a decline instead of
+      // leaking; codex gets an answer.
+      const decided = yield* Fiber.join(approvalFiber);
+      NodeAssert.deepStrictEqual(decided, { decision: "decline" });
+    }),
+  );
+
+  it.effect("keeps resumed threads registered before codex replays pending requests", () =>
+    Effect.gen(function* () {
+      const harness = makeFakeCodexClient();
+      const replayed: Array<unknown> = [];
+      // Transport-realistic replay: codex re-issues the pending tool call for
+      // a resumed thread immediately around the resume response — before the
+      // adapter's resume effect gets to run any code after the request.
+      harness.setOverride("thread/resume", (payload) =>
+        harness
+          .fireServerRequest("item/tool/call", {
+            threadId: (payload as { threadId: string }).threadId,
+            turnId: "turn-replayed",
+            callId: "call-replayed",
+            tool: "ade_report_result",
+            arguments: {},
+          })
+          .pipe(
+            Effect.tap((result) => Effect.sync(() => replayed.push(result))),
+            Effect.map(() => ({ thread: { id: (payload as { threadId: string }).threadId } })),
+          ),
+      );
+      const { connection } = yield* makeConnection(harness);
+
+      const resumed = yield* connection.resumeThread({
+        threadId: "codex-thread-resumed",
+        botId: BOT_ID,
+        purpose: "specialized-work",
+        cwd: "/tmp/project",
+        onToolCall: () =>
+          Effect.succeed({
+            contentItems: [{ type: "inputText" as const, text: "replayed-ok" }],
+            success: true,
+          }),
+      });
+
+      NodeAssert.equal(resumed.threadId, "codex-thread-resumed");
+      // The replayed call hit the registered handler, not the fail-closed
+      // unknown-thread path.
+      NodeAssert.deepStrictEqual(replayed, [
+        { contentItems: [{ type: "inputText", text: "replayed-ok" }], success: true },
+      ]);
+    }),
+  );
+
+  it.effect("deregisters an eagerly registered thread when resume fails", () =>
+    Effect.gen(function* () {
+      const harness = makeFakeCodexClient();
+      harness.setOverride("thread/resume", () =>
+        Effect.fail(
+          new CodexErrors.CodexAppServerRequestError({
+            code: -32600,
+            errorMessage: "no rollout found",
+            method: "thread/resume",
+          }),
+        ),
+      );
+      const { connection } = yield* makeConnection(harness);
+
+      const error = yield* connection
+        .resumeThread({
+          threadId: "codex-thread-gone",
+          botId: BOT_ID,
+          purpose: "specialized-work",
+          cwd: "/tmp/project",
+          onToolCall: () => Effect.succeed({ contentItems: [], success: true }),
+        })
+        .pipe(Effect.asVoid, Effect.flip);
+      NodeAssert.equal(error._tag, "CodexAppServerRequestError");
+
+      // The eager registration did not leak: the thread is unknown again.
+      const toolError = yield* harness
+        .fireServerRequest("item/tool/call", {
+          threadId: "codex-thread-gone",
+          turnId: "turn-1",
+          callId: "call-1",
+          tool: "ade_report_result",
+          arguments: {},
+        })
+        .pipe(Effect.asVoid, Effect.flip);
+      NodeAssert.equal(toolError._tag, "CodexAppServerRequestError");
+    }),
+  );
+
+  it.effect("connection termination settles approvals and fail-louds every session", () =>
+    Effect.gen(function* () {
+      const harness = makeFakeCodexClient();
+      const { connection, terminate } = yield* makeConnection(harness);
+      const session = yield* startDefaultThread(connection);
+
+      const approvalFiber = yield* harness
+        .fireServerRequest("item/commandExecution/requestApproval", {
+          threadId: "codex-thread-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+          command: "deploy",
+          startedAtMs: 1,
+        })
+        .pipe(Effect.forkChild);
+      const [pendingEvent] = yield* session.events.pipe(Stream.take(1), Stream.runCollect);
+      NodeAssert.equal(pendingEvent?._tag, "approvalRequested");
+
+      const terminationError = new CodexErrors.CodexAppServerInputStreamEndedError({});
+      yield* terminate(terminationError);
+
+      // The pending approval settles as a decline...
+      const decided = yield* Fiber.join(approvalFiber);
+      NodeAssert.deepStrictEqual(decided, { decision: "decline" });
+      // ...the session gets a terminal fail-loud event and its stream ends...
+      const remaining = Array.from(yield* Stream.runCollect(session.events));
+      NodeAssert.equal(remaining.length, 1);
+      NodeAssert.equal(remaining[0]?._tag, "connectionTerminated");
+      if (remaining[0]?._tag === "connectionTerminated") {
+        NodeAssert.equal(remaining[0].error, terminationError);
+      }
+      // ...and the dead registry rejects further traffic.
+      const toolError = yield* harness
+        .fireServerRequest("item/tool/call", {
+          threadId: "codex-thread-1",
+          turnId: "turn-1",
+          callId: "call-1",
+          tool: "ade_report_result",
+          arguments: {},
+        })
+        .pipe(Effect.asVoid, Effect.flip);
+      NodeAssert.equal(toolError._tag, "CodexAppServerRequestError");
+    }),
+  );
+
+  it.effect("keeps two sessions independent while one approval is pending", () =>
+    Effect.gen(function* () {
+      const harness = makeFakeCodexClient();
+      const { connection } = yield* makeConnection(harness);
+      const sessionA = yield* startDefaultThread(connection);
+      const invocationsB: Array<AdeCodexToolInvocation> = [];
+      const sessionB = yield* startDefaultThread(connection, (invocation) => {
+        invocationsB.push(invocation);
+        return Effect.succeed({
+          contentItems: [{ type: "inputText" as const, text: "b-ok" }],
+          success: true,
+        });
+      });
+      NodeAssert.equal(sessionA.threadId, "codex-thread-1");
+      NodeAssert.equal(sessionB.threadId, "codex-thread-2");
+
+      // Session A has an approval pending on its own handler fiber (the
+      // transport forks request dispatch, so this never occupies the reader).
+      const approvalFiber = yield* harness
+        .fireServerRequest("item/commandExecution/requestApproval", {
+          threadId: sessionA.threadId,
+          turnId: "turn-1",
+          itemId: "item-1",
+          command: "deploy",
+          startedAtMs: 1,
+        })
+        .pipe(Effect.forkChild);
+      const [eventA] = yield* sessionA.events.pipe(Stream.take(1), Stream.runCollect);
+      NodeAssert.equal(eventA?._tag, "approvalRequested");
+
+      // Session B's tool call and status events flow while A is pending.
+      yield* harness.fireServerRequest("item/tool/call", {
+        threadId: sessionB.threadId,
+        turnId: "turn-1",
+        callId: "call-b",
+        tool: "ade_report_result",
+        arguments: {},
+      });
+      NodeAssert.equal(invocationsB.length, 1);
+      yield* harness.fireServerNotification("thread/status/changed", {
+        threadId: sessionB.threadId,
+        status: { state: "idle", activeFlags: [] },
+      });
+      const [eventB] = yield* sessionB.events.pipe(Stream.take(1), Stream.runCollect);
+      NodeAssert.equal(eventB?._tag, "statusChanged");
+
+      // A's approval still answers normally afterwards.
+      if (eventA?._tag !== "approvalRequested") return;
+      if (eventA.request.method !== "item/commandExecution/requestApproval") return;
+      yield* eventA.request.respond({ decision: "accept" });
+      NodeAssert.deepStrictEqual(yield* Fiber.join(approvalFiber), { decision: "accept" });
+    }),
+  );
+
+  it.effect("declines and surfaces approvalTimedOut when the deadline expires", () =>
+    Effect.gen(function* () {
+      const harness = makeFakeCodexClient();
+      const { connection } = yield* makeConnection(harness, { approvalTimeout: "5 seconds" });
+      const session = yield* startDefaultThread(connection);
+
+      const approvalFiber = yield* harness
+        .fireServerRequest("item/commandExecution/requestApproval", {
+          threadId: "codex-thread-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+          command: "deploy",
+          startedAtMs: 1,
+        })
+        .pipe(Effect.forkChild);
+      const [event] = yield* session.events.pipe(Stream.take(1), Stream.runCollect);
+      NodeAssert.equal(event?._tag, "approvalRequested");
+
+      yield* TestClock.adjust(Duration.seconds(6));
+
+      const decided = yield* Fiber.join(approvalFiber);
+      NodeAssert.deepStrictEqual(decided, { decision: "decline" });
+      const [timedOut] = yield* session.events.pipe(Stream.take(1), Stream.runCollect);
+      NodeAssert.deepStrictEqual(timedOut, {
+        _tag: "approvalTimedOut",
+        threadId: "codex-thread-1",
+        method: "item/commandExecution/requestApproval",
+      });
+
+      // A late respond is a no-op after the timeout decline.
+      if (event?._tag !== "approvalRequested") return;
+      if (event.request.method !== "item/commandExecution/requestApproval") return;
+      yield* event.request.respond({ decision: "accept" });
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("rejects ephemeral threads that carry dynamicTools", () =>
+    Effect.gen(function* () {
+      const harness = makeFakeCodexClient();
+      const { connection } = yield* makeConnection(harness);
+
+      const error = yield* connection
+        .startThread({
+          botId: BOT_ID,
+          purpose: "specialized-work",
+          cwd: "/tmp/project",
+          ephemeral: true,
+          dynamicTools: [
+            {
+              type: "function",
+              name: "ade_report_result",
+              description: "Report a structured assignment result to ADE.",
+              inputSchema: { type: "object" },
+            },
+          ],
+          onToolCall: () => Effect.succeed({ contentItems: [], success: true }),
+        })
+        .pipe(Effect.asVoid, Effect.flip);
+
+      NodeAssert.equal(error._tag, "AdeCodexEphemeralDynamicToolsError");
+      // No thread/start ever reached codex.
+      NodeAssert.equal(
+        harness.requests.some((request) => request.method === "thread/start"),
+        false,
+      );
     }),
   );
 });
