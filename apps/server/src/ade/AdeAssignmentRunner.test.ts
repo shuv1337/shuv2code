@@ -52,6 +52,7 @@ const makeLayer = (spy: Spy) =>
                 bindingId: "binding" as AdeBotChatSession["bindingId"],
                 sessionId: "oc-1" as AdeBotChatSession["sessionId"],
                 startedNow: true,
+                toolsAttached: true,
               } satisfies AdeBotChatSession),
             ),
         }),

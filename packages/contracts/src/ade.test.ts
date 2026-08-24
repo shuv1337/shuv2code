@@ -434,6 +434,7 @@ it("round-trips a chat session binding a thread to a kernel session", () => {
     bindingId: "binding-1",
     sessionId: "oc-session-1",
     startedNow: true,
+    toolsAttached: true,
   });
   assert.strictEqual(session.engine, "shuvcode");
 });

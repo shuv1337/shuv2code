@@ -669,6 +669,24 @@ export interface AdeToolGateShape {
     options: AdeShuvcodeAttachOptions,
   ) => Effect.Effect<void, E | AdeShuvcodeAttachConflictError>;
 
+  /**
+   * Record (or correct) a shuvcode thread's principal and kernel session id
+   * **without touching the provider**.
+   *
+   * The kernel-native session id only exists after the session is created,
+   * but the tool catalog has to be configured *before* creation to ride the
+   * `session.create` payload. Re-running the full attach afterwards just to
+   * correct the recorded id would push the catalog a second time — a live
+   * `PUT /session/:id/tools` that is both redundant (the tools already rode
+   * creation) and fatal on a kernel build without the dynamic-tool routes.
+   * This is the local half of an attach, so the gate can attribute
+   * invocations to the right {bot, session} even when the provider refuses
+   * a catalog write.
+   */
+  readonly rebindShuvcodeSession: (
+    options: AdeShuvcodeAttachOptions,
+  ) => Effect.Effect<void, AdeShuvcodeAttachConflictError>;
+
   /** Drop the thread's catalog and binding; interrupts in-flight dispatches. */
   readonly detachShuvcodeThread: <E>(
     seam: ProviderDynamicToolsShape<E>,
@@ -1018,6 +1036,31 @@ export const makeAdeToolGate = (options: MakeAdeToolGateOptions): AdeToolGateSha
         );
     });
 
+  const rebindShuvcodeSession: AdeToolGateShape["rebindShuvcodeSession"] = (options) =>
+    Effect.gen(function* () {
+      const existing = shuvcodeBindings.get(options.threadId);
+      if (
+        existing !== undefined &&
+        (existing.principal.botId !== options.principal.botId ||
+          existing.principal.purpose !== options.principal.purpose)
+      ) {
+        return yield* new AdeShuvcodeAttachConflictError({
+          threadId: options.threadId,
+          attachedBotId: existing.principal.botId,
+          requestedBotId: options.principal.botId,
+        });
+      }
+      // A new generation fences dispatches taken under the provisional id, so
+      // an invocation in flight across the rebind cannot settle against the
+      // wrong session.
+      attachGenerationCounter += 1;
+      shuvcodeBindings.set(options.threadId, {
+        principal: options.principal,
+        sessionId: options.sessionId,
+        generation: attachGenerationCounter,
+      });
+    });
+
   const detachShuvcodeThread: AdeToolGateShape["detachShuvcodeThread"] = (seam, threadId) =>
     Effect.gen(function* () {
       shuvcodeBindings.delete(threadId);
@@ -1148,6 +1191,7 @@ export const makeAdeToolGate = (options: MakeAdeToolGateOptions): AdeToolGateSha
     codexDynamicToolsFor,
     makeCodexToolCallHandler,
     attachShuvcodeThread,
+    rebindShuvcodeSession,
     detachShuvcodeThread,
     runShuvcodeDispatchLoop,
   } satisfies AdeToolGateShape;

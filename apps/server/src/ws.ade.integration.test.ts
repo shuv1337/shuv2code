@@ -72,6 +72,11 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
     getRoster: () => note("getRoster", emptyRoster),
     getBot: () => note("getBot", botDetail),
     createBotFromTemplate: () => note("createBotFromTemplate", botDetail),
+    createProject: () =>
+      note("createProject", {
+        project: { id: "project-1", name: "Demo" },
+        secondMateBotId: BOT_ID,
+      } as unknown as never),
     writeBotMemory: () => note("writeBotMemory", botDetail.memory),
     editBotPersona: () =>
       note("editBotPersona", {

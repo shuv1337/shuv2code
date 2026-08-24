@@ -66,6 +66,7 @@ describe("RPC authorization scopes", () => {
     }
     for (const method of [
       WS_METHODS.adeCreateBotFromTemplate,
+      WS_METHODS.adeCreateProject,
       WS_METHODS.adeWriteBotMemory,
       WS_METHODS.adeEditBotPersona,
       WS_METHODS.adeSetBotComputerUse,

@@ -67,11 +67,13 @@ import {
   WsVoiceStartRpc,
   WsVoiceStopRpc,
   type AdeCreateBotFromTemplateInput,
+  type AdeCreateProjectInput,
   type AdeEditPersonaInput,
   type AdeSetComputerUseInput,
   type AdeWriteMemoryInput,
   type BotId,
   WsAdeCreateBotFromTemplateRpc,
+  WsAdeCreateProjectRpc,
   WsAdeEditBotPersonaRpc,
   WsAdeGetBotRpc,
   WsAdeGetNeedsYouCountRpc,
@@ -356,6 +358,8 @@ const makeAdeRpcHandlers = (
         adeCaptainApi.createBotFromTemplate(input),
         ade,
       ),
+    [WS_METHODS.adeCreateProject]: (input: AdeCreateProjectInput) =>
+      observeRpcEffect(WS_METHODS.adeCreateProject, adeCaptainApi.createProject(input), ade),
     [WS_METHODS.adeWriteBotMemory]: (input: AdeWriteMemoryInput) =>
       observeRpcEffect(WS_METHODS.adeWriteBotMemory, adeCaptainApi.writeBotMemory(input), ade),
     [WS_METHODS.adeEditBotPersona]: (input: AdeEditPersonaInput) =>
@@ -378,6 +382,7 @@ export const AdeWsRpcGroup = RpcGroup.make(
   WsAdeGetRosterRpc,
   WsAdeGetBotRpc,
   WsAdeCreateBotFromTemplateRpc,
+  WsAdeCreateProjectRpc,
   WsAdeWriteBotMemoryRpc,
   WsAdeEditBotPersonaRpc,
   WsAdeSetBotComputerUseRpc,

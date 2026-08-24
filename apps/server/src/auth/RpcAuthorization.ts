@@ -119,6 +119,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.adeGetBot]: AuthOrchestrationReadScope,
   [WS_METHODS.adeGetNeedsYouCount]: AuthOrchestrationReadScope,
   [WS_METHODS.adeCreateBotFromTemplate]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeCreateProject]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeWriteBotMemory]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeEditBotPersona]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeSetBotComputerUse]: AuthOrchestrationOperateScope,

@@ -21,6 +21,7 @@ const chatSession: AdeBotChatSession = {
   bindingId: "binding" as AdeBotChatSession["bindingId"],
   sessionId: "oc-1" as AdeBotChatSession["sessionId"],
   startedNow: true,
+  toolsAttached: true,
 };
 
 /** A chat port that always succeeds — chat wiring is exercised separately. */
@@ -289,6 +290,41 @@ describe("AdeCaptainApi mutations", () => {
         api.setBotComputerUse({ botId: "nope" as BotId, computerUse: true }),
       );
       assert.equal(error.reason, "bot_not_found");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+  it.effect("creates a project together with its Second Mate", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      const created = yield* api.createProject({
+        name: "Demo Fleet Project",
+        repoPath: "/repos/demo",
+      });
+      assert.equal(created.project.name, "Demo Fleet Project");
+
+      // The auto-Second-Mate hook is the reason this goes through
+      // AdeBootstrap: without it a new project has no coordinator at all.
+      const detail = yield* api.getBot(created.secondMateBotId);
+      assert.equal(detail.bot.structuralRole, "second-mate");
+      assert.equal(detail.bot.projectId, created.project.id);
+
+      const roster = yield* api.getRoster();
+      assert.deepEqual(
+        roster.projects.map((project) => project.name),
+        ["Demo Fleet Project"],
+      );
+      // A bound repo is what lets the chat resolve somewhere to run.
+      assert.equal(detail.projectName, "Demo Fleet Project");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("accepts a project with no repository binding", () =>
+    Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      const created = yield* api.createProject({ name: "Unbound", repoPath: null });
+      const rows = yield* sql<{ repo_path: string | null }>`
+        SELECT repo_path FROM ade_projects WHERE project_id = ${created.project.id}
+      `;
+      assert.equal(rows[0]?.repo_path, null);
     }).pipe(Effect.provide(makeLayer())),
   );
 });

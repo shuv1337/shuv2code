@@ -621,6 +621,14 @@ export const AdeBotChatSession = Schema.Struct({
   sessionId: KernelSessionId,
   /** False when an existing active primary binding was reused. */
   startedNow: Schema.Boolean,
+  /**
+   * Whether the fleet tool catalog is registered on this session. False means
+   * the conversation works but delegation does not — the kernel build has no
+   * session-scoped dynamic-tool support (spec §3.1). Surfaced so the captain
+   * is told, rather than watching a bot fail to delegate for no visible
+   * reason.
+   */
+  toolsAttached: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type AdeBotChatSession = typeof AdeBotChatSession.Type;
 
@@ -659,6 +667,26 @@ export const AdeCreateBotFromTemplateInput = Schema.Struct({
   name: Schema.optional(BotName),
 });
 export type AdeCreateBotFromTemplateInput = typeof AdeCreateBotFromTemplateInput.Type;
+
+/**
+ * Create an ADE project (spec §2.3, §4.1). Distinct from a shuv2code
+ * workspace project: this is the organizational unit that owns a crew and
+ * auto-creates its Second Mate. `repoPath` optionally binds it to a
+ * repository on disk — normally an existing workspace project's root.
+ */
+export const AdeCreateProjectInput = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(160)),
+  repoPath: Schema.NullOr(TrimmedNonEmptyString),
+  repoRemote: Schema.optional(TrimmedNonEmptyString),
+});
+export type AdeCreateProjectInput = typeof AdeCreateProjectInput.Type;
+
+/** What project creation produced: the project plus its auto-created Second Mate. */
+export const AdeCreatedProject = Schema.Struct({
+  project: AdeProjectSummary,
+  secondMateBotId: BotId,
+});
+export type AdeCreatedProject = typeof AdeCreatedProject.Type;
 
 export const AdeWriteMemoryInput = Schema.Struct({
   botId: BotId,
