@@ -60,6 +60,7 @@ import {
   AdeScreenboxClient,
   type AdeScreenboxClientShape,
   boundScreenboxDetail,
+  describeUnhealthy,
   type AdeScreenboxDesktop,
 } from "./AdeScreenboxClient.ts";
 import {
@@ -710,11 +711,28 @@ export const makeAdeScreenboxRuntime = (
         mutexFor(botId).withPermits(1)(
           Effect.gen(function* () {
             const desktopId = desktopIdFor(botId);
-            // Confirm-gated delete purges all three upstream stores (§4.6):
-            // container (no snapshot), dossier, and home volume.
+            // Confirm-gated delete asks upstream to purge all three stores
+            // (§4.6): container (no snapshot), dossier, and home volume.
+            //
+            // Upstream defect, accommodated rather than worked around: the
+            // home volume removal fails silently (its docker-proxy whitelist
+            // has no `DELETE /volumes` route) yet delete-data still reports
+            // `{"deleted": true}`. ADE makes no docker calls and does not
+            // retry; it logs the operator's one-liner so a purge that left
+            // data behind is at least visible in the server log.
             const outcome = yield* client
               .destroyDesktop(desktopId)
               .pipe(Effect.andThen(client.deleteDesktopData(desktopId)), Effect.result);
+            if (outcome._tag === "Success") {
+              yield* Effect.logWarning(
+                "ADE Screenbox deleted a desktop; upstream may have left its home volume behind",
+                {
+                  botId,
+                  desktopId,
+                  operatorWorkaround: `docker volume rm -f screenbox-${desktopId}-home`,
+                },
+              );
+            }
             yield* orLogAndSucceed(
               sql`DELETE FROM ade_screenbox_provisionings WHERE bot_id = ${botId}`,
               "ADE Screenbox could not delete a provisioning record",
@@ -1015,9 +1033,15 @@ export const makeAdeScreenboxRuntime = (
         } as const;
       }
       const outcome = yield* client.health.pipe(Effect.result);
-      return outcome._tag === "Failure"
-        ? ({ state: "down", detail: boundScreenboxDetail(outcome.failure.message) } as const)
-        : ({ state: "healthy" } as const);
+      if (outcome._tag === "Failure") {
+        return { state: "down", detail: boundScreenboxDetail(outcome.failure.message) } as const;
+      }
+      // `/api/health` answers 200 even while degraded (missing desktop image,
+      // for instance), so a reachable upstream is not a healthy one: the
+      // pill follows the body's `ok`, not the status code.
+      return outcome.success.ok
+        ? ({ state: "healthy" } as const)
+        : ({ state: "down", detail: describeUnhealthy(outcome.success) } as const);
     });
 
     return {

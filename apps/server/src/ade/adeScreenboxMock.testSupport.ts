@@ -53,8 +53,14 @@ export interface AdeScreenboxMock {
   failCreate: number;
   /** Force every `control` call to fail. */
   failControl: boolean;
-  /** Force `GET /api/health` to fail. */
+  /** Force `GET /api/health` to fail at the transport level (non-2xx). */
   failHealth: boolean;
+  /**
+   * Upstream `issues` to report from `GET /api/health`. A non-empty list makes
+   * the mock answer **200 with `ok: false`**, which is exactly how the real
+   * service reports degradation — it never uses a non-2xx for it.
+   */
+  healthIssues: ReadonlyArray<string>;
   /** Force MCP `tools/list` to fail. */
   failToolsList: boolean;
   /** Force the next tool call to return an MCP error result. */
@@ -87,6 +93,7 @@ export async function startAdeScreenboxMock(
     failCreate: 0,
     failControl: false,
     failHealth: false,
+    healthIssues: [] as ReadonlyArray<string>,
     failToolsList: false,
     failToolCall: false,
   } as {
@@ -128,10 +135,24 @@ export async function startAdeScreenboxMock(
     send(response, 200, message);
   };
 
+  /**
+   * Upstream's HTTP API reads `body.get("id")` on every lifecycle route — never
+   * `desktop_id`, which is the MCP tool-argument spelling. Mirroring that
+   * exactly is the point of this helper: a client that regresses to sending
+   * only `desktop_id` must fail here the way it fails against the real service,
+   * not quietly pass.
+   */
   const desktopIdOf = (body: unknown): string => {
     const record = (body ?? {}) as Record<string, unknown>;
-    const value = record["desktop_id"];
-    return typeof value === "string" ? value : "";
+    const value = record["id"];
+    return typeof value === "string" ? value.trim() : "";
+  };
+
+  /** Upstream's `400 {"error": "Missing id"}` for a body without a usable `id`. */
+  const rejectMissingId = (response: NodeHttp.ServerResponse, desktopId: string): boolean => {
+    if (desktopId.length > 0) return false;
+    send(response, 400, { error: "Missing id" });
+    return true;
   };
 
   const server = NodeHttp.createServer((request, response) => {
@@ -147,7 +168,14 @@ export async function startAdeScreenboxMock(
 
       if (path === "/api/health") {
         if (mock.failHealth) return send(response, 503, { error: "screenbox down" });
-        return send(response, 200, { status: "ok" });
+        // Note the shape: upstream is unauthenticated here and always 200,
+        // carrying degradation in `ok`/`issues` rather than the status.
+        return send(response, 200, {
+          ok: mock.healthIssues.length === 0,
+          desktops: desktops.size,
+          issues: [...mock.healthIssues],
+          ts: 0,
+        });
       }
 
       if (path === "/api/desktop/list") {
@@ -160,21 +188,24 @@ export async function startAdeScreenboxMock(
       }
 
       if (path === "/api/desktop/create") {
+        const desktopId = desktopIdOf(body);
+        if (rejectMissingId(response, desktopId)) return;
         if (mock.failCreate > 0) {
           mock.failCreate -= 1;
           return send(response, 500, { error: "docker create failed" });
         }
-        desktops.set(desktopIdOf(body), { state: "running" });
-        return send(response, 200, { desktop_id: desktopIdOf(body), state: "running" });
+        desktops.set(desktopId, { state: "running" });
+        return send(response, 200, { ok: true, desktop_id: desktopId, state: "running" });
       }
 
       if (path === "/api/desktop/control") {
+        const desktopId = desktopIdOf(body);
+        const action = (body as Record<string, unknown>)["action"];
+        if (rejectMissingId(response, desktopId)) return;
         if (options.controlDelayMs !== undefined && options.controlDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, options.controlDelayMs));
         }
         if (mock.failControl) return send(response, 500, { error: "control failed" });
-        const desktopId = desktopIdOf(body);
-        const action = (body as Record<string, unknown>)["action"];
         const desktop = desktops.get(desktopId);
         if (desktop === undefined) return send(response, 404, { error: "unknown desktop" });
         if (action === "stop") desktop.state = "stopped";
@@ -183,12 +214,18 @@ export async function startAdeScreenboxMock(
       }
 
       if (path === "/api/desktop/destroy") {
-        desktops.delete(desktopIdOf(body));
-        return send(response, 200, {});
+        const desktopId = desktopIdOf(body);
+        if (rejectMissingId(response, desktopId)) return;
+        desktops.delete(desktopId);
+        return send(response, 200, { ok: true, desktop_id: desktopId, destroyed: true });
       }
 
       if (path === "/api/desktop/delete-data") {
-        return send(response, 200, {});
+        const desktopId = desktopIdOf(body);
+        if (rejectMissingId(response, desktopId)) return;
+        // Upstream reports `deleted: true` here even when the home volume
+        // survived the purge; the mock reproduces the optimistic answer.
+        return send(response, 200, { ok: true, desktop_id: desktopId, deleted: true });
       }
 
       if (path === "/mcp") {
