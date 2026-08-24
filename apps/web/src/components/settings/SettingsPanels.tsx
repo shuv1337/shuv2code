@@ -2421,10 +2421,7 @@ export function GeneralSettingsPanel() {
                   textGenInstanceEntry?.models ?? []
                 }
                 model={textGenModel}
-                prompt=""
-                onPromptChange={() => {}}
                 modelOptions={textGenModelOptions}
-                allowPromptInjectedEffort={false}
                 triggerVariant="outline"
                 triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
                 onModelOptionsChange={(nextOptions) => {
@@ -2500,17 +2497,12 @@ export function ProviderSettingsPanel() {
   );
   const visibleProviderSettings = PROVIDER_SETTINGS.filter(
     (providerSettings) =>
-      (providerSettings.provider !== "cursor" ||
-        serverProviders.some(
-          (provider) =>
-            provider.instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("cursor")),
-        )) &&
-      (providerSettings.provider !== "opencodeV2" ||
-        settings.providers.opencodeV2 !== undefined ||
-        Object.values(settings.providerInstances ?? {}).some(
-          (instance) => instance.driver === providerSettings.provider,
-        ) ||
-        serverProviders.some((provider) => provider.driver === providerSettings.provider)),
+      providerSettings.provider !== "opencodeV2" ||
+      settings.providers.opencodeV2 !== undefined ||
+      Object.values(settings.providerInstances ?? {}).some(
+        (instance) => instance.driver === providerSettings.provider,
+      ) ||
+      serverProviders.some((provider) => provider.driver === providerSettings.provider),
   );
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
   const textGenInstanceId = textGenerationModelSelection.instanceId;

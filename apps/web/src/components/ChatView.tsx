@@ -38,11 +38,7 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@shuv2code/client-runtime/environment";
-import {
-  applyClaudePromptEffortPrefix,
-  createModelSelection,
-  resolvePromptInjectedEffort,
-} from "@shuv2code/shared/model";
+import { createModelSelection } from "@shuv2code/shared/model";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@shuv2code/shared/chatList";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@shuv2code/shared/projectScripts";
 import { truncate } from "@shuv2code/shared/String";
@@ -186,7 +182,7 @@ import {
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
-import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
+import { resolveSelectableProvider } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
 import {
   useClientSettings,
@@ -508,17 +504,6 @@ function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
   return true;
 }
 
-function formatOutgoingPrompt(params: {
-  provider: ProviderDriverKind;
-  model: string | null;
-  models: ReadonlyArray<ServerProvider["models"][number]>;
-  effort: string | null;
-  text: string;
-}): string {
-  const caps = getProviderModelCapabilities(params.models, params.model, params.provider);
-  const promptEffort = resolvePromptInjectedEffort(caps, params.effort);
-  return applyClaudePromptEffortPrefix(params.text, promptEffort);
-}
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
 
@@ -5012,7 +4997,6 @@ function ChatViewContent(props: ChatViewProps) {
       selectedProvider: ctxSelectedProvider,
       selectedModel: ctxSelectedModel,
       selectedProviderModels: ctxSelectedProviderModels,
-      selectedPromptEffort: ctxSelectedPromptEffort,
       selectedModelSelection: ctxSelectedModelSelection,
     } = sendCtx;
     const composerImages =
@@ -5055,13 +5039,7 @@ function ChatViewContent(props: ChatViewProps) {
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
       });
-      const outgoingFollowUpText = formatOutgoingPrompt({
-        provider: ctxSelectedProvider,
-        model: ctxSelectedModel,
-        models: ctxSelectedProviderModels,
-        effort: ctxSelectedPromptEffort,
-        text: followUp.text.trim(),
-      });
+      const outgoingFollowUpText = followUp.text.trim();
       if (composerRef.current?.validateProviderInput(outgoingFollowUpText) === false) {
         return;
       }
@@ -5183,17 +5161,12 @@ function ChatViewContent(props: ChatViewProps) {
       messageTextWithPreviewAnnotations,
       composerReviewCommentsSnapshot,
     );
-    const outgoingMessageText = formatOutgoingPrompt({
-      provider: ctxSelectedProvider,
-      model: ctxSelectedModel,
-      models: ctxSelectedProviderModels,
-      effort: ctxSelectedPromptEffort,
-      text:
-        messageTextForSend ||
-        (composerImagesSnapshot.some((attachment) => attachment.type === "file")
-          ? FILE_ONLY_BOOTSTRAP_PROMPT
-          : IMAGE_ONLY_BOOTSTRAP_PROMPT),
-    });
+    const outgoingMessageText = (
+      messageTextForSend ||
+      (composerImagesSnapshot.some((attachment) => attachment.type === "file")
+        ? FILE_ONLY_BOOTSTRAP_PROMPT
+        : IMAGE_ONLY_BOOTSTRAP_PROMPT)
+    ).trim();
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       return;
     }
@@ -5725,20 +5698,13 @@ function ChatViewContent(props: ChatViewProps) {
         selectedProvider: ctxSelectedProvider,
         selectedModel: ctxSelectedModel,
         selectedProviderModels: ctxSelectedProviderModels,
-        selectedPromptEffort: ctxSelectedPromptEffort,
-        selectedModelSelection: ctxSelectedModelSelection,
+          selectedModelSelection: ctxSelectedModelSelection,
       } = sendCtx;
 
       const threadIdForSend = activeThread.id;
       const messageIdForSend = newMessageId();
       const messageCreatedAt = new Date().toISOString();
-      const outgoingMessageText = formatOutgoingPrompt({
-        provider: ctxSelectedProvider,
-        model: ctxSelectedModel,
-        models: ctxSelectedProviderModels,
-        effort: ctxSelectedPromptEffort,
-        text: trimmed,
-      });
+      const outgoingMessageText = trimmed;
 
       sendInFlightRef.current = true;
       beginLocalDispatch({ preparingWorktree: false });
@@ -5881,7 +5847,6 @@ function ChatViewContent(props: ChatViewProps) {
       selectedProvider: ctxSelectedProvider,
       selectedModel: ctxSelectedModel,
       selectedProviderModels: ctxSelectedProviderModels,
-      selectedPromptEffort: ctxSelectedPromptEffort,
       selectedModelSelection: ctxSelectedModelSelection,
     } = sendCtx;
 
@@ -5889,13 +5854,7 @@ function ChatViewContent(props: ChatViewProps) {
     const nextThreadId = newThreadId();
     const planMarkdown = activeProposedPlan.planMarkdown;
     const implementationPrompt = buildPlanImplementationPrompt(planMarkdown);
-    const outgoingImplementationPrompt = formatOutgoingPrompt({
-      provider: ctxSelectedProvider,
-      model: ctxSelectedModel,
-      models: ctxSelectedProviderModels,
-      effort: ctxSelectedPromptEffort,
-      text: implementationPrompt,
-    });
+    const outgoingImplementationPrompt = implementationPrompt.trim();
     if (composerRef.current?.validateProviderInput(outgoingImplementationPrompt) === false) {
       return;
     }

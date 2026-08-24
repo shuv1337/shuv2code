@@ -46,7 +46,7 @@ describe("ProviderSettingsForm helpers", () => {
   });
 
   it("sources labels and descriptions from schema annotations", () => {
-    const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
+    const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencodeV2")];
     expect(opencode).toBeDefined();
 
     const serverPassword = deriveProviderSettingsFields(opencode!).find(
@@ -61,7 +61,7 @@ describe("ProviderSettingsForm helpers", () => {
   });
 
   it("preserves unknown config keys while omitting empty configurable fields", () => {
-    const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
+    const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencodeV2")];
     expect(opencode).toBeDefined();
 
     const serverUrl = deriveProviderSettingsFields(opencode!).find(
