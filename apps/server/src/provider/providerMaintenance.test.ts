@@ -549,32 +549,31 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
   );
 
   it("allows the package's own install scripts in npm global updates", () => {
-    const claudeUpdate = makePackageManagedProviderMaintenanceResolver({
-      provider: driver("claudeAgent"),
-      npmPackageName: "@anthropic-ai/claude-code",
-      homebrewFormula: "claude-code",
+    const scopedUpdate = makePackageManagedProviderMaintenanceResolver({
+      provider: driver("scopedTool"),
+      npmPackageName: "@example/scoped-tool",
+      homebrewFormula: "scoped-tool",
       nativeUpdate: {
-        executable: "claude",
+        executable: "scoped-tool",
         args: ["update"],
-        lockKey: "claude-native",
-        isCommandPath: isNativeTestCommandPath("/.local/bin/claude"),
+        lockKey: "scoped-tool-native",
+        isCommandPath: isNativeTestCommandPath("/.local/bin/scoped-tool"),
       },
     });
 
-    expect(claudeUpdate.resolve()).toEqual({
-      provider: driver("claudeAgent"),
-      packageName: "@anthropic-ai/claude-code",
+    expect(scopedUpdate.resolve()).toEqual({
+      provider: driver("scopedTool"),
+      packageName: "@example/scoped-tool",
       update: {
-        command:
-          "npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest",
+        command: "npm install -g --allow-scripts=@example/scoped-tool @example/scoped-tool@latest",
 
         executable: "npm",
 
         args: [
           "install",
           "-g",
-          "--allow-scripts=@anthropic-ai/claude-code",
-          "@anthropic-ai/claude-code@latest",
+          "--allow-scripts=@example/scoped-tool",
+          "@example/scoped-tool@latest",
         ],
 
         lockKey: "npm-global",

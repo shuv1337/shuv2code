@@ -3,7 +3,7 @@
  *
  * Maps a `ProviderInstanceId` (the new per-instance routing key) or a
  * `ProviderDriverKind` (legacy single-instance-per-driver key) to the concrete
- * adapter service (Codex, Claude, etc). It does not own session lifecycle
+ * adapter service (Codex, OpenCodeV2, etc). It does not own session lifecycle
  * or routing rules; `ProviderService` uses this registry together with
  * `ProviderSessionDirectory`.
  *

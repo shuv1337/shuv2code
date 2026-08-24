@@ -30,11 +30,11 @@ import {
 const isServerProviderUpdateError = Schema.is(ServerProviderUpdateError);
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
-const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
-const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
+const NATIVE_TOOL_DRIVER = ProviderDriverKind.make("nativeTool");
+const NPM_TOOL_DRIVER = ProviderDriverKind.make("npmTool");
 const CODEX_INSTANCE_ID = ProviderInstanceId.make("codex");
-const CURSOR_INSTANCE_ID = ProviderInstanceId.make("cursor");
-const OPENCODE_INSTANCE_ID = ProviderInstanceId.make("opencode");
+const NATIVE_TOOL_INSTANCE_ID = ProviderInstanceId.make("nativeTool");
+const NPM_TOOL_INSTANCE_ID = ProviderInstanceId.make("npmTool");
 const encoder = new TextEncoder();
 
 // Pin a non-win32 platform so `resolveSpawnCommand` is a no-op and the raw
@@ -44,22 +44,22 @@ const encoder = new TextEncoder();
 const NonWindowsPlatform = Layer.succeed(HostProcessPlatform, "linux");
 
 function lifecycleFor(provider: ProviderDriverKind): ProviderMaintenanceCapabilities {
-  if (provider === CURSOR_DRIVER) {
+  if (provider === NATIVE_TOOL_DRIVER) {
     return makeProviderMaintenanceCapabilities({
       provider,
       packageName: null,
-      updateExecutable: "cursor-agent",
+      updateExecutable: "native-tool",
       updateArgs: ["update"],
-      updateLockKey: "cursor-agent",
+      updateLockKey: "native-tool",
     });
   }
   return makeProviderMaintenanceCapabilities({
     provider,
-    packageName: provider === OPENCODE_DRIVER ? "opencode-ai" : "@openai/codex",
+    packageName: provider === NPM_TOOL_DRIVER ? "example-npm-tool" : "@openai/codex",
     updateExecutable: "npm",
     updateArgs:
-      provider === OPENCODE_DRIVER
-        ? ["install", "-g", "opencode-ai@latest"]
+      provider === NPM_TOOL_DRIVER
+        ? ["install", "-g", "example-npm-tool@latest"]
         : ["install", "-g", "@openai/codex@latest"],
     updateLockKey: "npm-global",
   });
@@ -79,16 +79,16 @@ const baseProvider: ServerProvider = {
   skills: [],
 };
 
-const baseCursorProvider: ServerProvider = {
+const baseNativeToolProvider: ServerProvider = {
   ...baseProvider,
-  instanceId: CURSOR_INSTANCE_ID,
-  driver: CURSOR_DRIVER,
+  instanceId: NATIVE_TOOL_INSTANCE_ID,
+  driver: NATIVE_TOOL_DRIVER,
 };
 
-const baseOpenCodeProvider: ServerProvider = {
+const baseNpmToolProvider: ServerProvider = {
   ...baseProvider,
-  instanceId: OPENCODE_INSTANCE_ID,
-  driver: OPENCODE_DRIVER,
+  instanceId: NPM_TOOL_INSTANCE_ID,
+  driver: NPM_TOOL_DRIVER,
 };
 
 const latestVersionHttpClient = (version: string) =>
@@ -220,13 +220,13 @@ describe("providerMaintenanceRunner", () => {
   it.effect("runs the allowlisted provider update command and records success", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
     return Effect.gen(function* () {
-      const { registry, updateStatesRef } = yield* makeRegistry(baseCursorProvider);
+      const { registry, updateStatesRef } = yield* makeRegistry(baseNativeToolProvider);
       const updater = yield* makeTestRunner(registry);
 
-      const result = yield* updater.updateProvider(CURSOR_DRIVER);
+      const result = yield* updater.updateProvider(NATIVE_TOOL_DRIVER);
       assert.deepStrictEqual(calls, [
         {
-          command: "cursor-agent",
+          command: "native-tool",
           args: ["update"],
         },
       ]);
@@ -509,18 +509,18 @@ describe("providerMaintenanceRunner", () => {
     });
     const calls: Array<string> = [];
     return Effect.gen(function* () {
-      const { registry } = yield* makeRegistry([baseProvider, baseOpenCodeProvider]);
+      const { registry } = yield* makeRegistry([baseProvider, baseNpmToolProvider]);
       const updater = yield* makeTestRunner({
         ...registry,
         getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
           Effect.succeed(
             makeProviderMaintenanceCapabilities({
               provider,
-              packageName: provider === OPENCODE_DRIVER ? "opencode-ai" : "@openai/codex",
+              packageName: provider === NPM_TOOL_DRIVER ? "example-npm-tool" : "@openai/codex",
               updateExecutable: "npm",
               updateArgs:
-                provider === OPENCODE_DRIVER
-                  ? ["install", "-g", "opencode-ai@latest"]
+                provider === NPM_TOOL_DRIVER
+                  ? ["install", "-g", "example-npm-tool@latest"]
                   : ["install", "-g", "@openai/codex@latest"],
               updateLockKey: "npm-global",
             }),
@@ -530,12 +530,12 @@ describe("providerMaintenanceRunner", () => {
       const first = yield* updater.updateProvider(CODEX_DRIVER).pipe(Effect.forkScoped);
       yield* Effect.promise(() => firstStarted);
 
-      const second = yield* updater.updateProvider(OPENCODE_DRIVER).pipe(Effect.forkScoped);
+      const second = yield* updater.updateProvider(NPM_TOOL_DRIVER).pipe(Effect.forkScoped);
       let providersWhileQueued: ReadonlyArray<ServerProvider> = [];
       for (let attempt = 0; attempt < 20; attempt += 1) {
         providersWhileQueued = yield* registry.getProviders;
         const queuedStatus = providersWhileQueued.find(
-          (provider) => provider.instanceId === OPENCODE_INSTANCE_ID,
+          (provider) => provider.instanceId === NPM_TOOL_INSTANCE_ID,
         )?.updateState?.status;
         if (queuedStatus === "queued") {
           break;
@@ -544,7 +544,7 @@ describe("providerMaintenanceRunner", () => {
       }
       assert.deepStrictEqual(calls, ["install -g @openai/codex@latest"]);
       assert.strictEqual(
-        providersWhileQueued.find((provider) => provider.instanceId === OPENCODE_INSTANCE_ID)
+        providersWhileQueued.find((provider) => provider.instanceId === NPM_TOOL_INSTANCE_ID)
           ?.updateState?.status,
         "queued",
       );
@@ -554,7 +554,7 @@ describe("providerMaintenanceRunner", () => {
       yield* Fiber.join(second);
       assert.deepStrictEqual(calls, [
         "install -g @openai/codex@latest",
-        "install -g opencode-ai@latest",
+        "install -g example-npm-tool@latest",
       ]);
     }).pipe(
       Effect.provide(

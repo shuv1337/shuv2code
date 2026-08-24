@@ -2,7 +2,7 @@
  * Shared prompt builders for text generation providers.
  *
  * Extracts the prompt construction logic that is identical across
- * Codex, Claude, and any future CLI-based text generation backends.
+ * Codex and any future CLI-based text generation backends.
  *
  * @module textGenerationPrompts
  */
