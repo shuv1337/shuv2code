@@ -52,6 +52,35 @@ export class OpenCodeV2EventTooLargeError extends Error {
   }
 }
 
+/**
+ * Non-2xx response from the OpenCode V2 API. Carries the HTTP `status` and the
+ * upstream error `name` (e.g. `ConflictError`, `InvalidRequestError`) so
+ * callers can separate semantic rejections from retryable transport failures,
+ * with a human-readable message either way.
+ */
+export class OpenCodeV2RequestError extends Error {
+  readonly status: number;
+  readonly errorName: string | undefined;
+  readonly body: unknown;
+
+  constructor(input: {
+    readonly status: number;
+    readonly resource: string;
+    readonly errorName?: string | undefined;
+    readonly detail?: string | undefined;
+    readonly body?: unknown;
+  }) {
+    super(
+      `OpenCode V2 request to ${input.resource} failed with status ${input.status}` +
+        `${input.errorName ? ` (${input.errorName})` : ""}${input.detail ? `: ${input.detail}` : "."}`,
+    );
+    this.name = "OpenCodeV2RequestError";
+    this.status = input.status;
+    this.errorName = input.errorName;
+    this.body = input.body;
+  }
+}
+
 export interface OpenCodeV2Event {
   readonly id?: string;
   readonly type: string;
@@ -66,7 +95,27 @@ export interface OpenCodeV2SessionInfo {
   readonly id: string;
   readonly title?: string;
   readonly location?: { readonly directory?: string };
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
+
+export interface OpenCodeV2DynamicToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  /** Raw JSON Schema for the tool input. */
+  readonly parameters?: Readonly<Record<string, unknown>>;
+}
+
+export interface OpenCodeV2DynamicToolCall {
+  readonly callID: string;
+  readonly sessionID: string;
+  readonly tool: string;
+  readonly input: unknown;
+  readonly time?: { readonly requested?: number };
+}
+
+export type OpenCodeV2DynamicToolReply =
+  | { readonly status: "completed"; readonly content: string }
+  | { readonly status: "failed"; readonly message: string };
 
 export interface OpenCodeV2RemoteMcpConfig {
   readonly type: "remote";
@@ -226,11 +275,13 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
           return undefined;
         }
       })();
-      if (body && typeof body === "object") {
-        throw Object.assign(body, { status });
-      }
-      throw Object.assign(new Error(`OpenCode V2 request failed with status ${status}.`), {
+      const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+      throw new OpenCodeV2RequestError({
         status,
+        resource: url.pathname,
+        errorName: typeof record.name === "string" ? record.name : undefined,
+        detail: typeof record.message === "string" ? record.message : undefined,
+        body,
       });
     }
     if (options?.empty || status === 204) {
@@ -339,6 +390,8 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
         readonly location?: { readonly directory: string };
         readonly agent?: string;
         readonly model?: unknown;
+        readonly metadata?: Readonly<Record<string, unknown>>;
+        readonly tools?: ReadonlyArray<OpenCodeV2DynamicToolDefinition>;
       }) =>
         data<OpenCodeV2SessionInfo>("POST", "/api/session", {
           body: {
@@ -360,6 +413,7 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
           readonly boundary:
             | { readonly type: "through" }
             | { readonly type: "before"; readonly messageID: string };
+          readonly tools?: ReadonlyArray<OpenCodeV2DynamicToolDefinition>;
         },
       ) => data<OpenCodeV2SessionInfo>("POST", sessionPath(sessionID, "/fork"), { body }),
       switchAgent: (sessionID: string, agent: string) =>
@@ -397,6 +451,32 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
       wait: (sessionID: string) =>
         request<void>("POST", sessionPath(sessionID, "/wait"), { empty: true }),
       active: () => data<Record<string, { readonly type?: string }>>("GET", "/api/session/active"),
+      tools: {
+        set: (sessionID: string, tools: ReadonlyArray<OpenCodeV2DynamicToolDefinition>) =>
+          request<void>("PUT", sessionPath(sessionID, "/tools"), {
+            body: { tools },
+            empty: true,
+          }),
+        list: (sessionID: string) =>
+          data<ReadonlyArray<OpenCodeV2DynamicToolDefinition>>(
+            "GET",
+            sessionPath(sessionID, "/tools"),
+          ),
+        calls: (sessionID: string) =>
+          data<ReadonlyArray<OpenCodeV2DynamicToolCall>>(
+            "GET",
+            sessionPath(sessionID, "/tools/calls"),
+          ),
+        reply: (sessionID: string, callID: string, reply: OpenCodeV2DynamicToolReply) =>
+          request<void>(
+            "POST",
+            sessionPath(sessionID, `/tools/calls/${encodeURIComponent(callID)}/reply`),
+            {
+              body: reply,
+              empty: true,
+            },
+          ),
+      },
       rename: (sessionID: string, title: string) =>
         request<void>("POST", sessionPath(sessionID, "/rename"), {
           body: { title },

@@ -25,6 +25,8 @@ import type {
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type { ProviderDynamicToolsShape } from "./ProviderDynamicTools.ts";
+
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
@@ -239,4 +241,10 @@ export interface ProviderAdapterShape<TError> {
    * Canonical runtime event stream emitted by this adapter.
    */
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;
+
+  /**
+   * Session-scoped dynamic tool seam (ADE §3.1). Present only on adapters
+   * whose provider supports per-session client-registered tools.
+   */
+  readonly dynamicTools?: ProviderDynamicToolsShape<TError>;
 }
