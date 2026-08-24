@@ -170,6 +170,19 @@ export default Effect.gen(function* () {
       result_json TEXT,
       delivered INTEGER NOT NULL DEFAULT 0 CHECK (delivered IN (0, 1)),
       delivered_at TEXT,
+      -- Assignment-engine delivery state machine (S7, #161). delivered /
+      -- delivered_at stay the product-level delivery record from the
+      -- contracts schema; these two columns are how the engine gets there
+      -- exactly once: a batch is claimed ('delivering' + a durable
+      -- delivery_attempt_id committed BEFORE the kernel call), then marked
+      -- 'delivered'. A crash in that window leaves the batch 'delivering',
+      -- and recovery re-drives it with the same attempt id so the kernel
+      -- port can dedupe. 'not-applicable' marks captain-requested results,
+      -- which surface on the client instead of as synthetic input.
+      delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK (
+        delivery_state IN ('pending', 'delivering', 'delivered', 'not-applicable')
+      ),
+      delivery_attempt_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (recipient_bot_id) REFERENCES ade_bots(bot_id) ON DELETE CASCADE,
