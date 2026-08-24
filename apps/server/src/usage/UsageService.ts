@@ -35,7 +35,6 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import { ServerConfig } from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
@@ -184,19 +183,6 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  /**
-   * Claude's config dir is the home itself when overridden, but a default
-   * install nests transcripts under `~/.claude/projects`. Probe both.
-   */
-  const resolveClaudeTranscriptDir = (homePath: string) =>
-    Effect.gen(function* () {
-      const nested = path.join(homePath, ".claude", "projects");
-      const nestedExists = yield* fileSystem
-        .exists(nested)
-        .pipe(Effect.catchCause(() => Effect.succeed(false)));
-      return nestedExists ? nested : path.join(homePath, "projects");
-    });
-
   /** Resolves the transcript directory for each provider. */
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* () {
     // A settings failure must surface as an error: swallowing it here would
@@ -215,12 +201,9 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-    const claudeHome = yield* resolveClaudeHomePath(settings.providers.claudeAgent);
-    const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
 
     return [
-      { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
     ];
   });

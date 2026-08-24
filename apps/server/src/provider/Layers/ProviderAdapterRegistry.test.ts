@@ -10,10 +10,9 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
-import type * as ClaudeAdapter from "../Services/ClaudeAdapter.ts";
 import type * as CodexAdapter from "../Services/CodexAdapter.ts";
-import type * as CursorAdapter from "../Services/CursorAdapter.ts";
-import type * as OpenCodeAdapter from "../Services/OpenCodeAdapter.ts";
+import type { ProviderAdapterError } from "../Errors.ts";
+import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
@@ -23,9 +22,7 @@ import * as ProviderAdapterRegistryLayer from "./ProviderAdapterRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
-const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
-const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
-const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const OPENCODE_V2_DRIVER = ProviderDriverKind.make("opencodeV2");
 
 const fakeCodexAdapter: CodexAdapter.CodexAdapterShape = {
   provider: CODEX_DRIVER,
@@ -44,42 +41,8 @@ const fakeCodexAdapter: CodexAdapter.CodexAdapterShape = {
   streamEvents: Stream.empty,
 };
 
-const fakeClaudeAdapter: ClaudeAdapter.ClaudeAdapterShape = {
-  provider: CLAUDE_AGENT_DRIVER,
-  capabilities: { sessionModelSwitch: "in-session" },
-  startSession: vi.fn(),
-  sendTurn: vi.fn(),
-  interruptTurn: vi.fn(),
-  respondToRequest: vi.fn(),
-  respondToUserInput: vi.fn(),
-  stopSession: vi.fn(),
-  listSessions: vi.fn(),
-  hasSession: vi.fn(),
-  readThread: vi.fn(),
-  rollbackThread: vi.fn(),
-  stopAll: vi.fn(),
-  streamEvents: Stream.empty,
-};
-
-const fakeOpenCodeAdapter: OpenCodeAdapter.OpenCodeAdapterShape = {
-  provider: OPENCODE_DRIVER,
-  capabilities: { sessionModelSwitch: "in-session" },
-  startSession: vi.fn(),
-  sendTurn: vi.fn(),
-  interruptTurn: vi.fn(),
-  respondToRequest: vi.fn(),
-  respondToUserInput: vi.fn(),
-  stopSession: vi.fn(),
-  listSessions: vi.fn(),
-  hasSession: vi.fn(),
-  readThread: vi.fn(),
-  rollbackThread: vi.fn(),
-  stopAll: vi.fn(),
-  streamEvents: Stream.empty,
-};
-
-const fakeCursorAdapter: CursorAdapter.CursorAdapterShape = {
-  provider: CURSOR_DRIVER,
+const fakeOpenCodeV2Adapter: ProviderAdapterShape<ProviderAdapterError> = {
+  provider: OPENCODE_V2_DRIVER,
   capabilities: { sessionModelSwitch: "in-session" },
   startSession: vi.fn(),
   sendTurn: vi.fn(),
@@ -97,11 +60,11 @@ const fakeCursorAdapter: CursorAdapter.CursorAdapterShape = {
 
 // ProviderAdapterRegistryLive is now a facade over ProviderInstanceRegistry —
 // it walks `listInstances` once at boot and surfaces the default-instance
-// adapter keyed by its driver kind. To test the facade we supply four fake
+// adapter keyed by its driver kind. To test the facade we supply fake
 // instances whose `instanceId === defaultInstanceIdForDriver(driverKind)` so
 // they pass the default-instance filter.
 const makeFakeInstance = (
-  driverKindString: "codex" | "claudeAgent" | "cursor" | "opencode",
+  driverKindString: "codex" | "opencodeV2",
   adapter: ProviderInstance["adapter"],
 ): ProviderInstance => {
   const driverKind = ProviderDriverKind.make(driverKindString);
@@ -130,9 +93,7 @@ const makeFakeInstance = (
 
 const fakeInstances: ReadonlyArray<ProviderInstance> = [
   makeFakeInstance("codex", fakeCodexAdapter),
-  makeFakeInstance("claudeAgent", fakeClaudeAdapter),
-  makeFakeInstance("opencode", fakeOpenCodeAdapter),
-  makeFakeInstance("cursor", fakeCursorAdapter),
+  makeFakeInstance("opencodeV2", fakeOpenCodeV2Adapter),
 ];
 
 const fakeInstanceRegistryLayer = Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
@@ -158,38 +119,31 @@ it.layer(layer)("ProviderAdapterRegistryLive", (it) => {
   it("resolves adapters and routing metadata from provider instances", () =>
     Effect.gen(function* () {
       const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
-      const claudeInstanceId = defaultInstanceIdForDriver(CLAUDE_AGENT_DRIVER);
+      const openCodeV2InstanceId = defaultInstanceIdForDriver(OPENCODE_V2_DRIVER);
 
-      const adapter = yield* registry.getByInstance(claudeInstanceId);
-      assert.strictEqual(adapter, fakeClaudeAdapter);
+      const adapter = yield* registry.getByInstance(openCodeV2InstanceId);
+      assert.strictEqual(adapter, fakeOpenCodeV2Adapter);
 
-      const info = yield* registry.getInstanceInfo(claudeInstanceId);
+      const info = yield* registry.getInstanceInfo(openCodeV2InstanceId);
       assert.deepStrictEqual(info, {
-        instanceId: claudeInstanceId,
-        driverKind: CLAUDE_AGENT_DRIVER,
+        instanceId: openCodeV2InstanceId,
+        driverKind: OPENCODE_V2_DRIVER,
         displayName: undefined,
         accentColor: undefined,
         enabled: true,
         continuationIdentity: {
-          driverKind: CLAUDE_AGENT_DRIVER,
-          continuationKey: "claudeAgent:instance:claudeAgent",
+          driverKind: OPENCODE_V2_DRIVER,
+          continuationKey: "opencodeV2:instance:opencodeV2",
         },
       });
 
       const instances = yield* registry.listInstances();
       assert.deepStrictEqual(instances, [
         defaultInstanceIdForDriver(CODEX_DRIVER),
-        claudeInstanceId,
-        defaultInstanceIdForDriver(OPENCODE_DRIVER),
-        defaultInstanceIdForDriver(CURSOR_DRIVER),
+        openCodeV2InstanceId,
       ]);
 
       const providers = yield* registry.listProviders();
-      assert.deepStrictEqual(providers, [
-        CODEX_DRIVER,
-        CLAUDE_AGENT_DRIVER,
-        OPENCODE_DRIVER,
-        CURSOR_DRIVER,
-      ]);
+      assert.deepStrictEqual(providers, [CODEX_DRIVER, OPENCODE_V2_DRIVER]);
     }));
 });

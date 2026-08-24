@@ -8,7 +8,7 @@ import * as NodePath from "node:path";
 
 import { describe, it } from "vite-plus/test";
 
-import { OPENCODE_MAINTENANCE_DEFINITION } from "./Drivers/OpenCodeDriver.ts";
+import { OPENCODE_V2_MAINTENANCE_DEFINITION } from "./Drivers/OpenCodeV2Driver.ts";
 import { detectOpenCodeProtocolFromVersionOutput } from "./opencodeRuntime.ts";
 import { resolvePackageManagedProviderMaintenance } from "./providerMaintenance.ts";
 import {
@@ -51,13 +51,13 @@ describe("shuvcode OpenCode V2 fork compatibility", () => {
   });
 
   it("tracks shuvcode npm releases for provider update checks", () => {
-    NodeAssert.equal(OPENCODE_MAINTENANCE_DEFINITION.npmPackageName, "shuvcode");
-    NodeAssert.equal(OPENCODE_MAINTENANCE_DEFINITION.homebrewFormula, null);
-    NodeAssert.equal(OPENCODE_MAINTENANCE_DEFINITION.nativeUpdate, null);
+    NodeAssert.equal(OPENCODE_V2_MAINTENANCE_DEFINITION.npmPackageName, "shuvcode");
+    NodeAssert.equal(OPENCODE_V2_MAINTENANCE_DEFINITION.homebrewFormula, null);
+    NodeAssert.equal(OPENCODE_V2_MAINTENANCE_DEFINITION.nativeUpdate, null);
   });
 
   it("resolves shuvcode update commands for package-managed installs", () => {
-    const bareCommand = resolvePackageManagedProviderMaintenance(OPENCODE_MAINTENANCE_DEFINITION, {
+    const bareCommand = resolvePackageManagedProviderMaintenance(OPENCODE_V2_MAINTENANCE_DEFINITION, {
       binaryPath: "shuvcode",
     });
     NodeAssert.equal(bareCommand.packageName, "shuvcode");
@@ -66,13 +66,13 @@ describe("shuvcode OpenCode V2 fork compatibility", () => {
       "npm install -g --allow-scripts=shuvcode shuvcode@latest",
     );
 
-    const bunGlobal = resolvePackageManagedProviderMaintenance(OPENCODE_MAINTENANCE_DEFINITION, {
+    const bunGlobal = resolvePackageManagedProviderMaintenance(OPENCODE_V2_MAINTENANCE_DEFINITION, {
       binaryPath: "/home/user/.bun/bin/shuvcode",
       resolvedCommandPath: "/home/user/.bun/bin/shuvcode",
     });
     NodeAssert.equal(bunGlobal.update?.command, "bun i -g shuvcode@latest");
 
-    const npmGlobal = resolvePackageManagedProviderMaintenance(OPENCODE_MAINTENANCE_DEFINITION, {
+    const npmGlobal = resolvePackageManagedProviderMaintenance(OPENCODE_V2_MAINTENANCE_DEFINITION, {
       binaryPath: "/home/user/.npm-global/bin/shuvcode",
       resolvedCommandPath: "/home/user/.npm-global/bin/shuvcode",
       realCommandPath: "/home/user/.npm-global/lib/node_modules/shuvcode/bin/launcher.mjs",
@@ -85,7 +85,7 @@ describe("shuvcode OpenCode V2 fork compatibility", () => {
 
   it("keeps version advisories on shuvcode for manual installs without an update command", () => {
     const manualInstall = resolvePackageManagedProviderMaintenance(
-      OPENCODE_MAINTENANCE_DEFINITION,
+      OPENCODE_V2_MAINTENANCE_DEFINITION,
       {
         binaryPath: "/home/user/.local/bin/shuvcode",
         resolvedCommandPath: "/home/user/.local/bin/shuvcode",
