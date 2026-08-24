@@ -27,6 +27,7 @@ import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import { AdeBootstrap } from "./ade/AdeBootstrap.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -292,6 +293,13 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
 
 const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
 
+// ADE bootstrap (spec §4.1): the idempotent ensure-Firstmate + LimitsConfig
+// seed runs once at startup, after migrations, against the same database.
+const AdeBootstrapLayerLive = AdeBootstrap.bootLive.pipe(
+  Layer.provideMerge(AdeBootstrap.layer),
+  Layer.provide(PersistenceLayerLive),
+);
+
 const VoiceControlPersistenceLive = VoiceControlPersistenceLayerLive.pipe(
   Layer.provide(PersistenceLayerLive),
 );
@@ -457,7 +465,7 @@ const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
-  Layer.provideMerge(PersistenceLayerLive),
+  Layer.provideMerge(Layer.mergeAll(PersistenceLayerLive, AdeBootstrapLayerLive)),
   Layer.provideMerge(Layer.mergeAll(AutomationServiceLayerLive, Keybindings.layer)),
   Layer.provideMerge(ProviderRegistryLive),
   // The instance registry is the new routing keystone — text generation,
