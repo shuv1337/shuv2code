@@ -40,7 +40,7 @@ const TRANSFER_BUDGET = {
 
 export const TRANSFER_BUDGETS: Readonly<Record<string, ProviderTransferBudget>> = {
   codex: TRANSFER_BUDGET,
-  claudeAgent: TRANSFER_BUDGET,
+  opencodeV2: TRANSFER_BUDGET,
 };
 
 function totalWireBytes(run: TransferBudgetRun): number {

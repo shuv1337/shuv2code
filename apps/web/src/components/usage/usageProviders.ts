@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@shuv2code/contracts";
 
-import { ClaudeAI, type Icon, OpenAI } from "../Icons";
+import { type Icon, OpenAI } from "../Icons";
 
 type UsageProviderPresentation = {
   readonly label: string;
@@ -18,11 +18,6 @@ export const PROVIDER_PRESENTATION = {
     label: "Codex",
     color: "var(--foreground)",
     mark: OpenAI,
-  },
-  claude: {
-    label: "Claude Code",
-    color: "#d97757",
-    mark: ClaudeAI,
   },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 

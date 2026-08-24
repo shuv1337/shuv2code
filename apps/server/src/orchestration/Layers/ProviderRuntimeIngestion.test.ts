@@ -3530,14 +3530,14 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
-  it("projects Claude usage snapshots with context window into normalized thread activities", async () => {
+  it("projects OpenCode usage snapshots with context window into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
     harness.emit({
       type: "thread.token-usage.updated",
-      eventId: asEventId("evt-thread-token-usage-updated-claude-window"),
-      provider: ProviderDriverKind.make("claudeAgent"),
+      eventId: asEventId("evt-thread-token-usage-updated-opencode-window"),
+      provider: ProviderDriverKind.make("opencodeV2"),
       createdAt: now,
       threadId: asThreadId("thread-1"),
       payload: {
@@ -3550,8 +3550,8 @@ describe("ProviderRuntimeIngestion", () => {
         },
       },
       raw: {
-        source: "claude.sdk.message",
-        method: "claude/result/success",
+        source: "opencode.sdk.event",
+        method: "session.updated",
         payload: {},
       },
     });

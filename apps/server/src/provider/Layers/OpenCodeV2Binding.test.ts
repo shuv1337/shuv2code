@@ -24,16 +24,20 @@ describe("applyOpenCodeV2Binding", () => {
       const patches: Array<unknown> = [];
       const remaps: Array<string> = [];
       const settings = {
-        providers: {
+        providers: {},
+        providerInstances: {
           opencode: {
+            driver: "opencode",
             enabled: true,
-            binaryPath: "opencode",
-            serverUrl: "",
-            serverPassword: "",
-            customModels: [],
+            config: {
+              enabled: true,
+              binaryPath: "opencode",
+              serverUrl: "",
+              serverPassword: "",
+              customModels: [],
+            },
           },
         },
-        providerInstances: {},
       } as unknown as ServerSettings;
 
       const runtime = {
@@ -92,16 +96,20 @@ describe("applyOpenCodeV2Binding", () => {
     Effect.gen(function* () {
       let updated = false;
       const settings = {
-        providers: {
+        providers: {},
+        providerInstances: {
           opencode: {
+            driver: "opencode",
             enabled: true,
-            binaryPath: "opencode",
-            serverUrl: "",
-            serverPassword: "",
-            customModels: [],
+            config: {
+              enabled: true,
+              binaryPath: "opencode",
+              serverUrl: "",
+              serverPassword: "",
+              customModels: [],
+            },
           },
         },
-        providerInstances: {},
       } as unknown as ServerSettings;
       const runtime = {
         runOpenCodeCommand: () =>

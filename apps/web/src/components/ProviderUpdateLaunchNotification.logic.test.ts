@@ -120,15 +120,15 @@ describe("provider update launch notification logic", () => {
           instanceId: instanceId("codex"),
           latestVersion: "1.1.0",
         }),
-        provider({ driver: driver("cursor"), latestVersion: "0.3.0" }),
+        provider({ driver: driver("opencodeV2"), latestVersion: "0.3.0" }),
       ]),
     ).toHaveLength(2);
   });
 
   it("disables one-click updates when provider instances disagree on the update command", () => {
     const candidate = updateCandidate({
-      driver: driver("claudeAgent"),
-      instanceId: instanceId("claude_personal"),
+      driver: driver("opencodeV2"),
+      instanceId: instanceId("opencode_personal"),
       latestVersion: "2.1.123",
     });
 
@@ -136,11 +136,11 @@ describe("provider update launch notification logic", () => {
       canOneClickUpdateProviderCandidate(candidate, [
         candidate,
         provider({
-          driver: driver("claudeAgent"),
-          instanceId: instanceId("claude_work"),
+          driver: driver("opencodeV2"),
+          instanceId: instanceId("opencode_work"),
           latestVersion: "2.1.123",
           canUpdate: true,
-          updateCommand: "bun add -g @anthropic-ai/claude-code@latest",
+          updateCommand: "bun add -g opencode-ai@latest",
         }),
       ]),
     ).toBe(false);
@@ -148,18 +148,18 @@ describe("provider update launch notification logic", () => {
 
   it("keeps one-click updates enabled when sibling instances are already current", () => {
     const candidate = updateCandidate({
-      driver: driver("claudeAgent"),
-      instanceId: instanceId("claude_personal"),
+      driver: driver("opencodeV2"),
+      instanceId: instanceId("opencode_personal"),
       latestVersion: "2.1.123",
-      updateCommand: "npm install -g @anthropic-ai/claude-code@latest",
+      updateCommand: "npm install -g opencode-ai@latest",
     });
 
     expect(
       hasOneClickUpdateProviderCandidate(candidate, [
         candidate,
         provider({
-          driver: driver("claudeAgent"),
-          instanceId: instanceId("claude_work"),
+          driver: driver("opencodeV2"),
+          instanceId: instanceId("opencode_work"),
           version: "2.1.123",
           latestVersion: "2.1.123",
           advisoryStatus: "current",
@@ -172,8 +172,8 @@ describe("provider update launch notification logic", () => {
       canOneClickUpdateProviderCandidate(candidate, [
         candidate,
         provider({
-          driver: driver("claudeAgent"),
-          instanceId: instanceId("claude_work"),
+          driver: driver("opencodeV2"),
+          instanceId: instanceId("opencode_work"),
           version: "2.1.123",
           latestVersion: "2.1.123",
           advisoryStatus: "current",
@@ -206,13 +206,13 @@ describe("provider update launch notification logic", () => {
       version: "1.0.0",
       latestVersion: "1.1.0",
     });
-    const cursor = updateCandidate({
-      driver: driver("cursor"),
+    const opencode = updateCandidate({
+      driver: driver("opencodeV2"),
       version: "0.2.0",
       latestVersion: "0.3.0",
     });
 
-    expect(providerUpdateNotificationKey([codex, cursor])).toBe("codex:1.1.0|cursor:0.3.0");
+    expect(providerUpdateNotificationKey([codex, opencode])).toBe("codex:1.1.0|opencodeV2:0.3.0");
     expect(providerUpdateNotificationKey([])).toBeNull();
   });
 
@@ -295,12 +295,12 @@ describe("provider update launch notification logic", () => {
     const view = getProviderUpdateInitialToastView({
       updateProviders: [
         updateCandidate({ driver: driver("codex"), canUpdate: false }),
-        updateCandidate({ driver: driver("cursor"), canUpdate: false }),
+        updateCandidate({ driver: driver("opencodeV2"), canUpdate: false }),
       ],
       oneClickProviders: [],
     });
 
-    expect(view.description).toBe("Codex and Cursor can be updated from provider settings.");
+    expect(view.description).toBe("Codex and opencode2 can be updated from provider settings.");
   });
 
   it("uses server update state for running progress", () => {
@@ -378,7 +378,7 @@ describe("provider update launch notification logic", () => {
     const view = getProviderUpdateProgressToastView({
       providers: [
         provider({
-          driver: driver("cursor"),
+          driver: driver("opencodeV2"),
           updateState: {
             status: "unchanged",
             startedAt: checkedAt,
@@ -395,7 +395,7 @@ describe("provider update launch notification logic", () => {
       phase: "unchanged",
       type: "warning",
       title: "Provider still needs an update",
-      description: "Cursor still appears outdated. Check provider settings for details.",
+      description: "opencode2 still appears outdated. Check provider settings for details.",
     });
   });
 
@@ -466,15 +466,15 @@ describe("provider update launch notification logic", () => {
 
   it("collects only attempted provider snapshots from update responses", () => {
     const codex = provider({ driver: driver("codex") });
-    const cursor = provider({ driver: driver("cursor") });
-    const results = [AsyncResult.success({ providers: [codex, cursor] })];
+    const opencode = provider({ driver: driver("opencodeV2") });
+    const results = [AsyncResult.success({ providers: [codex, opencode] })];
 
     expect(
       collectUpdatedProviderSnapshots({
         results,
-        providerInstanceIds: new Set([cursor.instanceId]),
+        providerInstanceIds: new Set([opencode.instanceId]),
       }),
-    ).toEqual([cursor]);
+    ).toEqual([opencode]);
   });
 
   it("summarizes active provider updates for the sidebar pill", () => {
@@ -490,7 +490,7 @@ describe("provider update launch notification logic", () => {
         },
       }),
       provider({
-        driver: driver("cursor"),
+        driver: driver("opencodeV2"),
         updateState: {
           status: "queued",
           startedAt: null,
@@ -504,7 +504,7 @@ describe("provider update launch notification logic", () => {
     expect(view).toMatchObject({
       tone: "loading",
       title: "Updating 2 providers",
-      description: "Codex and Cursor updates are in progress.",
+      description: "Codex and opencode2 updates are in progress.",
     });
   });
 
@@ -534,7 +534,7 @@ describe("provider update launch notification logic", () => {
     const view = getProviderUpdateSidebarPillView(
       [
         provider({
-          driver: driver("claudeAgent"),
+          driver: driver("opencodeV2"),
           updateState: {
             status: "failed",
             startedAt: checkedAt,
@@ -548,9 +548,9 @@ describe("provider update launch notification logic", () => {
     );
 
     expect(view).toMatchObject({
-      key: "failed:claudeAgent:2026-04-23T10:00:00.000Z:Update command exited with code 1.",
+      key: "failed:opencodeV2:2026-04-23T10:00:00.000Z:Update command exited with code 1.",
       tone: "error",
-      title: "Claude v1.1.0 update failed",
+      title: "opencode2 v1.1.0 update failed",
       description: "Update command exited with code 1.",
       dismissible: true,
     });
@@ -589,7 +589,7 @@ describe("provider update launch notification logic", () => {
     const view = getProviderUpdateSidebarPillView(
       [
         provider({
-          driver: driver("cursor"),
+          driver: driver("opencodeV2"),
           updateState: {
             status: "unchanged",
             startedAt: checkedAt,
@@ -603,9 +603,9 @@ describe("provider update launch notification logic", () => {
     );
 
     expect(view).toMatchObject({
-      key: "unchanged:cursor:2026-04-23T10:00:00.000Z:still old",
+      key: "unchanged:opencodeV2:2026-04-23T10:00:00.000Z:still old",
       tone: "warning",
-      title: "Cursor still needs an update",
+      title: "opencode2 still needs an update",
       dismissible: true,
     });
   });
@@ -633,7 +633,7 @@ describe("provider update launch notification logic", () => {
   it("shows a newer success before falling back to an older failure", () => {
     const providers = [
       provider({
-        driver: driver("claudeAgent"),
+        driver: driver("opencodeV2"),
         updateState: {
           status: "failed",
           startedAt: checkedAt,
@@ -671,9 +671,9 @@ describe("provider update launch notification logic", () => {
       dismissedKeys: new Set(["succeeded:codex:2026-04-23T10:01:00.000Z:Provider updated."]),
     });
     expect(failureView).toMatchObject({
-      key: "failed:claudeAgent:2026-04-23T10:00:00.000Z:Update command exited with code 1.",
+      key: "failed:opencodeV2:2026-04-23T10:00:00.000Z:Update command exited with code 1.",
       tone: "error",
-      title: "Claude v1.1.0 update failed",
+      title: "opencode2 v1.1.0 update failed",
     });
   });
 
@@ -681,7 +681,7 @@ describe("provider update launch notification logic", () => {
     expect(
       getProviderUpdateSidebarPillView([
         provider({ driver: driver("codex"), canUpdate: true }),
-        provider({ driver: driver("cursor"), canUpdate: false }),
+        provider({ driver: driver("opencodeV2"), canUpdate: false }),
       ]),
     ).toBeNull();
   });

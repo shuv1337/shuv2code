@@ -1,6 +1,5 @@
 import {
   defaultInstanceIdForDriver,
-  type OpenCodeSettings,
   type OpenCodeV2Settings,
   type ProviderInstanceConfig,
   ProviderDriverKind,
@@ -39,7 +38,7 @@ export class OpenCodeV2BindingReady extends Context.Service<OpenCodeV2BindingRea
   "shuv2code/provider/Layers/OpenCodeV2Binding/OpenCodeV2BindingReady",
 ) {}
 
-function asOpenCodeSettings(config: unknown): OpenCodeSettings {
+function asOpenCodeSettings(config: unknown): OpenCodeV2Settings {
   const record = config && typeof config === "object" ? (config as Record<string, unknown>) : {};
   return {
     enabled: record.enabled !== false,
@@ -54,7 +53,7 @@ function asOpenCodeSettings(config: unknown): OpenCodeSettings {
 
 export const probeOpenCodeLegacyProtocol = Effect.fn("probeOpenCodeLegacyProtocol")(
   function* (input: {
-    readonly settings: OpenCodeSettings;
+    readonly settings: OpenCodeV2Settings;
     readonly environment?: NodeJS.ProcessEnv;
   }): Effect.fn.Return<OpenCodeProtocol | null, never, OpenCodeRuntime | FileSystem.FileSystem> {
     const runtime = yield* OpenCodeRuntime;
@@ -115,7 +114,10 @@ export const applyOpenCodeV2Binding = Effect.fn("applyOpenCodeV2Binding")(functi
   ) {
     return;
   }
-  const legacyConfig = asOpenCodeSettings(legacyEnvelope?.config ?? settings.providers.opencode);
+  // Legacy v1 `providers.opencode` settings were dropped from the contract;
+  // a surviving v1 `providerInstances` envelope is the only legacy config
+  // source left, and its absence falls back to on-PATH defaults.
+  const legacyConfig = asOpenCodeSettings(legacyEnvelope?.config);
   const environment = mergeProviderInstanceEnvironment(legacyEnvelope?.environment);
   const protocol = yield* probeOpenCodeLegacyProtocol({
     settings: legacyConfig,
