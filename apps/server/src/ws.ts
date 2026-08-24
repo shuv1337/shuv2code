@@ -66,6 +66,19 @@ import {
   WsVoiceResetControllerRpc,
   WsVoiceStartRpc,
   WsVoiceStopRpc,
+  type AdeCreateBotFromTemplateInput,
+  type AdeEditPersonaInput,
+  type AdeSetComputerUseInput,
+  type AdeWriteMemoryInput,
+  type BotId,
+  WsAdeCreateBotFromTemplateRpc,
+  WsAdeEditBotPersonaRpc,
+  WsAdeGetBotRpc,
+  WsAdeGetNeedsYouCountRpc,
+  WsAdeGetRosterRpc,
+  WsAdeSetBotComputerUseRpc,
+  WsAdeStartBotChatRpc,
+  WsAdeWriteBotMemoryRpc,
   WS_METHODS,
   WsRpcGroup,
 } from "@shuv2code/contracts";
@@ -118,6 +131,7 @@ import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
+import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
 import * as UsageService from "./usage/UsageService.ts";
@@ -319,6 +333,68 @@ export const makeVoiceWsRpcLayer = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   voiceController: VoiceController.VoiceControllerService["Service"],
 ) => VoiceWsRpcGroup.toLayer(makeVoiceRpcHandlers(currentSession, voiceController));
+
+/**
+ * ADE captain-surface handlers (spec §7 slices 1, 2, 8). Factored out for the
+ * same reason the voice handlers were: the production route and the focused
+ * in-memory scope tests must install one definition, not two.
+ */
+const makeAdeRpcHandlers = (
+  currentSession: EnvironmentAuth.AuthenticatedSession,
+  adeCaptainApi: AdeCaptainApi["Service"],
+) => {
+  const { observeRpcEffect } = makeAuthorizedRpcObservers(currentSession);
+  const ade = { "rpc.aggregate": "ade" } as const;
+  return {
+    [WS_METHODS.adeGetRoster]: (_input: Record<never, never>) =>
+      observeRpcEffect(WS_METHODS.adeGetRoster, adeCaptainApi.getRoster(), ade),
+    [WS_METHODS.adeGetBot]: (input: { readonly botId: BotId }) =>
+      observeRpcEffect(WS_METHODS.adeGetBot, adeCaptainApi.getBot(input.botId), ade),
+    [WS_METHODS.adeCreateBotFromTemplate]: (input: AdeCreateBotFromTemplateInput) =>
+      observeRpcEffect(
+        WS_METHODS.adeCreateBotFromTemplate,
+        adeCaptainApi.createBotFromTemplate(input),
+        ade,
+      ),
+    [WS_METHODS.adeWriteBotMemory]: (input: AdeWriteMemoryInput) =>
+      observeRpcEffect(WS_METHODS.adeWriteBotMemory, adeCaptainApi.writeBotMemory(input), ade),
+    [WS_METHODS.adeEditBotPersona]: (input: AdeEditPersonaInput) =>
+      observeRpcEffect(WS_METHODS.adeEditBotPersona, adeCaptainApi.editBotPersona(input), ade),
+    [WS_METHODS.adeSetBotComputerUse]: (input: AdeSetComputerUseInput) =>
+      observeRpcEffect(
+        WS_METHODS.adeSetBotComputerUse,
+        adeCaptainApi.setBotComputerUse(input),
+        ade,
+      ),
+    [WS_METHODS.adeGetNeedsYouCount]: (_input: Record<never, never>) =>
+      observeRpcEffect(WS_METHODS.adeGetNeedsYouCount, adeCaptainApi.getNeedsYouCount(), ade),
+    [WS_METHODS.adeStartBotChat]: (input: { readonly botId: BotId }) =>
+      observeRpcEffect(WS_METHODS.adeStartBotChat, adeCaptainApi.startBotChat(input.botId), ade),
+  };
+};
+
+/** The production ADE captain RPC subset, for focused in-memory tests. */
+export const AdeWsRpcGroup = RpcGroup.make(
+  WsAdeGetRosterRpc,
+  WsAdeGetBotRpc,
+  WsAdeCreateBotFromTemplateRpc,
+  WsAdeWriteBotMemoryRpc,
+  WsAdeEditBotPersonaRpc,
+  WsAdeSetBotComputerUseRpc,
+  WsAdeGetNeedsYouCountRpc,
+  WsAdeStartBotChatRpc,
+);
+
+/**
+ * Builds the same authenticated ADE handlers installed by the full WebSocket
+ * RPC route, without requiring unrelated server services.
+ *
+ * @internal
+ */
+export const makeAdeWsRpcLayer = (
+  currentSession: EnvironmentAuth.AuthenticatedSession,
+  adeCaptainApi: AdeCaptainApi["Service"],
+) => AdeWsRpcGroup.toLayer(makeAdeRpcHandlers(currentSession, adeCaptainApi));
 
 export const resolveAvailableEditorsForConfig = <A, E, R>(
   discovery: Effect.Effect<ReadonlyArray<A>, E, R>,
@@ -622,6 +698,7 @@ export const makeWsRpcLayer = (
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const adeHealthChecker = yield* AdeHealthChecker;
+      const adeCaptainApi = yield* AdeCaptainApi;
       const automationService = yield* AutomationService.AutomationService;
       const voiceController = yield* VoiceController.VoiceControllerService;
       const usage = yield* UsageService.UsageService;
@@ -2566,6 +2643,7 @@ export const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "ade" },
           ),
+        ...makeAdeRpcHandlers(currentSession, adeCaptainApi),
       });
     }),
   );

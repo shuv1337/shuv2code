@@ -26,6 +26,7 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderDynamicToolsShape } from "./ProviderDynamicTools.ts";
+import type { ProviderSyntheticInputShape } from "./ProviderSyntheticInput.ts";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
@@ -247,4 +248,10 @@ export interface ProviderAdapterShape<TError> {
    * whose provider supports per-session client-registered tools.
    */
   readonly dynamicTools?: ProviderDynamicToolsShape<TError>;
+
+  /**
+   * Session-scoped synthetic input seam (ADE §3.4). Present only on adapters
+   * whose provider can accept out-of-band items on a live session.
+   */
+  readonly syntheticInput?: ProviderSyntheticInputShape<TError>;
 }

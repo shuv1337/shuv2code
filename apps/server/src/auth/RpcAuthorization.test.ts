@@ -55,6 +55,27 @@ describe("RPC authorization scopes", () => {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
   });
+  it("separates looking at the fleet from changing it", () => {
+    for (const method of [
+      WS_METHODS.adeGetRoster,
+      WS_METHODS.adeGetBot,
+      WS_METHODS.adeGetNeedsYouCount,
+      WS_METHODS.subscribeAdeFleetHealth,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of [
+      WS_METHODS.adeCreateBotFromTemplate,
+      WS_METHODS.adeWriteBotMemory,
+      WS_METHODS.adeEditBotPersona,
+      WS_METHODS.adeSetBotComputerUse,
+      // Starting a chat mints a kernel session; it is not a read.
+      WS_METHODS.adeStartBotChat,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("reads the reviewer menu under the same scope as the pull request it belongs to", () => {
     // The candidate list is a read like the detail beside it, and asking somebody for a review is
     // a write like every other pull request operation.

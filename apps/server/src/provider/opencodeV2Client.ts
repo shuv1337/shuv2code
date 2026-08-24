@@ -439,10 +439,23 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
       synthetic: (
         sessionID: string,
         body: {
+          /**
+           * Inbox item id. Upstream admits an item once per id (first
+           * admission wins) and ignores `metadata` when deduping, so this is
+           * the only field that makes a redelivery idempotent.
+           */
+          readonly id?: string;
           readonly text: string;
           readonly description?: string;
           readonly metadata?: Readonly<Record<string, unknown>>;
-          readonly delivery?: "follow-up" | "steer";
+          /**
+           * Upstream's own vocabulary (`Session.Inbox.Delivery`). `"follow-up"`
+           * — the word ADE and the ADR use for queued delivery — is NOT valid
+           * here and is rejected by the payload decoder; translate before
+           * calling.
+           */
+          readonly delivery?: "steer" | "queue";
+          /** Omitted or `true` wakes an idle session; `false` admits only. */
           readonly resume?: boolean;
         },
       ) => data<unknown>("POST", sessionPath(sessionID, "/synthetic"), { body }),

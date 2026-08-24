@@ -27,10 +27,25 @@ import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import { AdeAssignmentEngine } from "./ade/AdeAssignmentEngine.ts";
+import { AdeAssignmentRunner } from "./ade/AdeAssignmentRunner.ts";
+import { AdeAssignmentInlineChecks, AdeAssignmentToolHandlers } from "./ade/AdeAssignmentTools.ts";
 import { AdeBootstrap } from "./ade/AdeBootstrap.ts";
+import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
-import { AdeScreenboxHealthProbesLive, AdeScreenboxRuntime } from "./ade/AdeScreenbox.ts";
+import { AdeMemoryToolHandlers } from "./ade/AdeMemoryTools.ts";
+import { AdePersonaMemory } from "./ade/AdePersonaMemory.ts";
+import {
+  AdeScreenboxHealthProbesLive,
+  AdeScreenboxRuntime,
+  AdeScreenboxToolPlaneLive,
+} from "./ade/AdeScreenbox.ts";
 import { AdeScreenboxClient, AdeScreenboxConfig } from "./ade/AdeScreenboxClient.ts";
+import { AdeSessionRollover } from "./ade/AdeSessionRollover.ts";
+import { AdeShuvcodeChatSession } from "./ade/AdeShuvcodeChatSession.ts";
+import { AdeShuvcodeDispatchLoop } from "./ade/AdeShuvcodeDispatchLoop.ts";
+import { AdeShuvcodeKernelPort } from "./ade/AdeShuvcodeKernelPort.ts";
+import { AdeToolGate, AdeToolHandlers } from "./ade/AdeToolGate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -289,8 +304,12 @@ const OpenCodeV2BindingLayerLive = OpenCodeV2BindingLive.pipe(
 // `create()`; `ProviderEventLoggers.layer` owns the shared native/canonical
 // NDJSON writers and is provided at the outer runtime layer so both
 // `ProviderService` and the per-instance drivers read the same logger pair.
+// The registry is exported, not just consumed: ADE's tool gate and delivery
+// port must resolve the *same* adapter instances `ProviderService` uses. The
+// shuvcode dynamic-tool seam is single-consumer, so a second registry would
+// mean a second seam and a dispatch loop listening to the wrong one.
 const ProviderLayerLive = ProviderServiceLive.pipe(
-  Layer.provide(ProviderAdapterRegistryLive),
+  Layer.provideMerge(ProviderAdapterRegistryLive),
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
 
@@ -325,6 +344,55 @@ const AdeHealthCheckerLayerLive = AdeHealthChecker.tickerLive().pipe(
   Layer.provide(AdeScreenboxHealthProbesLive),
   Layer.provideMerge(AdeScreenboxLayerLive),
   Layer.provide(PersistenceLayerLive),
+);
+
+/**
+ * The ADE captain stack (S9, spec §7 slices 1–2 + §3.2 + §4.2–4.3).
+ *
+ * Unlike the two ADE layers above, this one deliberately leaves its
+ * requirements open — persistence, the provider runtime, the orchestration
+ * engine, and the S17 health checker are all satisfied by the runtime graph it
+ * is merged into. Self-providing them here would build a second copy of the
+ * provider runtime, which is exactly what must not happen: the tool-dispatch
+ * loop is a single-consumer seam.
+ *
+ * Composition notes:
+ * - handler layers stack patch-style over the fail-closed base, so each slice
+ *   wires only what it owns (S7 assignments/fleet, S8 `update_memory`);
+ * - the Screenbox plane is the **live** one (S14). The gate's default
+ *   `layerNotEligible` would silently ship a Screenbox-less tool plane, which
+ *   is exactly the failure S14 warned this ticket about; `AdeScreenboxRuntime`
+ *   is left open and comes from `AdeScreenboxLayerLive` above, so an
+ *   unconfigured host still degrades correctly (no `SCREENBOX_API_URL` → empty
+ *   catalog, `not-provisioned` pill) rather than erroring;
+ * - the three `Layer<never, …>` activations (delivery sweep, assignment sweep,
+ *   dispatch loop) sit outermost, like the health ticker.
+ */
+const AdeToolHandlersLayerLive = AdeMemoryToolHandlers.layer.pipe(
+  Layer.provide(AdeAssignmentToolHandlers.layer),
+  Layer.provide(AdeToolHandlers.layerUnavailable),
+);
+
+const AdeToolGateLayerLive = AdeToolGate.layer.pipe(
+  Layer.provide(AdeToolHandlersLayerLive),
+  Layer.provide(AdeAssignmentInlineChecks.layer),
+  Layer.provide(AdeScreenboxToolPlaneLive),
+);
+
+const AdeCaptainLayerLive = Layer.mergeAll(
+  AdeAssignmentEngine.sweeperLive(),
+  AdeAssignmentRunner.sweeperLive(),
+  AdeShuvcodeDispatchLoop.live,
+).pipe(
+  Layer.provideMerge(AdeCaptainApi.layer),
+  Layer.provideMerge(AdeAssignmentRunner.layer),
+  Layer.provideMerge(AdeShuvcodeChatSession.layer),
+  Layer.provideMerge(AdeToolGateLayerLive),
+  Layer.provideMerge(AdeAssignmentEngine.layer),
+  Layer.provideMerge(AdeShuvcodeKernelPort.layer),
+  // `AdeBootstrap` deliberately comes from the core chain's boot layer rather
+  // than being rebuilt here: one seeder, one ensure-Firstmate pass.
+  Layer.provideMerge(Layer.mergeAll(AdePersonaMemory.layer, AdeSessionRollover.layer)),
 );
 
 const VoiceControlPersistenceLive = VoiceControlPersistenceLayerLive.pipe(
@@ -483,7 +551,7 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
+const RuntimeCoreServicesLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(ServerSettingsLayerLive),
   Layer.provideMerge(CheckpointingLayerLive),
@@ -539,6 +607,17 @@ const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
       CloudManagedEndpointRuntimeLive,
     ),
   ),
+);
+
+/**
+ * The ADE captain stack sits outside the core-services chain so everything in
+ * that chain — persistence, the provider runtime, the orchestration engine,
+ * the S17 health checker — provides to it, and it never builds a private copy
+ * of any of them. The tool-dispatch loop in particular is a single-consumer
+ * seam: a second provider runtime would mean a second consumer.
+ */
+const RuntimeCoreDependenciesBaseLive = AdeCaptainLayerLive.pipe(
+  Layer.provideMerge(RuntimeCoreServicesLive),
 );
 
 const RuntimeCoreDependenciesLive = VoiceControlServicesLayerLive.pipe(

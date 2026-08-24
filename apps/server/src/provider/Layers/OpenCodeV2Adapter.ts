@@ -59,6 +59,10 @@ import {
   type ProviderDynamicToolThreadConfig,
   type ProviderDynamicToolsShape,
 } from "../Services/ProviderDynamicTools.ts";
+import type {
+  ProviderSyntheticDelivery,
+  ProviderSyntheticInputShape,
+} from "../Services/ProviderSyntheticInput.ts";
 import { toToolLifecycleItemType } from "./toolLifecycleItemType.ts";
 
 const PROVIDER = ProviderDriverKind.make("opencodeV2");
@@ -181,6 +185,24 @@ function asString(value: unknown): string | undefined {
 function openCodeV2ToolCallId(data: Record<string, unknown>): string | undefined {
   return asString(data.callID) ?? asString(data.id);
 }
+
+/**
+ * Upstream inbox item ids must carry the `msg_` prefix. ADE's delivery key is
+ * already durable and unique, so prefixing it yields an id that is stable
+ * across redelivery — which is exactly what makes admission idempotent.
+ */
+export const openCodeV2SyntheticItemId = (dedupeKey: string): string => `msg_ade_${dedupeKey}`;
+
+/**
+ * Upstream's delivery vocabulary is `steer | queue`; the seam says
+ * `steer | follow-up` because "follow-up" is the ADR's word for queued
+ * delivery. Passing the seam's word straight through is a 400 — this is the
+ * translation, and it belongs here because the wire format is the adapter's
+ * business, not the caller's.
+ */
+export const openCodeV2SyntheticDelivery = (
+  delivery: ProviderSyntheticDelivery,
+): "steer" | "queue" => (delivery === "steer" ? "steer" : "queue");
 
 function openCodeV2ContentItemId(
   data: Record<string, unknown>,
@@ -1089,6 +1111,47 @@ export function makeOpenCodeV2Adapter(
           });
           break;
         }
+        /**
+         * ADE injects assignment results, voice digests, and session context as
+         * *synthetic* inbox items (ADE §3.4). Upstream admits them without any
+         * of the `session.text.*` streaming a model reply produces, so without
+         * this case the injected text is durable, is seen by the model — and is
+         * completely invisible in the transcript.
+         *
+         * `session.inbox.enqueued` is the only event that carries the text
+         * inline (`session.inbox.delivered` is a bare id), so the row is
+         * emitted at admission. User items are deliberately skipped: those
+         * already reach the timeline through orchestration, and re-emitting
+         * them here would double every message the captain types.
+         */
+        case "session.inbox.enqueued": {
+          const item = asRecord(data.item);
+          if (item === null || item === undefined || item.type !== "synthetic") break;
+          const payload = asRecord(item.payload) ?? {};
+          const text = asString(payload.text) ?? "";
+          if (text.trim().length === 0) break;
+          const inboxId = asString(data.inboxID) ?? `inbox-${yield* randomUUIDv4}`;
+          const description = asString(payload.description);
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId,
+              // The inbox id is upstream's stable, deduped identity for the
+              // item, so a redelivered claim maps onto the same row.
+              itemId: `${inboxId}:synthetic`,
+              createdAt,
+              raw: event,
+            })),
+            type: "item.completed",
+            payload: {
+              itemType: "user_message",
+              status: "completed",
+              ...(description === undefined ? {} : { title: description }),
+              detail: text,
+            },
+          });
+          break;
+        }
         case "session.tool.dynamic.requested": {
           const callId = asString(data.callID);
           const tool = asString(data.tool);
@@ -1790,6 +1853,43 @@ export function makeOpenCodeV2Adapter(
       takeSignal: Queue.take(dynamicToolSignals),
     };
 
+    // ADE §3.4 — `POST /session/:id/synthetic`. `isLive` is a local map read
+    // rather than a probe: the adapter's session map *is* the authority on
+    // whether this process holds a live session for the thread, and callers
+    // (ADE's delivery sweep) use it to defer rather than to diagnose.
+    const syntheticInput: ProviderSyntheticInputShape<OpenCodeV2AdapterError> = {
+      inject: Effect.fn("injectSyntheticInput")(function* (input) {
+        const context = yield* ensureSession(input.threadId);
+        yield* Effect.tryPromise({
+          try: () =>
+            context.client.session.synthetic(context.openCodeSessionId, {
+              // The item id is the dedupe key: upstream admits one item per id
+              // (first admission wins) and ignores metadata when deduping, so
+              // this — not the metadata below — is what stops a redelivered
+              // claim from admitting a second item.
+              ...(input.dedupeKey === undefined
+                ? {}
+                : {
+                    id: openCodeV2SyntheticItemId(input.dedupeKey),
+                    metadata: { shuv2code: { kind: "ade-synthetic", key: input.dedupeKey } },
+                  }),
+              text: input.text,
+              ...(input.description === undefined ? {} : { description: input.description }),
+              delivery: openCodeV2SyntheticDelivery(input.delivery),
+              ...(input.resume === undefined ? {} : { resume: input.resume }),
+            }),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session.synthetic",
+              detail: cause instanceof Error ? cause.message : String(cause),
+              cause,
+            }),
+        });
+      }),
+      isLive: (threadId) => Effect.sync(() => sessions.has(threadId)),
+    };
+
     return {
       provider: PROVIDER,
       capabilities: {
@@ -1957,6 +2057,7 @@ export function makeOpenCodeV2Adapter(
         }),
       streamEvents: Stream.fromQueue(runtimeEvents),
       dynamicTools,
+      syntheticInput,
     } satisfies ProviderAdapterShape<OpenCodeV2AdapterError>;
   });
 }
