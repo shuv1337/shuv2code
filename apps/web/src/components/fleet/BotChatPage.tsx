@@ -1,7 +1,7 @@
 import type { BotId, ThreadId } from "@shuv2code/contracts";
 import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtime";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { openCommandPalette } from "../../commandPaletteBus";
 import { cn } from "../../lib/utils";
@@ -14,6 +14,11 @@ import {
 import { adeCaptainErrorMessage } from "../../state/ade.logic";
 import { useAtomCommand } from "../../state/use-atom-command";
 import ChatView from "../ChatView";
+import { useThreadDetail, useThreadShell, useThreadStatus } from "../../state/entities";
+import { useEnvironmentQuery } from "../../state/query";
+import { environmentShell } from "../../state/shell";
+import { resolveThreadRouteRenderState } from "../../threadRoutes";
+import { resolveThreadSyncPhase } from "../../threadSync";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
@@ -33,6 +38,7 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
   const roster = useAdeRoster();
   const startChat = useAtomCommand(adeEnvironment.startBotChat, { reportFailure: false });
   const [startedThreadId, setStartedThreadId] = useState<ThreadId | null>(null);
+  const [toolsMissing, setToolsMissing] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,6 +53,44 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
   // the two shapes are pulled out here.
   const chatThreadId = body.kind === "chat" ? body.threadId : null;
   const welcome = body.kind === "welcome" ? body.copy : null;
+
+  /**
+   * ChatView must not be mounted until the client actually holds the thread.
+   * Mounting it the instant `startBotChat` returns renders it once against a
+   * thread the store has never seen and again once the subscription lands,
+   * and its hook count differs between those two passes — React aborts the
+   * subtree with "Rendered more hooks than during the previous render" and the
+   * page goes blank. The real thread route gates on exactly this readiness,
+   * so the ADE chat gates on it too rather than inventing a second rule.
+   */
+  const threadRef = useMemo(
+    () =>
+      chatThreadId === null || environmentId === null
+        ? null
+        : { environmentId, threadId: chatThreadId },
+    [chatThreadId, environmentId],
+  );
+  const shell = useEnvironmentQuery(
+    environmentId === null ? null : environmentShell.stateAtom(environmentId),
+  );
+  const threadShell = useThreadShell(threadRef);
+  const threadDetail = useThreadDetail(threadRef);
+  const threadStatus = useThreadStatus(threadRef);
+  const renderState = resolveThreadRouteRenderState({
+    bootstrapComplete: shell.data?.snapshot._tag === "Some",
+    serverThreadShellExists: threadShell !== null,
+    serverThreadDetailExists: threadDetail !== null,
+    serverThreadDetailDeleted: threadStatus === "deleted",
+    draftThreadExists: false,
+  });
+  const threadSyncPhase = resolveThreadSyncPhase({
+    detailExists: threadDetail !== null,
+    shellExists: threadShell !== null,
+    status: threadStatus,
+  });
+  const chatReady =
+    threadRef !== null &&
+    (renderState === "ready" || (renderState === "loading" && threadShell !== null));
 
   const handleStart = async () => {
     if (environmentId === null) return;
@@ -65,6 +109,7 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
       );
       return;
     }
+    setToolsMissing(!result.value.toolsAttached);
     setStartedThreadId(result.value.threadId);
   };
 
@@ -104,14 +149,38 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
           </>
         )}
       </header>
-      {chatThreadId !== null && environmentId !== null ? (
+      {chatReady && threadRef !== null ? (
         <div className="flex min-h-0 flex-1 flex-col">
-          <ChatView environmentId={environmentId} routeKind="server" threadId={chatThreadId} />
+          {toolsMissing ? (
+            // The conversation works; delegation does not. Saying so beats
+            // letting the captain watch the bot fail to delegate silently.
+            <p
+              className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground"
+              role="status"
+            >
+              Fleet tools are not available on this kernel build, so this bot cannot delegate
+              assignments or update its memory. Chat still works.
+            </p>
+          ) : null}
+          <ChatView
+            environmentId={threadRef.environmentId}
+            routeKind="server"
+            threadId={threadRef.threadId}
+            threadSyncPhase={threadSyncPhase}
+          />
         </div>
       ) : (
         <ScrollArea className="min-h-0 flex-1">
           <div className="mx-auto flex w-full max-w-xl flex-col gap-4 px-4 py-10">
-            {body.kind === "error" ? (
+            {body.kind === "chat" ? (
+              // A session exists; the client is still catching up on the
+              // thread. Showing the welcome again here would invite a second
+              // "Start chatting" press on a bot that already has a session.
+              <>
+                <p className="text-sm text-muted-foreground">Opening the conversation…</p>
+                <Skeleton className="h-20 w-full" />
+              </>
+            ) : body.kind === "error" ? (
               <p className="text-sm text-destructive">{body.message}</p>
             ) : welcome === null ? (
               <>

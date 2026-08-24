@@ -1,10 +1,9 @@
-import type { AdeBotTemplateId, AdeProjectId } from "@shuv2code/contracts";
+import type { AdeBotTemplateId, AdeProjectId, EnvironmentId } from "@shuv2code/contracts";
 import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtime";
 import { Link } from "@tanstack/react-router";
 import { AnchorIcon, MessageSquareIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 
-import { openCommandPalette } from "../../commandPaletteBus";
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { adeEnvironment, useAdeEnvironmentId, useAdeRoster } from "../../state/ade";
@@ -57,7 +56,7 @@ export function FleetRosterPage() {
         )}
         <ScrollArea className="min-h-0 flex-1">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6 sm:px-6">
-            {needsFirstProject ? <FirstProjectCta /> : null}
+            {needsFirstProject ? <FirstProjectCta environmentId={environmentId} /> : null}
             <AddFromTemplateControl
               environmentId={environmentId}
               projects={roster.data?.projects ?? []}
@@ -139,19 +138,81 @@ export function FleetRosterPage() {
 }
 
 /** Issue #141: point at the existing project surface rather than a new wizard. */
-function FirstProjectCta() {
+/**
+ * The empty-state CTA (#141). It creates an **ADE** project — the thing that
+ * owns a crew and auto-creates a Second Mate — not a shuv2code workspace
+ * project. Pointing this at the generic workspace palette left the fleet with
+ * no ADE projects at all: the Project combobox below stayed permanently empty,
+ * every bot was fleet-wide, and the auto-Second-Mate hook was unreachable.
+ */
+function FirstProjectCta({ environmentId }: { readonly environmentId: EnvironmentId | null }) {
+  const createProject = useAtomCommand(adeEnvironment.createProject, { reportFailure: false });
+  const [name, setName] = useState("");
+  const [repoPath, setRepoPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (environmentId === null || name.trim().length === 0) return;
+    setBusy(true);
+    setError(null);
+    const result = await createProject({
+      environmentId,
+      input: {
+        name: name.trim(),
+        repoPath: repoPath.trim().length === 0 ? null : repoPath.trim(),
+      },
+    });
+    setBusy(false);
+    if (result._tag === "Failure") {
+      setError(
+        adeCaptainErrorMessage(
+          squashAtomCommandFailure(result),
+          "The project could not be created.",
+        ),
+      );
+      return;
+    }
+    setName("");
+    setRepoPath("");
+  };
+
   return (
     <Empty className="rounded-lg border border-border">
       <EmptyHeader>
         <EmptyTitle>Create your first project</EmptyTitle>
         <EmptyDescription>
-          Bots do their work inside a project. Add one and the fleet gets somewhere to work.
+          Bots do their work inside a project. Creating one also creates its Second Mate.
         </EmptyDescription>
       </EmptyHeader>
-      <Button onClick={() => openCommandPalette({ open: "add-project" })} size="sm">
-        <PlusIcon />
-        Create your first project
-      </Button>
+      <div className="flex w-full max-w-md flex-col gap-2">
+        <Input
+          aria-label="Project name"
+          onChange={(event) => setName(event.target.value)}
+          placeholder="Project name"
+          value={name}
+        />
+        <Input
+          aria-label="Repository path"
+          onChange={(event) => setRepoPath(event.target.value)}
+          placeholder="Repository path (optional)"
+          value={repoPath}
+        />
+        <Button
+          className="self-start"
+          disabled={busy || environmentId === null || name.trim().length === 0}
+          onClick={() => void submit()}
+          size="sm"
+        >
+          <PlusIcon />
+          Create project
+        </Button>
+        {error === null ? null : (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
     </Empty>
   );
 }

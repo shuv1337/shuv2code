@@ -1057,3 +1057,55 @@ describe("AdeToolGate layers", () => {
     ),
   );
 });
+
+describe("AdeToolGate.rebindShuvcodeSession", () => {
+  it.effect("records the real kernel session without touching the provider", () =>
+    Effect.gen(function* () {
+      const gate = yield* AdeToolGate;
+      const seam = yield* makeFakeSeam;
+      const threadId = ThreadId.make("thread-rebind");
+      const principal = { botId: "bot-1" as BotId, purpose: "primary-text" } as const;
+
+      // Pre-session attach: the catalog rides session creation.
+      yield* gate.attachShuvcodeThread(seam.seam, {
+        threadId,
+        sessionId: threadId as unknown as KernelSessionId,
+        principal,
+      });
+      const configuresAfterAttach = seam.configured.length;
+
+      yield* gate.rebindShuvcodeSession({
+        threadId,
+        sessionId: "ses_real" as KernelSessionId,
+        principal,
+      });
+
+      // The whole point: correcting the recorded session id must not push the
+      // catalog a second time. That PUT is redundant after session.create and
+      // fatal on a kernel build without the dynamic-tool routes.
+      NodeAssert.equal(seam.configured.length, configuresAfterAttach);
+    }).pipe(Effect.provide(AdeToolGate.layerFailClosed)),
+  );
+
+  it.effect("refuses to re-attribute a thread to a different bot", () =>
+    Effect.gen(function* () {
+      const gate = yield* AdeToolGate;
+      const seam = yield* makeFakeSeam;
+      const threadId = ThreadId.make("thread-rebind-conflict");
+      yield* gate.attachShuvcodeThread(seam.seam, {
+        threadId,
+        sessionId: "ses_a" as KernelSessionId,
+        principal: { botId: "bot-1" as BotId, purpose: "primary-text" },
+      });
+
+      const error = yield* Effect.flip(
+        gate.rebindShuvcodeSession({
+          threadId,
+          sessionId: "ses_b" as KernelSessionId,
+          principal: { botId: "bot-2" as BotId, purpose: "primary-text" },
+        }),
+      );
+      NodeAssert.equal(error._tag, "AdeShuvcodeAttachConflictError");
+    }).pipe(Effect.provide(AdeToolGate.layerFailClosed)),
+  );
+});

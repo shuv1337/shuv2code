@@ -98,6 +98,20 @@ export function createAdeEnvironmentAtoms<R, E>(
       },
       onSettled: (target, registry) => refreshRoster(target, registry),
     }),
+    /**
+     * Creates an ADE project and its Second Mate. Both the project list and
+     * the roster change, so the roster (which carries both) is re-read.
+     */
+    createProject: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:create-project",
+      tag: WS_METHODS.adeCreateProject,
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId }) => environmentId,
+      },
+      onSettled: (target, registry) => refreshRoster(target, registry),
+    }),
     writeBotMemory: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:ade:write-bot-memory",
       tag: WS_METHODS.adeWriteBotMemory,

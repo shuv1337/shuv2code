@@ -27,6 +27,8 @@ import {
   type AdeBotDetail,
   type AdeBotTemplateSummary,
   type AdeCreateBotFromTemplateInput,
+  type AdeCreateProjectInput,
+  type AdeCreatedProject,
   type AdeEditPersonaInput,
   type AdeNeedsYouCount,
   type AdeProjectId,
@@ -172,6 +174,9 @@ export interface AdeCaptainApiShape {
   readonly createBotFromTemplate: (
     input: AdeCreateBotFromTemplateInput,
   ) => Effect.Effect<AdeBotDetail, AdeCaptainError>;
+  readonly createProject: (
+    input: AdeCreateProjectInput,
+  ) => Effect.Effect<AdeCreatedProject, AdeCaptainError>;
   readonly writeBotMemory: (
     input: AdeWriteMemoryInput,
   ) => Effect.Effect<MemoryDocument, AdeCaptainError>;
@@ -318,6 +323,30 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         return yield* getBot(created.botId);
       });
 
+      const createProject: AdeCaptainApiShape["createProject"] = Effect.fn(
+        "AdeCaptainApi.createProject",
+      )(function* (input: AdeCreateProjectInput) {
+        // The Second Mate is created with the project, atomically — that hook
+        // lives in AdeBootstrap and is the whole reason this goes through it
+        // rather than a bare INSERT.
+        const created = yield* captainize(
+          bootstrap.createProject({
+            name: input.name,
+            repoBinding:
+              input.repoPath === null
+                ? null
+                : {
+                    path: input.repoPath,
+                    remote: input.repoRemote ?? null,
+                  },
+          }),
+        );
+        return {
+          project: { id: created.projectId, name: input.name },
+          secondMateBotId: created.secondMate.botId,
+        } satisfies AdeCreatedProject;
+      });
+
       const writeBotMemory: AdeCaptainApiShape["writeBotMemory"] = Effect.fn(
         "AdeCaptainApi.writeBotMemory",
       )(function* (input: AdeWriteMemoryInput) {
@@ -385,6 +414,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         getRoster,
         getBot,
         createBotFromTemplate,
+        createProject,
         writeBotMemory,
         editBotPersona,
         setBotComputerUse,

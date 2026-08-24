@@ -37,8 +37,10 @@ class StubAttachError extends Schema.TaggedErrorClass<StubAttachError>()("StubAt
 interface Spy {
   /** Every `attachShuvcodeThread` call, as `threadId|sessionId|botId`. */
   readonly attaches: Ref.Ref<ReadonlyArray<string>>;
-  /** Set to make the attach fail, standing in for a session gone upstream. */
+  /** Set to make the attach fail, standing in for a kernel refusing tools. */
   readonly attachFails: Ref.Ref<boolean>;
+  /** Every local `rebindShuvcodeSession`, as `threadId|sessionId|botId`. */
+  readonly rebinds: Ref.Ref<ReadonlyArray<string>>;
 }
 
 const makeLayer = (spy: Spy) =>
@@ -59,6 +61,13 @@ const makeLayer = (spy: Spy) =>
                     )}`,
                   ]),
             ),
+          rebindShuvcodeSession: (options: Record<string, unknown>) =>
+            Ref.update(spy.rebinds, (calls) => [
+              ...calls,
+              `${String(options.threadId)}|${String(options.sessionId)}|${String(
+                (options.principal as { botId: string }).botId,
+              )}`,
+            ]),
         } as unknown as AdeToolGate["Service"]),
         Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, {
           // A seam is present, so "no dynamic-tool seam" is never the reason a
@@ -92,6 +101,7 @@ const withChat = <A, E>(body: (spy: Spy) => Effect.Effect<A, E, ChatEnv>) =>
     const spy: Spy = {
       attaches: yield* Ref.make<ReadonlyArray<string>>([]),
       attachFails: yield* Ref.make(false),
+      rebinds: yield* Ref.make<ReadonlyArray<string>>([]),
     };
     return yield* Effect.provide(body(spy), makeLayer(spy));
   });
@@ -134,38 +144,46 @@ describe("AdeShuvcodeChatSession.startPrimaryChat", () => {
     ),
   );
 
-  it.effect("retires a binding whose kernel session upstream has forgotten", () =>
+  it.effect("keeps a session whose catalog refresh the kernel refuses", () =>
     withChat((spy) =>
       Effect.gen(function* () {
         const { rollover, chat, botId } = yield* setup;
         const opened = yield* rollover.startPrimarySession({
           botId,
           engine: "shuvcode",
-          sessionId: "oc-dead" as KernelSessionId,
+          sessionId: "oc-no-tools" as KernelSessionId,
         });
         yield* Ref.set(spy.attachFails, true);
 
-        // Falling through to a fresh start stops at "no project yet" here,
-        // which is the refusal we want to observe rather than a crash.
-        const error = yield* Effect.flip(chat.startPrimaryChat(botId));
-        assert.equal(error.reason, "session_unavailable");
+        const resolved = yield* chat.startPrimaryChat(botId);
 
-        // The dead binding must not be left `active` for the next caller to
-        // adopt — it is `lost`, never silently reused (ADR §16).
+        // A refused catalog write does NOT mean the session is gone — the
+        // usual cause is a kernel build without the dynamic-tool routes.
+        // Retiring the binding there would mint a fresh session on every
+        // visit; the session is kept and the loss of tools is reported.
+        assert.isFalse(resolved.startedNow);
+        assert.equal(resolved.bindingId, opened.binding.id);
+        assert.isFalse(resolved.toolsAttached);
+
         const bindings = yield* rollover.listBindings(botId);
-        const retired = bindings.find((binding) => binding.id === opened.binding.id);
-        assert.equal(retired?.status, "lost");
+        assert.equal(
+          bindings.find((binding) => binding.id === opened.binding.id)?.status,
+          "active",
+        );
+        // Attribution still got recorded, so invocations on that session can
+        // be resolved to this bot even though the catalog push failed.
+        assert.deepEqual(yield* Ref.get(spy.rebinds), [`ade-bot-${botId}|oc-no-tools|${botId}`]);
       }),
     ),
   );
 
-  it.effect("refuses without a project instead of half-starting a session", () =>
+  it.effect("refuses actionably when the fleet has no project at all", () =>
     withChat(() =>
       Effect.gen(function* () {
         const { chat, botId } = yield* setup;
         const error = yield* Effect.flip(chat.startPrimaryChat(botId));
         assert.equal(error.reason, "session_unavailable");
-        assert.include(error.message, "No project exists yet");
+        assert.include(error.message, "Create one from the Fleet page");
       }),
     ),
   );

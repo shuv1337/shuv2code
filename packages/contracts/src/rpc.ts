@@ -8,6 +8,8 @@ import {
   AdeBotIdInput,
   AdeCaptainError,
   AdeCreateBotFromTemplateInput,
+  AdeCreateProjectInput,
+  AdeCreatedProject,
   AdeEditPersonaInput,
   AdeNeedsYouCount,
   AdeRoster,
@@ -405,6 +407,7 @@ export const WS_METHODS = {
   adeGetRoster: "ade.getRoster",
   adeGetBot: "ade.getBot",
   adeCreateBotFromTemplate: "ade.createBotFromTemplate",
+  adeCreateProject: "ade.createProject",
   adeWriteBotMemory: "ade.writeBotMemory",
   adeEditBotPersona: "ade.editBotPersona",
   adeSetBotComputerUse: "ade.setBotComputerUse",
@@ -1307,6 +1310,17 @@ export const WsAdeSetBotComputerUseRpc = Rpc.make(WS_METHODS.adeSetBotComputerUs
   error: AdeCaptainRpcError,
 });
 
+/**
+ * Create an ADE project and its Second Mate (spec §4.1). The empty-state CTA
+ * lands here; without it the fleet has no projects, so crew can only ever be
+ * fleet-wide and the auto-Second-Mate hook is unreachable.
+ */
+export const WsAdeCreateProjectRpc = Rpc.make(WS_METHODS.adeCreateProject, {
+  payload: AdeCreateProjectInput,
+  success: AdeCreatedProject,
+  error: AdeCaptainRpcError,
+});
+
 /** Sidebar badge count of open Needs You items (slice 8). */
 export const WsAdeGetNeedsYouCountRpc = Rpc.make(WS_METHODS.adeGetNeedsYouCount, {
   payload: Schema.Struct({}),
@@ -1329,6 +1343,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAdeGetRosterRpc,
   WsAdeGetBotRpc,
   WsAdeCreateBotFromTemplateRpc,
+  WsAdeCreateProjectRpc,
   WsAdeWriteBotMemoryRpc,
   WsAdeEditBotPersonaRpc,
   WsAdeSetBotComputerUseRpc,

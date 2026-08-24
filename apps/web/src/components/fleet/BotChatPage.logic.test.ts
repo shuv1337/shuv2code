@@ -56,7 +56,10 @@ describe("getBotChatBody", () => {
     if (body.kind !== "welcome") return;
     expect(body.copy.startLabel).toBe("Start chatting");
     expect(body.copy.projectCta).toBeNull();
-    expect(body.copy.kernelHint).toContain("kernels");
+    // The hint has to name the two things a fresh install is actually
+    // missing, not just say "kernels".
+    expect(body.copy.kernelHint).toContain("shuvcode service start");
+    expect(body.copy.kernelHint).toContain("Settings → Providers");
   });
 
   it("adds the first-project CTA when the workspace has no project", () => {

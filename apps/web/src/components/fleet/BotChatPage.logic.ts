@@ -44,7 +44,9 @@ export interface BotChatWelcomeCopy {
 }
 
 const KERNEL_HINT =
-  "Get your kernels running and this bot can start doing real work; you can talk to it either way.";
+  "This bot runs on the shuvcode kernel. It needs `shuvcode service start` running and an " +
+  "opencode2 provider instance in Settings → Providers (with Binary path pointing at your " +
+  "shuvcode CLI). You can open the chat either way — it will tell you what is missing.";
 
 const PROJECT_CTA = "Create your first project so this bot has somewhere to work.";
 
