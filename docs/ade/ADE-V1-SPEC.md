@@ -238,14 +238,20 @@ hostile isolation, mobile voice; snapshots; consolidation of the coding UX into 
 
 ## 9. Build sequence
 
-Tracked as epic **“ADE V1 build”** with GitHub sub-issues, native blocked-by dependencies, label `ade:build`.
-Upstream shuvcode work is filed on Latitudes-Dev/shuvcode and bridged by S4. Sizing: one focused agent session
-each. `←` lists blockers.
+Tracked as epic **“ADE V1 build”** ([#154](https://github.com/shuv1337/shuv2code/issues/154)) with GitHub
+sub-issues, native blocked-by dependencies, label `ade:build`. Upstream shuvcode work is filed on
+Latitudes-Dev/shuvcode and bridged by S4. Sizing: one focused agent session each. `←` lists blockers.
+
+**Landing policy (captain amendment, 2026-08-23):** all build work lands on the long-lived integration branch
+**`ade-v1`** (cut from main at this spec). Per-issue PRs and stacked series target `ade-v1`, never main; keep
+`ade-v1` fresh with periodic rebases onto main. Main receives **nothing** until the S18 acceptance walkthrough
+passes and the captain personally approves the final `ade-v1` → main merge. This supersedes ADR §17.1's
+"no long-lived strip branch" wording for this build.
 
 **Phase 0 — strip (ADR §17.1)**
 - **S1. Provider strip stack** — remove OpenCode v1, Grok, Cursor, Claude drivers/adapters/providers +
   their settings, usage-scanner, composer, and startup-default seams; keep Codex + OpenCodeV2 (shuvcode);
-  tree boots green at every layer of one short stacked series.
+  tree boots green at every layer of one short stacked series targeting `ade-v1`.
 
 **Phase 1 — foundation**
 - **S2. ADE contracts + persistence** ← S1 — `packages/contracts` schemas for §2, DB tables/migrations on the fresh database.
@@ -275,7 +281,8 @@ each. `←` lists blockers.
 - **S16. Voice retargeting** ← S6, S9 — §4.7 bindings, toolkit, two-phase approvals, digest/summary.
 
 **Phase 5 — acceptance**
-- **S18. V1 acceptance walkthrough** ← all — §10.2 scenarios run once against a fresh boot; close = V1 done.
+- **S18. V1 acceptance walkthrough** ← all — §10.2 scenarios run once against a fresh `ade-v1` boot;
+  close = V1 build-complete, unlocking the captain-approved `ade-v1` → main merge.
 
 ## 10. Verification
 
