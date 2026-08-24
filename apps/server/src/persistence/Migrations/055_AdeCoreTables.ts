@@ -72,6 +72,9 @@ export default Effect.gen(function* () {
   `;
 
   // Spec §2.1 / ADR §3.1–§3.2 — replaceable kernel-session bindings.
+  // rollover_summary is the bounded outgoing-session summary (ADR §12.3,
+  // ≤16 KB per ADR §18.1) recorded on a binding when it is closed/rolled over;
+  // it seeds component 4 of the replacement session's projection.
   yield* sql`
     CREATE TABLE ade_bot_execution_bindings (
       binding_id TEXT PRIMARY KEY,
@@ -82,6 +85,9 @@ export default Effect.gen(function* () {
         purpose IN ('primary-text', 'parallel-work', 'voice', 'specialized-work')
       ),
       status TEXT NOT NULL CHECK (status IN ('active', 'historical', 'lost')),
+      rollover_summary TEXT CHECK (
+        rollover_summary IS NULL OR length(rollover_summary) <= 16384
+      ),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (bot_id) REFERENCES ade_bots(bot_id) ON DELETE CASCADE
@@ -94,6 +100,14 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE INDEX idx_ade_bot_execution_bindings_bot
     ON ade_bot_execution_bindings(bot_id, status)
+  `;
+  // ADR §3.2 — each bot has at most one *active primary text* session; makes
+  // the session/rollover service (S8, #162) race-proof at the schema level,
+  // exactly like idx_ade_bots_single_firstmate does for the bootstrap.
+  yield* sql`
+    CREATE UNIQUE INDEX idx_ade_bot_execution_bindings_one_active_primary
+    ON ade_bot_execution_bindings(bot_id)
+    WHERE purpose = 'primary-text' AND status = 'active'
   `;
 
   // Spec §2.3 / ADR §6, §7, §14 — projects. second_mate_bot_id is not a
