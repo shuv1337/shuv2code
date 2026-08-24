@@ -354,16 +354,55 @@ export const IntegrationCandidateStatus = Schema.Literals([
 ]);
 export type IntegrationCandidateStatus = typeof IntegrationCandidateStatus.Type;
 
+/** Why a candidate left the pipeline without advancing canonical (ADR §7.2). */
+export const IntegrationBounceReason = Schema.Literals([
+  "rebase-conflict",
+  "checks-failed",
+  "review-rejected",
+  "approval-denied",
+]);
+export type IntegrationBounceReason = typeof IntegrationBounceReason.Type;
+
+/** Bounce feedback rides into the repair assignment, so it shares the §18.1 bound. */
+export const INTEGRATION_BOUNCE_DETAIL_MAX_LENGTH = ASSIGNMENT_RESULT_SUMMARY_MAX_LENGTH;
+
+export const IntegrationBounce = Schema.Struct({
+  reason: IntegrationBounceReason,
+  detail: Schema.String.check(Schema.isMaxLength(INTEGRATION_BOUNCE_DETAIL_MAX_LENGTH)),
+  at: IsoDateTime,
+});
+export type IntegrationBounce = typeof IntegrationBounce.Type;
+
 /**
  * Serialized per-project integration unit (ADR §7.2, §16.2). One running
  * candidate per project; restart re-runs the queue head — no per-step journal.
+ *
+ * `gate`, `reviewerBotId`, and `workspacePath` are derived-and-recorded, not
+ * journal entries: every one of them is recomputed from scratch when the queue
+ * head re-runs. They exist so the captain surfaces (S12/S13) can render *why* a
+ * candidate is parked without re-deriving policy.
  */
 export const IntegrationCandidate = Schema.Struct({
   id: IntegrationCandidateId,
   projectId: AdeProjectId,
+  /** Per-project creation idempotency, mirroring `Assignment.idempotencyKey`. */
+  idempotencyKey: TrimmedNonEmptyString,
   sourceAssignmentIds: Schema.Array(AssignmentId),
   changeIds: Schema.Array(JjChangeId),
+  /** Repair assignments route back here (ADR §6.3, §7.2). */
+  originatingBotId: BotId,
+  /** Escalate-only input to the gate calculation (ADR §7.1–§7.2). */
+  declaredRisk: DeclaredRisk,
   status: IntegrationCandidateStatus,
+  /** Effective gate, computed once the candidate reaches its gate step. */
+  gate: Schema.NullOr(IntegrationPolicy),
+  /** Set only under `agent-review`; never the authoring bot (ADR §7.2). */
+  reviewerBotId: Schema.NullOr(BotId),
+  /** Retained on a bounce for forensics; cleared on cleanup (ADR §14.4). */
+  workspacePath: Schema.NullOr(TrimmedNonEmptyString),
+  bounceCount: NonNegativeInt,
+  bounce: Schema.NullOr(IntegrationBounce),
+  repairAssignmentId: Schema.NullOr(AssignmentId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

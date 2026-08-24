@@ -76,10 +76,13 @@ layer("055_AdeCoreTables", (it) => {
       `;
       yield* sql`
         INSERT INTO ade_integration_candidates (
-          integration_candidate_id, project_id, source_assignment_ids_json,
-          change_ids_json, status, created_at, updated_at
-        ) VALUES ('candidate-1', 'project-1', '["assignment-1"]',
-                  '["zkmqwpxr"]', 'running', '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
+          integration_candidate_id, project_id, idempotency_key,
+          source_assignment_ids_json, change_ids_json, originating_bot_id,
+          declared_risk, status, gate, reviewer_bot_id, workspace_path,
+          bounce_count, bounce_json, repair_assignment_id, created_at, updated_at
+        ) VALUES ('candidate-1', 'project-1', 'assignment-1', '["assignment-1"]',
+                  '["zkmqwpxr"]', 'bot-coder', 'normal', 'running', NULL, NULL, NULL,
+                  0, NULL, NULL, '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
       `;
       yield* sql`
         INSERT INTO ade_publication_stacks (
@@ -148,21 +151,52 @@ layer("055_AdeCoreTables", (it) => {
       `;
       yield* sql`
         INSERT INTO ade_integration_candidates (
-          integration_candidate_id, project_id, source_assignment_ids_json,
-          change_ids_json, status, created_at, updated_at
-        ) VALUES ('candidate-inv-1', 'project-inv', '[]', '[]', 'running',
+          integration_candidate_id, project_id, idempotency_key,
+          source_assignment_ids_json, change_ids_json, originating_bot_id,
+          declared_risk, status, created_at, updated_at
+        ) VALUES ('candidate-inv-1', 'project-inv', 'inv-1', '[]', '[]', 'bot-inv',
+                  'normal', 'running',
                   '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
       `;
 
       // One running integration candidate per project (ADR §16.2).
       const secondRunning = yield* sql`
         INSERT INTO ade_integration_candidates (
-          integration_candidate_id, project_id, source_assignment_ids_json,
-          change_ids_json, status, created_at, updated_at
-        ) VALUES ('candidate-inv-2', 'project-inv', '[]', '[]', 'running',
+          integration_candidate_id, project_id, idempotency_key,
+          source_assignment_ids_json, change_ids_json, originating_bot_id,
+          declared_risk, status, created_at, updated_at
+        ) VALUES ('candidate-inv-2', 'project-inv', 'inv-2', '[]', '[]', 'bot-inv',
+                  'normal', 'running',
                   '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
       `.pipe(Effect.flip);
       assert.strictEqual(secondRunning._tag, "SqlError");
+
+      // A settled candidate frees the running slot for the next queue head.
+      yield* sql`
+        UPDATE ade_integration_candidates SET status = 'integrated'
+        WHERE integration_candidate_id = 'candidate-inv-1'
+      `;
+      yield* sql`
+        INSERT INTO ade_integration_candidates (
+          integration_candidate_id, project_id, idempotency_key,
+          source_assignment_ids_json, change_ids_json, originating_bot_id,
+          declared_risk, status, created_at, updated_at
+        ) VALUES ('candidate-inv-3', 'project-inv', 'inv-3', '[]', '[]', 'bot-inv',
+                  'mechanical', 'running',
+                  '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
+      `;
+
+      // Enqueue idempotency is per project (spec §4.4).
+      const replayedCandidate = yield* sql`
+        INSERT INTO ade_integration_candidates (
+          integration_candidate_id, project_id, idempotency_key,
+          source_assignment_ids_json, change_ids_json, originating_bot_id,
+          declared_risk, status, created_at, updated_at
+        ) VALUES ('candidate-inv-4', 'project-inv', 'inv-3', '[]', '[]', 'bot-inv',
+                  'normal', 'queued',
+                  '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
+      `.pipe(Effect.flip);
+      assert.strictEqual(replayedCandidate._tag, "SqlError");
 
       yield* sql`
         INSERT INTO ade_publication_stacks (
@@ -322,9 +356,11 @@ layer("055_AdeCoreTables", (it) => {
       `;
       yield* sql`
         INSERT INTO ade_integration_candidates (
-          integration_candidate_id, project_id, source_assignment_ids_json,
-          change_ids_json, status, created_at, updated_at
-        ) VALUES ('candidate-del', 'proj-del', '[]', '[]', 'queued',
+          integration_candidate_id, project_id, idempotency_key,
+          source_assignment_ids_json, change_ids_json, originating_bot_id,
+          declared_risk, status, created_at, updated_at
+        ) VALUES ('candidate-del', 'proj-del', 'del-1', '[]', '[]', 'bot-del-worker',
+                  'normal', 'queued',
                   '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
       `;
       yield* sql`
