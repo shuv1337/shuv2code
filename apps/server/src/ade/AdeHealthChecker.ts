@@ -474,33 +474,43 @@ export class AdeHealthChecker extends Context.Service<AdeHealthChecker, AdeHealt
   static readonly layer = AdeHealthChecker.layerWith();
 
   /**
-   * Shipped probe set: shuvcode service registration, Codex supervisor,
-   * Screenbox dormant. S14 swaps the Screenbox entry for a live probe.
+   * Shipped probe set with a caller-supplied Screenbox probe: shuvcode service
+   * registration, Codex supervisor, and whatever the Screenbox slice provides.
+   * S14 passes its live runtime probe here; the probe's own requirements are
+   * captured at layer-build time so the stored `Effect` stays requirement-free
+   * for the checker.
    */
-  static readonly probesLive = Layer.effect(
-    AdeHealthProbes,
-    Effect.gen(function* () {
-      const supervisor = yield* CodexAppServerSupervisor;
-      return AdeHealthProbes.of({
-        probes: [
-          shuvcodeServiceProbe,
-          {
-            target: "codex",
-            // Blocked assignments never call acquireConnection, so a crashed
-            // shared process would otherwise stay down forever (the outage
-            // blocks the only lazy-respawn path). The probe actively asserts
-            // liveness: attempt a bounded respawn of crashed identities, then
-            // read the books. The tick cadence is the retry schedule.
-            probe: supervisor.reviveCrashed.pipe(
-              Effect.andThen(supervisor.status),
-              Effect.map(codexProbeResultFromStatus),
-            ),
-          },
-          screenboxNotProvisionedProbe,
-        ],
-      });
-    }),
-  );
+  static readonly probesLiveWith = <R>(
+    screenboxProbe: Effect.Effect<AdeHealthProbeResult, never, R>,
+  ): Layer.Layer<AdeHealthProbes, never, CodexAppServerSupervisor | R> =>
+    Layer.effect(
+      AdeHealthProbes,
+      Effect.gen(function* () {
+        const supervisor = yield* CodexAppServerSupervisor;
+        const services = yield* Effect.context<R>();
+        return AdeHealthProbes.of({
+          probes: [
+            shuvcodeServiceProbe,
+            {
+              target: "codex",
+              // Blocked assignments never call acquireConnection, so a crashed
+              // shared process would otherwise stay down forever (the outage
+              // blocks the only lazy-respawn path). The probe actively asserts
+              // liveness: attempt a bounded respawn of crashed identities, then
+              // read the books. The tick cadence is the retry schedule.
+              probe: supervisor.reviveCrashed.pipe(
+                Effect.andThen(supervisor.status),
+                Effect.map(codexProbeResultFromStatus),
+              ),
+            },
+            { target: "screenbox", probe: Effect.provide(screenboxProbe, services) },
+          ],
+        });
+      }),
+    );
+
+  /** Default wiring: Screenbox dormant until S14's runtime layer is provided. */
+  static readonly probesLive = AdeHealthChecker.probesLiveWith(screenboxNotProvisionedProbe.probe);
 
   /**
    * Periodic tick, parked until server activation. Probe passes are cheap

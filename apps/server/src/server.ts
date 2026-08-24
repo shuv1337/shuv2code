@@ -29,6 +29,8 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { AdeBootstrap } from "./ade/AdeBootstrap.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
+import { AdeScreenboxHealthProbesLive, AdeScreenboxRuntime } from "./ade/AdeScreenbox.ts";
+import { AdeScreenboxClient, AdeScreenboxConfig } from "./ade/AdeScreenboxClient.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -305,9 +307,23 @@ const AdeBootstrapLayerLive = AdeBootstrap.bootLive.pipe(
 // the background, feeding the sidebar kernel pills over WS and applying the
 // kernel-down queue-and-alert side effects. Provided (not merged) supervisor:
 // the checker only reads its status.
+// ADE Screenbox runtime (spec §4.6): the operate-only tool plane, botId-keyed
+// provisioning, and the idle-stop/reconcile loop. Dormant unless the operator
+// configures `SCREENBOX_API_URL` — an unconfigured host exposes no desktop
+// tools and reads as `not-provisioned` on the pill.
+const AdeScreenboxLayerLive = AdeScreenboxRuntime.bootLive().pipe(
+  Layer.provideMerge(AdeScreenboxRuntime.layer),
+  Layer.provide(AdeScreenboxClient.layer),
+  Layer.provide(AdeScreenboxConfig.layerFromEnv()),
+  Layer.provide(FetchHttpClient.layer),
+  Layer.provide(PersistenceLayerLive),
+);
+
+// Also exports `AdeScreenboxRuntime` for the viewer/Screen-tab slice (S15).
 const AdeHealthCheckerLayerLive = AdeHealthChecker.tickerLive().pipe(
   Layer.provideMerge(AdeHealthChecker.layer),
-  Layer.provide(AdeHealthChecker.probesLive),
+  Layer.provide(AdeScreenboxHealthProbesLive),
+  Layer.provideMerge(AdeScreenboxLayerLive),
   Layer.provide(PersistenceLayerLive),
 );
 
