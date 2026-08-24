@@ -47,10 +47,18 @@ import {
 import {
   createOpenCodeV2Client,
   type OpenCodeV2Client,
+  type OpenCodeV2DynamicToolCall,
   type OpenCodeV2Event,
   type OpenCodeV2SessionInfo,
 } from "../opencodeV2Client.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import {
+  findProviderDynamicToolCatalogIssue,
+  type ProviderDynamicToolCall,
+  type ProviderDynamicToolSignal,
+  type ProviderDynamicToolThreadConfig,
+  type ProviderDynamicToolsShape,
+} from "../Services/ProviderDynamicTools.ts";
 import { toToolLifecycleItemType } from "./toolLifecycleItemType.ts";
 
 const PROVIDER = ProviderDriverKind.make("opencodeV2");
@@ -417,6 +425,15 @@ export function makeOpenCodeV2Adapter(
     const crypto = yield* Crypto.Crypto;
     const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, OpenCodeV2SessionContext>();
+    const dynamicToolConfigByThread = new Map<ThreadId, ProviderDynamicToolThreadConfig>();
+    const dynamicToolSignals = yield* Queue.unbounded<ProviderDynamicToolSignal>();
+    /**
+     * Adapter-scoped outstanding (requested, not yet settled) dynamic tool
+     * call ids per thread. Survives session-context recreation so a re-attach
+     * drain cannot re-emit a call the consumer is already executing; entries
+     * leave on reply/cancel/clearThread and thread teardown.
+     */
+    const outstandingDynamicCallsByThread = new Map<ThreadId, Set<string>>();
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
       Effect.mapError(
         (cause) =>
@@ -480,6 +497,107 @@ export function makeOpenCodeV2Adapter(
         ? Effect.succeed(session)
         : new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId });
     };
+
+    const dynamicToolRequestError = (method: string) => (cause: unknown) => {
+      const rawStatus = asRecord(cause)?.status;
+      const status = typeof rawStatus === "number" ? rawStatus : undefined;
+      return new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method,
+        detail: cause instanceof Error ? cause.message : String(cause),
+        ...(status === undefined ? {} : { status }),
+        cause,
+      });
+    };
+
+    const toDynamicToolSeamCall = (
+      threadId: ThreadId,
+      call: OpenCodeV2DynamicToolCall,
+    ): ProviderDynamicToolCall => {
+      const requestedAt = isoFromEpochMs(call.time?.requested);
+      return {
+        threadId,
+        callId: call.callID,
+        tool: call.tool,
+        input: call.input,
+        ...(requestedAt ? { requestedAt } : {}),
+      };
+    };
+
+    const offerDynamicToolRequested = (call: ProviderDynamicToolCall) =>
+      Effect.suspend(() => {
+        const outstanding = outstandingDynamicCallsByThread.get(call.threadId) ?? new Set<string>();
+        outstandingDynamicCallsByThread.set(call.threadId, outstanding);
+        if (outstanding.has(call.callId)) return Effect.void;
+        outstanding.add(call.callId);
+        return Queue.offer(dynamicToolSignals, { kind: "requested", call }).pipe(Effect.asVoid);
+      });
+
+    /** Drop an outstanding entry; true when the call was outstanding. */
+    const settleDynamicCall = (threadId: ThreadId, callId: string): boolean => {
+      const outstanding = outstandingDynamicCallsByThread.get(threadId);
+      if (!outstanding?.delete(callId)) return false;
+      if (outstanding.size === 0) outstandingDynamicCallsByThread.delete(threadId);
+      return true;
+    };
+
+    /**
+     * Terminal signals for a torn-down session context: every outstanding call
+     * of the thread becomes `cancelled` so the consumer never holds
+     * unresolvable pending state (in-flight calls fail provider-side at
+     * shutdown; a still-pending call is re-`requested` on the next attach).
+     */
+    const cancelOutstandingDynamicCalls = (threadId: ThreadId) =>
+      Effect.suspend(() => {
+        const outstanding = outstandingDynamicCallsByThread.get(threadId);
+        outstandingDynamicCallsByThread.delete(threadId);
+        if (!outstanding || outstanding.size === 0) return Effect.void;
+        return Effect.forEach(
+          [...outstanding],
+          (callId) =>
+            Queue.offer(dynamicToolSignals, { kind: "cancelled", threadId, callId }).pipe(
+              Effect.asVoid,
+            ),
+          { discard: true },
+        );
+      });
+
+    /**
+     * Drain provider-side pending calls dispatched while no consumer was
+     * attached (ADE §3.1 re-attach contract). Runs regardless of local
+     * configuration: registrations are durable upstream, so a restarted server
+     * must recover pending calls even before the gate reconfigures the thread.
+     */
+    const drainPendingDynamicCalls = Effect.fn("drainOpenCodeV2DynamicCalls")(function* (
+      context: OpenCodeV2SessionContext,
+    ) {
+      const pending = yield* Effect.tryPromise({
+        try: () => context.client.session.tools.calls(context.openCodeSessionId),
+        catch: dynamicToolRequestError("session.tools.calls"),
+      }).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<OpenCodeV2DynamicToolCall>));
+      yield* Effect.forEach(
+        pending,
+        (call) => offerDynamicToolRequested(toDynamicToolSeamCall(context.session.threadId, call)),
+        { discard: true },
+      );
+    });
+
+    /**
+     * Reconcile a re-attached session: replace-set the registered tools when a
+     * catalog is configured, then always drain pending calls.
+     */
+    const syncDynamicTools = Effect.fn("syncOpenCodeV2DynamicTools")(function* (
+      context: OpenCodeV2SessionContext,
+    ) {
+      const config = dynamicToolConfigByThread.get(context.session.threadId);
+      if (config) {
+        yield* Effect.tryPromise({
+          try: () => context.client.session.tools.set(context.openCodeSessionId, config.tools),
+          catch: dynamicToolRequestError("session.tools.set"),
+        });
+      }
+      yield* drainPendingDynamicCalls(context);
+    });
 
     const writeResume = (context: OpenCodeV2SessionContext, clearActiveTurnId = false) => {
       context.session = {
@@ -971,6 +1089,38 @@ export function makeOpenCodeV2Adapter(
           });
           break;
         }
+        case "session.tool.dynamic.requested": {
+          const callId = asString(data.callID);
+          const tool = asString(data.tool);
+          if (!callId || !tool) break;
+          yield* offerDynamicToolRequested({
+            threadId: context.session.threadId,
+            callId,
+            tool,
+            input: data.input,
+            ...(createdAt ? { requestedAt: createdAt } : {}),
+          });
+          break;
+        }
+        case "session.tool.dynamic.cancelled": {
+          const callId = asString(data.callID);
+          if (!callId) break;
+          // Only pair a `cancelled` with a `requested` the consumer has seen.
+          if (!settleDynamicCall(context.session.threadId, callId)) break;
+          yield* Queue.offer(dynamicToolSignals, {
+            kind: "cancelled",
+            threadId: context.session.threadId,
+            callId,
+          });
+          break;
+        }
+        case "session.tool.dynamic.replied": {
+          const callId = asString(data.callID);
+          if (!callId) break;
+          // Settled (by this consumer or another client); no signal needed.
+          settleDynamicCall(context.session.threadId, callId);
+          break;
+        }
         case "permission.asked": {
           const permission = yield* decodeOpenCodeV2Permission(data).pipe(
             Effect.mapError(invalidEventPayload(context, event)),
@@ -1091,6 +1241,7 @@ export function makeOpenCodeV2Adapter(
     const startEventPump = (
       context: OpenCodeV2SessionContext,
       iterator: AsyncIterator<OpenCodeV2Event>,
+      abort?: () => void,
     ) =>
       Effect.gen(function* () {
         const remainingEvents: AsyncIterable<OpenCodeV2Event> = {
@@ -1112,6 +1263,7 @@ export function makeOpenCodeV2Adapter(
             Effect.gen(function* () {
               if (yield* Ref.get(context.stopped)) return;
               sessions.delete(context.session.threadId);
+              yield* cancelOutstandingDynamicCalls(context.session.threadId);
               if (Exit.isFailure(exit)) {
                 yield* emit({
                   ...(yield* buildEventBase({
@@ -1130,6 +1282,13 @@ export function makeOpenCodeV2Adapter(
           ),
           Effect.forkIn(context.sessionScope),
         );
+        if (abort) {
+          // Registered after the pump fork so scope close (reverse finalizer
+          // order) aborts the SSE transport before interrupting the pump
+          // fiber. Without this the fiber's async-iterator return() queues
+          // behind the pending chunk await and scope close deadlocks.
+          yield* Scope.addFinalizer(context.sessionScope, Effect.sync(abort));
+        }
         yield* hydratePending(context);
       });
 
@@ -1181,12 +1340,16 @@ export function makeOpenCodeV2Adapter(
           ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
           updatedAt,
         };
+        yield* syncDynamicTools(existing);
         yield* hydratePending(existing);
         return existing.session;
       }
       if (existing) {
         yield* Scope.close(existing.sessionScope, Exit.void).pipe(Effect.ignore);
         sessions.delete(input.threadId);
+        // The thread moves to a different provider session; calls outstanding
+        // against the replaced session can never settle through it.
+        yield* cancelOutstandingDynamicCalls(input.threadId);
       }
 
       const sessionScope = yield* Scope.make();
@@ -1282,10 +1445,20 @@ export function makeOpenCodeV2Adapter(
             adopted && adopted._tag === "Some"
               ? adopted.value
               : yield* Effect.tryPromise({
-                  try: () =>
-                    client.session.create({
+                  try: () => {
+                    const dynamicToolConfig = dynamicToolConfigByThread.get(input.threadId);
+                    return client.session.create({
                       location: { directory },
-                    }),
+                      ...(dynamicToolConfig === undefined
+                        ? {}
+                        : {
+                            tools: dynamicToolConfig.tools,
+                            ...(dynamicToolConfig.metadata === undefined
+                              ? {}
+                              : { metadata: dynamicToolConfig.metadata }),
+                          }),
+                    });
+                  },
                   catch: (cause) =>
                     new ProviderAdapterRequestError({
                       provider: PROVIDER,
@@ -1302,6 +1475,7 @@ export function makeOpenCodeV2Adapter(
           return {
             client,
             iterator,
+            abortEventTransport: () => controller.abort(),
             sessionInfo,
             serverExternal: server.external,
             toolNameById,
@@ -1375,7 +1549,9 @@ export function makeOpenCodeV2Adapter(
         sessionScope,
       };
       sessions.set(input.threadId, context);
-      const pumpExit = yield* Effect.exit(startEventPump(context, startedExit.value.iterator));
+      const pumpExit = yield* Effect.exit(
+        startEventPump(context, startedExit.value.iterator, startedExit.value.abortEventTransport),
+      );
       if (Exit.isFailure(pumpExit)) {
         sessions.delete(input.threadId);
         yield* Scope.close(sessionScope, pumpExit).pipe(Effect.ignore);
@@ -1385,6 +1561,9 @@ export function makeOpenCodeV2Adapter(
           detail: "Failed to subscribe to the OpenCode v2 event stream.",
           cause: pumpExit.cause,
         });
+      }
+      if (startedExit.value.adopted) {
+        yield* syncDynamicTools(context);
       }
       if (resumedTurnId !== undefined) {
         if (adoptedTurnId !== undefined) {
@@ -1542,6 +1721,75 @@ export function makeOpenCodeV2Adapter(
       };
     });
 
+    const dynamicTools: ProviderDynamicToolsShape<OpenCodeV2AdapterError> = {
+      configureThread: Effect.fn("configureDynamicTools")(function* (input) {
+        const issue = findProviderDynamicToolCatalogIssue(input.tools);
+        if (issue !== null) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "configureDynamicTools",
+            issue,
+          });
+        }
+        const config: ProviderDynamicToolThreadConfig = {
+          tools: input.tools,
+          ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+        };
+        const context = sessions.get(input.threadId);
+        if (!context) {
+          dynamicToolConfigByThread.set(input.threadId, config);
+          return;
+        }
+        // Record the config only once the live replace-set succeeded so a
+        // failed PUT does not leave local intent diverged from the provider.
+        yield* Effect.tryPromise({
+          try: () => context.client.session.tools.set(context.openCodeSessionId, input.tools),
+          catch: dynamicToolRequestError("session.tools.set"),
+        });
+        dynamicToolConfigByThread.set(input.threadId, config);
+        yield* drainPendingDynamicCalls(context);
+      }),
+      clearThread: Effect.fn("clearDynamicTools")(function* (threadId) {
+        dynamicToolConfigByThread.delete(threadId);
+        outstandingDynamicCallsByThread.delete(threadId);
+        const context = sessions.get(threadId);
+        if (!context) return;
+        yield* Effect.tryPromise({
+          try: () => context.client.session.tools.set(context.openCodeSessionId, []),
+          catch: dynamicToolRequestError("session.tools.set"),
+        });
+      }),
+      listTools: Effect.fn("listDynamicTools")(function* (threadId) {
+        const context = yield* ensureSession(threadId);
+        return yield* Effect.tryPromise({
+          try: () => context.client.session.tools.list(context.openCodeSessionId),
+          catch: dynamicToolRequestError("session.tools.list"),
+        });
+      }),
+      pendingCalls: Effect.fn("pendingDynamicToolCalls")(function* (threadId) {
+        const context = yield* ensureSession(threadId);
+        const calls = yield* Effect.tryPromise({
+          try: () => context.client.session.tools.calls(context.openCodeSessionId),
+          catch: dynamicToolRequestError("session.tools.calls"),
+        });
+        return calls.map((call) => toDynamicToolSeamCall(threadId, call));
+      }),
+      replyToCall: Effect.fn("replyToDynamicToolCall")(function* (input) {
+        const context = yield* ensureSession(input.threadId);
+        yield* Effect.tryPromise({
+          try: () =>
+            context.client.session.tools.reply(
+              context.openCodeSessionId,
+              input.callId,
+              input.result,
+            ),
+          catch: dynamicToolRequestError("session.tools.reply"),
+        });
+        settleDynamicCall(input.threadId, input.callId);
+      }),
+      takeSignal: Queue.take(dynamicToolSignals),
+    };
+
     return {
       provider: PROVIDER,
       capabilities: {
@@ -1665,6 +1913,8 @@ export function makeOpenCodeV2Adapter(
         }
         yield* Ref.set(context.stopped, true);
         sessions.delete(threadId);
+        dynamicToolConfigByThread.delete(threadId);
+        yield* cancelOutstandingDynamicCalls(threadId);
         yield* Scope.close(context.sessionScope, Exit.void).pipe(Effect.ignore);
         yield* emit({
           ...(yield* buildEventBase({ threadId })),
@@ -1695,6 +1945,10 @@ export function makeOpenCodeV2Adapter(
             contexts,
             (context) =>
               Ref.set(context.stopped, true).pipe(
+                Effect.andThen(() => {
+                  dynamicToolConfigByThread.delete(context.session.threadId);
+                  return cancelOutstandingDynamicCalls(context.session.threadId);
+                }),
                 Effect.andThen(Scope.close(context.sessionScope, Exit.void)),
                 Effect.ignore,
               ),
@@ -1702,6 +1956,7 @@ export function makeOpenCodeV2Adapter(
           );
         }),
       streamEvents: Stream.fromQueue(runtimeEvents),
+      dynamicTools,
     } satisfies ProviderAdapterShape<OpenCodeV2AdapterError>;
   });
 }

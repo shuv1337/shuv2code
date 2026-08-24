@@ -3,7 +3,14 @@
 
 import * as NodeHttp from "node:http";
 
-import type { OpenCodeV2Event, OpenCodeV2SessionInfo } from "./opencodeV2Client.ts";
+import type {
+  OpenCodeV2DynamicToolCall,
+  OpenCodeV2DynamicToolDefinition,
+  OpenCodeV2DynamicToolReply,
+  OpenCodeV2Event,
+  OpenCodeV2SessionInfo,
+} from "./opencodeV2Client.ts";
+import { findProviderDynamicToolCatalogIssue } from "./Services/ProviderDynamicTools.ts";
 
 export interface OpenCodeV2MockRequest {
   readonly method: string;
@@ -22,16 +29,29 @@ export interface OpenCodeV2MockFormAnswer {
   readonly answer: Record<string, unknown>;
 }
 
+export interface OpenCodeV2MockToolReply {
+  readonly sessionID: string;
+  readonly callID: string;
+  readonly reply: OpenCodeV2DynamicToolReply;
+}
+
 export interface OpenCodeV2Mock {
   readonly baseUrl: string;
   readonly sessions: Map<string, OpenCodeV2SessionInfo>;
+  readonly sessionTools: Map<string, ReadonlyArray<OpenCodeV2DynamicToolDefinition>>;
   readonly prompts: OpenCodeV2MockPrompt[];
   readonly formAnswers: OpenCodeV2MockFormAnswer[];
+  readonly toolReplies: OpenCodeV2MockToolReply[];
   readonly requests: OpenCodeV2MockRequest[];
   readonly events: OpenCodeV2Event[];
   readonly subscriberCount: number;
   readonly waitForSubscriber: (timeoutMs?: number) => Promise<void>;
   readonly triggerScript: (sessionID: string) => void;
+  readonly triggerDynamicToolCall: (
+    sessionID: string,
+    call: { readonly callID: string; readonly tool: string; readonly input?: unknown },
+  ) => void;
+  readonly cancelDynamicToolCall: (sessionID: string, callID: string) => void;
   readonly close: () => Promise<void>;
 }
 
@@ -79,6 +99,10 @@ export async function startOpenCodeV2Mock(
   options: { readonly port?: number } = {},
 ): Promise<OpenCodeV2Mock> {
   const sessions = new Map<string, OpenCodeV2SessionInfo>();
+  const sessionTools = new Map<string, ReadonlyArray<OpenCodeV2DynamicToolDefinition>>();
+  const pendingToolCalls = new Map<string, Map<string, OpenCodeV2DynamicToolCall>>();
+  const settledToolCallIds = new Set<string>();
+  const toolReplies: OpenCodeV2MockToolReply[] = [];
   const prompts: OpenCodeV2MockPrompt[] = [];
   const formAnswers: OpenCodeV2MockFormAnswer[] = [];
   const requests: OpenCodeV2MockRequest[] = [];
@@ -145,6 +169,28 @@ export async function startOpenCodeV2Mock(
     });
     emit({ type: "form.created", data: { form: mockForm(sessionID) } });
   };
+  const triggerDynamicToolCall = (
+    sessionID: string,
+    call: { readonly callID: string; readonly tool: string; readonly input?: unknown },
+  ) => {
+    const pending = pendingToolCalls.get(sessionID) ?? new Map<string, OpenCodeV2DynamicToolCall>();
+    pendingToolCalls.set(sessionID, pending);
+    pending.set(call.callID, {
+      callID: call.callID,
+      sessionID,
+      tool: call.tool,
+      input: call.input,
+      time: { requested: 1_800_000_000_000 },
+    });
+    emit({
+      type: "session.tool.dynamic.requested",
+      data: { sessionID, callID: call.callID, tool: call.tool, input: call.input },
+    });
+  };
+  const cancelDynamicToolCall = (sessionID: string, callID: string) => {
+    pendingToolCalls.get(sessionID)?.delete(callID);
+    emit({ type: "session.tool.dynamic.cancelled", data: { sessionID, callID } });
+  };
 
   const server = NodeHttp.createServer((request, response) => {
     void (async () => {
@@ -169,7 +215,7 @@ export async function startOpenCodeV2Mock(
         return;
       }
 
-      const body = method === "POST" ? await readJson(request) : undefined;
+      const body = method === "POST" || method === "PUT" ? await readJson(request) : undefined;
       requests.push({ method, path, ...(body === undefined ? {} : { body }) });
 
       if (method === "GET" && path === "/api/health") {
@@ -180,14 +226,23 @@ export async function startOpenCodeV2Mock(
         const input = (body ?? {}) as {
           readonly title?: string;
           readonly location?: { readonly directory?: string };
+          readonly metadata?: Readonly<Record<string, unknown>>;
+          readonly tools?: ReadonlyArray<OpenCodeV2DynamicToolDefinition>;
         };
+        const toolIssue = findProviderDynamicToolCatalogIssue(input.tools ?? []);
+        if (toolIssue !== null) {
+          sendJson(response, { name: "InvalidRequestError", message: toolIssue }, 400);
+          return;
+        }
         const session: OpenCodeV2SessionInfo = {
           id: `ses_mock_${nextSession}`,
           ...(input.title ? { title: input.title } : {}),
           ...(input.location ? { location: input.location } : {}),
+          ...(input.metadata ? { metadata: input.metadata } : {}),
         };
         nextSession += 1;
         sessions.set(session.id, session);
+        if (input.tools !== undefined) sessionTools.set(session.id, input.tools);
         sendJson(response, { data: session }, 201);
         return;
       }
@@ -232,6 +287,55 @@ export async function startOpenCodeV2Mock(
         }
         if (method === "GET" && suffix[0] === "permission") {
           sendJson(response, { data: [] });
+          return;
+        }
+        if (method === "PUT" && suffix[0] === "tools" && suffix.length === 1) {
+          const input = (body ?? {}) as {
+            readonly tools?: ReadonlyArray<OpenCodeV2DynamicToolDefinition>;
+          };
+          const toolIssue = findProviderDynamicToolCatalogIssue(input.tools ?? []);
+          if (toolIssue !== null) {
+            sendJson(response, { name: "InvalidRequestError", message: toolIssue }, 400);
+            return;
+          }
+          sessionTools.set(sessionID, input.tools ?? []);
+          emit({
+            type: "session.tool.dynamic.updated",
+            data: { sessionID, tools: input.tools ?? [] },
+          });
+          response.writeHead(204).end();
+          return;
+        }
+        if (method === "GET" && suffix[0] === "tools" && suffix.length === 1) {
+          sendJson(response, { data: sessionTools.get(sessionID) ?? [] });
+          return;
+        }
+        if (method === "GET" && suffix[0] === "tools" && suffix[1] === "calls") {
+          sendJson(response, { data: [...(pendingToolCalls.get(sessionID)?.values() ?? [])] });
+          return;
+        }
+        if (
+          method === "POST" &&
+          suffix[0] === "tools" &&
+          suffix[1] === "calls" &&
+          suffix[2] &&
+          suffix[3] === "reply"
+        ) {
+          const callID = suffix[2];
+          const pending = pendingToolCalls.get(sessionID);
+          if (!pending?.has(callID)) {
+            sendJson(
+              response,
+              { name: "ConflictError", message: `Dynamic tool call not pending: ${callID}` },
+              409,
+            );
+            return;
+          }
+          pending.delete(callID);
+          settledToolCallIds.add(callID);
+          toolReplies.push({ sessionID, callID, reply: body as OpenCodeV2DynamicToolReply });
+          emit({ type: "session.tool.dynamic.replied", data: { sessionID, callID } });
+          response.writeHead(204).end();
           return;
         }
       }
@@ -287,8 +391,10 @@ export async function startOpenCodeV2Mock(
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
     sessions,
+    sessionTools,
     prompts,
     formAnswers,
+    toolReplies,
     requests,
     events,
     get subscriberCount() {
@@ -317,6 +423,8 @@ export async function startOpenCodeV2Mock(
       });
     },
     triggerScript,
+    triggerDynamicToolCall,
+    cancelDynamicToolCall,
     close: async () => {
       if (closed) return;
       closed = true;

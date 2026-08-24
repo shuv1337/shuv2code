@@ -60,6 +60,13 @@ export class ProviderAdapterRequestError extends Schema.TaggedErrorClass<Provide
     provider: Schema.String,
     method: Schema.String,
     detail: Schema.String,
+    /**
+     * HTTP status of the failed provider request, when the transport exposed
+     * one. Lets callers separate semantic rejections (409 conflict on an
+     * already-settled dynamic tool call, 400 validation) from retryable
+     * transport failures.
+     */
+    status: Schema.optional(Schema.Number),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
