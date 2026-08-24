@@ -3,6 +3,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -30,6 +31,8 @@ const SOCKET_READY_ATTEMPTS = 50;
 const SOCKET_READY_INTERVAL = "50 millis" as const;
 const RESTART_BACKOFF_BASE_MS = 500;
 const RESTART_BACKOFF_MAX_MS = 5_000;
+/** Bounded wait for a health-checker-triggered respawn (`reviveCrashed`). */
+const REVIVE_CRASHED_WAIT = "3 seconds" as const;
 
 interface SupervisedProcess {
   readonly digest: string;
@@ -49,6 +52,8 @@ interface SupervisedProcess {
 interface SupervisedCrashState {
   readonly consecutiveFailures: number;
   readonly lastExitAtMs: number;
+  /** Spawn identity retained so `reviveCrashed` can respawn without a caller. */
+  readonly key: CodexAppServerSupervisorKey;
 }
 
 const hashKey = (material: string): string =>
@@ -129,7 +134,7 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
   };
   const connect = options.connect ?? connectUnixSocket;
 
-  const recordCrash = (digest: string) =>
+  const recordCrash = (digest: string, key: CodexAppServerSupervisorKey) =>
     Clock.currentTimeMillis.pipe(
       Effect.flatMap((nowMs) =>
         Ref.update(crashesRef, (map) => {
@@ -137,6 +142,7 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
           next.set(digest, {
             consecutiveFailures: (map.get(digest)?.consecutiveFailures ?? 0) + 1,
             lastExitAtMs: nowMs,
+            key,
           });
           return next;
         }),
@@ -161,6 +167,7 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
 
   const handleProcessExit = (
     digest: string,
+    key: CodexAppServerSupervisorKey,
     child: ChildProcessSpawner.ChildProcessHandle,
     exitCode: number | undefined,
   ) =>
@@ -178,7 +185,7 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
       // unknown exit codes should incur restart backoff on the next
       // acquisition.
       if (exitCode !== 0) {
-        yield* recordCrash(digest);
+        yield* recordCrash(digest, key);
       }
       yield* Scope.close(current.childScope, Exit.void).pipe(Effect.ignore);
       yield* removeSocketState(current);
@@ -258,7 +265,7 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
       }
       if (!ready) {
         yield* Scope.close(childScope, Exit.void).pipe(Effect.ignore);
-        yield* recordCrash(digest);
+        yield* recordCrash(digest, keyInput);
         yield* removeSocketPaths(socketPath, lockPath);
         return yield* spawnError(
           keyInput.binaryPath,
@@ -285,7 +292,7 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
       yield* child.exitCode.pipe(
         Effect.map((exitCode): number | undefined => exitCode),
         Effect.orElseSucceed((): number | undefined => undefined),
-        Effect.flatMap((exitCode) => handleProcessExit(digest, child, exitCode)),
+        Effect.flatMap((exitCode) => handleProcessExit(digest, keyInput, child, exitCode)),
         Effect.forkIn(supervisorScope),
       );
 
@@ -351,9 +358,33 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
     };
   });
 
+  const reviveCrashed = Effect.gen(function* () {
+    if (topologySetting !== "shared") return;
+    const processes = yield* Ref.get(processesRef);
+    const crashes = yield* Ref.get(crashesRef);
+    for (const [digest, crash] of crashes) {
+      if (processes.has(digest)) continue;
+      // Fork in the supervisor scope and wait a bounded time on the result: a
+      // timeout abandons the wait without interrupting the spawn, so a slow
+      // attempt is never torn down half-way — it finishes in the background
+      // and the next `status` read observes the outcome. The per-digest
+      // acquisition lane serializes against real acquisitions, so a revive
+      // can never race a session into a double-spawn.
+      const attempt = yield* acquireLaneFor(digest)
+        .withPermits(1)(ensureProcess(crash.key, digest))
+        .pipe(
+          Effect.flatMap(() => releaseConnection(digest)),
+          Effect.ignore,
+          Effect.forkIn(supervisorScope),
+        );
+      yield* Fiber.await(attempt).pipe(Effect.timeout(REVIVE_CRASHED_WAIT), Effect.ignore);
+    }
+  });
+
   return CodexAppServerSupervisor.of({
     topology: topologySetting,
     status,
+    reviveCrashed,
     sharedRealtimeEnabled,
     acquireConnection: (key) =>
       topologySetting === "shared"
@@ -381,6 +412,7 @@ export const layerTest = (topology: "per-session" | "shared" = "per-session") =>
     CodexAppServerSupervisor.of({
       topology,
       status: Effect.succeed({ topology, runningProcesses: 0, crashed: [] }),
+      reviveCrashed: Effect.void,
       sharedRealtimeEnabled: false,
       acquireConnection: () =>
         Effect.fail(

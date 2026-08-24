@@ -353,6 +353,44 @@ describe("CodexAppServerSupervisor", () => {
     },
   );
 
+  it.effect("reviveCrashed respawns a crashed shared process without a caller", () => {
+    const state: FakeSpawnerState = { spawns: [] };
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const runtimeDir = yield* makeRuntimeDir;
+      const { supervisor, supervisorScope } = yield* sharedSupervisorHarness();
+      const key = makeKey(runtimeDir, "/tmp/home-revive");
+
+      const connectionScope = yield* Scope.make();
+      yield* supervisor.acquireConnection(key).pipe(Scope.provide(connectionScope));
+      NodeAssert.equal((yield* supervisor.status).runningProcesses, 1);
+      const firstSocketPath = state.spawns[0]!.socketPath ?? "";
+
+      // Crash the shared process and let the exit monitor settle.
+      yield* Deferred.succeed(state.spawns[0]!.exit, ChildProcessSpawner.ExitCode(1));
+      yield* TestClock.adjust("1 millis");
+      for (let attempt = 0; attempt < 1000 && (yield* fs.exists(firstSocketPath)); attempt++) {
+        yield* Effect.yieldNow;
+      }
+      const crashed = yield* supervisor.status;
+      NodeAssert.equal(crashed.runningProcesses, 0);
+      NodeAssert.equal(crashed.crashed.length, 1);
+
+      // No session ever re-acquires (the outage blocked them); the health
+      // checker's revive respawns from the recorded key through the normal
+      // ensureProcess path — including its bounded backoff window.
+      const reviveFiber = yield* supervisor.reviveCrashed.pipe(Effect.forkChild);
+      yield* TestClock.adjust("600 millis");
+      yield* Fiber.join(reviveFiber);
+      NodeAssert.equal(state.spawns.length, 2);
+      const revived = yield* supervisor.status;
+      NodeAssert.equal(revived.runningProcesses, 1);
+      NodeAssert.equal(revived.crashed.length, 0);
+
+      yield* Scope.close(supervisorScope, Exit.void);
+    }).pipe(Effect.provide(testLayerWithTopology(state, "shared")));
+  });
+
   it.effect("does not apply restart backoff after a clean exit-code-0 shutdown", () => {
     const state: FakeSpawnerState = { spawns: [] };
     return Effect.gen(function* () {

@@ -1,10 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import type { HealthTargetId, KernelEngine } from "@shuv2code/contracts";
 
@@ -12,6 +15,7 @@ import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import {
   AdeHealthChecker,
+  type AdeHealthCheckerOptions,
   AdeHealthProbes,
   type AdeHealthProbeResult,
   codexProbeResultFromStatus,
@@ -49,9 +53,14 @@ const makeProbeControls = Effect.gen(function* () {
 });
 
 /** Builds the checker inside the test scope so its PubSub stays alive. */
-const buildChecker = (probesLayer: Layer.Layer<AdeHealthProbes>) =>
+const buildChecker = (
+  probesLayer: Layer.Layer<AdeHealthProbes>,
+  options?: AdeHealthCheckerOptions,
+) =>
   Effect.gen(function* () {
-    const context = yield* Layer.build(AdeHealthChecker.layer.pipe(Layer.provide(probesLayer)));
+    const context = yield* Layer.build(
+      AdeHealthChecker.layerWith(options).pipe(Layer.provide(probesLayer)),
+    );
     return yield* Effect.service(AdeHealthChecker).pipe(Effect.provide(context));
   });
 
@@ -379,9 +388,72 @@ describe("AdeHealthChecker", () => {
       assert.equal(targetState(snapshot, "codex"), "down");
     }),
   );
+
+  testCase(
+    "a hung probe times out to down and does not freeze reads or subscriptions",
+    Effect.gen(function* () {
+      yield* setup;
+      const layer = Layer.succeed(
+        AdeHealthProbes,
+        AdeHealthProbes.of({
+          probes: [
+            { target: "shuvcode", probe: Effect.succeed({ state: "healthy" }) },
+            { target: "codex", probe: Effect.never },
+          ],
+        }),
+      );
+      const checker = yield* buildChecker(layer, { probeTimeout: Duration.millis(50) });
+
+      // While a tick with the hung probe is in flight, latest and subscribe
+      // stay responsive (they must not share the tick mutex).
+      const tick = yield* checker.checkNow.pipe(Effect.forkChild);
+      const during = yield* checker.latest;
+      assert.equal(targetState(during, "codex"), "unknown");
+      const subscription = yield* checker.subscribe;
+      assert.equal(targetState(subscription.latest, "codex"), "unknown");
+
+      yield* TestClock.adjust(Duration.millis(60));
+      const snapshot = yield* Fiber.join(tick);
+      assert.equal(targetState(snapshot, "codex"), "down");
+      const detail = snapshot.targets.find((entry) => entry.target === "codex")?.detail;
+      assert.equal(detail, "probe timed out");
+      assert.equal(targetState(snapshot, "shuvcode"), "healthy");
+    }),
+  );
+
+  testCase(
+    "an oversized probe detail is truncated before it reaches the snapshot",
+    Effect.gen(function* () {
+      yield* setup;
+      const layer = Layer.succeed(
+        AdeHealthProbes,
+        AdeHealthProbes.of({
+          probes: [
+            {
+              target: "screenbox",
+              probe: Effect.succeed({ state: "not-provisioned", detail: "x".repeat(10_000) }),
+            },
+          ],
+        }),
+      );
+      const checker = yield* buildChecker(layer);
+      const snapshot = yield* checker.checkNow;
+      const detail = snapshot.targets.find((entry) => entry.target === "screenbox")?.detail;
+      assert.equal(detail?.length, 512);
+    }),
+  );
 });
 
 it("codexProbeResultFromStatus maps supervisor state to a pill state", () => {
+  // Default topology never runs a shared process, so the supervisor's books
+  // are structurally empty — that is a configuration gap, not health.
+  assert.deepEqual(
+    codexProbeResultFromStatus({ topology: "per-session", runningProcesses: 0, crashed: [] }),
+    {
+      state: "not-provisioned",
+      detail: "codexAppServerTopology=per-session; the ADE Codex kernel requires shared topology.",
+    },
+  );
   assert.deepEqual(
     codexProbeResultFromStatus({ topology: "shared", runningProcesses: 1, crashed: [] }),
     { state: "healthy" },
