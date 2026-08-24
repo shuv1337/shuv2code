@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -95,6 +96,52 @@ describe("AdePersonaMemory.writeMemory", () => {
         WHERE bot_id = ${botId}
       `;
       assert.deepEqual(rows[0], { length: 65_536, updated_by: "bot" });
+
+      // The DB-side CHECK backstops the bound even for raw writes.
+      const rawOverBound = yield* Effect.exit(sql`
+        UPDATE ade_memory_documents
+        SET content = ${"m".repeat(MEMORY_DOCUMENT_MAX_LENGTH + 1)}
+        WHERE bot_id = ${botId}
+      `);
+      assert.isTrue(Exit.isFailure(rawOverBound));
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("supports an optional updatedAt precondition (CAS) for writes", () =>
+    Effect.gen(function* () {
+      const { service, botId } = yield* setup;
+
+      yield* service.writeMemory({ botId, content: "v1", author: "bot" });
+      const current = yield* service.readMemory(botId);
+
+      // Matching precondition lands.
+      const ok = yield* service.writeMemory({
+        botId,
+        content: "v2",
+        author: "captain",
+        expectedUpdatedAt: current.updatedAt,
+      });
+      assert.equal(ok.content, "v2");
+
+      // Stale precondition is refused and the document is untouched.
+      const conflict = yield* Effect.flip(
+        service.writeMemory({
+          botId,
+          content: "v3-lost",
+          author: "bot",
+          expectedUpdatedAt: "2000-01-01T00:00:00.000Z",
+        }),
+      );
+      assert.equal(conflict._tag, "AdeMemoryConflictError");
+      if (conflict._tag !== "AdeMemoryConflictError") {
+        return assert.fail("expected AdeMemoryConflictError");
+      }
+      assert.equal(conflict.expectedUpdatedAt, "2000-01-01T00:00:00.000Z");
+      assert.equal(conflict.actualUpdatedAt, ok.updatedAt);
+
+      const after = yield* service.readMemory(botId);
+      assert.equal(after.content, "v2");
+      assert.equal(after.updatedBy, "captain");
     }).pipe(Effect.provide(makeLayer())),
   );
 

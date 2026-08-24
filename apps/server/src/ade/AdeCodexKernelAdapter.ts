@@ -293,6 +293,9 @@ export const toBotExecutionBinding = (
   sessionId: descriptor.sessionId,
   purpose: descriptor.purpose,
   status: input.status ?? "active",
+  // Summaries are recorded at retirement by the session/rollover service
+  // (S8); a freshly described kernel session never carries one.
+  rolloverSummary: null,
   createdAt: input.now,
   updatedAt: input.now,
 });

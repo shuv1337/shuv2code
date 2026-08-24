@@ -61,10 +61,13 @@ export default Effect.gen(function* () {
   `;
 
   // Spec §2.1 / ADR §12.2 — one bounded memory document per bot (1:1).
+  // The CHECK counts code points while the contracts bound counts UTF-16
+  // code units — the DB is deliberately the looser backstop; the service
+  // enforces the strict bound. (Pre-release in-place edit on ade-v1.)
   yield* sql`
     CREATE TABLE ade_memory_documents (
       bot_id TEXT PRIMARY KEY,
-      content TEXT NOT NULL,
+      content TEXT NOT NULL CHECK (length(content) <= 65536),
       updated_at TEXT NOT NULL,
       updated_by TEXT NOT NULL CHECK (updated_by IN ('bot', 'captain', 'system')),
       FOREIGN KEY (bot_id) REFERENCES ade_bots(bot_id) ON DELETE CASCADE

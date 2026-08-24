@@ -123,6 +123,12 @@ export const PersonaVersion = Schema.Struct({
 });
 export type PersonaVersion = typeof PersonaVersion.Type;
 
+/**
+ * Bounds note: JS-side `isMaxLength` counts UTF-16 code units, while the
+ * SQLite `CHECK (length(...))` mirrors in migration 055 count code points —
+ * the DB is deliberately the looser of the two (astral characters count once
+ * there, twice here). Services enforce the strict JS bound before SQL.
+ */
 export const MEMORY_DOCUMENT_MAX_LENGTH = 65_536;
 
 export const MemoryDocumentContent = Schema.String.check(
@@ -146,7 +152,8 @@ export type MemoryDocument = typeof MemoryDocument.Type;
 /**
  * ADR §12.3 / §12.4 — bounded outgoing-session summary carried into a
  * replacement session at rollover (and out of voice calls). Shares the
- * 16 KB (UTF-16 code units) ceiling ADR §18.1 fixes for result summaries.
+ * 16 KB (UTF-16 code units; see the bounds note on
+ * `MEMORY_DOCUMENT_MAX_LENGTH`) ceiling ADR §18.1 fixes for result summaries.
  */
 export const SESSION_ROLLOVER_SUMMARY_MAX_LENGTH = 16_384;
 
@@ -166,7 +173,12 @@ export type BotExecutionBindingPurpose = typeof BotExecutionBindingPurpose.Type;
 export const BotExecutionBindingStatus = Schema.Literals(["active", "historical", "lost"]);
 export type BotExecutionBindingStatus = typeof BotExecutionBindingStatus.Type;
 
-/** Replaceable kernel-session binding for a durable bot (ADR §3.1–§3.2). */
+/**
+ * Replaceable kernel-session binding for a durable bot (ADR §3.1–§3.2).
+ * `rolloverSummary` is the durable outgoing-session summary recorded when the
+ * binding is retired (ADR §12.3 component 4) — readable so a restart can
+ * recover it into the replacement session's projection.
+ */
 export const BotExecutionBinding = Schema.Struct({
   id: BotExecutionBindingId,
   botId: BotId,
@@ -174,6 +186,7 @@ export const BotExecutionBinding = Schema.Struct({
   sessionId: KernelSessionId,
   purpose: BotExecutionBindingPurpose,
   status: BotExecutionBindingStatus,
+  rolloverSummary: Schema.NullOr(SessionRolloverSummary),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

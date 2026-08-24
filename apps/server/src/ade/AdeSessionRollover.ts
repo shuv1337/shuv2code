@@ -20,8 +20,13 @@
  *   `idx_ade_bot_execution_bindings_one_active_primary` (055) turns a lost
  *   race into `ON CONFLICT DO NOTHING`.
  * - **Rollover summaries** are bounded at 16 KB
- *   (`SESSION_ROLLOVER_SUMMARY_MAX_LENGTH`, contracts / ADR §18.1) and stored
- *   on the superseded binding row (`rollover_summary`).
+ *   (`SESSION_ROLLOVER_SUMMARY_MAX_LENGTH`, contracts / ADR §18.1), stored
+ *   on the retired binding row (`rollover_summary`), readable back through
+ *   `listBindings`, and recovered into a fresh `startPrimarySession`
+ *   projection after a restart (component 4 survives the process).
+ * - **Rollover is a compare-and-set** on `expectedBindingId`: a stale or
+ *   concurrent duplicate rollover fails with `AdeRolloverConflictError`
+ *   instead of retiring a binding its rival just created.
  */
 import * as NodeCrypto from "node:crypto";
 
@@ -89,6 +94,53 @@ export class AdeRolloverSummaryLimitExceededError extends Schema.TaggedErrorClas
   }
 }
 
+/**
+ * The rollover's compare-and-set lost: `expectedBindingId` is no longer the
+ * active primary binding. `currentActive*` name the surviving active binding
+ * so callers can distinguish "someone already rolled over" (non-null — retry
+ * against the survivor or adopt it) from "no active session at all" (null —
+ * start a fresh primary instead).
+ */
+export class AdeRolloverConflictError extends Schema.TaggedErrorClass<AdeRolloverConflictError>()(
+  "AdeRolloverConflictError",
+  {
+    botId: Schema.String,
+    expectedBindingId: Schema.String,
+    currentActiveBindingId: Schema.NullOr(Schema.String),
+    currentActiveSessionId: Schema.NullOr(Schema.String),
+  },
+) {
+  override get message(): string {
+    return this.currentActiveBindingId === null
+      ? `Rollover for bot '${this.botId}' expected active binding '${this.expectedBindingId}', but no primary binding is active.`
+      : `Rollover for bot '${this.botId}' expected active binding '${this.expectedBindingId}', but '${this.currentActiveBindingId}' is active.`;
+  }
+}
+
+/**
+ * The kernel session id is already bound (unique per engine). Surfaced as a
+ * typed error so S7 can decide to re-adopt the surviving session (§4.2)
+ * instead of treating it as a defect.
+ */
+export class AdeSessionBindingConflictError extends Schema.TaggedErrorClass<AdeSessionBindingConflictError>()(
+  "AdeSessionBindingConflictError",
+  {
+    engine: Schema.String,
+    sessionId: Schema.String,
+    boundBotId: Schema.NullOr(Schema.String),
+    boundBindingId: Schema.NullOr(Schema.String),
+  },
+) {
+  override get message(): string {
+    return (
+      `Kernel session '${this.sessionId}' (${this.engine}) is already bound` +
+      (this.boundBindingId === null
+        ? "."
+        : ` to binding '${this.boundBindingId}' of bot '${this.boundBotId}'.`)
+    );
+  }
+}
+
 export class AdeBindingNotFoundError extends Schema.TaggedErrorClass<AdeBindingNotFoundError>()(
   "AdeBindingNotFoundError",
   {
@@ -128,24 +180,51 @@ export interface AdeSessionProjection {
 }
 
 /**
+ * Delimiters fencing content the bot (or a past session) could have written:
+ * memory, outgoing summaries, and assignment briefs. Everything between the
+ * markers is data, not instructions — a bot writing section headers into its
+ * memory must not be able to forge new prompt sections. Any literal
+ * occurrence of a delimiter inside fenced content is defanged (see
+ * {@link defangDelimiters}) so the fence cannot be closed early.
+ */
+export const UNTRUSTED_CONTENT_OPEN = "<<<untrusted-content>>>";
+export const UNTRUSTED_CONTENT_CLOSE = "<<</untrusted-content>>>";
+
+/** Break embedded delimiters so fenced content cannot escape its fence. */
+const defangDelimiters = (content: string): string =>
+  content
+    .replaceAll(UNTRUSTED_CONTENT_CLOSE, "<< /untrusted-content >>")
+    .replaceAll(UNTRUSTED_CONTENT_OPEN, "<< untrusted-content >>");
+
+const fence = (content: string): string =>
+  `${UNTRUSTED_CONTENT_OPEN}\n${defangDelimiters(content)}\n${UNTRUSTED_CONTENT_CLOSE}`;
+
+/**
  * Render a projection into kernel-native instruction text (system prompt /
  * `developerInstructions`). Pure; adapters own where it lands.
+ *
+ * Size ceiling: persona ≤120 000 + memory ≤65 536 + summary ≤16 384 units,
+ * plus one ≤120 000-unit instruction per active assignment — bounded in
+ * practice by `LimitsConfig.maxQueuedAssignmentsPerBot` (default 20), so the
+ * rendered projection stays well under ~2.6 M UTF-16 units.
  */
 export const renderSessionProjection = (projection: AdeSessionProjection): string => {
   const sections: Array<string> = [projection.persona.trim()];
   if (projection.memory.trim().length > 0) {
-    sections.push(`## Your memory\n\n${projection.memory.trim()}`);
+    sections.push(`## Your memory\n\n${fence(projection.memory.trim())}`);
   }
   if (projection.activeAssignments.length > 0) {
     const lines = projection.activeAssignments.map((assignment) => {
       const blocked =
         assignment.blockedReason === null ? "" : ` (blocked: ${assignment.blockedReason})`;
-      return `- [${assignment.status}${blocked}] ${assignment.instruction} (assignment ${assignment.assignmentId})`;
+      return `- [${assignment.status}${blocked}] assignment ${assignment.assignmentId}:\n${fence(assignment.instruction)}`;
     });
     sections.push(`## Your active assignments\n\n${lines.join("\n")}`);
   }
   if (projection.outgoingSessionSummary !== null) {
-    sections.push(`## Summary of your previous session\n\n${projection.outgoingSessionSummary}`);
+    sections.push(
+      `## Summary of your previous session\n\n${fence(projection.outgoingSessionSummary)}`,
+    );
   }
   return sections.join("\n\n");
 };
@@ -164,6 +243,13 @@ export interface RolloverPrimarySessionInput {
   readonly botId: BotId;
   readonly engine: KernelEngine;
   readonly sessionId: KernelSessionId;
+  /**
+   * Compare-and-set target: the active primary binding the caller observed
+   * (and summarized). Rollover retires exactly this binding; if it is no
+   * longer the active one, the call fails with `AdeRolloverConflictError`
+   * instead of retiring a binding someone else just created.
+   */
+  readonly expectedBindingId: BotExecutionBindingId;
   /** Generated summary of the outgoing session (ADR §12.3 component 4). */
   readonly outgoingSummary: string;
 }
@@ -187,7 +273,12 @@ export interface CloseBindingInput {
 export interface AdePrimarySession {
   readonly binding: BotExecutionBinding;
   readonly projection: AdeSessionProjection;
-  /** The active binding this session replaced; null when none existed. */
+  /**
+   * The binding this session replaced: always the `expectedBindingId` on the
+   * rollover path, null on the start path (a start never retires anything —
+   * with no active binding, component 4 is recovered from the most recently
+   * retired primary binding's stored summary instead).
+   */
   readonly supersededBindingId: BotExecutionBindingId | null;
 }
 
@@ -197,24 +288,37 @@ export interface AdeSessionRolloverShape {
     input: StartPrimarySessionInput,
   ) => Effect.Effect<
     AdePrimarySession,
-    AdeBotNotFoundError | AdePrimarySessionActiveError | PersistenceSqlError
+    | AdeBotNotFoundError
+    | AdePrimarySessionActiveError
+    | AdeSessionBindingConflictError
+    | PersistenceSqlError
   >;
   /**
-   * Explicit rollover (ADR §12.3 triggers): atomically closes the active
-   * primary binding as `historical` (recording the summary) and opens the
-   * replacement with the full four-component projection. Tolerates a missing
-   * active binding (crash recovery — the old binding may already be `lost`).
+   * Explicit rollover (ADR §12.3 triggers): atomically retires exactly
+   * `expectedBindingId` as `historical` (recording the summary on it) and
+   * opens the replacement with the full four-component projection. The
+   * retire is a compare-and-set — a stale or repeated call fails with
+   * `AdeRolloverConflictError` rather than retiring someone else's binding.
+   * Crash recovery where the old binding is already `lost` goes through
+   * `closeBinding(lost, summary)` + `startPrimarySession` instead.
    */
   readonly rolloverPrimarySession: (
     input: RolloverPrimarySessionInput,
   ) => Effect.Effect<
     AdePrimarySession,
-    AdeBotNotFoundError | AdeRolloverSummaryLimitExceededError | PersistenceSqlError
+    | AdeBotNotFoundError
+    | AdeRolloverConflictError
+    | AdeRolloverSummaryLimitExceededError
+    | AdeSessionBindingConflictError
+    | PersistenceSqlError
   >;
   /** Open a non-primary binding (parallel-work / voice / specialized-work). */
   readonly openBinding: (
     input: OpenBindingInput,
-  ) => Effect.Effect<BotExecutionBinding, AdeBotNotFoundError | PersistenceSqlError>;
+  ) => Effect.Effect<
+    BotExecutionBinding,
+    AdeBotNotFoundError | AdeSessionBindingConflictError | PersistenceSqlError
+  >;
   readonly closeBinding: (
     input: CloseBindingInput,
   ) => Effect.Effect<
@@ -237,6 +341,7 @@ interface BindingRow {
   readonly kernel_session_id: string;
   readonly purpose: BotExecutionBindingPurpose;
   readonly status: BotExecutionBindingStatus;
+  readonly rollover_summary: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -248,6 +353,7 @@ const rowToBinding = (row: BindingRow): BotExecutionBinding => ({
   sessionId: row.kernel_session_id as KernelSessionId,
   purpose: row.purpose,
   status: row.status,
+  rolloverSummary: row.rollover_summary,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -353,6 +459,22 @@ export class AdeSessionRollover extends Context.Service<
         if (rows.length === 0) return yield* new AdeBotNotFoundError({ botId });
       });
 
+      /** Name the binding that already holds (engine, sessionId), if visible. */
+      const sessionBindingConflict = Effect.fn("AdeSessionRollover.sessionBindingConflict")(
+        function* (engine: KernelEngine, kernelSessionId: KernelSessionId) {
+          const bound = yield* sql<{ binding_id: string; bot_id: string }>`
+            SELECT binding_id, bot_id FROM ade_bot_execution_bindings
+            WHERE engine = ${engine} AND kernel_session_id = ${kernelSessionId}
+          `;
+          return yield* new AdeSessionBindingConflictError({
+            engine,
+            sessionId: kernelSessionId,
+            boundBotId: bound[0]?.bot_id ?? null,
+            boundBindingId: bound[0]?.binding_id ?? null,
+          });
+        },
+      );
+
       /**
        * Insert the new active primary binding. `ON CONFLICT DO NOTHING`
        * against the one-active-primary partial index turns a concurrent
@@ -382,6 +504,7 @@ export class AdeSessionRollover extends Context.Service<
             sessionId: input.sessionId,
             purpose: "primary-text",
             status: "active",
+            rolloverSummary: null,
             createdAt: at,
             updatedAt: at,
           } satisfies BotExecutionBinding;
@@ -393,10 +516,10 @@ export class AdeSessionRollover extends Context.Service<
         const survivor = existing[0];
         if (survivor === undefined) {
           // The only other unique constraint is (engine, kernel_session_id):
-          // reusing a kernel session id for a new binding is a caller bug.
-          return yield* Effect.die(
-            new Error(`kernel session '${input.sessionId}' (${input.engine}) is already bound`),
-          );
+          // the kernel session already belongs to another binding. Typed, not
+          // a defect — re-adopting a surviving kernel session (spec §4.2) is
+          // the caller's (S7's) decision to make.
+          return yield* sessionBindingConflict(input.engine, input.sessionId);
         }
         return yield* new AdePrimarySessionActiveError({
           botId: input.botId,
@@ -422,6 +545,25 @@ export class AdeSessionRollover extends Context.Service<
         } satisfies AdeSessionProjection;
       });
 
+      /**
+       * Component-4 recovery for fresh starts (ADR §16 crash recovery): with
+       * no active binding to roll over, the most recently retired primary
+       * binding's stored summary still reaches the replacement session.
+       */
+      const lastRetiredPrimarySummary = Effect.fn("AdeSessionRollover.lastRetiredPrimarySummary")(
+        function* (botId: BotId) {
+          const rows = yield* sql<{ rollover_summary: string | null }>`
+          SELECT rollover_summary FROM ade_bot_execution_bindings
+          WHERE bot_id = ${botId}
+            AND purpose = 'primary-text'
+            AND status IN ('historical', 'lost')
+          ORDER BY updated_at DESC, rowid DESC
+          LIMIT 1
+        `;
+          return rows[0]?.rollover_summary ?? null;
+        },
+      );
+
       const startPrimarySession: AdeSessionRolloverShape["startPrimarySession"] = Effect.fn(
         "AdeSessionRollover.startPrimarySession",
       )(function* (input: StartPrimarySessionInput) {
@@ -430,8 +572,9 @@ export class AdeSessionRollover extends Context.Service<
           .withTransaction(
             Effect.gen(function* () {
               yield* requireBot(input.botId);
+              const recoveredSummary = yield* lastRetiredPrimarySummary(input.botId);
               const binding = yield* insertActivePrimary(input, at);
-              const projection = yield* composeProjection(input.botId, at, null);
+              const projection = yield* composeProjection(input.botId, at, recoveredSummary);
               return { binding, projection, supersededBindingId: null };
             }),
           )
@@ -457,29 +600,46 @@ export class AdeSessionRollover extends Context.Service<
           .withTransaction(
             Effect.gen(function* () {
               yield* requireBot(input.botId);
+              // Compare-and-set: retire exactly the binding the caller
+              // observed and summarized. Anything else — already rolled
+              // over, closed as lost, or never existed — is a conflict, so
+              // a concurrent rollover can never retire the binding its
+              // rival just created, and a retried call is a clean failure
+              // rather than a double retire.
               const superseded = yield* sql<{ binding_id: string }>`
                 UPDATE ade_bot_execution_bindings
                 SET status = 'historical',
                     rollover_summary = ${input.outgoingSummary},
                     updated_at = ${at}
-                WHERE bot_id = ${input.botId}
+                WHERE binding_id = ${input.expectedBindingId}
+                  AND bot_id = ${input.botId}
                   AND purpose = 'primary-text'
                   AND status = 'active'
                 RETURNING binding_id
               `;
-              // With the active row (if any) now historical, the partial
-              // unique index cannot refuse this insert; a refusal here means
-              // a session-id collision, which insertActivePrimary treats as
-              // a defect.
+              if (superseded.length === 0) {
+                const active = yield* sql<{ binding_id: string; kernel_session_id: string }>`
+                  SELECT binding_id, kernel_session_id FROM ade_bot_execution_bindings
+                  WHERE bot_id = ${input.botId}
+                    AND purpose = 'primary-text'
+                    AND status = 'active'
+                `;
+                return yield* new AdeRolloverConflictError({
+                  botId: input.botId,
+                  expectedBindingId: input.expectedBindingId,
+                  currentActiveBindingId: active[0]?.binding_id ?? null,
+                  currentActiveSessionId: active[0]?.kernel_session_id ?? null,
+                });
+              }
+              // With the bot's active row now historical, the partial unique
+              // index cannot refuse this insert; a refusal is a session-id
+              // collision, surfaced as AdeSessionBindingConflictError.
               const binding = yield* insertActivePrimary(input, at);
               const projection = yield* composeProjection(input.botId, at, input.outgoingSummary);
               return {
                 binding,
                 projection,
-                supersededBindingId:
-                  superseded[0] === undefined
-                    ? null
-                    : (superseded[0].binding_id as BotExecutionBindingId),
+                supersededBindingId: input.expectedBindingId,
               };
             }),
           )
@@ -489,7 +649,9 @@ export class AdeSessionRollover extends Context.Service<
                 toPersistenceSqlError("AdeSessionRollover.rolloverPrimarySession")(cause),
               ),
             ),
-            // Unreachable: the active row was closed in the same transaction.
+            // Invariant, not input-shaped: the CAS retired the bot's only
+            // active primary binding inside this same transaction, so the
+            // partial unique index cannot report another one.
             Effect.catchTag("AdePrimarySessionActiveError", (error) => Effect.die(error)),
           );
       });
@@ -503,7 +665,7 @@ export class AdeSessionRollover extends Context.Service<
           .withTransaction(
             Effect.gen(function* () {
               yield* requireBot(input.botId);
-              yield* sql`
+              const inserted = yield* sql<{ binding_id: string }>`
                 INSERT INTO ade_bot_execution_bindings (
                   binding_id, bot_id, engine, kernel_session_id, purpose, status,
                   rollover_summary, created_at, updated_at
@@ -511,7 +673,14 @@ export class AdeSessionRollover extends Context.Service<
                   ${bindingId}, ${input.botId}, ${input.engine}, ${input.sessionId},
                   ${input.purpose}, 'active', NULL, ${at}, ${at}
                 )
+                ON CONFLICT DO NOTHING
+                RETURNING binding_id
               `;
+              if (inserted.length === 0) {
+                // (engine, kernel_session_id) is the only reachable unique
+                // constraint for non-primary purposes.
+                return yield* sessionBindingConflict(input.engine, input.sessionId);
+              }
               return {
                 id: bindingId as BotExecutionBindingId,
                 botId: input.botId,
@@ -519,6 +688,7 @@ export class AdeSessionRollover extends Context.Service<
                 sessionId: input.sessionId,
                 purpose: input.purpose,
                 status: "active",
+                rolloverSummary: null,
                 createdAt: at,
                 updatedAt: at,
               } satisfies BotExecutionBinding;
