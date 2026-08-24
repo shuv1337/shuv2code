@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 
 import type { AssignmentId, BotId, KernelEngine } from "@shuv2code/contracts";
@@ -101,15 +102,26 @@ const makePortFixture = Effect.gen(function* () {
   return { layer, sends, healthy, refuse, liveSessions, stall };
 });
 
-const setup = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations();
-  yield* sql`PRAGMA foreign_keys = ON`;
-  const port = yield* makePortFixture;
-  const context = yield* Layer.build(AdeAssignmentEngine.layer.pipe(Layer.provide(port.layer)));
-  const engine = yield* Effect.service(AdeAssignmentEngine).pipe(Effect.provide(context));
-  return { sql, engine, port };
-});
+/**
+ * Default to a zero-length delivery lease so recovery tests do not need to
+ * advance the clock; the lease-respecting test asks for a long one.
+ */
+const setupWith = (options: { deliveryLease?: Duration.Duration } = {}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations();
+    yield* sql`PRAGMA foreign_keys = ON`;
+    const port = yield* makePortFixture;
+    const context = yield* Layer.build(
+      AdeAssignmentEngine.layerWith({
+        deliveryLease: options.deliveryLease ?? Duration.zero,
+      }).pipe(Layer.provide(port.layer)),
+    );
+    const engine = yield* Effect.service(AdeAssignmentEngine).pipe(Effect.provide(context));
+    return { sql, engine, port };
+  });
+
+const setup = setupWith();
 
 /**
  * One fresh in-memory database per test: the engine's invariants are about
@@ -209,6 +221,39 @@ describe("AdeAssignmentEngine", () => {
       }),
     );
 
+    scenario("a replay wins over the guards a new request would fail", () =>
+      Effect.gen(function* () {
+        const { sql, engine } = yield* setup;
+        yield* seedBot(sql, "boss");
+        yield* seedBot(sql, "coder");
+        const first = yield* create(engine, {
+          requesterBotId: "boss",
+          recipientBotId: "coder",
+          idempotencyKey: "key-1",
+        });
+
+        // The recipient is archived after the fact: a *new* assignment is
+        // refused, but the post-restart replay still resolves to its row.
+        yield* sql`UPDATE ade_bots SET archived_at = ${AT} WHERE bot_id = 'coder'`;
+        const replay = yield* create(engine, {
+          requesterBotId: "boss",
+          recipientBotId: "coder",
+          idempotencyKey: "key-1",
+        });
+        assert.isFalse(replay.created);
+        assert.equal(replay.assignment.id, first.assignment.id);
+
+        const fresh = yield* Effect.flip(
+          create(engine, {
+            requesterBotId: "boss",
+            recipientBotId: "coder",
+            idempotencyKey: "key-2",
+          }),
+        );
+        assert.equal(fresh._tag, "AdeBotArchivedError");
+      }),
+    );
+
     scenario("refuses archived recipients and over-deep lineage", () =>
       Effect.gen(function* () {
         const { sql, engine } = yield* setup;
@@ -291,7 +336,7 @@ describe("AdeAssignmentEngine", () => {
   });
 
   describe("kernel-down admission (ADR §11.3)", () => {
-    scenario("start parks the assignment as blocked kernel-down during an outage", () =>
+    scenario("queued work stays queued during an outage; only running work blocks", () =>
       Effect.gen(function* () {
         const { sql, engine, port } = yield* setup;
         yield* seedBot(sql, "coder");
@@ -301,17 +346,53 @@ describe("AdeAssignmentEngine", () => {
           idempotencyKey: "work",
         });
 
+        // Queue-and-alert: admission refuses, but the row is untouched, so
+        // the S17 release can never promote work that never started.
         yield* Ref.set(port.healthy, false);
-        const blocked = yield* engine.startAssignment(assignment.assignment.id);
-        assert.isTrue(blocked.blockedByKernel);
-        assert.equal(blocked.assignment.status, "blocked");
-        assert.equal(blocked.assignment.blockedReason, "kernel-down");
+        const refused = yield* engine.startAssignment(assignment.assignment.id);
+        assert.isTrue(refused.blockedByKernel);
+        assert.equal(refused.assignment.status, "queued");
+        assert.isNull(refused.assignment.blockedReason);
 
         yield* Ref.set(port.healthy, true);
         const running = yield* engine.startAssignment(assignment.assignment.id);
         assert.isFalse(running.blockedByKernel);
         assert.equal(running.assignment.status, "running");
         assert.isNull(running.assignment.blockedReason);
+
+        // Work that is already running when the kernel goes away does block.
+        yield* Ref.set(port.healthy, false);
+        const blocked = yield* engine.startAssignment(assignment.assignment.id);
+        assert.isTrue(blocked.blockedByKernel);
+        assert.equal(blocked.assignment.status, "blocked");
+        assert.equal(blocked.assignment.blockedReason, "kernel-down");
+      }),
+    );
+
+    scenario("a bot with no session yet is admitted against the serving kernel", () =>
+      Effect.gen(function* () {
+        const { sql, engine, port } = yield* setup;
+        yield* seedBot(sql, "coder");
+        const assignment = yield* create(engine, {
+          recipientBotId: "coder",
+          idempotencyKey: "work",
+        });
+
+        // No binding at all: admission still consults kernel health for the
+        // engine that will serve the bot, instead of sailing into `running`.
+        yield* Ref.set(port.healthy, false);
+        const refused = yield* engine.startAssignment(assignment.assignment.id);
+        assert.isTrue(refused.blockedByKernel);
+        assert.equal(refused.assignment.status, "queued");
+
+        const explicitEngine = yield* engine.startAssignment(assignment.assignment.id, {
+          engine: "codex",
+        });
+        assert.isTrue(explicitEngine.blockedByKernel);
+
+        yield* Ref.set(port.healthy, true);
+        const admitted = yield* engine.startAssignment(assignment.assignment.id);
+        assert.equal(admitted.assignment.status, "running");
       }),
     );
   });
@@ -362,6 +443,45 @@ describe("AdeAssignmentEngine", () => {
         assert.equal(yield* statusOf(sibling.assignment.id), "queued");
         assert.equal(yield* statusOf(child.assignment.id), "cancelled");
         assert.equal(yield* statusOf(grandchild.assignment.id), "cancelled");
+      }),
+    );
+
+    scenario("cascade reaches grandchildren under an already-settled child", () =>
+      Effect.gen(function* () {
+        const { sql, engine } = yield* setup;
+        yield* seedBot(sql, "coder");
+        const root = yield* create(engine, { recipientBotId: "coder", idempotencyKey: "root" });
+        const settled = yield* create(engine, {
+          recipientBotId: "coder",
+          idempotencyKey: "settled",
+          parentAssignmentId: root.assignment.id,
+        });
+        const grandchild = yield* create(engine, {
+          recipientBotId: "coder",
+          idempotencyKey: "grandchild",
+          parentAssignmentId: settled.assignment.id,
+        });
+        yield* engine.reportResult({
+          assignmentId: settled.assignment.id,
+          status: "completed",
+          summary: "already done",
+        });
+
+        const cancelled = yield* engine.cancelAssignment({
+          assignmentId: root.assignment.id,
+          cascade: true,
+        });
+        // The settled intermediate is not re-cancelled, but the traversal
+        // still passes through it to reach live descendants.
+        assert.deepEqual(
+          new Set(cancelled.cancelled),
+          new Set([root.assignment.id, grandchild.assignment.id]),
+        );
+        const survivor = yield* engine.getAssignment(settled.assignment.id);
+        assert.equal(survivor?.status, "completed");
+        assert.equal(survivor?.result?.summary, "already done");
+        const descendant = yield* engine.getAssignment(grandchild.assignment.id);
+        assert.equal(descendant?.status, "cancelled");
       }),
     );
 
@@ -538,7 +658,7 @@ describe("AdeAssignmentEngine", () => {
       }),
     );
 
-    scenario("a refused delivery returns to pending and retries later", () =>
+    scenario("a failed send keeps its claim and its key — a lost ack cannot duplicate", () =>
       Effect.gen(function* () {
         const { sql, engine, port } = yield* setup;
         yield* seedBot(sql, "boss");
@@ -555,18 +675,103 @@ describe("AdeAssignmentEngine", () => {
           summary: "done",
         });
 
+        // The port errors after the kernel may already have accepted the
+        // send: the claim must survive, key intact.
         yield* Ref.set(port.refuse, true);
         const failed = yield* engine.deliverPending();
         assert.lengthOf(failed.failed, 1);
-        const pending = yield* sql<{ delivery_state: string }>`
-          SELECT delivery_state FROM ade_assignments
+        const claimedKey = failed.failed[0]!.deliveryKey;
+        const held = yield* sql<{ delivery_state: string; delivery_attempt_id: string | null }>`
+          SELECT delivery_state, delivery_attempt_id FROM ade_assignments
         `;
-        assert.equal(pending[0]?.delivery_state, "pending");
+        assert.equal(held[0]?.delivery_state, "delivering");
+        assert.equal(held[0]?.delivery_attempt_id, claimedKey);
 
+        // A plain drain never re-keys a claimed batch.
         yield* Ref.set(port.refuse, false);
-        const delivered = yield* engine.deliverPending();
-        assert.lengthOf(delivered.delivered, 1);
+        const drain = yield* engine.deliverPending();
+        assert.lengthOf(drain.delivered, 0);
+        assert.lengthOf(yield* Ref.get(port.sends), 0);
+
+        // Only recovery retries it, under the original key.
+        const recovered = yield* engine.recoverInterruptedDeliveries();
+        assert.lengthOf(recovered.delivered, 1);
+        assert.equal(recovered.delivered[0]!.deliveryKey, claimedKey);
+        assert.isTrue(recovered.delivered[0]!.redelivery);
+        const sends = yield* Ref.get(port.sends);
+        assert.lengthOf(sends, 1);
+        assert.equal(sends[0]!.deliveryKey, claimedKey);
+      }),
+    );
+
+    scenario("recovery leaves a fresh claim alone until its lease expires", () =>
+      Effect.gen(function* () {
+        const { sql, engine, port } = yield* setupWith({ deliveryLease: Duration.minutes(5) });
+        yield* seedBot(sql, "boss");
+        yield* seedBot(sql, "coder");
+        yield* seedBinding(sql, { botId: "boss" });
+        const assignment = yield* create(engine, {
+          requesterBotId: "boss",
+          recipientBotId: "coder",
+          idempotencyKey: "one",
+        });
+        yield* engine.reportResult({
+          assignmentId: assignment.assignment.id,
+          status: "completed",
+          summary: "done",
+        });
+
+        yield* Ref.set(port.refuse, true);
+        yield* engine.deliverPending();
+        yield* Ref.set(port.refuse, false);
+
+        // Lease still live: recovery must not race the (possibly in-flight)
+        // attempt with a second send.
+        const early = yield* engine.recoverInterruptedDeliveries();
+        assert.lengthOf(early.delivered, 0);
+        assert.lengthOf(yield* Ref.get(port.sends), 0);
+
+        yield* TestClock.adjust(Duration.minutes(6));
+        const late = yield* engine.recoverInterruptedDeliveries();
+        assert.lengthOf(late.delivered, 1);
         assert.lengthOf(yield* Ref.get(port.sends), 1);
+      }),
+    );
+
+    scenario("concurrent recovery passes re-claim once — no third delivery", () =>
+      Effect.gen(function* () {
+        const { sql, engine, port } = yield* setup;
+        yield* seedBot(sql, "boss");
+        yield* seedBot(sql, "coder");
+        yield* seedBinding(sql, { botId: "boss" });
+        const assignment = yield* create(engine, {
+          requesterBotId: "boss",
+          recipientBotId: "coder",
+          idempotencyKey: "one",
+        });
+        yield* engine.reportResult({
+          assignmentId: assignment.assignment.id,
+          status: "completed",
+          summary: "done",
+        });
+        yield* Ref.set(port.refuse, true);
+        yield* engine.deliverPending();
+        yield* Ref.set(port.refuse, false);
+
+        const outcomes = yield* Effect.all(
+          [engine.recoverInterruptedDeliveries(), engine.recoverInterruptedDeliveries()],
+          { concurrency: 2 },
+        );
+        const deliveredBatches = outcomes.flatMap((outcome) => outcome.delivered);
+        assert.lengthOf(deliveredBatches, 1);
+        const sends = yield* Ref.get(port.sends);
+        assert.lengthOf(sends, 1);
+
+        const rows = yield* sql<{ delivered: number; delivery_state: string }>`
+          SELECT delivered, delivery_state FROM ade_assignments
+        `;
+        assert.equal(rows[0]?.delivered, 1);
+        assert.equal(rows[0]?.delivery_state, "delivered");
       }),
     );
 
@@ -677,6 +882,112 @@ describe("AdeAssignmentEngine", () => {
           SELECT COUNT(*) AS count FROM ade_bot_execution_bindings
         `;
         assert.equal(bindings[0]?.count, 1);
+      }),
+    );
+
+    scenario("a re-driven batch replays its claimed wait, never a later one", () =>
+      Effect.gen(function* () {
+        const { sql, engine, port } = yield* setup;
+        yield* seedBot(sql, "boss");
+        yield* seedBot(sql, "coder");
+        yield* seedBinding(sql, { botId: "boss" });
+        const parent = yield* create(engine, {
+          recipientBotId: "boss",
+          idempotencyKey: "parent",
+        });
+        const early = yield* create(engine, {
+          requesterBotId: "boss",
+          recipientBotId: "coder",
+          idempotencyKey: "early",
+          parentAssignmentId: parent.assignment.id,
+        });
+        yield* engine.reportResult({
+          assignmentId: early.assignment.id,
+          status: "completed",
+          summary: "early done",
+        });
+
+        // Claim happens with no wait in force, then the send is interrupted.
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Ref.set(port.stall, { started, release });
+        const fiber = yield* Effect.forkChild(engine.deliverPending());
+        yield* Deferred.await(started);
+        yield* Fiber.interrupt(fiber);
+        yield* Ref.set(port.stall, null);
+        assert.isNull((yield* Ref.get(port.sends))[0]!.parentAssignmentId);
+
+        // Only afterwards does the parent start waiting — on a *different*
+        // child that is still open.
+        const later = yield* create(engine, {
+          requesterBotId: "boss",
+          recipientBotId: "coder",
+          idempotencyKey: "later",
+          parentAssignmentId: parent.assignment.id,
+        });
+        const wait = yield* engine.waitForChildren(parent.assignment.id);
+        assert.isTrue(wait.waiting);
+        assert.deepEqual(wait.outstandingChildren, [later.assignment.id]);
+
+        const recovered = yield* engine.recoverInterruptedDeliveries();
+        assert.lengthOf(recovered.delivered, 1);
+        assert.isNull(recovered.delivered[0]!.parentAssignmentId);
+
+        // The later wait survives untouched: the replay released nothing.
+        const stillWaiting = yield* engine.getAssignment(parent.assignment.id);
+        assert.equal(stillWaiting?.status, "blocked");
+        assert.equal(stillWaiting?.blockedReason, "children");
+      }),
+    );
+
+    scenario("a replayed batch cannot release a wait that still has open children", () =>
+      Effect.gen(function* () {
+        const { sql, engine, port } = yield* setup;
+        yield* seedBot(sql, "boss");
+        yield* seedBot(sql, "coder");
+        yield* seedBinding(sql, { botId: "boss" });
+        const parent = yield* create(engine, {
+          recipientBotId: "boss",
+          idempotencyKey: "parent",
+        });
+        const first = yield* create(engine, {
+          requesterBotId: "boss",
+          recipientBotId: "coder",
+          idempotencyKey: "first",
+          parentAssignmentId: parent.assignment.id,
+        });
+        const wait = yield* engine.waitForChildren(parent.assignment.id);
+        assert.isTrue(wait.waiting);
+        yield* engine.reportResult({
+          assignmentId: first.assignment.id,
+          status: "completed",
+          summary: "first done",
+        });
+
+        // Claimed under the wait, then interrupted mid-send.
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Ref.set(port.stall, { started, release });
+        const fiber = yield* Effect.forkChild(engine.deliverPending());
+        yield* Deferred.await(started);
+        yield* Fiber.interrupt(fiber);
+        yield* Ref.set(port.stall, null);
+
+        // A new child joins the same wait before the replay lands.
+        yield* create(engine, {
+          requesterBotId: "boss",
+          recipientBotId: "coder",
+          idempotencyKey: "second",
+          parentAssignmentId: parent.assignment.id,
+        });
+
+        const recovered = yield* engine.recoverInterruptedDeliveries();
+        assert.lengthOf(recovered.delivered, 1);
+        assert.equal(recovered.delivered[0]!.parentAssignmentId, parent.assignment.id);
+
+        const stillWaiting = yield* engine.getAssignment(parent.assignment.id);
+        assert.equal(stillWaiting?.status, "blocked");
+        assert.equal(stillWaiting?.blockedReason, "children");
       }),
     );
 
@@ -792,6 +1103,50 @@ describe("AdeAssignmentEngine", () => {
         yield* engine.noteProgress(assignment.assignment.id);
         const surfaced = yield* engine.surfaceStalls({ stallAfter: Duration.minutes(15) });
         assert.lengthOf(surfaced, 0);
+      }),
+    );
+  });
+
+  describe("delivery sweep", () => {
+    scenario("boot recovery plus an interval drain, without any tool call", () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations();
+        yield* sql`PRAGMA foreign_keys = ON`;
+        const port = yield* makePortFixture;
+        const engineLayer = AdeAssignmentEngine.layerWith({
+          deliveryLease: Duration.zero,
+        }).pipe(Layer.provide(port.layer));
+        const context = yield* Layer.build(engineLayer);
+        const engine = yield* Effect.service(AdeAssignmentEngine).pipe(Effect.provide(context));
+
+        yield* seedBot(sql, "boss");
+        yield* seedBot(sql, "coder");
+        yield* seedBinding(sql, { botId: "boss" });
+        const assignment = yield* create(engine, {
+          requesterBotId: "boss",
+          recipientBotId: "coder",
+          idempotencyKey: "one",
+        });
+        yield* engine.reportResult({
+          assignmentId: assignment.assignment.id,
+          status: "completed",
+          summary: "done",
+        });
+
+        // Nothing has drained it yet: no report, no tool call, no session
+        // event — only the sweep.
+        assert.lengthOf(yield* Ref.get(port.sends), 0);
+        yield* Layer.build(
+          AdeAssignmentEngine.sweeperLive(Duration.seconds(1)).pipe(
+            Layer.provideMerge(engineLayer),
+          ),
+        );
+        yield* TestClock.adjust(Duration.seconds(2));
+
+        assert.lengthOf(yield* Ref.get(port.sends), 1);
+        const rows = yield* sql<{ delivered: number }>`SELECT delivered FROM ade_assignments`;
+        assert.equal(rows[0]?.delivered, 1);
       }),
     );
   });

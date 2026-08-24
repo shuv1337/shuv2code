@@ -248,14 +248,20 @@ describe("ADE assignment tools through the gate", () => {
         assert.include(batches[0]!.text, "shipped it");
         assert.include(batches[0]!.text, "src/thing.ts");
 
-        // A replayed tool call (the gate's dedupe is in-memory only) neither
-        // rewrites the result nor delivers a second time.
+        // A replayed tool call (the gate's dedupe is in-memory only) answers
+        // idempotently — recorded: false — instead of being denied, and
+        // neither rewrites the result nor delivers a second time.
         const replay = yield* gate.dispatch(ctxFor("coder", "report_assignment_result"), {
           assignmentId: created.assignmentId,
           status: "failed",
           summary: "overwrite attempt",
         });
-        assert.equal(replay._tag, "denied");
+        const replayJson = JSON.parse(completedContent(replay)) as {
+          recorded: boolean;
+          status: string;
+        };
+        assert.isFalse(replayJson.recorded);
+        assert.equal(replayJson.status, "completed");
         assert.lengthOf(yield* Ref.get(sends), 1);
 
         const rows = yield* sql<{ status: string; result_json: string; delivered: number }>`
@@ -313,6 +319,42 @@ describe("ADE assignment tools through the gate", () => {
         assert.lengthOf(snapshot.bots, 2);
         const coder = snapshot.bots.find((bot) => bot.botId === "coder");
         assert.equal(coder?.assignments[0]?.status, "queued");
+      }),
+    );
+
+    scenario("fleet_read is scoped by the routing grants, not the whole roster", () =>
+      Effect.gen(function* () {
+        const { sql, gate } = yield* setup;
+        yield* seedProject(sql, "project-a", "mate-a");
+        yield* seedProject(sql, "project-b", "mate-b");
+        yield* seedBot(sql, { botId: "firstmate", role: "firstmate" });
+        yield* seedBot(sql, { botId: "mate-a", role: "second-mate", projectId: "project-a" });
+        yield* seedBot(sql, { botId: "coder-a", projectId: "project-a" });
+        yield* seedBot(sql, { botId: "mate-b", role: "second-mate", projectId: "project-b" });
+        yield* seedBot(sql, { botId: "coder-b", projectId: "project-b" });
+
+        const readAs = (botId: string) =>
+          Effect.map(gate.dispatch(ctxFor(botId, "fleet_read"), {}), (outcome) =>
+            (
+              JSON.parse(completedContent(outcome)) as {
+                bots: ReadonlyArray<{ botId: string }>;
+              }
+            ).bots
+              .map((bot) => bot.botId)
+              .sort(),
+          );
+
+        // Fleet-wide authority sees everyone; a project crew sees its own
+        // project (including itself) and nothing across the boundary.
+        assert.deepEqual(yield* readAs("firstmate"), [
+          "coder-a",
+          "coder-b",
+          "firstmate",
+          "mate-a",
+          "mate-b",
+        ]);
+        assert.deepEqual(yield* readAs("coder-a"), ["coder-a", "mate-a"]);
+        assert.deepEqual(yield* readAs("mate-b"), ["coder-b", "mate-b"]);
       }),
     );
 
