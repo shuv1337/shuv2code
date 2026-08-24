@@ -301,7 +301,7 @@ importers:
         version: 56.0.19(expo@56.0.12)
       expo-camera:
         specifier: ~56.0.8
-        version: 56.0.8(@types/emscripten@1.41.5)(expo@56.0.12)(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.2.16)(bufferutil@4.1.0)(react@19.2.3)(utf-8-validate@6.0.6))(react@19.2.3)
+        version: 56.0.8(expo@56.0.12)(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.2.16)(bufferutil@4.1.0)(react@19.2.3)(utf-8-validate@6.0.6))(react@19.2.3)
       expo-clipboard:
         specifier: ~56.0.4
         version: 56.0.4(expo@56.0.12)(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.2.16)(bufferutil@4.1.0)(react@19.2.3)(utf-8-validate@6.0.6))(react@19.2.3)
@@ -583,6 +583,9 @@ importers:
       '@tanstack/react-router':
         specifier: ^1.160.2
         version: 1.170.10(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      barcode-detector:
+        specifier: 3.2.0
+        version: 3.2.0(@types/emscripten@1.41.5)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -634,6 +637,9 @@ importers:
       zustand:
         specifier: ^5.0.11
         version: 5.0.14(@types/react@19.2.16)(react@19.2.6)(use-sync-external-store@1.6.0(react@19.2.6))
+      zxing-wasm:
+        specifier: 3.1.0
+        version: 3.1.0(@types/emscripten@1.41.5)
     devDependencies:
       '@effect/platform-node':
         specifier: 4.0.0-beta.103
@@ -16850,7 +16856,7 @@ snapshots:
       resolve-from: 5.0.0
       semver: 7.8.5
 
-  expo-camera@56.0.8(@types/emscripten@1.41.5)(expo@56.0.12)(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.2.16)(bufferutil@4.1.0)(react@19.2.3)(utf-8-validate@6.0.6))(react@19.2.3):
+  expo-camera@56.0.8(expo@56.0.12)(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.2.16)(bufferutil@4.1.0)(react@19.2.3)(utf-8-validate@6.0.6))(react@19.2.3):
     dependencies:
       barcode-detector: 3.2.0(@types/emscripten@1.41.5)
       expo: 56.0.12(8895228379997a2a064f9644cda56ed0)
