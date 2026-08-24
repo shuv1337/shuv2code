@@ -60,6 +60,16 @@ export interface CodexAppServerSupervisorShape {
   /** Snapshot of supervised process state; never fails. */
   readonly status: Effect.Effect<CodexAppServerSupervisorStatus>;
   /**
+   * Best-effort respawn of crashed shared processes (ADE health checker,
+   * ADR §16): a crashed identity's blocked assignments never call
+   * `acquireConnection`, so without this the outage would block the only
+   * lazy-respawn path. Attempts each crashed identity with its recorded key,
+   * waits a bounded time, and abandons (without interrupting) attempts that
+   * are still spawning — a later `status` read observes the result. Never
+   * fails; a no-op under `per-session` topology or when nothing crashed.
+   */
+  readonly reviveCrashed: Effect.Effect<void>;
+  /**
    * Realtime conversation enablement decided once per supervised process from
    * the resolved voice policy at supervisor construction. Per-session flags
    * never influence shared launch identity.

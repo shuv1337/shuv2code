@@ -58,7 +58,7 @@ import { discoverOpenCodeV2Service } from "../provider/opencodeV2Service.ts";
 import { forkParked } from "../serverActivation.ts";
 import {
   type SnapshotSubscription,
-  subscribeBeforeSnapshot,
+  subscribeBeforeSnapshotWithoutMutex,
 } from "../utils/subscribeBeforeSnapshot.ts";
 
 // ---------------------------------------------------------------------------
@@ -76,7 +76,11 @@ export interface AdeHealthProbeResult {
 
 export interface AdeHealthProbe {
   readonly target: HealthTargetId;
-  /** Never fails; defects are mapped to `down` by the checker as a backstop. */
+  /**
+   * Never fails and should be bounded — the checker enforces a hard per-probe
+   * timeout ({@link DEFAULT_PROBE_TIMEOUT}) anyway, mapping a timeout to
+   * `down`, and maps defects to `down` as a backstop.
+   */
   readonly probe: Effect.Effect<AdeHealthProbeResult>;
 }
 
@@ -98,10 +102,27 @@ const kernelEngineOf = (target: HealthTargetId): KernelEngine | null =>
 // Default probe implementations
 // ---------------------------------------------------------------------------
 
-/** Pure mapping so the Codex probe rule is unit-testable. */
+/**
+ * Pure mapping so the Codex probe rule is unit-testable:
+ *
+ * - topology ≠ `shared` → `not-provisioned`: the supervisor never runs a
+ *   shared process under `per-session`, so its process/crash books stay empty
+ *   forever — reporting healthy would show a green pill while the ADE Codex
+ *   kernel adapter (S5) fails closed. Neutral pill, no kernel-down Needs You
+ *   spam on stock installs; S6/S7 still fail closed with typed errors.
+ * - no live process but a recorded abnormal exit → `down`.
+ * - otherwise `healthy` — an idle shared supervisor (nothing spawned yet)
+ *   spawns on the next acquisition, which is not an outage.
+ */
 export const codexProbeResultFromStatus = (
   status: CodexAppServerSupervisorStatus,
 ): AdeHealthProbeResult => {
+  if (status.topology !== "shared") {
+    return {
+      state: "not-provisioned",
+      detail: `codexAppServerTopology=${status.topology}; the ADE Codex kernel requires shared topology.`,
+    };
+  }
   if (status.runningProcesses === 0 && status.crashed.length > 0) {
     const failures = Math.max(...status.crashed.map((crash) => crash.consecutiveFailures));
     return {
@@ -109,8 +130,6 @@ export const codexProbeResultFromStatus = (
       detail: `codex app-server exited (${failures} consecutive failure${failures === 1 ? "" : "s"})`,
     };
   }
-  // An idle supervisor (no process spawned yet) is healthy: it spawns on the
-  // next acquisition. Per-session topology has no shared process to watch.
   return { state: "healthy" };
 };
 
@@ -169,91 +188,120 @@ const TARGET_ORDER: ReadonlyArray<HealthTargetId> = ["shuvcode", "codex", "scree
 
 const DEFAULT_TICK_INTERVAL = Duration.seconds(15);
 
+/** Hard per-probe bound; a slower probe reads as `down` ("probe timed out"). */
+export const DEFAULT_PROBE_TIMEOUT = Duration.seconds(5);
+
+/** Wire bound for probe detail so a stringified defect can't ship a stack. */
+const DETAIL_MAX_LENGTH = 512;
+
+const boundedDetail = (detail: string | null | undefined): string | null =>
+  detail === undefined || detail === null || detail.length === 0
+    ? null
+    : detail.slice(0, DETAIL_MAX_LENGTH);
+
+export interface AdeHealthCheckerOptions {
+  /** Test seam; production keeps the {@link DEFAULT_PROBE_TIMEOUT} constant. */
+  readonly probeTimeout?: Duration.Duration;
+}
+
 export class AdeHealthChecker extends Context.Service<AdeHealthChecker, AdeHealthCheckerShape>()(
   "shuv2code/ade/AdeHealthChecker",
 ) {
-  static readonly layer = Layer.effect(
-    AdeHealthChecker,
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const { probes } = yield* AdeHealthProbes;
+  static readonly layerWith = (options: AdeHealthCheckerOptions = {}) =>
+    Layer.effect(
+      AdeHealthChecker,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const { probes } = yield* AdeHealthProbes;
+        const probeTimeout = options.probeTimeout ?? DEFAULT_PROBE_TIMEOUT;
 
-      const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-      const uuid = Effect.sync(() => NodeCrypto.randomUUID());
-      const bootAt = yield* nowIso;
+        const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+        const uuid = Effect.sync(() => NodeCrypto.randomUUID());
+        const bootAt = yield* nowIso;
 
-      const stateRef = yield* Ref.make(
-        new Map<HealthTargetId, TargetState>(
-          probes.map((probe) => [
-            probe.target,
-            { state: "unknown", detail: null, since: bootAt, checkedAt: bootAt },
-          ]),
-        ),
-      );
-      const changesPubSub = yield* Effect.acquireRelease(
-        PubSub.unbounded<FleetHealthSnapshot>(),
-        (pubsub) => PubSub.shutdown(pubsub),
-      );
-      const mutex = Semaphore.makeUnsafe(1);
+        const stateRef = yield* Ref.make(
+          new Map<HealthTargetId, TargetState>(
+            probes.map((probe) => [
+              probe.target,
+              { state: "unknown", detail: null, since: bootAt, checkedAt: bootAt },
+            ]),
+          ),
+        );
+        // Sliding: a stalled subscriber only ever needs the newest pill row.
+        const changesPubSub = yield* Effect.acquireRelease(
+          PubSub.sliding<FleetHealthSnapshot>(8),
+          (pubsub) => PubSub.shutdown(pubsub),
+        );
+        // Serializes probe passes only. Reads (`latest`) and new subscriptions
+        // deliberately do NOT take this mutex: one slow tick must never freeze
+        // snapshot reads or `subscribeAdeFleetHealth` calls.
+        const tickMutex = Semaphore.makeUnsafe(1);
 
-      const toSnapshot = (
-        states: ReadonlyMap<HealthTargetId, TargetState>,
-      ): FleetHealthSnapshot => {
-        const targets: Array<TargetHealthSnapshot> = [];
-        for (const target of TARGET_ORDER) {
-          const state = states.get(target);
-          if (state === undefined) continue;
-          targets.push({
-            target,
-            state: state.state,
-            detail: state.detail,
-            since: state.since,
-            checkedAt: state.checkedAt,
-          });
-        }
-        return { targets };
-      };
+        const toSnapshot = (
+          states: ReadonlyMap<HealthTargetId, TargetState>,
+        ): FleetHealthSnapshot => {
+          const targets: Array<TargetHealthSnapshot> = [];
+          for (const target of TARGET_ORDER) {
+            const state = states.get(target);
+            if (state === undefined) continue;
+            targets.push({
+              target,
+              state: state.state,
+              detail: state.detail,
+              since: state.since,
+              checkedAt: state.checkedAt,
+            });
+          }
+          return { targets };
+        };
 
-      const subjectRefsNameKernel = (subjectRefsJson: string, engine: KernelEngine): boolean => {
-        try {
-          const refs = JSON.parse(subjectRefsJson) as unknown;
-          return (
-            Array.isArray(refs) &&
-            refs.some(
-              (ref) =>
-                typeof ref === "object" &&
-                ref !== null &&
-                (ref as { _tag?: unknown })._tag === "kernel" &&
-                (ref as { engine?: unknown }).engine === engine,
-            )
-          );
-        } catch {
-          return false;
-        }
-      };
+        const subjectRefsNameKernel = (subjectRefsJson: string, engine: KernelEngine): boolean => {
+          try {
+            const refs = JSON.parse(subjectRefsJson) as unknown;
+            return (
+              Array.isArray(refs) &&
+              refs.some(
+                (ref) =>
+                  typeof ref === "object" &&
+                  ref !== null &&
+                  (ref as { _tag?: unknown })._tag === "kernel" &&
+                  (ref as { engine?: unknown }).engine === engine,
+              )
+            );
+          } catch {
+            return false;
+          }
+        };
 
-      /** Queue-and-alert: one Needs You per outage + block running work. */
-      const onKernelDown = (engine: KernelEngine, at: string) =>
-        sql.withTransaction(
-          Effect.gen(function* () {
-            const openItems = yield* sql<{ subject_refs_json: string }>`
+        /**
+         * Queue-and-alert: one Needs You per outage + block running work.
+         *
+         * Blocking is edge-triggered (down transitions only). S7 contract: the
+         * assignment engine must check kernel health at admission — an
+         * assignment promoted queued→running mid-outage is S7's responsibility,
+         * not swept up by a later tick here.
+         */
+        const onKernelDown = (engine: KernelEngine, at: string) =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const openItems = yield* sql<{ subject_refs_json: string }>`
               SELECT subject_refs_json FROM ade_needs_you_items
               WHERE kind = 'kernel-down' AND status = 'open'
             `;
-            const alreadyAlerted = openItems.some((row) =>
-              subjectRefsNameKernel(row.subject_refs_json, engine),
-            );
-            if (!alreadyAlerted) {
-              const id = yield* uuid;
-              const subjectRefs = JSON.stringify([{ _tag: "kernel", engine }]);
-              yield* sql`
+              const alreadyAlerted = openItems.some((row) =>
+                subjectRefsNameKernel(row.subject_refs_json, engine),
+              );
+              if (!alreadyAlerted) {
+                const id = yield* uuid;
+                const subjectRefs = JSON.stringify([{ _tag: "kernel", engine }]);
+                yield* sql`
                 INSERT INTO ade_needs_you_items (
                   needs_you_item_id, kind, subject_refs_json, status,
                   created_at, updated_at, resolved_at
                 ) VALUES (${id}, 'kernel-down', ${subjectRefs}, 'open', ${at}, ${at}, NULL)
               `;
-            }
-            yield* sql`
+              }
+              yield* sql`
               UPDATE ade_assignments
               SET status = 'blocked', blocked_reason = 'kernel-down', updated_at = ${at}
               WHERE status = 'running'
@@ -262,36 +310,41 @@ export class AdeHealthChecker extends Context.Service<AdeHealthChecker, AdeHealt
                   WHERE engine = ${engine} AND status = 'active'
                 )
             `;
-          }),
-        );
+            }),
+          );
 
-      /** Resolve the alert and release work the recovered engine was blocking. */
-      const onKernelRecovered = (
-        engine: KernelEngine,
-        stillDownEngines: ReadonlyArray<KernelEngine>,
-        at: string,
-      ) =>
-        sql.withTransaction(
-          Effect.gen(function* () {
-            const openItems = yield* sql<{
-              needs_you_item_id: string;
-              subject_refs_json: string;
-            }>`
+        /**
+         * Resolve the alert and release work the recovered engine was blocking.
+         * Both release UPDATEs are scoped to `blocked_reason = 'kernel-down'` on
+         * purpose: the checker only ever promotes rows it blocked itself —
+         * approval/children/needs-resume blocks belong to S7/S13.
+         */
+        const onKernelRecovered = (
+          engine: KernelEngine,
+          stillDownEngines: ReadonlyArray<KernelEngine>,
+          at: string,
+        ) =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const openItems = yield* sql<{
+                needs_you_item_id: string;
+                subject_refs_json: string;
+              }>`
               SELECT needs_you_item_id, subject_refs_json FROM ade_needs_you_items
               WHERE kind = 'kernel-down' AND status = 'open'
             `;
-            for (const row of openItems) {
-              if (!subjectRefsNameKernel(row.subject_refs_json, engine)) continue;
-              yield* sql`
+              for (const row of openItems) {
+                if (!subjectRefsNameKernel(row.subject_refs_json, engine)) continue;
+                yield* sql`
                 UPDATE ade_needs_you_items
                 SET status = 'resolved', resolved_at = ${at}, updated_at = ${at}
                 WHERE needs_you_item_id = ${row.needs_you_item_id}
               `;
-            }
-            // Only two kernel engines exist, so at most one can still be down.
-            const otherDown = stillDownEngines.find((candidate) => candidate !== engine);
-            if (otherDown === undefined) {
-              yield* sql`
+              }
+              // Only two kernel engines exist, so at most one can still be down.
+              const otherDown = stillDownEngines.find((candidate) => candidate !== engine);
+              if (otherDown === undefined) {
+                yield* sql`
                 UPDATE ade_assignments
                 SET status = 'running', blocked_reason = NULL, updated_at = ${at}
                 WHERE status = 'blocked' AND blocked_reason = 'kernel-down'
@@ -300,8 +353,8 @@ export class AdeHealthChecker extends Context.Service<AdeHealthChecker, AdeHealt
                     WHERE engine = ${engine} AND status = 'active'
                   )
               `;
-            } else {
-              yield* sql`
+              } else {
+                yield* sql`
                 UPDATE ade_assignments
                 SET status = 'running', blocked_reason = NULL, updated_at = ${at}
                 WHERE status = 'blocked' AND blocked_reason = 'kernel-down'
@@ -314,95 +367,111 @@ export class AdeHealthChecker extends Context.Service<AdeHealthChecker, AdeHealt
                     WHERE engine = ${otherDown} AND status = 'active'
                   )
               `;
-            }
-          }),
-        );
+              }
+            }),
+          );
 
-      const checkNow = mutex
-        .withPermits(1)(
-          Effect.gen(function* () {
-            const checkedAt = yield* nowIso;
-            const previous = yield* Ref.get(stateRef);
-            const results = yield* Effect.forEach(
-              probes,
-              (probe) =>
-                probe.probe.pipe(
-                  Effect.catchDefect((defect) =>
-                    Effect.succeed<AdeHealthProbeResult>({
-                      state: "down",
-                      detail: `probe crashed: ${String(defect)}`,
+        const checkNow = tickMutex
+          .withPermits(1)(
+            Effect.gen(function* () {
+              const checkedAt = yield* nowIso;
+              const previous = yield* Ref.get(stateRef);
+              const results = yield* Effect.forEach(
+                probes,
+                (probe) =>
+                  probe.probe.pipe(
+                    Effect.timeoutOrElse({
+                      duration: probeTimeout,
+                      orElse: () =>
+                        Effect.succeed<AdeHealthProbeResult>({
+                          state: "down",
+                          detail: "probe timed out",
+                        }),
                     }),
+                    Effect.catchDefect((defect) =>
+                      Effect.succeed<AdeHealthProbeResult>({
+                        state: "down",
+                        detail: `probe crashed: ${String(defect)}`,
+                      }),
+                    ),
+                    Effect.map((result) => ({ target: probe.target, result })),
                   ),
-                  Effect.map((result) => ({ target: probe.target, result })),
-                ),
-              { concurrency: "unbounded" },
-            );
+                { concurrency: "unbounded" },
+              );
 
-            const next = new Map(previous);
-            let changed = false;
-            const transitions: Array<{
-              readonly engine: KernelEngine;
-              readonly kind: "down" | "recovered";
-              readonly detail: string | null;
-            }> = [];
-            for (const { target, result } of results) {
-              const prior = previous.get(target);
-              const priorState = prior?.state ?? "unknown";
-              const detail = result.detail ?? null;
-              next.set(target, {
-                state: result.state,
-                detail,
-                since: prior !== undefined && priorState === result.state ? prior.since : checkedAt,
-                checkedAt,
-              });
-              if (priorState !== result.state || prior?.detail !== detail) {
-                changed = true;
-              }
-              const engine = kernelEngineOf(target);
-              if (engine === null) continue;
-              if (result.state === "down" && priorState !== "down") {
-                transitions.push({ engine, kind: "down", detail });
-              } else if (result.state === "healthy" && priorState !== "healthy") {
-                transitions.push({ engine, kind: "recovered", detail });
-              }
-            }
-
-            const stillDownEngines = [...next.entries()].flatMap(([target, state]) => {
-              const engine = kernelEngineOf(target);
-              return engine !== null && state.state === "down" ? [engine] : [];
-            });
-            for (const transition of transitions) {
-              if (transition.kind === "down") {
-                yield* onKernelDown(transition.engine, checkedAt);
-                yield* Effect.logWarning("ADE kernel down", {
-                  engine: transition.engine,
-                  detail: transition.detail,
+              const next = new Map(previous);
+              let changed = false;
+              const transitions: Array<{
+                readonly engine: KernelEngine;
+                readonly kind: "down" | "recovered";
+                readonly detail: string | null;
+              }> = [];
+              for (const { target, result } of results) {
+                const prior = previous.get(target);
+                const priorState = prior?.state ?? "unknown";
+                const detail = boundedDetail(result.detail);
+                next.set(target, {
+                  state: result.state,
+                  detail,
+                  since:
+                    prior !== undefined && priorState === result.state ? prior.since : checkedAt,
+                  checkedAt,
                 });
-              } else {
-                yield* onKernelRecovered(transition.engine, stillDownEngines, checkedAt);
-                yield* Effect.log("ADE kernel recovered", { engine: transition.engine });
+                if (priorState !== result.state || prior?.detail !== detail) {
+                  changed = true;
+                }
+                const engine = kernelEngineOf(target);
+                if (engine === null) continue;
+                if (result.state === "down" && priorState !== "down") {
+                  transitions.push({ engine, kind: "down", detail });
+                } else if (result.state === "healthy" && priorState !== "healthy") {
+                  transitions.push({ engine, kind: "recovered", detail });
+                }
               }
-            }
 
-            yield* Ref.set(stateRef, next);
-            const snapshot = toSnapshot(next);
-            if (changed) {
-              yield* PubSub.publish(changesPubSub, snapshot);
-            }
-            return snapshot;
-          }),
-        )
-        .pipe(Effect.mapError(toPersistenceSqlError("AdeHealthChecker.checkNow")));
+              const stillDownEngines = [...next.entries()].flatMap(([target, state]) => {
+                const engine = kernelEngineOf(target);
+                return engine !== null && state.state === "down" ? [engine] : [];
+              });
+              for (const transition of transitions) {
+                if (transition.kind === "down") {
+                  yield* onKernelDown(transition.engine, checkedAt);
+                  yield* Effect.logWarning("ADE kernel down", {
+                    engine: transition.engine,
+                    detail: transition.detail,
+                  });
+                } else {
+                  yield* onKernelRecovered(transition.engine, stillDownEngines, checkedAt);
+                  yield* Effect.log("ADE kernel recovered", { engine: transition.engine });
+                }
+              }
 
-      const latest = Effect.map(Ref.get(stateRef), toSnapshot);
+              yield* Ref.set(stateRef, next);
+              const snapshot = toSnapshot(next);
+              if (changed) {
+                yield* PubSub.publish(changesPubSub, snapshot);
+              }
+              return snapshot;
+            }),
+          )
+          .pipe(Effect.mapError(toPersistenceSqlError("AdeHealthChecker.checkNow")));
 
-      return AdeHealthChecker.of({
-        latest,
-        subscribe: subscribeBeforeSnapshot(changesPubSub, latest, mutex),
-        checkNow,
-      });
-    }),
-  );
+        const latest = Effect.map(Ref.get(stateRef), toSnapshot);
+
+        return AdeHealthChecker.of({
+          latest,
+          // Subscription-before-snapshot without the tick mutex: the critical
+          // section is just "subscribe, then read the Ref" — it never spans
+          // probing, so a hung probe can't block new subscribers. A snapshot
+          // published between the two steps is delivered again through the
+          // stream; identical-snapshot redelivery is idempotent for clients.
+          subscribe: subscribeBeforeSnapshotWithoutMutex(changesPubSub, latest),
+          checkNow,
+        });
+      }),
+    );
+
+  static readonly layer = AdeHealthChecker.layerWith();
 
   /**
    * Shipped probe set: shuvcode service registration, Codex supervisor,
@@ -417,7 +486,15 @@ export class AdeHealthChecker extends Context.Service<AdeHealthChecker, AdeHealt
           shuvcodeServiceProbe,
           {
             target: "codex",
-            probe: Effect.map(supervisor.status, codexProbeResultFromStatus),
+            // Blocked assignments never call acquireConnection, so a crashed
+            // shared process would otherwise stay down forever (the outage
+            // blocks the only lazy-respawn path). The probe actively asserts
+            // liveness: attempt a bounded respawn of crashed identities, then
+            // read the books. The tick cadence is the retry schedule.
+            probe: supervisor.reviveCrashed.pipe(
+              Effect.andThen(supervisor.status),
+              Effect.map(codexProbeResultFromStatus),
+            ),
           },
           screenboxNotProvisionedProbe,
         ],
