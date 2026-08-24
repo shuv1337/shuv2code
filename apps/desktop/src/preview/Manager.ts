@@ -364,10 +364,6 @@ const nextZoomLevel = (current: number, direction: "in" | "out"): number => {
 type Listener = (tabId: string, state: PreviewTabState) => Effect.Effect<void>;
 type RecordingFrameListener = (frame: DesktopPreviewRecordingFrame) => Effect.Effect<void>;
 
-type PreviewInputSignal =
-  | { readonly kind: "pointer"; readonly x: number; readonly y: number; readonly button: number }
-  | { readonly kind: "key"; readonly key: string; readonly code: string };
-
 interface ManagedListeners {
   readonly attachmentId: symbol;
   readonly cancelFaviconCapture: () => void;
@@ -412,11 +408,6 @@ interface BrowserDiagnostics {
 
 type PointerEventListener = (event: DesktopPreviewPointerEvent) => Effect.Effect<void>;
 
-interface ExpectedAgentInput {
-  readonly signal: PreviewInputSignal;
-  readonly expiresAt: number;
-}
-
 const APP_FORWARDED_SHORTCUTS: ReadonlyArray<{
   key: string;
   meta: boolean;
@@ -439,44 +430,6 @@ export const isPreviewRefreshShortcut = (input: Electron.Input): boolean =>
   (input.meta || input.control) &&
   !input.shift &&
   !input.alt;
-
-const isPreviewInputSignal = (value: unknown): value is PreviewInputSignal => {
-  if (typeof value !== "object" || value === null || !("kind" in value)) return false;
-  if (value.kind === "pointer") {
-    return (
-      "x" in value &&
-      typeof value.x === "number" &&
-      "y" in value &&
-      typeof value.y === "number" &&
-      "button" in value &&
-      typeof value.button === "number"
-    );
-  }
-  return (
-    value.kind === "key" &&
-    "key" in value &&
-    typeof value.key === "string" &&
-    "code" in value &&
-    typeof value.code === "string"
-  );
-};
-
-const inputSignalsMatch = (left: PreviewInputSignal, right: PreviewInputSignal): boolean => {
-  if (left.kind !== right.kind) return false;
-  if (left.kind === "pointer" && right.kind === "pointer") {
-    return (
-      Math.abs(left.x - right.x) <= 1 &&
-      Math.abs(left.y - right.y) <= 1 &&
-      left.button === right.button
-    );
-  }
-  return (
-    left.kind === "key" &&
-    right.kind === "key" &&
-    left.key === right.key &&
-    left.code === right.code
-  );
-};
 
 const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function* (
   artifactDirectory: string,
@@ -507,9 +460,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ReadonlyMap<number, BrowserControlSession>
   >(new Map());
   const diagnosticsRef = yield* Ref.make<ReadonlyMap<number, BrowserDiagnostics>>(new Map());
-  const expectedAgentInputsRef = yield* Ref.make<
-    ReadonlyMap<string, ReadonlyArray<ExpectedAgentInput>>
-  >(new Map());
   const controlEpochRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const actionTimelineRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<PreviewAutomationActionEvent>>
@@ -1094,19 +1044,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     commandParams?: Record<string, unknown>,
   ) => Effect.Effect<unknown, PreviewManagerError>;
 
-  const prepareAutomationInput = Effect.fn("PreviewManager.prepareAutomationInput")(function* (
-    send: SendCommand,
-    enableRuntime: boolean,
-  ) {
-    yield* Effect.all(
-      [
-        ...(enableRuntime ? [send("Runtime.enable")] : []),
-        send("Input.setIgnoreInputEvents", { ignore: false }),
-      ],
-      { concurrency: 2, discard: true },
-    );
-  });
-
   const withControlSession = Effect.fn("PreviewManager.withControlSession")(function* <A>(
     tabId: string,
     wc: Electron.WebContents,
@@ -1319,44 +1256,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     return { kind: "Success", url, title };
   };
 
-  const consumeExpectedAgentInput = Effect.fn("PreviewManager.consumeExpectedAgentInput")(
-    function* (tabId: string, signal: PreviewInputSignal) {
-      const now = yield* currentMillis;
-      return yield* Ref.modify(expectedAgentInputsRef, (allExpected) => {
-        const pending = (allExpected.get(tabId) ?? []).filter(
-          (expected) => expected.expiresAt > now,
-        );
-        const index = pending.findIndex((expected) => inputSignalsMatch(expected.signal, signal));
-        const matched = index >= 0;
-        const nextPending = matched
-          ? pending.filter((_, pendingIndex) => pendingIndex !== index)
-          : pending;
-        return [
-          matched,
-          replaceMap(allExpected, (copy) => {
-            if (nextPending.length === 0) copy.delete(tabId);
-            else copy.set(tabId, nextPending);
-          }),
-        ] as const;
-      });
-    },
-  );
-
-  const expectAgentInput = Effect.fn("PreviewManager.expectAgentInput")(function* (
-    tabId: string,
-    signal: PreviewInputSignal,
-  ) {
-    const now = yield* currentMillis;
-    yield* Ref.update(expectedAgentInputsRef, (allExpected) =>
-      replaceMap(allExpected, (copy) => {
-        const pending = (allExpected.get(tabId) ?? []).filter(
-          (expected) => expected.expiresAt > now,
-        );
-        copy.set(tabId, [...pending, { signal, expiresAt: now + 1_000 }]);
-      }),
-    );
-  });
-
   const attachListeners = Effect.fn("PreviewManager.attachListeners")(function* (
     tabId: string,
     wc: Electron.WebContents,
@@ -1546,11 +1445,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
     };
     const handleHumanInput = Effect.fn("PreviewManager.handleHumanInput")(function* (
-      rawSignal?: unknown,
+      _rawSignal?: unknown,
     ) {
-      if (isPreviewInputSignal(rawSignal) && (yield* consumeExpectedAgentInput(tabId, rawSignal))) {
-        return;
-      }
       yield* Ref.update(controlEpochRef, (epochs) =>
         replaceMap(epochs, (copy) => {
           copy.set(tabId, (epochs.get(tabId) ?? 0) + 1);
@@ -2165,7 +2061,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             wc.ipc.on(ELEMENT_PICKED_CHANNEL, onMessage);
             wc.once("destroyed", onDestroyed);
             wc.once("did-start-navigation", onNavigated);
-            if (!wc.isFocused()) wc.focus();
             wc.send(START_PICK_CHANNEL, annotationTheme);
           });
           yield* Ref.update(pickSessionsRef, (sessions) =>
@@ -3121,7 +3016,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     input: PreviewAutomationClickInput,
     send: SendCommand,
   ) {
-    yield* prepareAutomationInput(send, true);
+    yield* send("Runtime.enable");
     const point = yield* resolveClickPoint(tabId, send, input);
     const viewport = yield* evaluateWithDebugger<{ width: number; height: number }>(
       tabId,
@@ -3158,19 +3053,65 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       createdAt: clickCreatedAt,
     });
     yield* Effect.sleep(AGENT_CURSOR_CLICK_LEAD_MS);
-    yield* expectAgentInput(tabId, { kind: "pointer", ...point, button: 0 });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      ...point,
-      button: "left",
-      clickCount: 1,
-    });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      ...point,
-      button: "left",
-      clickCount: 1,
-    });
+    // IAB automation is page-local browser automation, not OS computer use.
+    // CDP Input.dispatchMouseEvent activates Electron's guest WebContents and can
+    // consequently pull the desktop window in front of whatever the human is
+    // doing. Dispatch the browser event sequence inside the guest document so
+    // page controls still receive pointer/mouse activation and DOM focus without
+    // changing the native active WebContents or the operating-system input owner.
+    yield* evaluateWithDebugger(
+      tabId,
+      send,
+      `(() => {
+          const x = ${point.x};
+          const y = ${point.y};
+          const target = document.elementFromPoint(x, y);
+          if (!target) return { notFound: true };
+          const pointer = (type, buttons) => target.dispatchEvent(new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            clientX: x,
+            clientY: y,
+            button: 0,
+            buttons,
+            pointerId: 1,
+            pointerType: "mouse",
+            isPrimary: true,
+          }));
+          const mouse = (type, buttons, detail = 0) => target.dispatchEvent(new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            clientX: x,
+            clientY: y,
+            button: 0,
+            buttons,
+            detail,
+          }));
+          pointer("pointerover", 0);
+          mouse("mouseover", 0);
+          pointer("pointermove", 0);
+          mouse("mousemove", 0);
+          const pointerDownAccepted = pointer("pointerdown", 1);
+          const mouseDownAccepted = mouse("mousedown", 1, 1);
+          if (pointerDownAccepted && mouseDownAccepted) {
+            const focusTarget = target.closest(
+              'a[href],button,input,select,textarea,[contenteditable="true"],[tabindex]:not([tabindex="-1"])',
+            );
+            if (focusTarget instanceof HTMLElement && !focusTarget.matches(":disabled")) {
+              focusTarget.focus({ preventScroll: true });
+            }
+          }
+          pointer("pointerup", 0);
+          mouse("mouseup", 0, 1);
+          mouse("click", 0, 1);
+          return { ok: true };
+        })()`,
+      true,
+    );
   });
 
   const automationClick = Effect.fn("PreviewManager.automationClick")(function* (
@@ -3311,54 +3252,86 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const performAutomationPress = Effect.fn("PreviewManager.performAutomationPress")(function* (
     tabId: string,
-    wc: Electron.WebContents,
     input: PreviewAutomationPressInput,
     send: SendCommand,
-    sendCleanup: SendCommand,
   ) {
-    yield* prepareAutomationInput(send, false);
     const keySequence = makePreviewAutomationKeySequence(input, {
       isMac: hostPlatform === "darwin",
     });
-    const previouslyFocused = yield* attempt(
-      { operation: "automationPress.getFocusedWebContents", tabId, webContentsId: wc.id },
-      () => webContents.getFocusedWebContents(),
+    const keyJson = yield* encodeJson(
+      { operation: "automationPress.encodeKey", tabId },
+      keySequence.keyDown,
     );
-    let keyDownAttempted = false;
-    const releaseInput = Effect.gen(function* () {
-      if (keyDownAttempted) {
-        yield* sendCleanup("Input.dispatchKeyEvent", keySequence.keyUp).pipe(Effect.ignore);
-      }
-      yield* sendCleanup("Emulation.setFocusEmulationEnabled", { enabled: false }).pipe(
-        Effect.ignore,
-      );
-      if (previouslyFocused && previouslyFocused.id !== wc.id && !previouslyFocused.isDestroyed()) {
-        yield* attempt(
-          {
-            operation: "automationPress.restoreFocusedWebContents",
-            tabId,
-            webContentsId: previouslyFocused.id,
-          },
-          () => previouslyFocused.focus(),
-        ).pipe(Effect.ignore);
-      }
-    });
-
-    // Focus the guest WebContents itself, not its containing BrowserWindow. This
-    // activates native keyboard behavior for hidden/background previews without
-    // changing which thread is mounted in the UI. Restore the previous renderer
-    // after dispatch so automation never leaves the app's input focus behind.
-    yield* Effect.gen(function* () {
-      yield* attempt(
-        { operation: "automationPress.focusWebContents", tabId, webContentsId: wc.id },
-        () => wc.focus(),
-      );
-      yield* send("Page.bringToFront");
-      yield* send("Emulation.setFocusEmulationEnabled", { enabled: true });
-      yield* expectAgentInput(tabId, keySequence.signal);
-      keyDownAttempted = true;
-      yield* send("Input.dispatchKeyEvent", keySequence.keyDown);
-    }).pipe(Effect.ensuring(releaseInput));
+    yield* send("Runtime.enable");
+    // A CDP key packet is trusted input, but Electron routes it through the
+    // native guest focus path. Keep IAB keyboard automation in the page runtime;
+    // OS-level trusted input belongs to the separate computer-use mode.
+    yield* evaluateWithDebugger(
+      tabId,
+      send,
+      `(() => {
+          const key = ${keyJson};
+          const target = document.activeElement || document.body;
+          if (!target) return { notFound: true };
+          const init = {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            key: key.key,
+            code: key.code,
+            location: key.location,
+            ctrlKey: Boolean(key.modifiers & 2),
+            metaKey: Boolean(key.modifiers & 4),
+            shiftKey: Boolean(key.modifiers & 8),
+            altKey: Boolean(key.modifiers & 1),
+          };
+          const accepted = target.dispatchEvent(new KeyboardEvent("keydown", init));
+          if (accepted) {
+            const textControl =
+              target instanceof HTMLTextAreaElement ||
+              (target instanceof HTMLInputElement &&
+                !new Set(["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"]).has(target.type));
+            const editable = textControl || target.isContentEditable;
+            if (editable && !target.disabled && !target.readOnly) {
+              if (key.text) {
+                document.execCommand("insertText", false, key.text);
+              } else if (key.key === "Backspace") {
+                document.execCommand("delete", false);
+              } else if (key.key === "Delete") {
+                document.execCommand("forwardDelete", false);
+              } else if (key.key === "Enter") {
+                if (target instanceof HTMLTextAreaElement || target.isContentEditable) {
+                  document.execCommand("insertLineBreak", false);
+                } else if (target instanceof HTMLInputElement && target.form) {
+                  target.form.requestSubmit();
+                }
+              }
+            } else if (
+              (key.key === "Enter" || key.key === " ") &&
+              target instanceof HTMLElement &&
+              target.matches('a[href],button,input[type="button"],input[type="checkbox"],input[type="radio"],input[type="submit"]')
+            ) {
+              target.click();
+            }
+            if (key.key === "Tab") {
+              const focusable = Array.from(document.querySelectorAll(
+                'a[href],button,input,select,textarea,[contenteditable="true"],[tabindex]:not([tabindex="-1"])',
+              )).filter((element) =>
+                element instanceof HTMLElement &&
+                !element.matches(":disabled") &&
+                element.getClientRects().length > 0
+              );
+              const current = focusable.indexOf(target);
+              const direction = key.modifiers & 8 ? -1 : 1;
+              const next = focusable[(current + direction + focusable.length) % focusable.length];
+              if (next instanceof HTMLElement) next.focus({ preventScroll: true });
+            }
+          }
+          target.dispatchEvent(new KeyboardEvent("keyup", init));
+          return { ok: true };
+        })()`,
+      true,
+    );
   });
 
   const automationPress = Effect.fn("PreviewManager.automationPress")(function* (
@@ -3366,8 +3339,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     input: PreviewAutomationPressInput,
   ) {
     const wc = yield* requireWebContents(tabId);
-    yield* withControlSession(tabId, wc, "press", (send, sendCleanup) =>
-      performAutomationPress(tabId, wc, input, send, sendCleanup),
+    yield* withControlSession(tabId, wc, "press", (send) =>
+      performAutomationPress(tabId, input, send),
     );
   });
 
@@ -3580,7 +3553,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     yield* Effect.all(
       [
         Ref.set(listenersRef, new Set()),
-        Ref.set(expectedAgentInputsRef, new Map()),
         Ref.set(pointerEventListenersRef, new Set()),
         Ref.set(recordingFrameListenersRef, new Set()),
       ],

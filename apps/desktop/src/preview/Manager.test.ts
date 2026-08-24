@@ -87,7 +87,6 @@ const {
   browserWindowConstructor,
   createFromPath,
   fromId,
-  getFocusedWebContents,
   mkdir,
   showItemInFolder,
   webviewSend,
@@ -97,7 +96,6 @@ const {
   browserWindowConstructor: vi.fn(),
   createFromPath: vi.fn((): { readonly isEmpty: () => boolean } => ({ isEmpty: () => false })),
   fromId: vi.fn((_id?: number) => null),
-  getFocusedWebContents: vi.fn(() => null),
   mkdir: vi.fn((_path: string) => undefined),
   showItemInFolder: vi.fn(),
   webviewSend: vi.fn(),
@@ -121,7 +119,6 @@ vi.mock("electron", () => ({
   },
   webContents: {
     fromId,
-    getFocusedWebContents,
   },
 }));
 
@@ -345,8 +342,6 @@ describe("PreviewManager", () => {
   beforeEach(() => {
     browserWindowConstructor.mockReset();
     fromId.mockClear();
-    getFocusedWebContents.mockReset();
-    getFocusedWebContents.mockReturnValue(null);
     mkdir.mockClear();
     writeFile.mockClear();
     showItemInFolder.mockClear();
@@ -2345,10 +2340,11 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("keeps element picking active during subframe navigation", () =>
+  effectIt.effect("keeps element picking active without focusing the guest", () =>
     withManager((manager) =>
       Effect.gen(function* () {
         const listeners = new Map<string, (...args: unknown[]) => void>();
+        const focus = vi.fn();
         fromId.mockReturnValue({
           id: 42,
           isDestroyed: () => false,
@@ -2356,7 +2352,8 @@ describe("PreviewManager", () => {
           getURL: () => "https://example.com",
           getTitle: () => "Example",
           isLoading: () => false,
-          isFocused: () => true,
+          isFocused: () => false,
+          focus,
           getZoomFactor: () => 1,
           setZoomFactor: vi.fn(),
           on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
@@ -2383,6 +2380,7 @@ describe("PreviewManager", () => {
         yield* manager.registerWebview("tab_1", 42);
         const pick = yield* manager.pickElement("tab_1").pipe(Effect.forkChild);
         yield* Effect.yieldNow;
+        expect(focus).not.toHaveBeenCalled();
 
         listeners.get("did-start-navigation")?.({}, "about:blank", false, false);
         yield* Effect.yieldNow;
@@ -2600,25 +2598,27 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("emits the resolved pointer target before dispatching an automation click", () =>
+  effectIt.effect("clicks inside the guest runtime without focusing the native webview", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
         const activity: string[] = [];
         const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
           if (method === "Runtime.evaluate") {
+            const expression =
+              typeof params?.["expression"] === "string" ? params["expression"] : "";
+            if (expression.includes("new PointerEvent(type")) {
+              activity.push("runtimeClick");
+              return { result: { value: { ok: true } } };
+            }
             return {
               result: {
                 value: { width: 800, height: 600 },
               },
             };
           }
-          if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") {
-            activity.push("mousePressed");
-            humanInput?.({}, { kind: "pointer", x: params.x, y: params.y, button: 0 });
-          }
           return undefined;
         });
+        const focus = vi.fn();
         fromId.mockReturnValue({
           id: 42,
           isDestroyed: () => false,
@@ -2627,16 +2627,12 @@ describe("PreviewManager", () => {
           getTitle: () => "Example",
           isLoading: () => false,
           isDevToolsOpened: () => false,
+          focus,
           getZoomFactor: () => 1,
           setZoomFactor: vi.fn(),
           on: vi.fn(),
           off: vi.fn(),
-          ipc: {
-            on: vi.fn((channel: string, listener: typeof humanInput) => {
-              if (channel === "preview:human-input") humanInput = listener;
-            }),
-            off: vi.fn(),
-          },
+          ipc: { on: vi.fn(), off: vi.fn() },
           send: webviewSend,
           navigationHistory: { canGoBack: () => false, canGoForward: () => false },
           setWindowOpenHandler: vi.fn(),
@@ -2662,60 +2658,33 @@ describe("PreviewManager", () => {
         yield* TestClock.adjust(200);
         yield* Fiber.join(click);
 
-        expect(activity).toEqual(["move", "click", "mousePressed"]);
-        expect(sendCommand).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
-          type: "mousePressed",
-          x: 120,
-          y: 80,
-          button: "left",
-          clickCount: 1,
-        });
-        expect(sendCommand).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
-          type: "mouseReleased",
-          x: 120,
-          y: 80,
-          button: "left",
-          clickCount: 1,
-        });
+        expect(activity).toEqual(["move", "click", "runtimeClick"]);
+        expect(focus).not.toHaveBeenCalled();
+        expect(sendCommand.mock.calls.map(([method]) => method)).not.toContain(
+          "Input.dispatchMouseEvent",
+        );
+        expect(sendCommand.mock.calls.map(([method]) => method)).not.toContain(
+          "Input.setIgnoreInputEvents",
+        );
       }),
     ),
   );
 
-  effectIt.effect("types in background webviews and enables native key input", () =>
+  effectIt.effect("types and presses keys in background webviews without focusing them", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        let failKeyDown = false;
-        let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
+        let failPress = false;
         const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-          if (
-            failKeyDown &&
-            method === "Input.dispatchKeyEvent" &&
-            (params?.["type"] === "keyDown" || params?.["type"] === "rawKeyDown")
-          ) {
+          const expression =
+            method === "Runtime.evaluate" && typeof params?.["expression"] === "string"
+              ? params["expression"]
+              : "";
+          if (failPress && expression.includes('new KeyboardEvent("keydown"')) {
             throw new Error("key dispatch failed");
-          }
-          if (
-            method === "Input.dispatchKeyEvent" &&
-            (params?.["type"] === "keyDown" || params?.["type"] === "rawKeyDown")
-          ) {
-            humanInput?.(
-              {},
-              {
-                kind: "key",
-                key: params["key"],
-                code: params["code"] ?? "Digit1",
-              },
-            );
           }
           return method === "Runtime.evaluate" ? { result: { value: { ok: true } } } : undefined;
         });
-        const restoreFocus = vi.fn();
         const focus = vi.fn();
-        getFocusedWebContents.mockReturnValue({
-          id: 7,
-          isDestroyed: () => false,
-          focus: restoreFocus,
-        } as never);
         fromId.mockReturnValue({
           id: 42,
           isDestroyed: () => false,
@@ -2729,12 +2698,7 @@ describe("PreviewManager", () => {
           setZoomFactor: vi.fn(),
           on: vi.fn(),
           off: vi.fn(),
-          ipc: {
-            on: vi.fn((channel: string, listener: typeof humanInput) => {
-              if (channel === "preview:human-input") humanInput = listener;
-            }),
-            off: vi.fn(),
-          },
+          ipc: { on: vi.fn(), off: vi.fn() },
           send: webviewSend,
           navigationHistory: { canGoBack: () => false, canGoForward: () => false },
           setWindowOpenHandler: vi.fn(),
@@ -2755,22 +2719,6 @@ describe("PreviewManager", () => {
 
         const calls = sendCommand.mock.calls;
         const methods = calls.map(([method]) => method);
-        const enableIndex = methods.indexOf("Input.setIgnoreInputEvents");
-        const focusOnIndex = calls.findIndex(
-          ([method, params]) =>
-            method === "Emulation.setFocusEmulationEnabled" && params?.["enabled"] === true,
-        );
-        const keyDownIndex = calls.findIndex(
-          ([method, params]) =>
-            method === "Input.dispatchKeyEvent" && params?.["type"] === "keyDown",
-        );
-        const keyUpIndex = calls.findIndex(
-          ([method, params]) => method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp",
-        );
-        const focusOffIndex = calls.findIndex(
-          ([method, params]) =>
-            method === "Emulation.setFocusEmulationEnabled" && params?.["enabled"] === false,
-        );
         const typeEvaluation = sendCommand.mock.calls.find(
           ([method, params]) =>
             method === "Runtime.evaluate" &&
@@ -2792,63 +2740,38 @@ describe("PreviewManager", () => {
             params.expression.includes("Object.getOwnPropertyDescriptor"),
         );
         expect(clearOnlyEvaluation).toBeDefined();
-        expect(methods).not.toContain("Input.insertText");
-        expect(enableIndex).toBeGreaterThanOrEqual(0);
-        expect(focus).toHaveBeenCalledOnce();
-        expect(restoreFocus).toHaveBeenCalledOnce();
-        expect(methods).toContain("Page.bringToFront");
-        expect(enableIndex).toBeLessThan(focusOnIndex);
-        expect(focusOnIndex).toBeLessThan(keyDownIndex);
-        expect(keyDownIndex).toBeLessThan(keyUpIndex);
-        expect(keyUpIndex).toBeLessThan(focusOffIndex);
-        expect(
-          calls.filter(
-            ([method, params]) =>
-              method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp",
-          ),
-        ).toHaveLength(1);
-        expect(sendCommand).toHaveBeenCalledWith("Input.setIgnoreInputEvents", { ignore: false });
+        const pressEvaluation = sendCommand.mock.calls.find(
+          ([method, params]) =>
+            method === "Runtime.evaluate" &&
+            typeof params === "object" &&
+            params !== null &&
+            "expression" in params &&
+            typeof params.expression === "string" &&
+            params.expression.includes('new KeyboardEvent("keydown"'),
+        );
+        expect(pressEvaluation?.[1]?.["expression"]).toContain('document.execCommand("insertText"');
+        expect(focus).not.toHaveBeenCalled();
+        expect(methods).not.toContain("Page.bringToFront");
+        expect(methods).not.toContain("Input.dispatchKeyEvent");
+        expect(methods).not.toContain("Input.setIgnoreInputEvents");
+        expect(methods).not.toContain("Emulation.setFocusEmulationEnabled");
 
         sendCommand.mockClear();
-        failKeyDown = true;
+        failPress = true;
         const failedPress = yield* Effect.exit(manager.automationPress("tab_input", { key: "y" }));
 
         expect(Exit.isFailure(failedPress)).toBe(true);
-        expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
-          type: "keyUp",
-          key: "y",
-          code: "KeyY",
-          modifiers: 0,
-          windowsVirtualKeyCode: 89,
-          location: 0,
-          isKeypad: false,
-        });
-        expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
-          enabled: false,
-        });
-        expect(restoreFocus).toHaveBeenCalledTimes(2);
-        expect(
-          sendCommand.mock.calls.filter(
-            ([method, params]) =>
-              method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp",
-          ),
-        ).toHaveLength(1);
 
         sendCommand.mockClear();
-        failKeyDown = false;
+        failPress = false;
         yield* manager.automationPress("tab_input", { key: "!" });
-        expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
-          type: "keyDown",
-          key: "!",
-          code: "Digit1",
-          modifiers: 0,
-          windowsVirtualKeyCode: 49,
-          location: 0,
-          isKeypad: false,
-          text: "!",
-          unmodifiedText: "!",
-        });
-        expect(restoreFocus).toHaveBeenCalledTimes(3);
+        const printablePress = sendCommand.mock.calls.find(
+          ([method, params]) =>
+            method === "Runtime.evaluate" &&
+            typeof params?.["expression"] === "string" &&
+            params["expression"].includes('"key":"!"'),
+        );
+        expect(printablePress).toBeDefined();
       }),
     ),
   );
@@ -2857,16 +2780,19 @@ describe("PreviewManager", () => {
     withManager((manager) =>
       Effect.gen(function* () {
         let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
-        const sendCommand = vi.fn(async (method: string) => {
+        const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
           if (method === "Runtime.evaluate") {
+            if (
+              typeof params?.["expression"] === "string" &&
+              params["expression"].includes("new PointerEvent(type")
+            ) {
+              humanInput?.({}, { kind: "pointer", x: 400, y: 300, button: 0 });
+            }
             return {
               result: {
                 value: { width: 800, height: 600 },
               },
             };
-          }
-          if (method === "Input.dispatchMouseEvent") {
-            humanInput?.({}, { kind: "pointer", x: 400, y: 300, button: 0 });
           }
           return undefined;
         });
