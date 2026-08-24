@@ -534,4 +534,43 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
       assert.equal("cause" in error, false);
     }),
   );
+
+  it.effect(
+    "dispatches incoming requests off the reader fiber so a pending handler cannot stall the stream",
+    () =>
+      Effect.gen(function* () {
+        const { stdio, input, output } = yield* makeInMemoryStdio();
+        const release = yield* Deferred.make<void>();
+        const notified = yield* Deferred.make<void>();
+        yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+          stdio,
+          // Approval-style handler: stays pending until an external decision.
+          onRequest: () => Deferred.await(release).pipe(Effect.as({ decision: "accept" })),
+          onNotification: () => Deferred.succeed(notified, undefined).pipe(Effect.asVoid),
+        });
+
+        yield* Queue.offer(
+          input,
+          encodeJsonl({
+            id: "req-blocking-1",
+            method: "item/commandExecution/requestApproval",
+            params: {},
+          }),
+        );
+        yield* Queue.offer(input, encodeJsonl({ method: "thread/status/changed", params: {} }));
+
+        // The notification behind the pending request is processed while the
+        // request handler is still awaiting its decision.
+        yield* Deferred.await(notified);
+        assert.equal(yield* Queue.size(output), 0);
+
+        // Releasing the handler still produces the correlated response.
+        yield* Deferred.succeed(release, undefined);
+        const line = yield* Queue.take(output);
+        assert.deepEqual(yield* decodeJson(line.trim()), {
+          id: "req-blocking-1",
+          result: { decision: "accept" },
+        });
+      }),
+  );
 });

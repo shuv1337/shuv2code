@@ -255,6 +255,9 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
   function* (
     options: CodexAppServerPatchedProtocolOptions,
   ): Effect.fn.Return<CodexAppServerPatchedProtocol, never, Scope.Scope> {
+    // Construction scope, captured so forked request responders (see
+    // handleRequest) live alongside the reader/writer fibers.
+    const protocolScope = yield* Scope.Scope;
     const outgoing = yield* Queue.unbounded<string, Cause.Done<void>>();
     const incomingNotifications = yield* Queue.unbounded<CodexAppServerIncomingNotification>();
     const incomingRequests = yield* Queue.unbounded<CodexAppServerIncomingRequest>();
@@ -375,6 +378,13 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       );
     };
 
+    // Server requests (approvals, elicitations, dynamic tool calls) can stay
+    // pending for arbitrarily long, so their handlers must run off the reader
+    // fiber: handling them inline would wedge every subsequent incoming
+    // message — including responses to our own outgoing requests. JSON-RPC
+    // responses are correlated by id, so out-of-order replies are legal, and
+    // codex serializes turn-blocking requests per thread (it awaits each
+    // response before issuing the next), so per-thread ordering is preserved.
     const handleRequest = (request: CodexAppServerIncomingRequest) =>
       Queue.offer(incomingRequests, request).pipe(
         Effect.andThen(
@@ -391,6 +401,18 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
                     ),
                   onSuccess: (result) => respond(request.id, result),
                 }),
+                // Transport write failures surface through the transport's own
+                // termination path; a forked responder must not take the
+                // reader down with it.
+                Effect.tapError((error) =>
+                  Effect.logWarning("codex app-server request responder failed", {
+                    method: request.method,
+                    requestId: request.id,
+                    cause: error,
+                  }),
+                ),
+                Effect.ignore,
+                Effect.forkIn(protocolScope),
               )
             : Effect.void,
         ),

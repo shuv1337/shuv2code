@@ -217,8 +217,11 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
       const socketPath = pathService.join(socketDir, "control.sock");
       const lockPath = pathService.join(socketDir, "owner.lock");
 
+      // Owner-only directory: codex chmods the control socket itself to 0600
+      // (upstream unix_socket.rs CONTROL_SOCKET_MODE), and a 0700 parent keeps
+      // the socket path unlistable by other local users as well.
       yield* fs
-        .makeDirectory(socketDir, { recursive: true })
+        .makeDirectory(socketDir, { recursive: true, mode: 0o700 })
         .pipe(Effect.mapError((cause) => spawnError(keyInput.binaryPath, cause)));
       yield* fs.remove(socketPath).pipe(Effect.ignore);
 
