@@ -36,8 +36,29 @@ export interface CodexAppServerConnection {
   readonly terminated: Effect.Effect<CodexErrors.CodexAppServerError>;
 }
 
+/** Aggregate crash bookkeeping for one supervised process identity. */
+export interface CodexAppServerCrashState {
+  readonly digest: string;
+  readonly consecutiveFailures: number;
+  readonly lastExitAtMs: number;
+}
+
+/**
+ * Read-only supervisor observation for the ADE health checker (spec §4.8).
+ * `runningProcesses` counts live supervised children; `crashed` lists process
+ * identities that exited abnormally and have not been respawned yet (respawn
+ * is lazy — it happens on the next `acquireConnection`).
+ */
+export interface CodexAppServerSupervisorStatus {
+  readonly topology: CodexAppServerTopology;
+  readonly runningProcesses: number;
+  readonly crashed: ReadonlyArray<CodexAppServerCrashState>;
+}
+
 export interface CodexAppServerSupervisorShape {
   readonly topology: CodexAppServerTopology;
+  /** Snapshot of supervised process state; never fails. */
+  readonly status: Effect.Effect<CodexAppServerSupervisorStatus>;
   /**
    * Realtime conversation enablement decided once per supervised process from
    * the resolved voice policy at supervisor construction. Per-session flags

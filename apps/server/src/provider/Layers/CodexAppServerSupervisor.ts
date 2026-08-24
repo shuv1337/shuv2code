@@ -332,8 +332,28 @@ export const makeCodexAppServerSupervisor = Effect.fn("CodexAppServerSupervisor.
     }),
   );
 
+  const status = Effect.gen(function* () {
+    const processes = yield* Ref.get(processesRef);
+    const crashes = yield* Ref.get(crashesRef);
+    return {
+      topology: topologySetting,
+      runningProcesses: processes.size,
+      crashed: [...crashes.entries()]
+        // A crash record whose identity respawned already is stale history
+        // (clearCrashState runs on successful readiness), but guard anyway so
+        // an in-flight respawn never reads as an outage.
+        .filter(([digest]) => !processes.has(digest))
+        .map(([digest, crash]) => ({
+          digest,
+          consecutiveFailures: crash.consecutiveFailures,
+          lastExitAtMs: crash.lastExitAtMs,
+        })),
+    };
+  });
+
   return CodexAppServerSupervisor.of({
     topology: topologySetting,
+    status,
     sharedRealtimeEnabled,
     acquireConnection: (key) =>
       topologySetting === "shared"
@@ -360,6 +380,7 @@ export const layerTest = (topology: "per-session" | "shared" = "per-session") =>
     CodexAppServerSupervisor,
     CodexAppServerSupervisor.of({
       topology,
+      status: Effect.succeed({ topology, runningProcesses: 0, crashed: [] }),
       sharedRealtimeEnabled: false,
       acquireConnection: () =>
         Effect.fail(

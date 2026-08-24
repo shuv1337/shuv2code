@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
+import { FleetHealthSnapshot } from "./ade.ts";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
   AuthAccessStreamError,
@@ -397,6 +398,7 @@ export const WS_METHODS = {
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
   subscribeVoiceEvents: "subscribeVoiceEvents",
+  subscribeAdeFleetHealth: "subscribeAdeFleetHealth",
 } as const;
 
 export const WsAutomationsListRpc = Rpc.make(WS_METHODS.automationsList, {
@@ -1223,6 +1225,17 @@ export const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeReso
   stream: true,
 });
 
+/**
+ * ADE fleet health (spec §4.8): latest `FleetHealthSnapshot` on subscribe,
+ * then one snapshot per state change — the sidebar kernel pill feed.
+ */
+export const WsSubscribeAdeFleetHealthRpc = Rpc.make(WS_METHODS.subscribeAdeFleetHealth, {
+  payload: Schema.Struct({}),
+  success: FleetHealthSnapshot,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 export const WsRpcGroup = RpcGroup.make(
   WsAutomationsListRpc,
   WsAutomationsGetRpc,
@@ -1340,6 +1353,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
+  WsSubscribeAdeFleetHealthRpc,
   WsSubscribeVoiceEventsRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetWorkflowScriptRpc,

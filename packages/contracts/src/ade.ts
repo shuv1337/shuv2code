@@ -480,6 +480,44 @@ export const NeedsYouItem = Schema.Struct({
 });
 export type NeedsYouItem = typeof NeedsYouItem.Type;
 
+// ---------------------------------------------------------------------------
+// Fleet health (spec §4.8, ADR §11.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Monitored runtimes: the two execution kernels plus the Screenbox desktop
+ * runtime. Kernel-down semantics (Needs You + `blocked: kernel-down`) apply
+ * only to the `KernelEngine` subset; Screenbox health is pill-only.
+ */
+export const HealthTargetId = Schema.Literals(["shuvcode", "codex", "screenbox"]);
+export type HealthTargetId = typeof HealthTargetId.Type;
+
+/**
+ * `unknown` is the pre-first-probe state after boot; `not-provisioned` is a
+ * dormant target (Screenbox before S14 provisioning) — neither is an outage.
+ */
+export const HealthState = Schema.Literals(["unknown", "healthy", "down", "not-provisioned"]);
+export type HealthState = typeof HealthState.Type;
+
+/** One monitored target's pill state, as pushed to clients. */
+export const TargetHealthSnapshot = Schema.Struct({
+  target: HealthTargetId,
+  state: HealthState,
+  /** Bounded human-readable probe detail (error text, dormancy note). */
+  detail: Schema.NullOr(Schema.String),
+  /** When the current `state` was entered. */
+  since: IsoDateTime,
+  /** When the target was last probed. */
+  checkedAt: IsoDateTime,
+});
+export type TargetHealthSnapshot = typeof TargetHealthSnapshot.Type;
+
+/** The whole sidebar pill row; one entry per monitored target. */
+export const FleetHealthSnapshot = Schema.Struct({
+  targets: Schema.Array(TargetHealthSnapshot),
+});
+export type FleetHealthSnapshot = typeof FleetHealthSnapshot.Type;
+
 /**
  * ADR §18.1 locked initial defaults. Decoding `{}` yields the seed values, so
  * first-boot seeding (S3) is `LimitsConfig` decoded from an empty object.

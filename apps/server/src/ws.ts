@@ -118,6 +118,7 @@ import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
+import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
@@ -620,6 +621,7 @@ export const makeWsRpcLayer = (
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
+      const adeHealthChecker = yield* AdeHealthChecker;
       const automationService = yield* AutomationService.AutomationService;
       const voiceController = yield* VoiceController.VoiceControllerService;
       const usage = yield* UsageService.UsageService;
@@ -2553,6 +2555,16 @@ export const makeWsRpcLayer = (
               ),
             ),
             { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.subscribeAdeFleetHealth]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeAdeFleetHealth,
+            Stream.unwrap(
+              Effect.map(adeHealthChecker.subscribe, ({ latest, changes }) =>
+                Stream.concat(Stream.make(latest), changes),
+              ),
+            ),
+            { "rpc.aggregate": "ade" },
           ),
       });
     }),
