@@ -1,12 +1,16 @@
-import { TurnId } from "@shuv2code/contracts";
+import { ModelSelection, type ProviderInstanceId, TurnId } from "@shuv2code/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Schema from "effect/Schema";
 
 import {
   boundedUntrustedThreadContext,
   isAvailableThreadControlSource,
+  resolveControllerCreateModelSelection,
+  resolveUntrustedContextLimits,
+  untrustedThreadContext,
   validateInterruptTargetPrecondition,
   validateSendTargetPrecondition,
 } from "./ThreadControlService.ts";
@@ -252,4 +256,172 @@ describe("ThreadControlService local mutation outbox", () => {
       assert.strictEqual(reconciled, 1);
     }),
   );
+});
+
+
+describe("resolveControllerCreateModelSelection", () => {
+  const instanceIdOf = (value: string) => value as ProviderInstanceId;
+  const makeModel = (instanceId: string, model: string) =>
+    Effect.runSync(
+      Schema.decodeUnknownEffect(ModelSelection)({ instanceId, model }),
+    );
+  const invalidModelCode = (run: () => unknown): string | null => {
+    try {
+      run();
+      return null;
+    } catch (error) {
+      return typeof error === "object" && error !== null && "code" in error
+        ? String(error.code)
+        : null;
+    }
+  };
+
+  const candidates = [
+    {
+      instanceId: instanceIdOf("codex"),
+      snapshot: {
+        enabled: true,
+        availability: "available" as const,
+        models: [{ slug: "gpt-5.6-sol" }, { slug: "gpt-5.6-luna" }],
+      },
+    },
+    {
+      instanceId: instanceIdOf("broken"),
+      snapshot: {
+        enabled: false,
+        availability: "available" as const,
+        models: [{ slug: "gpt-5.6-sol" }],
+      },
+    },
+  ];
+
+  it("clones the controller model when no model is requested", () => {
+    const controllerModel = makeModel("opencodeV2", "ox");
+    assert.strictEqual(
+      resolveControllerCreateModelSelection({
+        requestedModel: undefined,
+        controllerModel,
+        candidates,
+      }),
+      controllerModel,
+    );
+  });
+
+  it("clones the controller model when the requested model matches it", () => {
+    const controllerModel = makeModel("opencodeV2", "ox");
+    assert.strictEqual(
+      resolveControllerCreateModelSelection({
+        requestedModel: "ox",
+        controllerModel,
+        candidates,
+      }),
+      controllerModel,
+    );
+  });
+
+  it("resolves a requested model against available instances", () => {
+    const controllerModel = makeModel("opencodeV2", "ox");
+    const selection = resolveControllerCreateModelSelection({
+      requestedModel: "gpt-5.6-sol",
+      controllerModel,
+      candidates,
+    });
+    assert.strictEqual(selection.instanceId, "codex");
+    assert.strictEqual(selection.model, "gpt-5.6-sol");
+  });
+
+  it("skips disabled and unavailable instances", () => {
+    const controllerModel = makeModel("opencodeV2", "ox");
+    const code = invalidModelCode(() =>
+      resolveControllerCreateModelSelection({
+        requestedModel: "gpt-5.6-sol",
+        controllerModel,
+        candidates: [
+          {
+            instanceId: instanceIdOf("off"),
+            snapshot: { enabled: false, models: [{ slug: "gpt-5.6-sol" }] },
+          },
+          {
+            instanceId: instanceIdOf("down"),
+            snapshot: {
+              enabled: true,
+              availability: "unavailable" as const,
+              models: [{ slug: "gpt-5.6-sol" }],
+            },
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(code, "invalid_model");
+  });
+
+  it("rejects a model no instance advertises", () => {
+    const controllerModel = makeModel("opencodeV2", "ox");
+    const code = invalidModelCode(() =>
+      resolveControllerCreateModelSelection({
+        requestedModel: "nonexistent",
+        controllerModel,
+        candidates,
+      }),
+    );
+    assert.strictEqual(code, "invalid_model");
+  });
+});
+
+
+describe("untrustedThreadContext limits", () => {
+  const longText = "x".repeat(50_000);
+  const messages = [
+    { role: "system", text: "hidden" },
+    { role: "user", text: "q1" },
+    { role: "assistant", text: longText },
+    { role: "user", text: "   " },
+    { role: "user", text: "q2", streaming: true },
+    { role: "assistant", text: "a2" },
+  ];
+
+  it("bounded defaults match the legacy helper output", () => {
+    assert.deepStrictEqual(
+      untrustedThreadContext(messages, resolveUntrustedContextLimits(undefined)),
+      boundedUntrustedThreadContext(messages),
+    );
+  });
+
+  it("mode full raises ceilings so large messages return whole", () => {
+    const context = untrustedThreadContext(
+      messages,
+      resolveUntrustedContextLimits({ mode: "full" }),
+    );
+    assert.deepStrictEqual(context.map((m) => m.role), ["user", "assistant", "assistant"]);
+    assert.strictEqual(context[1]?.text.length, 50_000);
+  });
+
+  it("the caller sets explicit budgets and they are clamped to ceilings", () => {
+    const tiny = untrustedThreadContext(
+      messages,
+      resolveUntrustedContextLimits({ maxMessages: 1, maxTotalChars: 10, maxMessageChars: 5 }),
+    );
+    assert.deepStrictEqual(tiny, [{ role: "assistant", text: "a2" }]);
+    const clamped = resolveUntrustedContextLimits({
+      maxMessages: 999_999,
+      maxTotalChars: -5,
+      maxMessageChars: 0,
+      anchor: "oldest",
+    });
+    assert.strictEqual(clamped.maxMessages, 10_000);
+    assert.strictEqual(clamped.maxTotalChars, 1);
+    assert.strictEqual(clamped.maxMessageChars, 1);
+    assert.strictEqual(clamped.anchor, "oldest");
+  });
+
+  it("anchor oldest reads from the start of the conversation", () => {
+    const context = untrustedThreadContext(
+      messages,
+      resolveUntrustedContextLimits({ maxMessages: 2, maxTotalChars: 100, anchor: "oldest" }),
+    );
+    assert.deepStrictEqual(context.map((m) => m.text), [
+      "q1",
+      "x".repeat(98),
+    ]);
+  });
 });

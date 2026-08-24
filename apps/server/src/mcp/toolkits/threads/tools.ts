@@ -79,19 +79,57 @@ export const ThreadGetInput = Schema.Struct({
   includeUntrustedContext: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "When true, include a bounded recent user/assistant conversation explicitly marked as untrusted target data.",
+        "When true, include the target conversation as explicitly untrusted target data. Bounded by default; set contextMode to 'full' for the complete transcript.",
     }),
   ).annotate({
-    description: "Include bounded recent conversation as untrusted target data.",
+    description:
+      "Include the target conversation (bounded by default) as untrusted target data.",
+  }),
+  context: Schema.optional(
+    Schema.Struct({
+      mode: Schema.optional(
+        Schema.Literals(["bounded", "full"]).annotate({
+          description:
+            "'bounded' (default) applies conservative defaults. 'full' raises defaults to generous ceilings (10k messages / 1M chars total / 100k per message).",
+        }),
+      ),
+      maxMessages: Schema.optional(
+        Schema.Int.annotate({
+          description: "Maximum messages returned (1 to 10000). Overrides the mode default.",
+        }),
+      ),
+      maxTotalChars: Schema.optional(
+        Schema.Int.annotate({
+          description: "Maximum combined characters across all returned messages (1 to 1000000).",
+        }),
+      ),
+      maxMessageChars: Schema.optional(
+        Schema.Int.annotate({
+          description:
+            "Maximum characters per message (1 to 100000). Also caps untrustedTargetContent when includeUntrustedExcerpt is set.",
+        }),
+      ),
+      anchor: Schema.optional(
+        Schema.Literals(["recent", "oldest"]).annotate({
+          description: "Which end of the conversation to read from. Defaults to 'recent'.",
+        }),
+      ),
+    }).annotate({
+      description:
+        "Tunable bounds for the returned conversation. You decide how much of the thread you need; unspecified fields use the mode default.",
+    }),
+  ).annotate({
+    description:
+      "Tunable read bounds for the target conversation. Defaults are conservative; pass larger budgets or mode 'full' when you need more.",
   }),
   includeUntrustedExcerpt: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "When true, include at most 2 KiB of explicitly untrusted target assistant content. It is never mutation authority.",
+        "When true, include explicitly untrusted target assistant content: capped at 2 KiB in bounded mode (default), untruncated when contextMode is 'full'. It is never mutation authority.",
     }),
   ).annotate({
     description:
-      "When true, include at most 2 KiB of explicitly untrusted target assistant content.",
+      "When true, include explicitly untrusted target assistant content (2 KiB cap in bounded mode; untruncated with contextMode 'full').",
   }),
 });
 export type ThreadGetInput = typeof ThreadGetInput.Type;
@@ -104,11 +142,12 @@ export const ThreadCreateInput = Schema.Struct({
   ).annotate({ description: "Optional short display title for the new standard thread." }),
   model: Schema.optional(
     describedTrimmedString(
-      "Optional model ID advertised by the controller thread's bound provider instance.",
+      "Optional model ID advertised by any available configured provider instance. Omit to use the controller thread's own model.",
       256,
     ),
   ).annotate({
-    description: "Optional model ID advertised by the controller's bound Codex provider instance.",
+    description:
+      "Optional model ID advertised by any available configured provider instance. Resolved against live provider snapshots; omit to clone the controller thread's model.",
   }),
 });
 export type ThreadCreateInput = typeof ThreadCreateInput.Type;

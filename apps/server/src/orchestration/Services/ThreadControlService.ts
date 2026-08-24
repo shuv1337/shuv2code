@@ -102,11 +102,22 @@ export interface ThreadControlListResult {
   readonly nextCursor: number | null;
 }
 
+export type ThreadControlContextAnchor = "recent" | "oldest";
+
+export interface ThreadControlUntrustedContextRequest {
+  readonly mode?: "bounded" | "full" | undefined;
+  readonly maxMessages?: number | undefined;
+  readonly maxTotalChars?: number | undefined;
+  readonly maxMessageChars?: number | undefined;
+  readonly anchor?: ThreadControlContextAnchor | undefined;
+}
+
 export interface ThreadControlGetInput {
   readonly grant: ThreadControlGrant;
   readonly threadId: ThreadId;
   readonly includeUntrustedExcerpt?: boolean | undefined;
   readonly includeUntrustedContext?: boolean | undefined;
+  readonly untrustedContextRequest?: ThreadControlUntrustedContextRequest | undefined;
 }
 
 export interface ThreadControlGetResult {
