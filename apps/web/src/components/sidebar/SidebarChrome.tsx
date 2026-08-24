@@ -23,6 +23,7 @@ import {
   useSidebar,
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SidebarFleetEntry } from "./SidebarFleetEntry";
 import { SidebarKernelHealthPills } from "./SidebarKernelHealthPills";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
@@ -153,6 +154,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
 
   return (
     <SidebarFooter className="p-[var(--sidebar-content-inset)]">
+      <SidebarFleetEntry />
       <SidebarKernelHealthPills />
       <SidebarProviderUpdatePill />
       <SidebarUpdateArchitectureWarning />

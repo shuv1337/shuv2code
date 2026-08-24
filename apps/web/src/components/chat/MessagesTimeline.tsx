@@ -42,6 +42,8 @@ import {
   resolveFileDiffPath,
 } from "../../lib/diffRendering";
 import ChatMarkdown from "../ChatMarkdown";
+import { AssignmentResultCard } from "../fleet/AssignmentResultCard";
+import { parseAssignmentDeliveryText } from "../fleet/assignmentResult.logic";
 import {
   BotIcon,
   CheckIcon,
@@ -981,6 +983,18 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  // ADE delivers a finished assignment into the recipient bot's session as
+  // synthetic user input (spec §13.5). It is a structured record rendered to
+  // text for the kernel, so it is read back here rather than shown as the
+  // fenced markdown blob the kernel sees. Every other turn is untouched.
+  const assignmentDelivery = parseAssignmentDeliveryText(row.message.text ?? "");
+  if (assignmentDelivery !== null) {
+    return (
+      <div className="group flex w-full flex-col items-stretch gap-1">
+        <AssignmentResultCard delivery={assignmentDelivery} />
+      </div>
+    );
+  }
   const userAttachments = row.message.attachments ?? [];
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;

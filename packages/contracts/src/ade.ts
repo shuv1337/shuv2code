@@ -6,7 +6,13 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  PositiveInt,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 
 const entityId = <Brand extends string>(brand: Brand) =>
   TrimmedNonEmptyString.pipe(Schema.brand(brand));
@@ -537,3 +543,139 @@ export const LimitsConfig = Schema.Struct({
   screenboxIdleStopMinutes: PositiveInt.pipe(Schema.withDecodingDefault(Effect.succeed(30))),
 });
 export type LimitsConfig = typeof LimitsConfig.Type;
+
+// ---------------------------------------------------------------------------
+// Captain surface views (spec §7 slices 1, 2, 8 — S9)
+// ---------------------------------------------------------------------------
+
+/**
+ * The one-click crew templates the roster offers (spec §4.1). Mirrors
+ * `ADE_BOT_TEMPLATES` on the server; coordinator templates stay out by
+ * construction — the Firstmate comes from the boot check and a Second Mate
+ * only from project creation.
+ */
+export const AdeBotTemplateId = Schema.Literals(["researcher", "coder", "reviewer"]);
+export type AdeBotTemplateId = typeof AdeBotTemplateId.Type;
+
+/** One shipped template as offered by the roster's "add from template" control. */
+export const AdeBotTemplateSummary = Schema.Struct({
+  templateId: AdeBotTemplateId,
+  defaultName: BotName,
+  roleTag: BotRoleTag,
+});
+export type AdeBotTemplateSummary = typeof AdeBotTemplateSummary.Type;
+
+/** One roster row: the durable bot plus the counts the list renders. */
+export const AdeRosterEntry = Schema.Struct({
+  bot: Bot,
+  projectName: Schema.NullOr(Schema.String),
+  /** True while a `primary-text` binding is `active` — chat is already warm. */
+  hasActivePrimarySession: Schema.Boolean,
+  /** `queued | running | blocked` assignments addressed to this bot. */
+  openAssignmentCount: NonNegativeInt,
+});
+export type AdeRosterEntry = typeof AdeRosterEntry.Type;
+
+export const AdeProjectSummary = Schema.Struct({
+  id: AdeProjectId,
+  name: Schema.String,
+});
+export type AdeProjectSummary = typeof AdeProjectSummary.Type;
+
+/**
+ * Roster payload (UI slice 2). `entries` is Firstmate-first, then the other
+ * coordinators, then crew — the server owns that order so every surface
+ * agrees on the pin.
+ */
+export const AdeRoster = Schema.Struct({
+  entries: Schema.Array(AdeRosterEntry),
+  projects: Schema.Array(AdeProjectSummary),
+  templates: Schema.Array(AdeBotTemplateSummary),
+});
+export type AdeRoster = typeof AdeRoster.Type;
+
+/** Bot detail payload (UI slice 2): bindings, memory, persona versions. */
+export const AdeBotDetail = Schema.Struct({
+  bot: Bot,
+  projectName: Schema.NullOr(Schema.String),
+  memory: MemoryDocument,
+  /** Newest first. The head may be pending (`activatedAt === null`). */
+  personaVersions: Schema.Array(PersonaVersion),
+  bindings: Schema.Array(BotExecutionBinding),
+  /** Open work addressed to this bot, in queue order. */
+  assignments: Schema.Array(Assignment),
+});
+export type AdeBotDetail = typeof AdeBotDetail.Type;
+
+/**
+ * Chat bootstrap result (UI slice 1). An ADE bot chat is an ordinary
+ * shuv2code thread: `threadId` is what the existing conversation stack
+ * renders, while `bindingId`/`sessionId` name the `BotExecutionBinding` the
+ * tool gate and the assignment engine key on.
+ */
+export const AdeBotChatSession = Schema.Struct({
+  botId: BotId,
+  threadId: ThreadId,
+  engine: KernelEngine,
+  bindingId: BotExecutionBindingId,
+  sessionId: KernelSessionId,
+  /** False when an existing active primary binding was reused. */
+  startedNow: Schema.Boolean,
+});
+export type AdeBotChatSession = typeof AdeBotChatSession.Type;
+
+/** Sidebar "Needs You" badge (UI slice 8): count of open `NeedsYouItem`s. */
+export const AdeNeedsYouCount = Schema.Struct({
+  open: NonNegativeInt,
+});
+export type AdeNeedsYouCount = typeof AdeNeedsYouCount.Type;
+
+/**
+ * One wire error for the captain RPCs. The services behind them fail with
+ * rich tagged errors (`AdeBotNotFoundError`, `AdeTemplateNotInstantiableError`,
+ * `AdeMemoryConflictError`, …); the RPC layer narrows those to a closed reason
+ * union so clients branch without importing server internals.
+ */
+export class AdeCaptainError extends Schema.TaggedErrorClass<AdeCaptainError>()("AdeCaptainError", {
+  reason: Schema.Literals([
+    "bot_not_found",
+    "template_not_instantiable",
+    "memory_conflict",
+    "memory_too_large",
+    "persona_invalid",
+    "session_unavailable",
+    "persistence_failed",
+  ]),
+  message: Schema.String,
+}) {}
+
+export const AdeBotIdInput = Schema.Struct({ botId: BotId });
+export type AdeBotIdInput = typeof AdeBotIdInput.Type;
+
+export const AdeCreateBotFromTemplateInput = Schema.Struct({
+  templateId: AdeBotTemplateId,
+  /** Crew home project; null makes a fleet-shared specialist. */
+  projectId: Schema.NullOr(AdeProjectId),
+  name: Schema.optional(BotName),
+});
+export type AdeCreateBotFromTemplateInput = typeof AdeCreateBotFromTemplateInput.Type;
+
+export const AdeWriteMemoryInput = Schema.Struct({
+  botId: BotId,
+  content: MemoryDocumentContent,
+  /** Optimistic-concurrency precondition; omit for last-writer-wins. */
+  expectedUpdatedAt: Schema.optional(IsoDateTime),
+});
+export type AdeWriteMemoryInput = typeof AdeWriteMemoryInput.Type;
+
+export const AdeEditPersonaInput = Schema.Struct({
+  botId: BotId,
+  content: PersonaContent,
+});
+export type AdeEditPersonaInput = typeof AdeEditPersonaInput.Type;
+
+export const AdeSetComputerUseInput = Schema.Struct({
+  botId: BotId,
+  computerUse: Schema.Boolean,
+});
+export type AdeSetComputerUseInput = typeof AdeSetComputerUseInput.Type;

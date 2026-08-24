@@ -29,6 +29,17 @@ export interface OpenCodeV2MockFormAnswer {
   readonly answer: Record<string, unknown>;
 }
 
+export interface OpenCodeV2MockSynthetic {
+  readonly sessionID: string;
+  readonly id: string;
+  readonly text: string;
+  readonly description?: string;
+  readonly delivery?: string;
+  readonly resume?: boolean;
+  /** False when the id was already admitted — upstream's first-admission-wins. */
+  readonly admitted: boolean;
+}
+
 export interface OpenCodeV2MockToolReply {
   readonly sessionID: string;
   readonly callID: string;
@@ -42,6 +53,10 @@ export interface OpenCodeV2Mock {
   readonly prompts: OpenCodeV2MockPrompt[];
   readonly formAnswers: OpenCodeV2MockFormAnswer[];
   readonly toolReplies: OpenCodeV2MockToolReply[];
+  /** Every POST /synthetic, including refused duplicates. */
+  readonly syntheticRequests: OpenCodeV2MockSynthetic[];
+  /** Inbox items actually admitted, keyed by item id. */
+  readonly syntheticItems: Map<string, OpenCodeV2MockSynthetic>;
   readonly requests: OpenCodeV2MockRequest[];
   readonly events: OpenCodeV2Event[];
   readonly subscriberCount: number;
@@ -103,6 +118,8 @@ export async function startOpenCodeV2Mock(
   const pendingToolCalls = new Map<string, Map<string, OpenCodeV2DynamicToolCall>>();
   const settledToolCallIds = new Set<string>();
   const toolReplies: OpenCodeV2MockToolReply[] = [];
+  const syntheticRequests: OpenCodeV2MockSynthetic[] = [];
+  const syntheticItems = new Map<string, OpenCodeV2MockSynthetic>();
   const prompts: OpenCodeV2MockPrompt[] = [];
   const formAnswers: OpenCodeV2MockFormAnswer[] = [];
   const requests: OpenCodeV2MockRequest[] = [];
@@ -289,6 +306,63 @@ export async function startOpenCodeV2Mock(
           sendJson(response, { data: [] });
           return;
         }
+        if (method === "POST" && suffix[0] === "synthetic" && suffix.length === 1) {
+          const input = (body ?? {}) as {
+            readonly id?: string;
+            readonly text?: string;
+            readonly description?: string;
+            readonly delivery?: string;
+            readonly resume?: boolean;
+          };
+          // Upstream only accepts `steer | queue`; anything else is a 400.
+          if (input.delivery !== undefined && !["steer", "queue"].includes(input.delivery)) {
+            sendJson(
+              response,
+              {
+                name: "InvalidRequestError",
+                message: `Invalid delivery: ${String(input.delivery)}`,
+              },
+              400,
+            );
+            return;
+          }
+          const itemId = input.id ?? `msg_mock_${String(syntheticRequests.length)}`;
+          const already = syntheticItems.get(itemId);
+          const record: OpenCodeV2MockSynthetic = {
+            sessionID,
+            id: itemId,
+            text: input.text ?? "",
+            ...(input.description === undefined ? {} : { description: input.description }),
+            ...(input.delivery === undefined ? {} : { delivery: input.delivery }),
+            ...(input.resume === undefined ? {} : { resume: input.resume }),
+            admitted: already === undefined,
+          };
+          syntheticRequests.push(record);
+          // First admission wins: a repeated id returns the stored item and
+          // publishes nothing, exactly like upstream's inbox.
+          if (already === undefined) {
+            syntheticItems.set(itemId, record);
+            emit({
+              type: "session.inbox.enqueued",
+              data: {
+                sessionID,
+                inboxID: itemId,
+                item: {
+                  type: "synthetic",
+                  payload: {
+                    text: record.text,
+                    ...(record.description === undefined
+                      ? {}
+                      : { description: record.description }),
+                  },
+                  delivery: input.delivery ?? "steer",
+                },
+              },
+            });
+          }
+          sendJson(response, { data: already ?? record });
+          return;
+        }
         if (method === "PUT" && suffix[0] === "tools" && suffix.length === 1) {
           const input = (body ?? {}) as {
             readonly tools?: ReadonlyArray<OpenCodeV2DynamicToolDefinition>;
@@ -395,6 +469,8 @@ export async function startOpenCodeV2Mock(
     prompts,
     formAnswers,
     toolReplies,
+    syntheticRequests,
+    syntheticItems,
     requests,
     events,
     get subscriberCount() {

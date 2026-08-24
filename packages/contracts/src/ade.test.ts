@@ -2,7 +2,12 @@ import { assert, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import {
+  AdeBotChatSession,
+  AdeCaptainError,
+  AdeCreateBotFromTemplateInput,
   AdeProject,
+  AdeRoster,
+  AdeRosterEntry,
   ArtifactRef,
   Assignment,
   Bot,
@@ -362,4 +367,99 @@ it("rejects an unknown health target", () => {
       ],
     }),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Captain surface views (spec §7 slices 1, 2, 8)
+// ---------------------------------------------------------------------------
+
+const decodeAdeCreateBotFromTemplateInput = Schema.decodeUnknownSync(AdeCreateBotFromTemplateInput);
+
+it("round-trips a roster with a pinned Firstmate and its crew templates", () => {
+  const roster = roundTrip(AdeRoster, {
+    entries: [
+      {
+        bot: {
+          id: "bot-firstmate",
+          name: "Firstmate",
+          displayMeta: null,
+          structuralRole: "firstmate",
+          roleTag: "Coordinator",
+          projectId: null,
+          activePersonaVersionId: "persona-1",
+          computerUse: false,
+          createdAt: "2026-08-24T00:00:00.000Z",
+          archivedAt: null,
+        },
+        projectName: null,
+        hasActivePrimarySession: true,
+        openAssignmentCount: 2,
+      },
+    ],
+    projects: [{ id: "project-1", name: "shuv2code" }],
+    templates: [{ templateId: "coder", defaultName: "Coder", roleTag: "Coder" }],
+  });
+  assert.strictEqual(roster.entries[0]!.bot.structuralRole, "firstmate");
+  assert.strictEqual(roster.entries[0]!.openAssignmentCount, 2);
+  assert.strictEqual(roster.templates[0]!.templateId, "coder");
+});
+
+it("rejects a negative open-assignment count", () => {
+  assert.throws(() =>
+    Schema.decodeUnknownSync(AdeRosterEntry)({
+      bot: {
+        id: "bot-1",
+        name: "Coder",
+        displayMeta: null,
+        structuralRole: "crew",
+        roleTag: "Coder",
+        projectId: null,
+        activePersonaVersionId: null,
+        computerUse: false,
+        createdAt: "2026-08-24T00:00:00.000Z",
+        archivedAt: null,
+      },
+      projectName: null,
+      hasActivePrimarySession: false,
+      openAssignmentCount: -1,
+    }),
+  );
+});
+
+it("round-trips a chat session binding a thread to a kernel session", () => {
+  const session = roundTrip(AdeBotChatSession, {
+    botId: "bot-firstmate",
+    threadId: "ade-bot-bot-firstmate",
+    engine: "shuvcode",
+    bindingId: "binding-1",
+    sessionId: "oc-session-1",
+    startedNow: true,
+  });
+  assert.strictEqual(session.engine, "shuvcode");
+});
+
+it("offers only the one-click crew templates, never a coordinator", () => {
+  assert.strictEqual(
+    decodeAdeCreateBotFromTemplateInput({ templateId: "reviewer", projectId: null }).templateId,
+    "reviewer",
+  );
+  // The Firstmate comes from the boot check and a Second Mate from project
+  // creation; neither is instantiable from the roster (spec §4.1).
+  assert.throws(() =>
+    decodeAdeCreateBotFromTemplateInput({ templateId: "firstmate", projectId: null }),
+  );
+  assert.throws(() =>
+    decodeAdeCreateBotFromTemplateInput({ templateId: "second-mate", projectId: null }),
+  );
+});
+
+it("carries a closed reason union on the captain error", () => {
+  const decode = Schema.decodeUnknownSync(AdeCaptainError);
+  const error = decode({
+    _tag: "AdeCaptainError",
+    reason: "memory_conflict",
+    message: "Memory document changed.",
+  });
+  assert.strictEqual(error.reason, "memory_conflict");
+  assert.throws(() => decode({ _tag: "AdeCaptainError", reason: "teapot", message: "nope" }));
 });

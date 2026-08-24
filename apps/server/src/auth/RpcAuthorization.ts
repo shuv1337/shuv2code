@@ -61,6 +61,12 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.voiceIngestRealtimeEvent]: AuthOrchestrationOperateScope,
   [WS_METHODS.voiceAppendAudio]: AuthOrchestrationOperateScope,
   [WS_METHODS.voiceStop]: AuthOrchestrationOperateScope,
+  // Pre-existing gap on `ade-v1`: `voice.prepareThreadCall` is declared in
+  // `WsRpcGroup` with no scope, which makes `requiredScopeForRpcMethod` throw
+  // for it and leaves the coverage test below red. Preparing a call is a
+  // control action like every other voice mutation. (Its ws.ts handler is
+  // still missing — that is the voice service's own gap, not this table's.)
+  [WS_METHODS.voicePrepareThreadCall]: AuthOrchestrationOperateScope,
   [WS_METHODS.subscribeVoiceEvents]: AuthOrchestrationReadScope,
   [WS_METHODS.cloudGetRelayClientStatus]: AuthRelayReadScope,
   [WS_METHODS.cloudInstallRelayClient]: AuthRelayWriteScope,
@@ -106,6 +112,18 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeVcsStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeResourceTelemetry]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAdeFleetHealth]: AuthOrchestrationReadScope,
+  // ADE captain surface (spec §7). No `ade:` scope exists yet — the approval
+  // surface introduces `ade:approve` in S13; until then reads and mutations
+  // ride the orchestration scopes like every other captain-facing RPC.
+  [WS_METHODS.adeGetRoster]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeGetBot]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeGetNeedsYouCount]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeCreateBotFromTemplate]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeWriteBotMemory]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeEditBotPersona]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeSetBotComputerUse]: AuthOrchestrationOperateScope,
+  // Starting a chat mints a kernel session — a mutation, not a read.
+  [WS_METHODS.adeStartBotChat]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsRefreshStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.vcsPull]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsFetch]: AuthOrchestrationOperateScope,

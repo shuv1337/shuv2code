@@ -2,7 +2,22 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
-import { FleetHealthSnapshot } from "./ade.ts";
+import {
+  AdeBotChatSession,
+  AdeBotDetail,
+  AdeBotIdInput,
+  AdeCaptainError,
+  AdeCreateBotFromTemplateInput,
+  AdeEditPersonaInput,
+  AdeNeedsYouCount,
+  AdeRoster,
+  AdeSetComputerUseInput,
+  AdeWriteMemoryInput,
+  Bot,
+  FleetHealthSnapshot,
+  MemoryDocument,
+  PersonaVersion,
+} from "./ade.ts";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
   AuthAccessStreamError,
@@ -385,6 +400,16 @@ export const WS_METHODS = {
   sourceControlLookupRepository: "sourceControl.lookupRepository",
   sourceControlCloneRepository: "sourceControl.cloneRepository",
   sourceControlPublishRepository: "sourceControl.publishRepository",
+
+  // ADE captain-surface methods (spec §7 slices 1, 2, 8)
+  adeGetRoster: "ade.getRoster",
+  adeGetBot: "ade.getBot",
+  adeCreateBotFromTemplate: "ade.createBotFromTemplate",
+  adeWriteBotMemory: "ade.writeBotMemory",
+  adeEditBotPersona: "ade.editBotPersona",
+  adeSetBotComputerUse: "ade.setBotComputerUse",
+  adeGetNeedsYouCount: "ade.getNeedsYouCount",
+  adeStartBotChat: "ade.startBotChat",
 
   // Streaming subscriptions
   subscribeVcsStatus: "subscribeVcsStatus",
@@ -1236,7 +1261,79 @@ export const WsSubscribeAdeFleetHealthRpc = Rpc.make(WS_METHODS.subscribeAdeFlee
   stream: true,
 });
 
+// ---------------------------------------------------------------------------
+// ADE captain surface (spec §7 slices 1, 2, 8)
+// ---------------------------------------------------------------------------
+
+const AdeCaptainRpcError = Schema.Union([AdeCaptainError, EnvironmentAuthorizationError]);
+
+/** Roster list (slice 2): every bot, Firstmate pinned first, plus templates. */
+export const WsAdeGetRosterRpc = Rpc.make(WS_METHODS.adeGetRoster, {
+  payload: Schema.Struct({}),
+  success: AdeRoster,
+  error: AdeCaptainRpcError,
+});
+
+export const WsAdeGetBotRpc = Rpc.make(WS_METHODS.adeGetBot, {
+  payload: AdeBotIdInput,
+  success: AdeBotDetail,
+  error: AdeCaptainRpcError,
+});
+
+/** Copy-on-create crew instantiation (spec §4.1). */
+export const WsAdeCreateBotFromTemplateRpc = Rpc.make(WS_METHODS.adeCreateBotFromTemplate, {
+  payload: AdeCreateBotFromTemplateInput,
+  success: AdeBotDetail,
+  error: AdeCaptainRpcError,
+});
+
+/** Captain-authored memory write (ADR §12.2 — author is always `captain`). */
+export const WsAdeWriteBotMemoryRpc = Rpc.make(WS_METHODS.adeWriteBotMemory, {
+  payload: AdeWriteMemoryInput,
+  success: MemoryDocument,
+  error: AdeCaptainRpcError,
+});
+
+/** Persona edit; takes effect at the bot's next session (ADR §12.1). */
+export const WsAdeEditBotPersonaRpc = Rpc.make(WS_METHODS.adeEditBotPersona, {
+  payload: AdeEditPersonaInput,
+  success: PersonaVersion,
+  error: AdeCaptainRpcError,
+});
+
+export const WsAdeSetBotComputerUseRpc = Rpc.make(WS_METHODS.adeSetBotComputerUse, {
+  payload: AdeSetComputerUseInput,
+  success: Bot,
+  error: AdeCaptainRpcError,
+});
+
+/** Sidebar badge count of open Needs You items (slice 8). */
+export const WsAdeGetNeedsYouCountRpc = Rpc.make(WS_METHODS.adeGetNeedsYouCount, {
+  payload: Schema.Struct({}),
+  success: AdeNeedsYouCount,
+  error: AdeCaptainRpcError,
+});
+
+/**
+ * Chat bootstrap (slice 1): resolve — creating it on first use — the bot's
+ * active primary-text session and hand back the thread the existing
+ * conversation stack renders.
+ */
+export const WsAdeStartBotChatRpc = Rpc.make(WS_METHODS.adeStartBotChat, {
+  payload: AdeBotIdInput,
+  success: AdeBotChatSession,
+  error: AdeCaptainRpcError,
+});
+
 export const WsRpcGroup = RpcGroup.make(
+  WsAdeGetRosterRpc,
+  WsAdeGetBotRpc,
+  WsAdeCreateBotFromTemplateRpc,
+  WsAdeWriteBotMemoryRpc,
+  WsAdeEditBotPersonaRpc,
+  WsAdeSetBotComputerUseRpc,
+  WsAdeGetNeedsYouCountRpc,
+  WsAdeStartBotChatRpc,
   WsAutomationsListRpc,
   WsAutomationsGetRpc,
   WsAutomationsCreateRpc,
