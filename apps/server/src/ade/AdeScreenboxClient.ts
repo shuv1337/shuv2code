@@ -13,10 +13,13 @@
  *   `tools/call` — the tool plane ADE proxies for bots.
  *
  * **One credential, held server-side** (spec §4.6): the single upstream admin
- * token lives in this process only. It is sent as `Authorization: Bearer` (and
- * `X-API-Key`, upstream's higher-priority header) on every request. No
- * Screenbox credential ever reaches a bot session, a session config, or a
- * client. Rotation is manual token rotation, i.e. a restart with new env.
+ * token lives in this process only. It is sent as both `Authorization: Bearer`
+ * and `X-API-Key` on every request because upstream splits the two planes:
+ * the HTTP API's `_check_auth` reads `Authorization: Bearer` **only**, while
+ * `X-API-Key` is honoured solely by the MCP middleware. Sending both is what
+ * makes one token work across both planes. No Screenbox credential ever
+ * reaches a bot session, a session config, or a client. Rotation is manual
+ * token rotation, i.e. a restart with new env.
  *
  * Everything upstream-shaped is parsed defensively: this client owns the
  * boundary with a service ADE does not control, so unknown/renamed fields
@@ -223,6 +226,51 @@ export const parseDesktopList = (body: unknown): ReadonlyArray<AdeScreenboxDeskt
 export type AdeScreenboxControlAction = "start" | "stop" | "pause" | "resume";
 
 /**
+ * Parsed `GET /api/health`. Upstream answers **200 with `ok: false`** when it
+ * is degraded (e.g. the desktop image is missing) rather than a non-2xx, so
+ * status alone cannot tell healthy from broken — the body is the signal.
+ */
+export interface AdeScreenboxHealth {
+  readonly ok: boolean;
+  readonly desktops: number | null;
+  readonly issues: ReadonlyArray<string>;
+}
+
+/** Bound on how many upstream `issues` entries are surfaced in a probe detail. */
+export const SCREENBOX_HEALTH_ISSUE_LIMIT = 3;
+
+/**
+ * Missing/unknown-shaped bodies are read as healthy: an upstream that answers
+ * 200 without the documented fields is reachable, and inventing a `down` pill
+ * from a parse miss would be worse than trusting the status code.
+ */
+export const parseHealth = (body: unknown): AdeScreenboxHealth => {
+  const record = readRecord(body);
+  if (record === null) return { ok: true, desktops: null, issues: [] };
+  const rawIssues = record["issues"];
+  const issues = Array.isArray(rawIssues)
+    ? rawIssues.filter((issue): issue is string => typeof issue === "string" && issue.length > 0)
+    : [];
+  const desktops = record["desktops"];
+  return {
+    ok: record["ok"] !== false,
+    desktops: typeof desktops === "number" && Number.isFinite(desktops) ? desktops : null,
+    issues,
+  };
+};
+
+/** One-line, bounded rendering of an unhealthy health body for a Needs You pill. */
+export const describeUnhealthy = (health: AdeScreenboxHealth): string => {
+  if (health.issues.length === 0) return "Screenbox reports itself unhealthy (no detail given).";
+  const shown = health.issues.slice(0, SCREENBOX_HEALTH_ISSUE_LIMIT).join("; ");
+  const hidden =
+    health.issues.length - Math.min(health.issues.length, SCREENBOX_HEALTH_ISSUE_LIMIT);
+  return boundScreenboxDetail(
+    hidden === 0 ? shown : `${shown} (+${hidden} more ${hidden === 1 ? "issue" : "issues"})`,
+  );
+};
+
+/**
  * Upstream bodies have no schema ADE can trust, so they are decoded as unknown
  * and read defensively by the parsers above.
  */
@@ -350,8 +398,11 @@ export const parseToolCallResult = (
 export interface AdeScreenboxClientShape {
   /** True when this install has an upstream origin configured at all. */
   readonly isConfigured: boolean;
-  /** `GET /api/health`. */
-  readonly health: Effect.Effect<void, AdeScreenboxClientError>;
+  /**
+   * `GET /api/health`. Resolves with the parsed body: upstream returns 200
+   * even while degraded, so callers must read {@link AdeScreenboxHealth.ok}.
+   */
+  readonly health: Effect.Effect<AdeScreenboxHealth, AdeScreenboxClientError>;
   /** `GET /api/desktop/list`. */
   readonly listDesktops: Effect.Effect<ReadonlyArray<AdeScreenboxDesktop>, AdeScreenboxClientError>;
   /** `POST /api/desktop/create` — re-entrant upstream for a running desktop. */
@@ -363,7 +414,11 @@ export interface AdeScreenboxClientShape {
   ) => Effect.Effect<void, AdeScreenboxClientError>;
   /** `POST /api/desktop/destroy` with `save_snapshot=false` (no snapshots in V1). */
   readonly destroyDesktop: (desktopId: string) => Effect.Effect<void, AdeScreenboxClientError>;
-  /** `POST /api/desktop/delete-data` — purges dossier + home volume. */
+  /**
+   * `POST /api/desktop/delete-data` — purges the dossier and *attempts* the
+   * home volume. See the implementation note: upstream reports success even
+   * when the volume survives.
+   */
   readonly deleteDesktopData: (desktopId: string) => Effect.Effect<void, AdeScreenboxClientError>;
   /** MCP `tools/list` (unfiltered; the tool plane owns the operate-only subset). */
   readonly listTools: Effect.Effect<
@@ -395,6 +450,19 @@ export class AdeScreenboxClient extends Context.Service<
   );
 }
 
+/**
+ * The two upstream planes disagree on the desktop-id field name, and getting
+ * it wrong is silent-looking but total: the HTTP API reads `body.get("id")` on
+ * create / control / destroy / delete-data and answers `400 Missing id` for
+ * anything else, while MCP `tools/call` arguments use `desktop_id`. HTTP
+ * bodies therefore carry `id` (required) plus `desktop_id` (ignored upstream,
+ * kept so a body read in a log or a proxy is self-describing).
+ */
+export const withDesktopId = (desktopId: string): Readonly<Record<string, unknown>> => ({
+  id: desktopId,
+  desktop_id: desktopId,
+});
+
 export const makeAdeScreenboxClient = (
   config: AdeScreenboxConfigShape,
   httpClient: HttpClient.HttpClient,
@@ -415,9 +483,10 @@ export const makeAdeScreenboxClient = (
       config.adminToken === null
         ? request
         : request.pipe(
+            // The HTTP API (`/api/*`) accepts `Authorization: Bearer` only;
+            // `X-API-Key` is read by the MCP middleware only. Send both so the
+            // single admin token authenticates on both planes.
             HttpClientRequest.bearerToken(config.adminToken),
-            // Upstream's auth middleware prefers `X-API-Key`; send both so the
-            // single admin token works in either wiring.
             HttpClientRequest.setHeader("x-api-key", config.adminToken),
           );
 
@@ -644,7 +713,7 @@ export const makeAdeScreenboxClient = (
     return {
       isConfigured: baseUrl !== null,
       health: httpJson({ operation: "health", method: "GET", path: "/api/health" }).pipe(
-        Effect.asVoid,
+        Effect.map(parseHealth),
       ),
       listDesktops: httpJson({
         operation: "desktop list",
@@ -656,14 +725,14 @@ export const makeAdeScreenboxClient = (
           operation: `desktop create ${desktopId}`,
           method: "POST",
           path: "/api/desktop/create",
-          body: { desktop_id: desktopId },
+          body: withDesktopId(desktopId),
         }).pipe(Effect.asVoid),
       controlDesktop: (desktopId, action) =>
         httpJson({
           operation: `desktop ${action} ${desktopId}`,
           method: "POST",
           path: "/api/desktop/control",
-          body: { desktop_id: desktopId, action },
+          body: { ...withDesktopId(desktopId), action },
         }).pipe(Effect.asVoid),
       destroyDesktop: (desktopId) =>
         httpJson({
@@ -671,14 +740,26 @@ export const makeAdeScreenboxClient = (
           method: "POST",
           path: "/api/desktop/destroy",
           // V1 has no snapshot feature (spec §4.6): never save one on destroy.
-          body: { desktop_id: desktopId, save_snapshot: false, confirm: true },
+          // Upstream reads `auto_snapshot` and falls back to `save_snapshot`,
+          // both defaulting to true, so this must be sent explicitly.
+          body: { ...withDesktopId(desktopId), save_snapshot: false, confirm: true },
         }).pipe(Effect.asVoid),
+      /**
+       * Known upstream defect (accommodated, not worked around): delete-data
+       * answers `{"deleted": true}` even when removing the home volume failed
+       * silently — its docker-proxy whitelist has no `DELETE /volumes` entry,
+       * so `screenbox-<id>-home` survives the purge and keeps the bot's data
+       * on disk. ADE deliberately makes no docker calls and does not retry;
+       * the operator workaround is `docker volume rm -f screenbox-<id>-home`
+       * on the Screenbox host. `AdeScreenbox.destroyDesktopFor` logs that
+       * hint on every successful delete.
+       */
       deleteDesktopData: (desktopId) =>
         httpJson({
           operation: `desktop delete-data ${desktopId}`,
           method: "POST",
           path: "/api/desktop/delete-data",
-          body: { desktop_id: desktopId },
+          body: withDesktopId(desktopId),
         }).pipe(Effect.asVoid),
       listTools,
       callTool,

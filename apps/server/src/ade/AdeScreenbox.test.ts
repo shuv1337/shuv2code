@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import type { BotId } from "@shuv2code/contracts";
 
@@ -723,6 +723,94 @@ describe("AdeScreenbox health probe", () => {
       const down = yield* runtime.probe;
       assert.strictEqual(down.state, "down");
       assert.isTrue((down.detail ?? "").length > 0);
+    }),
+  );
+
+  testCase(
+    "reads degradation out of the 200 body instead of trusting the status code",
+    Effect.gen(function* () {
+      yield* setup;
+      const { mock, runtime } = yield* buildHarness();
+      // Exactly what the real service does when its desktop image is missing:
+      // HTTP 200, `ok: false`, the reason in `issues`.
+      mock.healthIssues = ["Desktop image 'screenbox-desktop' not found. Run ./setup.sh"];
+
+      const degraded = yield* runtime.probe;
+      assert.strictEqual(degraded.state, "down");
+      assert.include(degraded.detail ?? "", "Desktop image");
+
+      mock.healthIssues = [];
+      assert.strictEqual((yield* runtime.probe).state, "healthy");
+    }),
+  );
+
+  testCase(
+    "summarizes a long issue list without unbounding the pill detail",
+    Effect.gen(function* () {
+      yield* setup;
+      const { mock, runtime } = yield* buildHarness();
+      mock.healthIssues = ["issue one", "issue two", "issue three", "issue four", "issue five"];
+
+      const degraded = yield* runtime.probe;
+      assert.strictEqual(degraded.state, "down");
+      assert.include(degraded.detail ?? "", "issue one");
+      assert.notInclude(degraded.detail ?? "", "issue five");
+      assert.include(degraded.detail ?? "", "+2 more issues");
+    }),
+  );
+});
+
+describe("AdeScreenbox HTTP lifecycle contract", () => {
+  /**
+   * Upstream's HTTP API keys every lifecycle route off `body["id"]` and answers
+   * `400 Missing id` otherwise; only MCP tool arguments use `desktop_id`. The
+   * mock enforces that, so these assertions fail the way the real service does
+   * if the client ever drops `id` again.
+   */
+  testCase(
+    "sends `id` on create, control, destroy, and delete-data",
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      yield* seedBot(sql, "bot-a", { computerUse: true });
+      const { mock, runtime } = yield* buildHarness();
+
+      yield* runtime.ensureDesktopReady("bot-a" as BotId);
+      yield* runtime.stopDesktopFor("bot-a" as BotId);
+      yield* runtime.destroyDesktopFor("bot-a" as BotId);
+
+      const lifecyclePaths = [
+        "/api/desktop/create",
+        "/api/desktop/control",
+        "/api/desktop/destroy",
+        "/api/desktop/delete-data",
+      ];
+      for (const path of lifecyclePaths) {
+        const sent = mock.requests.filter((request) => request.path === path);
+        assert.isAtLeast(sent.length, 1, `expected at least one ${path} request`);
+        for (const request of sent) {
+          const body = (request.body ?? {}) as Record<string, unknown>;
+          assert.strictEqual(body["id"], "bot-a", `${path} must carry the upstream \`id\` field`);
+        }
+      }
+      // No 400 leaked through: every lifecycle call was accepted upstream.
+      assert.deepStrictEqual([...mock.desktops.keys()], []);
+    }),
+  );
+
+  testCase(
+    "surfaces upstream's 400 when a lifecycle body omits `id`",
+    Effect.gen(function* () {
+      yield* setup;
+      const { mock } = yield* buildHarness();
+      const request = yield* HttpClientRequest.post(`${mock.baseUrl}/api/desktop/create`).pipe(
+        // The pre-fix body shape: `desktop_id` only, no `id`.
+        HttpClientRequest.bodyJson({ desktop_id: "bot-a" }),
+      );
+      const response = yield* HttpClient.execute(request).pipe(
+        Effect.provide(FetchHttpClient.layer),
+      );
+      assert.strictEqual(response.status, 400);
+      assert.include(yield* response.text, "Missing id");
     }),
   );
 });
