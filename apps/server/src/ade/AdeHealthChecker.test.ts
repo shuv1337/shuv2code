@@ -81,14 +81,20 @@ const seedBot = (sql: SqlClient.SqlClient, botId: string) =>
 
 const seedBinding = (
   sql: SqlClient.SqlClient,
-  input: { bindingId: string; botId: string; engine: KernelEngine; status?: string },
+  input: {
+    bindingId: string;
+    botId: string;
+    engine: KernelEngine;
+    status?: string;
+    purpose?: string;
+  },
 ) =>
   sql`
     INSERT INTO ade_bot_execution_bindings (
       binding_id, bot_id, engine, kernel_session_id, purpose, status, created_at, updated_at
     ) VALUES (
       ${input.bindingId}, ${input.botId}, ${input.engine}, ${`session-${input.bindingId}`},
-      'primary-text', ${input.status ?? "active"},
+      ${input.purpose ?? "primary-text"}, ${input.status ?? "active"},
       '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z'
     )
   `;
@@ -308,7 +314,14 @@ describe("AdeHealthChecker", () => {
       const sql = yield* setup;
       yield* seedBot(sql, "bot-both");
       yield* seedBinding(sql, { bindingId: "b1", botId: "bot-both", engine: "shuvcode" });
-      yield* seedBinding(sql, { bindingId: "b2", botId: "bot-both", engine: "codex" });
+      // 055 allows only one active primary-text binding per bot, so the second
+      // engine binding is the bot's parallel-work session.
+      yield* seedBinding(sql, {
+        bindingId: "b2",
+        botId: "bot-both",
+        engine: "codex",
+        purpose: "parallel-work",
+      });
       yield* seedAssignment(sql, { assignmentId: "a1", botId: "bot-both", status: "running" });
 
       const controls = yield* makeProbeControls;
