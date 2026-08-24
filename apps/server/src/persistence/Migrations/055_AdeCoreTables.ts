@@ -66,7 +66,7 @@ export default Effect.gen(function* () {
       bot_id TEXT PRIMARY KEY,
       content TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      updated_by TEXT NOT NULL CHECK (updated_by IN ('bot', 'captain')),
+      updated_by TEXT NOT NULL CHECK (updated_by IN ('bot', 'captain', 'system')),
       FOREIGN KEY (bot_id) REFERENCES ade_bots(bot_id) ON DELETE CASCADE
     )
   `;

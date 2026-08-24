@@ -130,7 +130,8 @@ export const MemoryDocumentContent = Schema.String.check(
 );
 export type MemoryDocumentContent = typeof MemoryDocumentContent.Type;
 
-export const MemoryDocumentAuthor = Schema.Literals(["bot", "captain"]);
+/** `system` marks seed/maintenance writes (e.g. the bootstrap's empty doc). */
+export const MemoryDocumentAuthor = Schema.Literals(["bot", "captain", "system"]);
 export type MemoryDocumentAuthor = typeof MemoryDocumentAuthor.Type;
 
 /** One bounded memory document per bot, keyed by botId (ADR §12.2). */
@@ -268,6 +269,13 @@ export type Assignment = typeof Assignment.Type;
 
 export const IntegrationPolicy = Schema.Literals(["automatic", "agent-review", "human-approval"]);
 export type IntegrationPolicy = typeof IntegrationPolicy.Type;
+
+/**
+ * Product default for `AdeProject.integrationPolicyDefault` when project
+ * creation does not specify one. A product default pending spec ratification —
+ * neither the spec nor the ADR fixes an initial value.
+ */
+export const DEFAULT_INTEGRATION_POLICY: IntegrationPolicy = "agent-review";
 
 /** Per-project limit overrides — every limit optional (spec §2.3). */
 export const LimitsOverrides = Schema.Struct({
