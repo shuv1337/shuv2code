@@ -223,15 +223,33 @@ export default Effect.gen(function* () {
   // Spec §2.3 / ADR §7.2, §16.2 — serialized integration queue. One running
   // candidate per project, enforced with a partial unique index; restart
   // re-runs the queue head, so no per-step journal exists.
+  //
+  // `gate`, `reviewer_bot_id`, and `workspace_path` are recomputed from scratch
+  // on every queue-head pass — they are rendering state for the captain
+  // surfaces, deliberately *not* a resume journal (ADR §16.2). Bot references
+  // carry no foreign key for the same reason `ade_assignments.requester_bot_id`
+  // does not: a bounced candidate stays readable as forensic history after its
+  // author or reviewer is deleted. (Pre-release in-place edit on ade-v1.)
   yield* sql`
     CREATE TABLE ade_integration_candidates (
       integration_candidate_id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
       source_assignment_ids_json TEXT NOT NULL,
       change_ids_json TEXT NOT NULL,
+      originating_bot_id TEXT NOT NULL,
+      declared_risk TEXT NOT NULL CHECK (declared_risk IN ('mechanical', 'normal', 'protected')),
       status TEXT NOT NULL CHECK (
         status IN ('queued', 'running', 'awaiting-review', 'awaiting-approval', 'integrated', 'bounced')
       ),
+      gate TEXT CHECK (
+        gate IS NULL OR gate IN ('automatic', 'agent-review', 'human-approval')
+      ),
+      reviewer_bot_id TEXT,
+      workspace_path TEXT,
+      bounce_count INTEGER NOT NULL DEFAULT 0,
+      bounce_json TEXT,
+      repair_assignment_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES ade_projects(project_id) ON DELETE CASCADE
@@ -241,6 +259,12 @@ export default Effect.gen(function* () {
     CREATE UNIQUE INDEX idx_ade_integration_candidates_one_running
     ON ade_integration_candidates(project_id)
     WHERE status = 'running'
+  `;
+  // Enqueue idempotency is per project (the queue is per project), mirroring
+  // the per-requester assignment key (ADR §13.6).
+  yield* sql`
+    CREATE UNIQUE INDEX idx_ade_integration_candidates_idempotency
+    ON ade_integration_candidates(project_id, idempotency_key)
   `;
   yield* sql`
     CREATE INDEX idx_ade_integration_candidates_queue

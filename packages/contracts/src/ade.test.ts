@@ -233,12 +233,49 @@ it("round-trips an IntegrationCandidate", () => {
   roundTrip(IntegrationCandidate, {
     id: "candidate-1",
     projectId: "project-1",
+    idempotencyKey: "assignment-1|assignment-2",
     sourceAssignmentIds: ["assignment-1", "assignment-2"],
     changeIds: ["zkmqwpxr", "qwlnnmts"],
+    originatingBotId: "bot-coder",
+    declaredRisk: "normal",
     status: "awaiting-review",
+    gate: "agent-review",
+    reviewerBotId: "bot-reviewer",
+    workspacePath: null,
+    bounceCount: 0,
+    bounce: null,
+    repairAssignmentId: null,
     createdAt: "2026-08-24T00:00:00.000Z",
     updatedAt: "2026-08-24T00:00:00.000Z",
   });
+});
+
+it("round-trips a bounced IntegrationCandidate with its repair lineage", () => {
+  const bounced = roundTrip(IntegrationCandidate, {
+    id: "candidate-2",
+    projectId: "project-1",
+    idempotencyKey: "assignment-3",
+    sourceAssignmentIds: ["assignment-3"],
+    changeIds: ["zkmqwpxr"],
+    originatingBotId: "bot-coder",
+    declaredRisk: "protected",
+    status: "bounced",
+    gate: "human-approval",
+    reviewerBotId: null,
+    workspacePath: "/tmp/ade/project-1/candidate-2",
+    bounceCount: 1,
+    bounce: {
+      reason: "checks-failed",
+      detail: "pnpm test exited 1",
+      at: "2026-08-24T00:00:01.000Z",
+    },
+    repairAssignmentId: "assignment-4",
+    createdAt: "2026-08-24T00:00:00.000Z",
+    updatedAt: "2026-08-24T00:00:01.000Z",
+  });
+  // The retained workspace is the forensic artifact (ADR §14.4).
+  assert.strictEqual(bounced.workspacePath, "/tmp/ade/project-1/candidate-2");
+  assert.strictEqual(bounced.bounce?.reason, "checks-failed");
 });
 
 it("round-trips a PublicationStack and PublicationLayer", () => {
