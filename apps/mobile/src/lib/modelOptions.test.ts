@@ -108,8 +108,8 @@ describe("mobile model options", () => {
           models: [],
         },
         {
-          instanceId: "claudeAgent",
-          driver: "claudeAgent",
+          instanceId: "opencodeV2",
+          driver: "opencodeV2",
           enabled: false,
           installed: true,
           auth: { status: "authenticated" },
@@ -123,7 +123,7 @@ describe("mobile model options", () => {
       model: "gpt-5.6-sol",
     };
     const disabled = {
-      instanceId: ProviderInstanceId.make("claudeAgent"),
+      instanceId: ProviderInstanceId.make("opencodeV2"),
       model: "claude-sonnet-5",
     };
     const removed = {

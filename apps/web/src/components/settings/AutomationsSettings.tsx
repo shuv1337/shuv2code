@@ -367,10 +367,7 @@ function AutomationEditor({
                     instanceId={activeInstanceEntry.instanceId}
                     models={activeInstanceEntry.models}
                     model={value.modelSelection.model}
-                    prompt=""
-                    onPromptChange={() => {}}
                     modelOptions={value.modelSelection.options}
-                    allowPromptInjectedEffort={false}
                     triggerVariant="outline"
                     triggerClassName="shrink-0"
                     onModelOptionsChange={(options) =>

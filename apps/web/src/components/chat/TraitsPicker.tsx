@@ -7,12 +7,10 @@ import {
   type ServerProviderModel,
 } from "@shuv2code/contracts";
 import {
-  applyClaudePromptEffortPrefix,
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
-  isClaudeUltrathinkPrompt,
 } from "@shuv2code/shared/model";
 import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
@@ -45,8 +43,6 @@ type TraitsPersistence =
       threadRef?: undefined;
       onModelOptionsChange: (nextOptions: ProviderOptions | undefined) => void;
     };
-
-const ULTRATHINK_PROMPT_PREFIX = "Ultrathink:\n";
 
 function DefaultBadge() {
   return (
@@ -93,9 +89,7 @@ function getSelectedTraits(
   provider: ProviderDriverKind,
   models: ReadonlyArray<ServerProviderModel>,
   model: string | null | undefined,
-  prompt: string,
   modelOptions: ProviderOptions | null | undefined,
-  allowPromptInjectedEffort: boolean,
 ) {
   const caps = getProviderModelCapabilities(models, model, provider);
   const descriptors = getProviderOptionDescriptors({
@@ -119,19 +113,7 @@ function getSelectedTraits(
   const thinkingDescriptor =
     booleanDescriptors.find((descriptor) => descriptor.id === "thinking") ?? null;
 
-  // Prompt-controlled effort (e.g. ultrathink in prompt text)
-  const ultrathinkPromptControlled =
-    allowPromptInjectedEffort &&
-    (primarySelectDescriptor?.promptInjectedValues?.length ?? 0) > 0 &&
-    isClaudeUltrathinkPrompt(prompt);
-
-  // Check if "ultrathink" appears in the body text (not just our prefix)
-  const ultrathinkInBodyText =
-    ultrathinkPromptControlled && isClaudeUltrathinkPrompt(prompt.replace(/^Ultrathink:\s*/i, ""));
-  const effort =
-    (ultrathinkPromptControlled
-      ? "ultrathink"
-      : getDescriptorStringValue(primarySelectDescriptor)) ?? null;
+  const effort = getDescriptorStringValue(primarySelectDescriptor) ?? null;
   const thinkingEnabled =
     typeof thinkingDescriptor?.currentValue === "boolean" ? thinkingDescriptor.currentValue : null;
   const contextWindow = getDescriptorStringValue(contextWindowDescriptor);
@@ -153,8 +135,6 @@ function getSelectedTraits(
     effort,
     thinkingEnabled,
     contextWindow,
-    ultrathinkPromptControlled,
-    ultrathinkInBodyText,
     selectedAgent,
     selectedAgentLabel,
   };
@@ -164,18 +144,9 @@ function getTraitsSectionVisibility(input: {
   provider: ProviderDriverKind;
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
-  prompt: string;
   modelOptions: ProviderOptions | null | undefined;
-  allowPromptInjectedEffort?: boolean;
 }) {
-  const selected = getSelectedTraits(
-    input.provider,
-    input.models,
-    input.model,
-    input.prompt,
-    input.modelOptions,
-    input.allowPromptInjectedEffort ?? true,
-  );
+  const selected = getSelectedTraits(input.provider, input.models, input.model, input.modelOptions);
 
   const showEffort = selected.primarySelectDescriptor !== null;
   const showThinking = selected.thinkingDescriptor !== null;
@@ -198,9 +169,7 @@ export function shouldRenderTraitsControls(input: {
   provider: ProviderDriverKind;
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
-  prompt: string;
   modelOptions: ProviderOptions | null | undefined;
-  allowPromptInjectedEffort?: boolean;
 }): boolean {
   return getTraitsSectionVisibility(input).hasAnyControls;
 }
@@ -210,10 +179,7 @@ export interface TraitsMenuContentProps {
   instanceId?: ProviderInstanceId;
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
-  prompt: string;
-  onPromptChange: (prompt: string) => void;
   modelOptions?: ProviderOptions | null | undefined;
-  allowPromptInjectedEffort?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
 }
@@ -223,10 +189,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   instanceId,
   models,
   model,
-  prompt,
-  onPromptChange,
   modelOptions,
-  allowPromptInjectedEffort = true,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
@@ -248,22 +211,13 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     },
     [instanceId, model, persistence, provider, setProviderModelOptions],
   );
-  const {
-    descriptors,
-    selectDescriptors,
-    booleanDescriptors,
-    primarySelectDescriptor,
-    ultrathinkPromptControlled,
-    ultrathinkInBodyText,
-    hasAnyControls,
-  } = getTraitsSectionVisibility({
-    provider,
-    models,
-    model,
-    prompt,
-    modelOptions,
-    allowPromptInjectedEffort,
-  });
+  const { descriptors, selectDescriptors, booleanDescriptors, hasAnyControls } =
+    getTraitsSectionVisibility({
+      provider,
+      models,
+      model,
+      modelOptions,
+    });
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
     updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
   };
@@ -273,19 +227,6 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     value: string,
   ) => {
     if (!value) return;
-    if (descriptor.promptInjectedValues?.includes(value)) {
-      const nextPrompt =
-        prompt.trim().length === 0
-          ? ULTRATHINK_PROMPT_PREFIX
-          : applyClaudePromptEffortPrefix(prompt, "ultrathink");
-      onPromptChange(nextPrompt);
-      return;
-    }
-    if (ultrathinkInBodyText && descriptor.id === primarySelectDescriptor?.id) return;
-    if (ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id) {
-      const stripped = prompt.replace(/^Ultrathink:\s*/i, "");
-      onPromptChange(stripped);
-    }
     updateDescriptors(replaceDescriptorCurrentValue(descriptors, descriptor.id, value));
   };
 
@@ -296,10 +237,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   return (
     <>
       {selectDescriptors.map((descriptor, index) => {
-        const selectedValue =
-          ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id
-            ? "ultrathink"
-            : (getDescriptorStringValue(descriptor) ?? "");
+        const selectedValue = getDescriptorStringValue(descriptor) ?? "";
 
         return (
           <div key={descriptor.id}>
@@ -308,12 +246,6 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
               <div className="px-2 pt-1.5 pb-1 font-medium text-muted-foreground text-xs">
                 {descriptor.label}
               </div>
-              {ultrathinkInBodyText && descriptor.id === primarySelectDescriptor?.id ? (
-                <div className="px-2 pb-1.5 text-muted-foreground/80 text-xs">
-                  Your prompt contains &quot;ultrathink&quot; in the text. Remove it to change this
-                  option.
-                </div>
-              ) : null}
               <MenuRadioGroup
                 value={selectedValue}
                 onValueChange={(value) => handleSelectChange(descriptor, value)}
@@ -326,7 +258,6 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
                     // Base UI keeps radio menus open by default. Close on pick so
                     // the traits menu behaves like the model picker.
                     closeOnClick
-                    disabled={ultrathinkInBodyText && descriptor.id === primarySelectDescriptor?.id}
                   >
                     <span className="flex w-full min-w-0 flex-col">
                       <span className="flex w-full min-w-0 items-center justify-between gap-3">
@@ -397,8 +328,6 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
 export function buildTraitsTriggerDisplay(input: {
   provider: ProviderDriverKind;
   descriptors: ReadonlyArray<ProviderOptionDescriptor>;
-  primarySelectDescriptorId: string | null;
-  ultrathinkPromptControlled: boolean;
 }): { label: string; showFastModeIcon: boolean } {
   let hasFastMode = false;
   let fastModeEnabled = false;
@@ -423,11 +352,9 @@ export function buildTraitsTriggerDisplay(input: {
       }
     }
     const label =
-      input.ultrathinkPromptControlled && descriptor.id === input.primarySelectDescriptorId
-        ? "Ultrathink"
-        : descriptor.type === "boolean"
-          ? `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`
-          : getProviderOptionCurrentLabel(descriptor);
+      descriptor.type === "boolean"
+        ? `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`
+        : getProviderOptionCurrentLabel(descriptor);
     if (typeof label === "string" && label.length > 0) {
       labels.push(label);
     }
@@ -447,32 +374,24 @@ export const TraitsPicker = memo(function TraitsPicker({
   instanceId,
   models,
   model,
-  prompt,
-  onPromptChange,
   modelOptions,
-  allowPromptInjectedEffort = true,
   triggerVariant,
   triggerClassName,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { descriptors, primarySelectDescriptor, ultrathinkPromptControlled } =
-    getTraitsSectionVisibility({
-      provider,
-      models,
-      model,
-      prompt,
-      modelOptions,
-      allowPromptInjectedEffort,
-    });
+  const { descriptors } = getTraitsSectionVisibility({
+    provider,
+    models,
+    model,
+    modelOptions,
+  });
   if (
     !shouldRenderTraitsControls({
       provider,
       models,
       model,
-      prompt,
       modelOptions,
-      allowPromptInjectedEffort,
     })
   ) {
     return null;
@@ -481,18 +400,10 @@ export const TraitsPicker = memo(function TraitsPicker({
   const { label: triggerLabel, showFastModeIcon } = buildTraitsTriggerDisplay({
     provider,
     descriptors,
-    primarySelectDescriptorId: primarySelectDescriptor?.id ?? null,
-    ultrathinkPromptControlled,
   });
   const fastModeIcon = showFastModeIcon ? (
     <>
-      <ComposerControlIcon
-        icon={ZapIcon}
-        className={cn(
-          "fill-current opacity-80",
-          provider === "claudeAgent" ? "text-[#d97757]" : "text-foreground",
-        )}
-      />
+      <ComposerControlIcon icon={ZapIcon} className="fill-current text-foreground opacity-80" />
       <span className="sr-only">Fast mode on</span>
     </>
   ) : null;
@@ -539,10 +450,7 @@ export const TraitsPicker = memo(function TraitsPicker({
           {...(instanceId ? { instanceId } : {})}
           models={models}
           model={model}
-          prompt={prompt}
-          onPromptChange={onPromptChange}
           modelOptions={modelOptions}
-          allowPromptInjectedEffort={allowPromptInjectedEffort}
           {...persistence}
         />
       </MenuPopup>

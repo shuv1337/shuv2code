@@ -1,7 +1,7 @@
-import { OpenCodeSettings, OpenCodeV2Settings, ProviderDriverKind } from "@shuv2code/contracts";
+import { CodexSettings, OpenCodeV2Settings, ProviderDriverKind } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { OpenCodeIcon } from "../Icons";
+import { OpenAI, OpenCodeIcon } from "../Icons";
 import { DRIVER_OPTION_BY_VALUE, DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 
 describe("providerDriverMeta", () => {
@@ -19,14 +19,21 @@ describe("providerDriverMeta", () => {
     expect(DRIVER_OPTION_BY_VALUE[driver]).toBe(definition);
   });
 
-  it("preserves the existing OpenCode v1 metadata", () => {
-    const driver = ProviderDriverKind.make("opencode");
+  it("exposes codex with its canonical user-facing metadata", () => {
+    const driver = ProviderDriverKind.make("codex");
 
     expect(getDriverOption(driver)).toEqual({
       value: driver,
-      label: "OpenCode",
-      icon: OpenCodeIcon,
-      settingsSchema: OpenCodeSettings,
+      label: "Codex",
+      icon: OpenAI,
+      settingsSchema: CodexSettings,
     });
+  });
+
+  it("returns undefined for stripped or unknown drivers", () => {
+    expect(getDriverOption(ProviderDriverKind.make("claudeAgent"))).toBeUndefined();
+    expect(getDriverOption(ProviderDriverKind.make("opencode"))).toBeUndefined();
+    expect(getDriverOption(ProviderDriverKind.make("cursor"))).toBeUndefined();
+    expect(getDriverOption(ProviderDriverKind.make("grok"))).toBeUndefined();
   });
 });

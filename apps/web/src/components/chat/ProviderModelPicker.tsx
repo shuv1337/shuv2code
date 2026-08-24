@@ -32,7 +32,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   keybindings?: ResolvedKeybindingsConfig;
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
-  activeProviderIconClassName?: string;
   compact?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
@@ -165,7 +164,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               accentColor={activeEntry.accentColor}
               showBadge={showInstanceBadge}
               className="size-4"
-              iconClassName={cn("size-4", props.activeProviderIconClassName)}
+              iconClassName="size-4"
               indicatorBackground="var(--input)"
               badgeClassName={cn(
                 "right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3",

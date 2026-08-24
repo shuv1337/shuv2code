@@ -29,15 +29,8 @@ export type ContextWindowSnapshot = NullableContextWindowUsage & {
 export function formatProviderDisplayName(provider: string | null | undefined): string {
   if (!provider) return "This agent";
   switch (provider) {
-    case "claudeAgent":
-    case "claude":
-      return "Claude";
     case "codex":
       return "Codex";
-    case "cursor":
-      return "Cursor";
-    case "opencode":
-      return "OpenCode";
     case "opencodeV2":
       return "opencode2";
     default: {
