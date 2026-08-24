@@ -2794,13 +2794,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             const base = existing ?? createEmptyThreadDraft();
             const nextMap = { ...base.modelSelectionByProvider };
-            for (const provider of [
-              "codex",
-              "claudeAgent",
-              "cursor",
-              "opencode",
-              "opencodeV2",
-            ] as const) {
+            for (const provider of ["codex", "opencodeV2"] as const) {
               if (!modelOptions || !(provider in modelOptions)) continue;
               const opts = modelOptions[provider];
               const driverKind = ProviderDriverKind.make(provider);

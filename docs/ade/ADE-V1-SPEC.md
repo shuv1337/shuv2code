@@ -4,7 +4,7 @@ Assembled 2026-08-23 from wayfinder map [#129](https://github.com/shuv1337/shuv2
 (final ticket [#140](https://github.com/shuv1337/shuv2code/issues/140)). Decision authority remains
 [ADE-FORK-DECISION.md](https://github.com/shuv1337/psychoharness/blob/main/ADE-FORK-DECISION.md) (the ADR);
 this spec is authoritative on implementation **shapes** — schemas, services, APIs, UI slices, build sequence,
-verification. On conflict about *why* or *whether*: the ADR wins. On conflict about *how*: this spec wins.
+verification. On conflict about _why_ or _whether_: the ADR wins. On conflict about _how_: this spec wins.
 
 Per-decision detail lives in the closed map tickets; each section links its source. Vocabulary is defined in
 [/CONTEXT.md](../../CONTEXT.md).
@@ -159,12 +159,13 @@ the queue head.
 
 Native GitHub Stacked PRs (`gh stack link` / `gh stack merge`) primary; chained PRs fallback (identical jj-side
 mechanics). **Invariants**:
+
 1. every pass begins `jj git fetch` + fresh `gh` reads (converge-then-act); durable `changeId` recreates lost bookmarks;
 2. `prNumber` is mutable — replacement PRs must be representable;
 3. post-merge reconciliation keys on recorded SHAs, never change IDs (`jj rebase --skip-emptied` for refresh);
 4. the service **never writes files inside operated workspaces**; `@` positioned deliberately;
 5. never `--delete-branch`; cleanup is the explicit post-reconcile pass.
-Recovery: GitHub-reconciling (re-read PR/stack state, converge).
+   Recovery: GitHub-reconciling (re-read PR/stack state, converge).
 
 ### 4.6 Screenbox integration ([#139](https://github.com/shuv1337/shuv2code/issues/139))
 
@@ -219,6 +220,7 @@ copied. Codex sits behind the thinner normalization/binding layer (ADR §19.2).
 
 Home = **Firstmate conversation**; persistent **fleet sidebar** (projects/crews tree, running assignments,
 Needs You badge, kernel pills). All eight surfaces ship thin:
+
 1. **Firstmate/bot chat** — existing conversation component stack over client-runtime, scoped to the active
    binding, ADE chrome (persona header, assignment context); new rendering only for assignment-result synthetic items.
 2. **Roster + bot detail** — bots, roles, bindings, captain-editable memory, persona versions, computer-use toggle.
@@ -249,11 +251,13 @@ passes and the captain personally approves the final `ade-v1` → main merge. Th
 "no long-lived strip branch" wording for this build.
 
 **Phase 0 — strip (ADR §17.1)**
+
 - **S1. Provider strip stack** — remove OpenCode v1, Grok, Cursor, Claude drivers/adapters/providers +
   their settings, usage-scanner, composer, and startup-default seams; keep Codex + OpenCodeV2 (shuvcode);
   tree boots green at every layer of one short stacked series targeting `ade-v1`.
 
 **Phase 1 — foundation**
+
 - **S2. ADE contracts + persistence** ← S1 — `packages/contracts` schemas for §2, DB tables/migrations on the fresh database.
 - **S3. Bootstrap: ensure-Firstmate + templates + LimitsConfig** ← S2 — §4.1 seed content and boot service.
 - **S4. shuvcode dynamic-tool extension (bridge)** — upstream session-scoped dynamic tools land in
@@ -263,6 +267,7 @@ passes and the captain personally approves the final `ade-v1` → main merge. Th
 - **S17. Health checker + pills** ← S3 — §4.8 (early: everything else surfaces through it).
 
 **Phase 2 — gate & core**
+
 - **S6. ADE tool gate** ← S2, S4, S5 — dynamic-tool registry, dispatch, inline checks, structural attribution (§3.1–3.2).
 - **S7. Assignment engine** ← S6 — §4.2 + §2.2 semantics end-to-end on both kernels.
 - **S8. Persona/memory/rollover services** ← S3, S5 — §4.3 + persona projection + memory tools.
@@ -270,17 +275,20 @@ passes and the captain personally approves the final `ade-v1` → main merge. Th
   **Milestone: walking skeleton** — talk to Firstmate, delegate one assignment, see its structured result delivered.
 
 **Phase 3 — critical path to publish**
+
 - **S10. Integration service** ← S7 — §4.4.
 - **S11. Publication service** ← S10 — §4.5 invariants + reconciliation.
 - **S12. Project view + work graph UI** ← S9, S10 — UI slices 3, 4 (publication panel lands with S11).
 - **S13. Needs You inbox + `ade:approve`** ← S9 — UI slice 5 + approval scope end-to-end.
 
 **Phase 4 — parallel tracks (post-skeleton)**
+
 - **S14. Screenbox proxy + provisioning + idle policy** ← S6 — §4.6 tool plane, provisioning, idle-stop, boot reconcile.
 - **S15. Screenbox viewer + Screen tab + delete** ← S14, S9 — WS→VNC proxy, noVNC embed, Start/Stop, delete purge.
 - **S16. Voice retargeting** ← S6, S9 — §4.7 bindings, toolkit, two-phase approvals, digest/summary.
 
 **Phase 5 — acceptance**
+
 - **S18. V1 acceptance walkthrough** ← all — §10.2 scenarios run once against a fresh `ade-v1` boot;
   close = V1 build-complete, unlocking the captain-approved `ade-v1` → main merge.
 
@@ -297,6 +305,7 @@ must encode their invariants as tests inside their own issue, not defer them to 
 ### 10.2 V1 acceptance walkthrough (S18)
 
 Captain-visible, run once against a fresh database with all three runtimes up:
+
 1. **First boot** — Firstmate exists (ensure-on-boot), welcome copy + kernel hint, LimitsConfig seeded, pills green.
 2. **First project** — empty-state CTA → create project with repo binding → Second Mate auto-created; add a
    Coder from template.

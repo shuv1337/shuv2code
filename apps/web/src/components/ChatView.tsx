@@ -5698,7 +5698,7 @@ function ChatViewContent(props: ChatViewProps) {
         selectedProvider: ctxSelectedProvider,
         selectedModel: ctxSelectedModel,
         selectedProviderModels: ctxSelectedProviderModels,
-          selectedModelSelection: ctxSelectedModelSelection,
+        selectedModelSelection: ctxSelectedModelSelection,
       } = sendCtx;
 
       const threadIdForSend = activeThread.id;

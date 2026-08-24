@@ -203,9 +203,7 @@ export const make = Effect.gen(function* () {
 
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
 
-    return [
-      { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
-    ];
+    return [{ provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") }];
   });
 
   /**
