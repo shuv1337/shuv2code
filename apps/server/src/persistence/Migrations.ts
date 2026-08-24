@@ -69,6 +69,7 @@ import Migration0051 from "./Migrations/051_ProjectionThreadMessageModality.ts";
 import Migration0052 from "./Migrations/052_VoiceCallEvents.ts";
 import Migration0053 from "./Migrations/053_VoiceCallOwnership.ts";
 import Migration0054 from "./Migrations/054_VoiceCallHandoff.ts";
+import Migration0055 from "./Migrations/055_AdeCoreTables.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -135,6 +136,7 @@ export const migrationEntries = [
   [52, "VoiceCallEvents", Migration0052],
   [53, "VoiceCallOwnership", Migration0053],
   [54, "VoiceCallHandoff", Migration0054],
+  [55, "AdeCoreTables", Migration0055],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
