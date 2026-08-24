@@ -33,6 +33,8 @@ import { AdeAssignmentInlineChecks, AdeAssignmentToolHandlers } from "./ade/AdeA
 import { AdeBootstrap } from "./ade/AdeBootstrap.ts";
 import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
+import { layer as AdeIntegrationRepoPortLayer } from "./ade/AdeIntegrationRepoPort.ts";
+import { AdeIntegrationService } from "./ade/AdeIntegrationService.ts";
 import { AdeMemoryToolHandlers } from "./ade/AdeMemoryTools.ts";
 import { AdePersonaMemory } from "./ade/AdePersonaMemory.ts";
 import {
@@ -93,6 +95,7 @@ import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as JjVcsDriver from "./vcs/JjVcsDriver.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
@@ -379,12 +382,27 @@ const AdeToolGateLayerLive = AdeToolGate.layer.pipe(
   Layer.provide(AdeScreenboxToolPlaneLive),
 );
 
+// ADE integration service (spec §4.4, S10): the serialized per-project
+// candidate pipeline. Its JJ mechanics ride a dedicated `JjVcsDriver` — ADE
+// projects are JJ-only by decision (ADR §6.1), so this deliberately does not go
+// through `VcsDriverRegistry`'s git/jj detection. `FileSystem`/`Path` come from
+// the runtime's platform services, like every other open-requirement ADE layer.
+const AdeIntegrationRepoPortLayerLive = AdeIntegrationRepoPortLayer.pipe(
+  Layer.provide(JjVcsDriver.layer),
+  Layer.provide(VcsProcess.layer),
+  Layer.provide(ProcessRunner.layer),
+);
+
 const AdeCaptainLayerLive = Layer.mergeAll(
   AdeAssignmentEngine.sweeperLive(),
   AdeAssignmentRunner.sweeperLive(),
+  AdeIntegrationService.sweeperLive(),
   AdeShuvcodeDispatchLoop.live,
 ).pipe(
   Layer.provideMerge(AdeCaptainApi.layer),
+  Layer.provideMerge(
+    AdeIntegrationService.layer.pipe(Layer.provide(AdeIntegrationRepoPortLayerLive)),
+  ),
   Layer.provideMerge(AdeAssignmentRunner.layer),
   Layer.provideMerge(AdeShuvcodeChatSession.layer),
   Layer.provideMerge(AdeToolGateLayerLive),
