@@ -67,6 +67,60 @@ export function getBotChatWelcomeCopy(input: {
  * command handed back this session; it wins over the loaded detail because the
  * detail re-read may not have landed yet.
  */
+/**
+ * What to do while a session exists but the thread has not arrived in the
+ * client store yet.
+ *
+ * "Waiting" must be a state with an exit. The thread route can afford to spin
+ * because a stuck route is a blank page the captain navigates away from; this
+ * page owns a bot that already has a live kernel session, so a permanent
+ * "Opening the conversation…" strands them with no way back to a Start button.
+ * Every terminal condition therefore resolves to `retry`.
+ */
+export type ChatSyncOutcome =
+  | { readonly kind: "waiting" }
+  | { readonly kind: "ready" }
+  | { readonly kind: "retry"; readonly message: string };
+
+/** How long to wait for the thread before offering the way out. */
+export const CHAT_SYNC_TIMEOUT_MS = 30_000;
+
+const SYNC_TIMEOUT_MESSAGE =
+  "The conversation did not finish loading. The session is still open — try again.";
+const SYNC_MISSING_MESSAGE =
+  "This bot's conversation is no longer available on the server. Start a new one.";
+
+export function resolveChatSyncOutcome(input: {
+  /** From `resolveThreadRouteRenderState`. */
+  readonly renderState: "loading" | "ready" | "missing";
+  readonly threadShellExists: boolean;
+  /** Error from the environment shell query, if any. */
+  readonly shellError?: unknown;
+  /** Milliseconds since the session was started, for the bounded fallback. */
+  readonly elapsedMs: number;
+}): ChatSyncOutcome {
+  if (input.shellError !== undefined && input.shellError !== null) {
+    return {
+      kind: "retry",
+      message: adeCaptainErrorMessage(input.shellError, SYNC_TIMEOUT_MESSAGE),
+    };
+  }
+  if (
+    input.renderState === "ready" ||
+    (input.renderState === "loading" && input.threadShellExists)
+  ) {
+    return { kind: "ready" };
+  }
+  // `missing` after bootstrap is terminal: the thread is not coming.
+  if (input.renderState === "missing") {
+    return { kind: "retry", message: SYNC_MISSING_MESSAGE };
+  }
+  if (input.elapsedMs >= CHAT_SYNC_TIMEOUT_MS) {
+    return { kind: "retry", message: SYNC_TIMEOUT_MESSAGE };
+  }
+  return { kind: "waiting" };
+}
+
 export function getBotChatBody(input: {
   readonly detail: AdeBotDetail | null;
   readonly startedThreadId: ThreadId | null;

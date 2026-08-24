@@ -328,6 +328,26 @@ export interface AdeSessionRolloverShape {
   readonly listBindings: (
     botId: BotId,
   ) => Effect.Effect<ReadonlyArray<BotExecutionBinding>, PersistenceSqlError>;
+  /**
+   * Correct the kernel session id an *existing* binding points at, without
+   * retiring it or touching its projection.
+   *
+   * This is bookkeeping, not a rollover: the durable binding is still the same
+   * conversation, but the kernel re-minted its session underneath (an adapter
+   * restart, a resume that produced a new native id). Leaving the old id in
+   * place would strand every S7 delivery and S8 lookup on a session that no
+   * longer exists, so the row has to follow. The same per-engine session
+   * uniqueness the index enforces applies here — adopting an id another
+   * binding already owns fails with `AdeSessionBindingConflictError` rather
+   * than silently re-pointing two bots at one session.
+   */
+  readonly rebindKernelSession: (input: {
+    readonly bindingId: BotExecutionBindingId;
+    readonly sessionId: KernelSessionId;
+  }) => Effect.Effect<
+    BotExecutionBinding,
+    AdeBindingNotFoundError | AdeSessionBindingConflictError | PersistenceSqlError
+  >;
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +746,62 @@ export class AdeSessionRollover extends Context.Service<
         }
       });
 
+      const rebindKernelSession: AdeSessionRolloverShape["rebindKernelSession"] = Effect.fn(
+        "AdeSessionRollover.rebindKernelSession",
+      )(function* (input) {
+        const at = yield* nowIso;
+        const mapSql = toPersistenceSqlError("AdeSessionRollover.rebindKernelSession");
+        const rows = yield* sql<BindingRow>`
+          SELECT * FROM ade_bot_execution_bindings WHERE binding_id = ${input.bindingId}
+        `.pipe(Effect.mapError(mapSql));
+        const row = rows[0];
+        if (row === undefined) {
+          return yield* new AdeBindingNotFoundError({ bindingId: input.bindingId });
+        }
+        if (row.kernel_session_id === input.sessionId) return rowToBinding(row);
+
+        // The unique (engine, kernel_session_id) index is the real guard; the
+        // pre-check exists only to report *who* holds it.
+        const owner = yield* sql<{ binding_id: string; bot_id: string }>`
+          SELECT binding_id, bot_id FROM ade_bot_execution_bindings
+          WHERE engine = ${row.engine} AND kernel_session_id = ${input.sessionId}
+        `.pipe(Effect.mapError(mapSql));
+        const held = owner[0];
+        if (held !== undefined) {
+          return yield* new AdeSessionBindingConflictError({
+            engine: row.engine,
+            sessionId: input.sessionId,
+            boundBotId: held.bot_id,
+            boundBindingId: held.binding_id,
+          });
+        }
+
+        const updated = yield* sql<BindingRow>`
+          UPDATE ade_bot_execution_bindings
+          SET kernel_session_id = ${input.sessionId}, updated_at = ${at}
+          WHERE binding_id = ${input.bindingId}
+          RETURNING *
+        `.pipe(
+          // Losing the race to the uniqueness index between the check above
+          // and this write is a conflict, not a persistence fault.
+          Effect.catchTag(
+            "SqlError",
+            () =>
+              new AdeSessionBindingConflictError({
+                engine: row.engine,
+                sessionId: input.sessionId,
+                boundBotId: null,
+                boundBindingId: null,
+              }),
+          ),
+        );
+        const next = updated[0];
+        if (next === undefined) {
+          return yield* new AdeBindingNotFoundError({ bindingId: input.bindingId });
+        }
+        return rowToBinding(next);
+      });
+
       const listBindings: AdeSessionRolloverShape["listBindings"] = Effect.fn(
         "AdeSessionRollover.listBindings",
       )(function* (botId: BotId) {
@@ -743,6 +819,7 @@ export class AdeSessionRollover extends Context.Service<
         openBinding,
         closeBinding,
         listBindings,
+        rebindKernelSession,
       });
     }),
   );

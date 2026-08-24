@@ -652,6 +652,7 @@ export class AdeCaptainError extends Schema.TaggedErrorClass<AdeCaptainError>()(
     "memory_too_large",
     "persona_invalid",
     "session_unavailable",
+    "project_invalid",
     "persistence_failed",
   ]),
   message: Schema.String,

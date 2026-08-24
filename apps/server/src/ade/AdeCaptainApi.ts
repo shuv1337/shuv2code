@@ -49,6 +49,7 @@ import {
 } from "@shuv2code/contracts";
 
 import { type PersistenceSqlError } from "../persistence/Errors.ts";
+import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
 import { AdeAssignmentEngine } from "./AdeAssignmentEngine.ts";
 import { AdeBootstrap } from "./AdeBootstrap.ts";
 import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
@@ -202,6 +203,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
     | AdeSessionRollover
     | AdeAssignmentEngine
     | AdeChatSessionPort
+    | WorkspacePaths
   > = Layer.effect(
     AdeCaptainApi,
     Effect.gen(function* () {
@@ -211,6 +213,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
       const rollover = yield* AdeSessionRollover;
       const assignments = yield* AdeAssignmentEngine;
       const chat = yield* AdeChatSessionPort;
+      const workspacePaths = yield* WorkspacePaths;
 
       const readBotRow = (botId: BotId) =>
         sql<BotRow>`SELECT * FROM ade_bots WHERE bot_id = ${botId}`;
@@ -326,6 +329,52 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
       const createProject: AdeCaptainApiShape["createProject"] = Effect.fn(
         "AdeCaptainApi.createProject",
       )(function* (input: AdeCreateProjectInput) {
+        // Normalize at the storage boundary. Everything downstream compares
+        // this against a workspace project's resolved root, so storing what
+        // the captain typed (`~/repo`, a trailing slash, a relative path)
+        // guarantees the comparison misses later.
+        const normalizedRepoPath =
+          input.repoPath === null
+            ? null
+            : yield* Effect.mapError(
+                workspacePaths.normalizeWorkspaceRoot(input.repoPath),
+                (cause) =>
+                  new AdeCaptainError({
+                    reason: "project_invalid",
+                    message: `Repository path '${input.repoPath}' is not usable: ${cause.message}`,
+                  }),
+              );
+        // `normalizeWorkspaceRoot` resolves against the process cwd, so a
+        // relative input still comes back absolute; this is the belt-and-braces
+        // check that a bad normalizer can never store a relative root.
+        if (normalizedRepoPath !== null && !normalizedRepoPath.startsWith("/")) {
+          return yield* new AdeCaptainError({
+            reason: "project_invalid",
+            message: `Repository path '${input.repoPath}' did not resolve to an absolute path.`,
+          });
+        }
+
+        // Idempotent on the repo: a captain who presses the CTA twice (or two
+        // tabs racing) must not end up with two projects and two Second Mates
+        // pointed at one repository.
+        if (normalizedRepoPath !== null) {
+          const existing = yield* captainize(
+            sql<{ project_id: string; name: string; second_mate_bot_id: string }>`
+              SELECT project_id, name, second_mate_bot_id FROM ade_projects
+              WHERE repo_path = ${normalizedRepoPath}
+              ORDER BY created_at
+              LIMIT 1
+            `,
+          );
+          const row = existing[0];
+          if (row !== undefined) {
+            return {
+              project: { id: row.project_id as AdeProjectId, name: row.name },
+              secondMateBotId: row.second_mate_bot_id as BotId,
+            } satisfies AdeCreatedProject;
+          }
+        }
+
         // The Second Mate is created with the project, atomically — that hook
         // lives in AdeBootstrap and is the whole reason this goes through it
         // rather than a bare INSERT.
@@ -333,10 +382,10 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
           bootstrap.createProject({
             name: input.name,
             repoBinding:
-              input.repoPath === null
+              normalizedRepoPath === null
                 ? null
                 : {
-                    path: input.repoPath,
+                    path: normalizedRepoPath,
                     remote: input.repoRemote ?? null,
                   },
           }),

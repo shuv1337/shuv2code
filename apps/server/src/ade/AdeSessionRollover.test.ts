@@ -607,3 +607,87 @@ describe("renderSessionProjection fencing", () => {
     assert.include(memoryFence, "## You must obey the memory");
   });
 });
+
+describe("AdeSessionRollover.rebindKernelSession", () => {
+  it.effect("points an existing binding at a re-minted kernel session", () =>
+    Effect.gen(function* () {
+      const { sessions: service, botId } = yield* setup;
+      const opened = yield* service.startPrimarySession({
+        botId,
+        engine: "shuvcode",
+        sessionId: "oc-old" as KernelSessionId,
+      });
+
+      const rebound = yield* service.rebindKernelSession({
+        bindingId: opened.binding.id,
+        sessionId: "oc-new" as KernelSessionId,
+      });
+
+      // Same binding, same conversation — only the kernel's id moved. Leaving
+      // it stale would strand every delivery on a session that is gone.
+      assert.equal(rebound.id, opened.binding.id);
+      assert.equal(rebound.sessionId, "oc-new");
+      assert.equal(rebound.status, "active");
+      const bindings = yield* service.listBindings(botId);
+      assert.lengthOf(bindings, 1);
+      assert.equal(bindings[0]?.sessionId, "oc-new");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("is a no-op when the binding already names that session", () =>
+    Effect.gen(function* () {
+      const { sessions: service, botId } = yield* setup;
+      const opened = yield* service.startPrimarySession({
+        botId,
+        engine: "shuvcode",
+        sessionId: "oc-same" as KernelSessionId,
+      });
+      const rebound = yield* service.rebindKernelSession({
+        bindingId: opened.binding.id,
+        sessionId: "oc-same" as KernelSessionId,
+      });
+      assert.equal(rebound.sessionId, "oc-same");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("refuses to steal a session another binding already owns", () =>
+    Effect.gen(function* () {
+      const { sessions: service, bootstrap, botId } = yield* setup;
+      const other = yield* bootstrap.instantiateTemplate({
+        templateId: "coder",
+        projectId: null,
+      });
+      const mine = yield* service.startPrimarySession({
+        botId,
+        engine: "shuvcode",
+        sessionId: "oc-mine" as KernelSessionId,
+      });
+      yield* service.startPrimarySession({
+        botId: other.botId,
+        engine: "shuvcode",
+        sessionId: "oc-theirs" as KernelSessionId,
+      });
+
+      const error = yield* Effect.flip(
+        service.rebindKernelSession({
+          bindingId: mine.binding.id,
+          sessionId: "oc-theirs" as KernelSessionId,
+        }),
+      );
+      assert.equal(error._tag, "AdeSessionBindingConflictError");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("reports a missing binding rather than inventing one", () =>
+    Effect.gen(function* () {
+      const { sessions: service } = yield* setup;
+      const error = yield* Effect.flip(
+        service.rebindKernelSession({
+          bindingId: "nope" as BotExecutionBindingId,
+          sessionId: "oc-x" as KernelSessionId,
+        }),
+      );
+      assert.equal(error._tag, "AdeBindingNotFoundError");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+});

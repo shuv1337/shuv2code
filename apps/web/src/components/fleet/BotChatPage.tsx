@@ -1,7 +1,7 @@
 import type { BotId, ThreadId } from "@shuv2code/contracts";
 import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtime";
 import { Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { openCommandPalette } from "../../commandPaletteBus";
 import { cn } from "../../lib/utils";
@@ -24,7 +24,7 @@ import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { Skeleton } from "../ui/skeleton";
-import { getBotChatBody, getBotChatHeaderView } from "./BotChatPage.logic";
+import { getBotChatBody, getBotChatHeaderView, resolveChatSyncOutcome } from "./BotChatPage.logic";
 
 /**
  * Firstmate/bot chat (spec §7 slice 1). The conversation itself is the
@@ -39,6 +39,9 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
   const startChat = useAtomCommand(adeEnvironment.startBotChat, { reportFailure: false });
   const [startedThreadId, setStartedThreadId] = useState<ThreadId | null>(null);
   const [toolsMissing, setToolsMissing] = useState(false);
+  /** When the current session was started, for the bounded sync fallback. */
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [syncElapsedMs, setSyncElapsedMs] = useState(0);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,9 +91,34 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
     shellExists: threadShell !== null,
     status: threadStatus,
   });
-  const chatReady =
-    threadRef !== null &&
-    (renderState === "ready" || (renderState === "loading" && threadShell !== null));
+  // Tick only while waiting, so the bounded fallback can fire without making
+  // the page re-render forever once it has settled.
+  useEffect(() => {
+    if (startedAt === null || threadDetail !== null) return;
+    const timer = setInterval(() => setSyncElapsedMs(Date.now() - startedAt), 1_000);
+    return () => clearInterval(timer);
+  }, [startedAt, threadDetail]);
+
+  const syncOutcome =
+    threadRef === null
+      ? ({ kind: "waiting" } as const)
+      : resolveChatSyncOutcome({
+          renderState,
+          threadShellExists: threadShell !== null,
+          shellError: shell.error,
+          elapsedMs: syncElapsedMs,
+        });
+  const chatReady = threadRef !== null && syncOutcome.kind === "ready";
+
+  const retrySync = () => {
+    // Waiting must have an exit. Drop back to the welcome state so the captain
+    // gets a button instead of a spinner; `startBotChat` is idempotent, so
+    // pressing it re-adopts the existing session rather than buying a second.
+    setStartedThreadId(null);
+    setStartedAt(null);
+    setSyncElapsedMs(0);
+    setError(syncOutcome.kind === "retry" ? syncOutcome.message : null);
+  };
 
   const handleStart = async () => {
     if (environmentId === null) return;
@@ -110,6 +138,8 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
       return;
     }
     setToolsMissing(!result.value.toolsAttached);
+    setStartedAt(Date.now());
+    setSyncElapsedMs(0);
     setStartedThreadId(result.value.threadId);
   };
 
@@ -154,6 +184,10 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
           {toolsMissing ? (
             // The conversation works; delegation does not. Saying so beats
             // letting the captain watch the bot fail to delegate silently.
+            //
+            // NOTE: a *start-time snapshot*. It reflects what the catalog
+            // probe saw when the session was opened and is never re-checked, so
+            // a kernel upgraded mid-session keeps showing this until reopened.
             <p
               className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground"
               role="status"
@@ -172,7 +206,18 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
       ) : (
         <ScrollArea className="min-h-0 flex-1">
           <div className="mx-auto flex w-full max-w-xl flex-col gap-4 px-4 py-10">
-            {body.kind === "chat" ? (
+            {body.kind === "chat" && syncOutcome.kind === "retry" ? (
+              // This bot already owns a live kernel session, so a permanent
+              // spinner would strand the captain with no way back to Start.
+              <>
+                <p className="text-sm text-destructive" role="alert">
+                  {syncOutcome.message}
+                </p>
+                <Button className="self-start" onClick={retrySync} size="sm">
+                  Try again
+                </Button>
+              </>
+            ) : body.kind === "chat" ? (
               // A session exists; the client is still catching up on the
               // thread. Showing the welcome again here would invite a second
               // "Start chatting" press on a bot that already has a session.
