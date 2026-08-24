@@ -628,10 +628,10 @@ export const makeAdeScreenboxRuntime = (
       function* (botId: BotId) {
         if (!client.isConfigured) {
           return yield* new AdeScreenboxProvisionError({
-              botId,
-              kind: "not-configured",
-              reason: "Screenbox is not configured on this host.",
-            });
+            botId,
+            kind: "not-configured",
+            reason: "Screenbox is not configured on this host.",
+          });
         }
         const at = yield* nowIso;
         const row = yield* readRow(botId);
@@ -654,10 +654,10 @@ export const makeAdeScreenboxRuntime = (
             error: claim.failure,
           });
           return yield* new AdeScreenboxProvisionError({
-              botId,
-              kind: "internal",
-              reason: "ADE could not record a desktop reservation for this bot.",
-            });
+            botId,
+            kind: "internal",
+            reason: "ADE could not record a desktop reservation for this bot.",
+          });
         }
         if (!claim.success.claimed) {
           return yield* capRefusal(
@@ -695,10 +695,10 @@ export const makeAdeScreenboxRuntime = (
               .pipe(Effect.result);
             if (outcome._tag === "Failure") {
               return yield* new AdeScreenboxProvisionError({
-                  botId,
-                  kind: "upstream",
-                  reason: `Screenbox could not stop this bot's desktop: ${boundScreenboxDetail(outcome.failure.message)}`,
-                });
+                botId,
+                kind: "upstream",
+                reason: `Screenbox could not stop this bot's desktop: ${boundScreenboxDetail(outcome.failure.message)}`,
+              });
             }
             yield* setStatus(botId, "stopped", at);
           }),
@@ -723,10 +723,10 @@ export const makeAdeScreenboxRuntime = (
             viewers.delete(botId);
             if (outcome._tag === "Failure") {
               return yield* new AdeScreenboxProvisionError({
-                  botId,
-                  kind: "upstream",
-                  reason: `Screenbox could not fully delete this bot's desktop: ${boundScreenboxDetail(outcome.failure.message)}`,
-                });
+                botId,
+                kind: "upstream",
+                reason: `Screenbox could not fully delete this bot's desktop: ${boundScreenboxDetail(outcome.failure.message)}`,
+              });
             }
           }),
         ),
@@ -811,9 +811,9 @@ export const makeAdeScreenboxRuntime = (
           // Defense in depth behind the gate's catalog resolution: lifecycle
           // and knowledge tools are never proxied for a bot.
           return yield* new AdeToolExecutionError({
-              tool: ctx.tool,
-              detail: "this desktop tool is not part of the operate-only subset",
-            });
+            tool: ctx.tool,
+            detail: "this desktop tool is not part of the operate-only subset",
+          });
         }
         yield* ensureDesktopReady(ctx.botId).pipe(
           Effect.mapError(

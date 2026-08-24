@@ -567,12 +567,12 @@ export const makeAdeScreenboxClient = (
       const error = record === null ? null : readRecord(record["error"]);
       if (error !== null) {
         return yield* new AdeScreenboxRequestError({
-            operation: input.operation,
-            status: response.status,
-            detail: boundScreenboxDetail(
-              readString(error, "message") ?? "upstream returned a JSON-RPC error",
-            ),
-          });
+          operation: input.operation,
+          status: response.status,
+          detail: boundScreenboxDetail(
+            readString(error, "message") ?? "upstream returned a JSON-RPC error",
+          ),
+        });
       }
       return record === null ? null : (record["result"] ?? null);
     });
