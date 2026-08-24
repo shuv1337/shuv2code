@@ -126,6 +126,7 @@ export type ServerProviderTurnSteering = typeof ServerProviderTurnSteering.Type;
 
 export const ServerProviderCapabilities = Schema.Struct({
   turnSteering: Schema.optional(ServerProviderTurnSteering),
+  manualCompaction: Schema.optional(Schema.Boolean),
 });
 export type ServerProviderCapabilities = typeof ServerProviderCapabilities.Type;
 

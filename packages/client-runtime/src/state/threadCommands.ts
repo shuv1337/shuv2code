@@ -1,5 +1,6 @@
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
+import type { ThreadId } from "@shuv2code/contracts";
 
 import { createAtomCommandScheduler, createEnvironmentCommand } from "./runtime.ts";
 import {
@@ -46,6 +47,7 @@ import {
   unsnoozeThread,
   updateThreadMetadata,
 } from "../operations/commands.ts";
+import { compactThread } from "../operations/threads.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 
 export type {
@@ -181,6 +183,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     interruptTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:interrupt-turn",
       execute: (input: InterruptThreadTurnInput) => interruptThreadTurn(input),
+      scheduler,
+      concurrency,
+    }),
+    compact: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:compact",
+      execute: (input: { readonly threadId: ThreadId }) => compactThread(input),
       scheduler,
       concurrency,
     }),

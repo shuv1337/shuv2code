@@ -189,6 +189,29 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("replaces voice controller selection without retaining stale options", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      voiceControllerModelSelection: createModelSelection(
+        ProviderInstanceId.make("codex"),
+        "gpt-5.6-luna",
+        [{ id: "reasoningEffort", value: "low" }],
+      ),
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        voiceControllerModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.6-sol",
+        },
+      }).voiceControllerModelSelection,
+    ).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.6-sol",
+    });
+  });
+
   it("clears source control writer selection with null", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,

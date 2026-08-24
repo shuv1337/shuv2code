@@ -308,11 +308,20 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
         }
       })();
       const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+      const data =
+        record.data && typeof record.data === "object"
+          ? (record.data as Record<string, unknown>)
+          : {};
       throw new OpenCodeV2RequestError({
         status,
         resource: url.pathname,
         errorName: typeof record.name === "string" ? record.name : undefined,
-        detail: typeof record.message === "string" ? record.message : undefined,
+        detail:
+          typeof record.message === "string"
+            ? record.message
+            : typeof data.message === "string"
+              ? data.message
+              : undefined,
         body,
       });
     }
@@ -493,6 +502,12 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
       ) => data<unknown>("POST", sessionPath(sessionID, "/synthetic"), { body }),
       interrupt: (sessionID: string) =>
         request<void>("POST", sessionPath(sessionID, "/interrupt"), { empty: true }),
+      compact: (sessionID: string) =>
+        request<void>("POST", sessionPath(sessionID, "/compact"), {
+          query: { directory: input.directory },
+          body: {},
+          empty: true,
+        }),
       wait: (sessionID: string) =>
         request<void>("POST", sessionPath(sessionID, "/wait"), { empty: true }),
       active: () => data<Record<string, { readonly type?: string }>>("GET", "/api/session/active"),

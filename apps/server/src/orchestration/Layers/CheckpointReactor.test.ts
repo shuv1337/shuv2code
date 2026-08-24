@@ -115,6 +115,7 @@ function createProviderServiceHarness(
     stopRealtime: () => unsupported(),
     listRealtimeVoices: () => unsupported(),
     interruptTurn: () => unsupported(),
+    compactThread: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),

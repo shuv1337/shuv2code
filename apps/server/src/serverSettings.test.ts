@@ -484,6 +484,20 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("persists a voice controller model selection atomically", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const voiceControllerModelSelection = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.6-sol",
+      };
+
+      const next = yield* serverSettings.updateSettings({ voiceControllerModelSelection });
+
+      assert.deepEqual(next.voiceControllerModelSelection, voiceControllerModelSelection);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("replaces provider instance maps when clearing optional fields", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;

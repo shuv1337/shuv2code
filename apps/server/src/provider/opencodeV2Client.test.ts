@@ -91,6 +91,34 @@ describe("createOpenCodeV2Client", () => {
     NodeAssert.ok(events[1]?.durable);
   });
 
+  it("posts manual compaction to the v2 session compact route", async () => {
+    const baseUrl = await listen(async (req, res) => {
+      NodeAssert.equal(req.method, "POST");
+      NodeAssert.equal(req.url, "/api/session/ses_compact/compact?directory=%2Ftmp%2Fproject");
+      NodeAssert.equal(req.headers["content-type"], "application/json");
+      NodeAssert.equal(await readBody(req), "{}");
+      res.statusCode = 204;
+      res.end();
+    });
+    const client = createOpenCodeV2Client({ baseUrl, directory: "/tmp/project" });
+
+    await client.session.compact("ses_compact");
+  });
+
+  it("preserves structured compact errors in the failure message", async () => {
+    const baseUrl = await listen((_req, res) => {
+      res.statusCode = 400;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ name: "InvalidRequestError", data: { message: "not idle" } }));
+    });
+    const client = createOpenCodeV2Client({ baseUrl, directory: "/tmp/project" });
+
+    await NodeAssert.rejects(
+      client.session.compact("ses_compact"),
+      /InvalidRequestError.*not idle/,
+    );
+  });
+
   it("hits live form list/reply/cancel and permission reply routes", async () => {
     const seen: string[] = [];
     const baseUrl = await listen(async (req, res) => {

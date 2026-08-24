@@ -85,6 +85,7 @@ export interface VoiceTransportCoordinatorShape {
     readonly controllerRuntime: ControllerRuntimeState;
     readonly environmentId: EnvironmentId;
     readonly workspaceRoot: string;
+    readonly realtimeModel: string;
     readonly onActivated: (session: ActiveVoiceSession) => Effect.Effect<void>;
     /**
      * ADE §4.7 digest-in: the persona projection + bounded recent-messages
@@ -114,6 +115,7 @@ export interface VoiceTransportCoordinatorShape {
       }>;
     };
     readonly transportModelSelection: ModelSelection;
+    readonly realtimeModel: string;
     readonly workspaceRoot: string;
     readonly threadSnapshotSequence: number;
   }) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;

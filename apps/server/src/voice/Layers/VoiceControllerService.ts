@@ -313,6 +313,12 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
     Effect.map(resolveVoiceControlPolicy),
     Effect.mapError(mapInternalError("internal_error", "The live voice policy could not be read.")),
   );
+  const currentRealtimeModel = settings.getSettings.pipe(
+    Effect.map((current) => current.voiceRealtimeModel),
+    Effect.mapError(
+      mapInternalError("internal_error", "The realtime voice model could not be read."),
+    ),
+  );
   const previousPolicyRef = yield* Ref.make(yield* currentPolicy);
 
   const getActiveCall: VoiceControllerService["Service"]["getActiveCall"] = Effect.fn(
@@ -822,6 +828,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         input,
         thread.modelSelection,
       );
+      const realtimeModel = yield* currentRealtimeModel;
       const transportModelSelection = yield* runtime
         .resolveModelSelection(requestedTransportSelection.instanceId, requestedTransportSelection)
         .pipe(
@@ -844,6 +851,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         environmentId,
         thread,
         transportModelSelection,
+        realtimeModel,
         workspaceRoot: project.value.workspaceRoot,
         threadSnapshotSequence: threadSnapshot.value.snapshotSequence,
       });
@@ -951,6 +959,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         binding,
         controllerRuntime,
         environmentId,
+        realtimeModel: yield* currentRealtimeModel,
         workspaceRoot: project.value.workspaceRoot,
         onActivated: (session) => targets.seedWatchedTargets(session),
         ...(adeCall === null ? {} : { adeInitialItems: adeCall.initialItems }),

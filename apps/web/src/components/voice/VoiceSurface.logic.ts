@@ -1,5 +1,5 @@
 import type { RealtimeVoiceSessionState } from "@shuv2code/client-runtime/state/realtime-voice";
-import type { EnvironmentId } from "@shuv2code/contracts";
+import type { EnvironmentId, VoicePrepareThreadCallResult } from "@shuv2code/contracts";
 
 import type { VoiceMediaActivity } from "../../voice/VoiceActivityMonitor";
 import type { VoiceSurfaceContext } from "./VoiceSurface";
@@ -27,6 +27,21 @@ export async function resolveVoiceCallContext(
   if (context.threadId !== null) return context;
   if (materialize !== undefined) return materialize();
   throw new Error("This thread could not be created for the Call.");
+}
+
+export async function prepareVoiceCallThread(
+  prepare: (migrationApproval: "none" | "approved") => Promise<VoicePrepareThreadCallResult>,
+  confirmMigration: () => Promise<boolean>,
+): Promise<boolean> {
+  let prepared = await prepare("none");
+  if (prepared.state === "migration-required") {
+    if (!(await confirmMigration())) return false;
+    prepared = await prepare("approved");
+  }
+  if (prepared.state !== "ready") {
+    throw new Error("The selected thread is not ready for a voice call.");
+  }
+  return true;
 }
 
 /**

@@ -460,6 +460,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   compact: boolean;
   activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
   activeThreadModelDisplayName: string | null;
+  compactAction: ChatComposerProps["compactAction"];
   isPreparingWorktree: boolean;
   pendingAction: {
     questionIndex: number;
@@ -488,6 +489,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         <ContextWindowMeter
           usage={props.activeContextWindow}
           modelDisplayName={props.activeThreadModelDisplayName}
+          compactAction={props.compactAction}
         />
       ) : null}
       {props.isPreparingWorktree ? (
@@ -587,6 +589,11 @@ export interface ChatComposerProps {
   isSendBusy: boolean;
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
+  compactAction: {
+    pending: boolean;
+    disabled: boolean;
+    run: () => void;
+  } | null;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -695,6 +702,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isSendBusy,
     sendDisabledReason,
     isPreparingWorktree,
+    compactAction,
     environmentUnavailable,
     activePendingApproval,
     pendingApprovals,
@@ -3525,6 +3533,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}
                   activeThreadModelDisplayName={activeThreadModelDisplayName}
+                  compactAction={compactAction}
                   pendingAction={pendingPrimaryAction}
                   isRunning={phase === "running"}
                   showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}

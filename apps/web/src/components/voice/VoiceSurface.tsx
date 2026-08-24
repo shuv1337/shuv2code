@@ -21,6 +21,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
+import { ensureLocalApi } from "../../localApi";
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
 import {
   acquireVoiceMicrophoneStream,
@@ -31,6 +32,7 @@ import { VoicePresence } from "./VoicePresence";
 import { deriveVoicePresenceIdentity } from "./voicePresenceIdentity";
 import {
   isVoiceCallContextAvailable,
+  prepareVoiceCallThread,
   resolveVoiceCallContext,
   resolveVoiceCallPresentation,
   resolveVoicePresencePhase,
@@ -170,6 +172,21 @@ function VoiceCallSurface(props: {
       ) {
         await voice.stop();
       }
+      const ready = await prepareVoiceCallThread(
+        (migrationApproval) =>
+          voice.prepareThreadCall(props.environmentId, threadId, migrationApproval),
+        () =>
+          ensureLocalApi().dialogs.confirm(
+            [
+              `Prepare “${callContext.threadTitle}” for voice calls?`,
+              "",
+              "This legacy Codex thread needs a one-time migration before it can load quickly enough for a call.",
+              "",
+              "Codex will rewrite only this thread's persisted rollout as paginated history. No other threads will be changed.",
+            ].join("\n"),
+          ),
+      );
+      if (!ready) return;
       microphoneStream = await acquireVoiceMicrophoneStream();
       const preparedMicrophone = microphoneStream;
       microphoneStream = undefined;

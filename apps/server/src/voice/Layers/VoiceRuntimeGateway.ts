@@ -649,6 +649,7 @@ export const makeVoiceRuntimeGateway = Effect.fn("VoiceRuntimeGateway.make")(fun
             threadId: input.transportThreadId,
             generation: input.generation,
             realtimeSessionId: input.realtimeSessionId,
+            model: input.realtimeModel,
             transportType,
             ...(input.offerSdp !== undefined ? { offerSdp: input.offerSdp } : {}),
             ...(input.voiceId !== undefined ? { voiceId: input.voiceId } : {}),

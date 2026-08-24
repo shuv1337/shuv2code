@@ -1228,6 +1228,7 @@ function ChatViewContent(props: ChatViewProps) {
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const compactThread = useAtomCommand(threadEnvironment.compact, { reportFailure: false });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -2679,11 +2680,13 @@ function ChatViewContent(props: ChatViewProps) {
     const defaultInstanceId = defaultInstanceIdForDriver(selectedProvider);
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
-  const activeThreadTurnSteering = providerStatuses.find(
+  const activeThreadProviderStatus = providerStatuses.find(
     (status) =>
       status.instanceId ===
       (activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection.instanceId),
-  )?.capabilities?.turnSteering;
+  );
+  const activeThreadTurnSteering = activeThreadProviderStatus?.capabilities?.turnSteering;
+  const canCompact = activeThreadProviderStatus?.capabilities?.manualCompaction === true;
   const providerStatusBannerKey = getProviderStatusBannerKey(activeProviderStatus);
   const [dismissedProviderStatusBannerKey, setDismissedProviderStatusBannerKey] = useState<
     string | null
@@ -2822,6 +2825,69 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeServerThread, draftId, routeThreadKey, routeThreadRef],
   );
+  const [compactionRequest, setCompactionRequest] = useState<{
+    threadId: ThreadId;
+    previousContextWindowActivityId: string | null;
+    previousCompactionActivityId: string | null;
+  } | null>(null);
+  useEffect(() => {
+    setCompactionRequest(null);
+  }, [activeThreadId]);
+  const latestContextWindowActivityId =
+    threadActivities.findLast((activity) => activity.kind === "context-window.updated")?.id ?? null;
+  const latestCompactionActivityId =
+    threadActivities.findLast((activity) => activity.kind === "context-compaction")?.id ?? null;
+  useEffect(() => {
+    if (
+      compactionRequest?.threadId === activeThreadId &&
+      (latestContextWindowActivityId !== compactionRequest.previousContextWindowActivityId ||
+        latestCompactionActivityId !== compactionRequest.previousCompactionActivityId)
+    ) {
+      setCompactionRequest(null);
+    }
+  }, [
+    activeThreadId,
+    compactionRequest,
+    latestCompactionActivityId,
+    latestContextWindowActivityId,
+  ]);
+  const isCompacting = compactionRequest?.threadId === activeThreadId;
+  const handleCompact = useCallback(async () => {
+    if (!activeThread || isWorking || isCompacting || !canCompact) return;
+    setCompactionRequest({
+      threadId: activeThread.id,
+      previousContextWindowActivityId: latestContextWindowActivityId,
+      previousCompactionActivityId: latestCompactionActivityId,
+    });
+    setThreadError(activeThread.id, null);
+    const result = await compactThread({
+      environmentId,
+      input: { threadId: activeThread.id },
+    });
+    if (result._tag === "Failure") {
+      setCompactionRequest(null);
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Failed to compact the context.",
+        );
+      }
+    }
+  }, [
+    activeThread,
+    canCompact,
+    compactThread,
+    environmentId,
+    isCompacting,
+    isWorking,
+    latestCompactionActivityId,
+    latestContextWindowActivityId,
+    setThreadError,
+  ]);
+  const compactAction = canCompact
+    ? { pending: isCompacting, disabled: isWorking, run: handleCompact }
+    : null;
 
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
@@ -6198,15 +6264,27 @@ function ChatViewContent(props: ChatViewProps) {
     return <NoActiveThreadState />;
   }
 
-  const voiceProvider = providerStatuses.find(
+  const configuredVoiceSelection = settings.voiceControllerModelSelection;
+  const configuredVoiceProvider = providerStatuses.find(
     (provider) =>
+      provider.instanceId === configuredVoiceSelection.instanceId &&
       provider.driver === "codex" &&
       provider.enabled &&
       provider.installed &&
       provider.availability !== "unavailable",
   );
-  const voicePreferredModelSelection =
-    voiceProvider && activeThread.modelSelection.instanceId === voiceProvider.instanceId
+  const voiceProvider =
+    configuredVoiceProvider ??
+    providerStatuses.find(
+      (provider) =>
+        provider.driver === "codex" &&
+        provider.enabled &&
+        provider.installed &&
+        provider.availability !== "unavailable",
+    );
+  const voicePreferredModelSelection = configuredVoiceProvider
+    ? configuredVoiceSelection
+    : voiceProvider && activeThread.modelSelection.instanceId === voiceProvider.instanceId
       ? activeThread.modelSelection
       : voiceProvider &&
           activeProject?.defaultModelSelection?.instanceId === voiceProvider.instanceId
@@ -6672,6 +6750,7 @@ function ChatViewContent(props: ChatViewProps) {
                             }
                             sendDisabledReason={threadDetailLoading ? "Messages loading" : null}
                             isPreparingWorktree={isPreparingWorktree}
+                            compactAction={compactAction}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}
                             pendingApprovals={pendingApprovals}

@@ -139,6 +139,7 @@ export interface VoiceRuntimeGatewayShape {
     readonly runtimeInstanceId: VoiceRuntimeInstanceId;
     readonly generation: VoiceGeneration;
     readonly realtimeSessionId: VoiceRealtimeSessionId;
+    readonly realtimeModel: string;
     readonly transportType: "webrtc" | "websocket";
     readonly offerSdp?: string | undefined;
     readonly voiceId?: string | undefined;

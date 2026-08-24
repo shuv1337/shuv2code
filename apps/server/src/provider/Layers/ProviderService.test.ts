@@ -203,6 +203,11 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       Effect.void,
   );
 
+  const compactThread = vi.fn(
+    (_input: { readonly threadId: ThreadId }): Effect.Effect<void, ProviderAdapterError> =>
+      Effect.void,
+  );
+
   const respondToRequest = vi.fn(
     (
       _threadId: ThreadId,
@@ -275,6 +280,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     capabilities: {
       sessionModelSwitch: "in-session",
       turnSteering: "same-turn",
+      manualCompaction: true,
       hasDurableSessionRecovery: (resumeCursor) =>
         Effect.succeed(
           typeof resumeCursor === "object" &&
@@ -293,6 +299,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     stopRealtime,
     listRealtimeVoices,
     interruptTurn,
+    compactThread,
     respondToRequest,
     respondToUserInput,
     stopSession,
@@ -335,6 +342,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     stopRealtime,
     listRealtimeVoices,
     interruptTurn,
+    compactThread,
     respondToRequest,
     respondToUserInput,
     stopSession,
@@ -1171,6 +1179,48 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("routes manual compaction to an idle capable provider session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-manual-compaction");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.compactThread({ threadId });
+
+      assert.deepEqual(routing.codex.compactThread.mock.calls, [[{ threadId }]]);
+      yield* provider.stopSession({ threadId });
+      routing.codex.compactThread.mockClear();
+    }),
+  );
+
+  it.effect("rejects manual compaction while a provider turn is active", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-active-compaction");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({ threadId, input: "working", attachments: [] });
+
+      const failure = yield* Effect.flip(provider.compactThread({ threadId }));
+
+      assert.equal(failure._tag, "ProviderValidationError");
+      assert.match(failure.message, /while a turn is active/);
+      assert.equal(routing.codex.compactThread.mock.calls.length, 0);
+      yield* provider.stopSession({ threadId });
+      routing.codex.sendTurn.mockClear();
+      routing.codex.compactThread.mockClear();
+    }),
+  );
+
   it.effect("reconciles an exact terminal turn before an idle-only send", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

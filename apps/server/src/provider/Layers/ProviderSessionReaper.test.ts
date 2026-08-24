@@ -172,6 +172,7 @@ describe("ProviderSessionReaper", () => {
       stopRealtime: () => unsupported(),
       listRealtimeVoices: () => unsupported(),
       interruptTurn: () => unsupported(),
+      compactThread: () => unsupported(),
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
       stopSession,

@@ -1,12 +1,22 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
   type VoiceControllerIdentity,
   type VoiceNarrationLevel,
 } from "@shuv2code/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import { createModelSelection } from "@shuv2code/shared/model";
 import { MicIcon, RefreshCwIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  sortProviderInstanceEntries,
+} from "../../providerInstances";
 import { usePrimaryEnvironment } from "../../state/environments";
+import { primaryServerProvidersAtom } from "../../state/server";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useVoiceSession } from "../../voice/VoiceSessionProvider";
 import {
@@ -19,7 +29,9 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { VoiceControllerConfigurationDetails } from "../voice/VoiceControllerDetails";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
@@ -42,6 +54,8 @@ const NARRATION_LEVEL_OPTIONS: Readonly<
   },
 };
 
+const CODEX_PROVIDER = ProviderDriverKind.make("codex");
+
 type ControllerStatus =
   | { readonly type: "loading" }
   | { readonly type: "ready"; readonly controller: VoiceControllerIdentity | null }
@@ -53,7 +67,9 @@ function errorMessage(error: unknown): string {
 
 export function VoiceControllerSettings() {
   const primaryEnvironment = usePrimaryEnvironment();
-  const narrationLevel = usePrimarySettings((settings) => settings.voiceNarrationLevel);
+  const settings = usePrimarySettings();
+  const narrationLevel = settings.voiceNarrationLevel;
+  const providers = useAtomValue(primaryServerProvidersAtom);
   const updateSettings = useUpdatePrimarySettings();
   const voice = useVoiceSession();
   const getController = voice.getController;
@@ -61,6 +77,37 @@ export function VoiceControllerSettings() {
   const [status, setStatus] = useState<ControllerStatus>({ type: "loading" });
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [realtimeModelDraft, setRealtimeModelDraft] = useState(settings.voiceRealtimeModel);
+  const controllerInstances = useMemo(
+    () =>
+      sortProviderInstanceEntries(
+        applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings),
+      ).filter((entry) => entry.driverKind === "codex"),
+    [providers, settings],
+  );
+  const controllerModelOptions = useMemo(
+    () =>
+      getCustomModelOptionsByInstance(
+        settings,
+        providers,
+        settings.voiceControllerModelSelection.instanceId,
+        settings.voiceControllerModelSelection.model,
+      ),
+    [providers, settings],
+  );
+
+  useEffect(() => {
+    setRealtimeModelDraft(settings.voiceRealtimeModel);
+  }, [settings.voiceRealtimeModel]);
+
+  const saveRealtimeModel = () => {
+    const model = realtimeModelDraft.trim();
+    if (model.length === 0) {
+      setRealtimeModelDraft(settings.voiceRealtimeModel);
+      return;
+    }
+    if (model !== settings.voiceRealtimeModel) updateSettings({ voiceRealtimeModel: model });
+  };
 
   const load = useCallback(async () => {
     const environmentId = primaryEnvironment?.environmentId;
@@ -148,6 +195,79 @@ export function VoiceControllerSettings() {
         />
 
         <SettingsRow
+          title="Controller model"
+          description="The Codex model that plans voice actions and works with the active thread. Existing controller bindings reconnect with this selection."
+          resetAction={
+            settings.voiceControllerModelSelection.instanceId !==
+              DEFAULT_SERVER_SETTINGS.voiceControllerModelSelection.instanceId ||
+            settings.voiceControllerModelSelection.model !==
+              DEFAULT_SERVER_SETTINGS.voiceControllerModelSelection.model ? (
+              <SettingResetButton
+                label="controller model"
+                onClick={() =>
+                  updateSettings({
+                    voiceControllerModelSelection:
+                      DEFAULT_SERVER_SETTINGS.voiceControllerModelSelection,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            controllerInstances.length > 0 ? (
+              <ProviderModelPicker
+                activeInstanceId={settings.voiceControllerModelSelection.instanceId}
+                model={settings.voiceControllerModelSelection.model}
+                lockedProvider={CODEX_PROVIDER}
+                instanceEntries={controllerInstances}
+                modelOptionsByInstance={controllerModelOptions}
+                triggerVariant="outline"
+                triggerClassName="w-full max-w-none sm:w-64"
+                triggerAriaLabel="Voice controller model"
+                onInstanceModelChange={(instanceId, model) =>
+                  updateSettings({
+                    voiceControllerModelSelection: createModelSelection(instanceId, model),
+                  })
+                }
+              />
+            ) : (
+              <span className="text-sm text-muted-foreground">No Codex model available</span>
+            )
+          }
+        />
+
+        <SettingsRow
+          title="Realtime speech model"
+          description="The Codex realtime model used for live audio. The default is pinned to the ChatGPT-compatible model validated for WebRTC."
+          resetAction={
+            settings.voiceRealtimeModel !== DEFAULT_SERVER_SETTINGS.voiceRealtimeModel ? (
+              <SettingResetButton
+                label="realtime speech model"
+                onClick={() =>
+                  updateSettings({ voiceRealtimeModel: DEFAULT_SERVER_SETTINGS.voiceRealtimeModel })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Input
+              className="w-full font-mono sm:w-64"
+              aria-label="Realtime speech model"
+              value={realtimeModelDraft}
+              onChange={(event) => setRealtimeModelDraft(event.target.value)}
+              onBlur={saveRealtimeModel}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") {
+                  setRealtimeModelDraft(settings.voiceRealtimeModel);
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+          }
+        />
+
+        <SettingsRow
           title="Environment controller"
           description="One controller is securely bound to this environment. Reset it before changing its host project, provider, or authority ceiling."
           status={
@@ -192,6 +312,7 @@ export function VoiceControllerSettings() {
               hostProjectId={controller.hostProjectId}
               providerInstanceId={controller.providerInstanceId}
               authorizedRuntimeCeiling={controller.authorizedRuntimeCeiling}
+              model={settings.voiceControllerModelSelection.model}
             />
           ) : null}
         </SettingsRow>

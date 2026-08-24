@@ -79,6 +79,7 @@ const OPEN_CODE_V2_SETTINGS = {
 function makeAdoptionClient(input: {
   readonly messages: () => Promise<unknown>;
   readonly events: ReadonlyArray<OpenCodeV2Event>;
+  readonly models?: () => Promise<unknown>;
 }): OpenCodeV2Client {
   return {
     event: {
@@ -94,6 +95,7 @@ function makeAdoptionClient(input: {
       get: async (sessionID: string) => ({ id: sessionID }),
       messages: input.messages,
     },
+    model: { list: input.models ?? (async () => ({ data: [] })) },
     form: { list: async () => [] },
     permission: { list: async () => [] },
   } as unknown as OpenCodeV2Client;
@@ -480,6 +482,50 @@ describe("OpenCodeV2Adapter terminal state", () => {
     }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
   );
 
+  it.effect("projects OpenCode V2 compaction completion", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-v2-compacted");
+      const client = makeAdoptionClient({
+        messages: async () => ({ data: [], cursor: {} }),
+        events: [
+          {
+            type: "session.compaction.ended",
+            data: { sessionID: "ses_adopted" },
+          },
+        ],
+      });
+      const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
+        clientFactory: () => client,
+      });
+      const compactedEvent = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.threadId === threadId && event.type === "thread.state.changed",
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencodeV2"),
+        threadId,
+        runtimeMode: "full-access",
+        resumeCursor: {
+          kind: "opencode-v2",
+          schemaVersion: 1,
+          sessionId: "ses_adopted",
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(compactedEvent).pipe(Effect.timeout("1 second")));
+      const event = events[0];
+      NodeAssert.equal(event?.type, "thread.state.changed");
+      if (event?.type === "thread.state.changed") {
+        NodeAssert.equal(event.payload.state, "compacted");
+      }
+    }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
+  );
+
   it.effect("removes the active turn from the session after successful execution", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-successful-execution");
@@ -552,59 +598,41 @@ describe("OpenCodeV2Adapter terminal state", () => {
   it.effect("emits current context usage after a successful execution", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-v2-context-usage");
-      let completeExecution: (() => void) | undefined;
-      const executionCompleted = new Promise<void>((resolve) => {
-        completeExecution = resolve;
-      });
-      const client = {
-        event: {
-          subscribe: () => ({
-            async *[Symbol.asyncIterator]() {
-              yield { type: "server.connected" };
-              await executionCompleted;
-              yield {
-                type: "session.execution.succeeded",
-                data: { sessionID: "ses_v2_context_usage" },
-              };
-              await new Promise<never>(() => undefined);
+      let messageReads = 0;
+      const client = makeAdoptionClient({
+        messages: async () => {
+          messageReads += 1;
+          return { data: [], cursor: {} };
+        },
+        events: [
+          {
+            type: "session.usage.updated",
+            data: {
+              sessionID: "ses_adopted",
+              cost: 0,
+              tokens: {
+                input: 1_000,
+                output: 250,
+                reasoning: 125,
+                cache: { read: 4_000, write: 500 },
+              },
             },
-          }),
-        },
-        session: {
-          create: async () => ({ id: "ses_v2_context_usage" }),
-          switchModel: async () => undefined,
-          prompt: async () => {
-            completeExecution?.();
           },
-          messages: async () => ({
-            data: [
-              {
-                type: "assistant",
-                model: { providerID: "openai", id: "gpt-5.6-sol" },
-                tokens: {
-                  input: 1_000,
-                  output: 250,
-                  reasoning: 125,
-                  cache: { read: 4_000, write: 500 },
-                },
-              },
-            ],
-          }),
-        },
-        model: {
-          list: async () => ({
-            data: [
-              {
-                id: "gpt-5.6-sol",
-                providerID: "openai",
-                limit: { context: 258_400 },
-              },
-            ],
-          }),
-        },
-        form: { list: async () => [] },
-        permission: { list: async () => [] },
-      } as unknown as OpenCodeV2Client;
+          {
+            type: "session.execution.succeeded",
+            data: { sessionID: "ses_adopted" },
+          },
+        ],
+        models: async () => ({
+          data: [
+            {
+              id: "gpt-5.6-sol",
+              providerID: "openai",
+              limit: { context: 258_400 },
+            },
+          ],
+        }),
+      });
       const adapter = yield* makeOpenCodeV2Adapter(OPEN_CODE_V2_SETTINGS, {
         clientFactory: () => client,
       });
@@ -616,20 +644,19 @@ describe("OpenCodeV2Adapter terminal state", () => {
         Stream.runCollect,
         Effect.forkChild,
       );
-
       yield* adapter.startSession({
         provider: ProviderDriverKind.make("opencodeV2"),
         threadId,
         runtimeMode: "full-access",
-      });
-      yield* adapter.sendTurn({
-        threadId,
-        input: "report context usage",
-        attachments: [],
         modelSelection: {
           instanceId: ProviderInstanceId.make("opencodeV2"),
           model: "openai/gpt-5.6-sol",
           options: [],
+        },
+        resumeCursor: {
+          kind: "opencode-v2",
+          schemaVersion: 1,
+          sessionId: "ses_adopted",
         },
       });
 
@@ -642,6 +669,7 @@ describe("OpenCodeV2Adapter terminal state", () => {
         NodeAssert.equal(usageEvent.payload.usage.usedTokens, 5_250);
         NodeAssert.equal(usageEvent.payload.usage.maxTokens, 258_400);
       }
+      NodeAssert.equal(messageReads, 1);
     }).pipe(Effect.provide(OpenCodeV2AdapterTestLayer)),
   );
 

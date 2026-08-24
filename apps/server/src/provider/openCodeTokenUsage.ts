@@ -58,6 +58,7 @@ const OpenCodeProviderListSchema = Schema.Struct({
 });
 
 const decodeAssistantMessage = Schema.decodeUnknownOption(OpenCodeAssistantMessageSchema);
+const decodeTokenCounters = Schema.decodeUnknownOption(OpenCodeTokenCountersSchema);
 const decodeProjectedAssistantMessage = Schema.decodeUnknownOption(
   OpenCodeV2ProjectedAssistantMessageSchema,
 );
@@ -95,6 +96,14 @@ function toSnapshot(
     lastReasoningOutputTokens: tokens.reasoning,
     compactsAutomatically: true,
   };
+}
+
+export function openCodeUsageFromTokenCounters(
+  value: unknown,
+  maxTokens?: number,
+): ThreadTokenUsageSnapshot | undefined {
+  const decoded = decodeTokenCounters(value);
+  return Option.isSome(decoded) ? toSnapshot(decoded.value, maxTokens) : undefined;
 }
 
 function modelKey(providerId: string, modelId: string): string {

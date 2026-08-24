@@ -256,6 +256,7 @@ function makeHarness(
         }),
       ),
       interruptTurn: vi.fn(() => Effect.void),
+      compactThread: vi.fn(() => Effect.void),
       respondToRequest: vi.fn(() => Effect.void),
       respondToUserInput: vi.fn(() => Effect.void),
       stopSession: ({ threadId }) =>
@@ -395,6 +396,7 @@ describe("VoiceRuntimeGateway", () => {
           runtimeInstanceId,
           generation: VoiceGeneration.make(3),
           realtimeSessionId: VoiceRealtimeSessionId.make("realtime-3"),
+          realtimeModel: "gpt-live-1-codex",
           transportType: "webrtc",
           offerSdp: "offer-sdp",
           clientManagedHandoffs: true,
@@ -407,6 +409,7 @@ describe("VoiceRuntimeGateway", () => {
         assert.strictEqual(harness.starts[0]?.input.threadPurpose, "voice-transport");
         assert.strictEqual(harness.starts[0]?.input.enableRealtimeConversation, true);
         assert.strictEqual(harness.realtimeStarts[0]?.clientManagedHandoffs, true);
+        assert.strictEqual(harness.realtimeStarts[0]?.model, "gpt-live-1-codex");
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -620,6 +623,7 @@ describe("VoiceRuntimeGateway", () => {
             runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime-failed-negotiation"),
             generation: VoiceGeneration.make(1),
             realtimeSessionId: VoiceRealtimeSessionId.make("realtime-failed-negotiation"),
+            realtimeModel: "gpt-live-1-codex",
             transportType: "webrtc",
             offerSdp: "offer-sdp",
             clientManagedHandoffs: true,
@@ -655,6 +659,7 @@ describe("VoiceRuntimeGateway", () => {
             runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime-rejected-negotiation"),
             generation: VoiceGeneration.make(1),
             realtimeSessionId: VoiceRealtimeSessionId.make("realtime-rejected-negotiation"),
+            realtimeModel: "gpt-live-1-codex",
             transportType: "webrtc",
             offerSdp: "offer-sdp",
             clientManagedHandoffs: true,
@@ -693,6 +698,7 @@ describe("VoiceRuntimeGateway", () => {
           runtimeInstanceId,
           generation: VoiceGeneration.make(1),
           realtimeSessionId: VoiceRealtimeSessionId.make("realtime-nonterminating-stop"),
+          realtimeModel: "gpt-live-1-codex",
           transportType: "webrtc",
           offerSdp: "offer-sdp",
           clientManagedHandoffs: true,

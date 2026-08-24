@@ -156,6 +156,18 @@ export const ProviderInterruptTurnInput = Schema.Struct({
 });
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 
+export const ProviderCompactThreadInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type ProviderCompactThreadInput = typeof ProviderCompactThreadInput.Type;
+
+export class ProviderCompactThreadError extends Schema.TaggedErrorClass<ProviderCompactThreadError>()(
+  "ProviderCompactThreadError",
+  {
+    message: TrimmedNonEmptyString,
+  },
+) {}
+
 export const ProviderStopSessionInput = Schema.Struct({
   threadId: ThreadId,
 });
