@@ -116,5 +116,4 @@ describe("buildTraitsTriggerDisplay", () => {
     };
     expect(display([unresolved])).toEqual({ label: "", showFastModeIcon: false });
   });
-
 });

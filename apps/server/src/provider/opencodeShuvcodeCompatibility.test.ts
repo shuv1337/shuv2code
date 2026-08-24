@@ -57,9 +57,12 @@ describe("shuvcode OpenCode V2 fork compatibility", () => {
   });
 
   it("resolves shuvcode update commands for package-managed installs", () => {
-    const bareCommand = resolvePackageManagedProviderMaintenance(OPENCODE_V2_MAINTENANCE_DEFINITION, {
-      binaryPath: "shuvcode",
-    });
+    const bareCommand = resolvePackageManagedProviderMaintenance(
+      OPENCODE_V2_MAINTENANCE_DEFINITION,
+      {
+        binaryPath: "shuvcode",
+      },
+    );
     NodeAssert.equal(bareCommand.packageName, "shuvcode");
     NodeAssert.equal(
       bareCommand.update?.command,

@@ -99,10 +99,6 @@ const makeCodexConfig = (overrides: Partial<CodexSettings>): CodexSettings => ({
   ...overrides,
 });
 
-
-
-
-
 const makeOpenCodeV2Config = (overrides: Partial<OpenCodeV2Settings> = {}): OpenCodeV2Settings => ({
   enabled: false,
   binaryPath: "opencode",

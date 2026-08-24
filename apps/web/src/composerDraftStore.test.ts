@@ -27,6 +27,8 @@ const CURSOR_INSTANCE = ProviderInstanceId.make("cursor");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const OPENCODE_V2_INSTANCE = ProviderInstanceId.make("opencodeV2");
+const OPENCODE_V2_DRIVER = ProviderDriverKind.make("opencodeV2");
 
 type ProviderOptionSelectionBag = ReadonlyArray<ProviderOptionSelection>;
 type ProviderOptionSelectionsByProvider = Partial<Record<string, ProviderOptionSelectionBag>>;
@@ -1452,11 +1454,11 @@ describe("composerDraftStore modelSelection", () => {
       threadRef,
       providerModelOptions({
         codex: { fastMode: true },
-        claudeAgent: { effort: "max" },
+        opencodeV2: { effort: "max" },
       }),
     );
 
-    // Now set options for only codex — claudeAgent should be untouched
+    // Now set options for only codex — opencodeV2 should be untouched
     store.setModelOptions(threadRef, providerModelOptions({ codex: { reasoningEffort: "xhigh" } }));
 
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
@@ -1464,12 +1466,9 @@ describe("composerDraftStore modelSelection", () => {
       createModelSelection(CODEX_INSTANCE, "gpt-5.4", toSelections({ reasoningEffort: "xhigh" }))
         .options,
     );
-    expect(draft?.modelSelectionByProvider[CLAUDE_AGENT_INSTANCE]?.options).toEqual(
-      createModelSelection(
-        CLAUDE_AGENT_INSTANCE,
-        "claude-opus-4-6",
-        toSelections({ effort: "max" }),
-      ).options,
+    expect(draft?.modelSelectionByProvider[OPENCODE_V2_INSTANCE]?.options).toEqual(
+      createModelSelection(OPENCODE_V2_INSTANCE, "openai/gpt-5", toSelections({ effort: "max" }))
+        .options,
     );
   });
 
@@ -1480,20 +1479,20 @@ describe("composerDraftStore modelSelection", () => {
       threadRef,
       providerModelOptions({
         codex: { fastMode: true },
-        claudeAgent: { effort: "max" },
+        opencodeV2: { effort: "max" },
       }),
     );
 
-    store.setModelSelection(threadRef, modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6"));
+    store.setModelSelection(threadRef, modelSelection(OPENCODE_V2_DRIVER, "openai/gpt-5"));
 
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
-    expect(draft?.modelSelectionByProvider[CLAUDE_AGENT_INSTANCE]).toEqual(
-      modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", { effort: "max" }),
+    expect(draft?.modelSelectionByProvider[OPENCODE_V2_INSTANCE]).toEqual(
+      modelSelection(OPENCODE_V2_DRIVER, "openai/gpt-5", { effort: "max" }),
     );
     expect(draft?.modelSelectionByProvider[CODEX_INSTANCE]?.options).toEqual(
       createModelSelection(CODEX_INSTANCE, "gpt-5.4", toSelections({ fastMode: true })).options,
     );
-    expect(draft?.activeProvider).toBe("claudeAgent");
+    expect(draft?.activeProvider).toBe("opencodeV2");
   });
 
   it("creates the first sticky snapshot from provider option changes", () => {
