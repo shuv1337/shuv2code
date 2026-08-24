@@ -15,12 +15,9 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
 
-import type { UsageProviderKind } from "@shuv2code/contracts";
-
 import {
   initialCodexScanState,
   mightCarryUsage,
-  parseClaudeLine,
   parseCodexLine,
   type UsageRecord,
 } from "./usageTranscripts.ts";
@@ -104,7 +101,6 @@ export async function readDirectoryVolumeId(path: string): Promise<string> {
  */
 export async function readTranscriptRecords(
   filePath: string,
-  provider: UsageProviderKind,
 ): Promise<readonly UsageRecord[] | null> {
   const records: UsageRecord[] = [];
   const codexState = initialCodexScanState();
@@ -116,21 +112,14 @@ export async function readTranscriptRecords(
     });
 
     for await (const line of lines) {
-      if (provider === "codex") {
-        if (
-          !mightCarryUsage(line, provider) &&
-          !line.includes('"turn_context"') &&
-          !line.includes('"session_meta"')
-        ) {
-          continue;
-        }
-        const record = parseCodexLine(line, codexState);
-        if (record !== null) records.push(record);
+      if (
+        !mightCarryUsage(line) &&
+        !line.includes('"turn_context"') &&
+        !line.includes('"session_meta"')
+      ) {
         continue;
       }
-
-      if (!mightCarryUsage(line, provider)) continue;
-      const record = parseClaudeLine(line);
+      const record = parseCodexLine(line, codexState);
       if (record !== null) records.push(record);
     }
   } catch {

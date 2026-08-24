@@ -6,7 +6,7 @@ import type { UsageRecord } from "./usageTranscripts.ts";
 
 const rates: RateTable = new Map([
   [
-    "claude-fable-5",
+    "gpt-5.6-sol",
     {
       inputCostPerToken: 1e-5,
       outputCostPerToken: 5e-5,
@@ -18,10 +18,10 @@ const rates: RateTable = new Map([
 
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
   return {
-    provider: "claude",
+    provider: "codex",
     // 2026-08-07T04:05Z is still Aug 6 in Los Angeles.
     timestampMs: Date.parse("2026-08-07T04:05:13.944Z"),
-    model: "claude-fable-5",
+    model: "gpt-5.6-sol",
     sessionId: "session-a",
     totals: {
       uncachedInputTokens: 100,
@@ -192,11 +192,11 @@ describe("UsageAggregator", () => {
     expect(aggregator.add(record({ timestampMs: Date.parse("2026-07-01T12:00:00Z") }))).toBe(false);
   });
 
-  it("separates providers and models into their own buckets", () => {
+  it("separates models into their own buckets", () => {
     const result = aggregate([
       record(),
-      record({ provider: "codex", model: "gpt-5.6-sol" }),
-      record({ model: "claude-opus-5" }),
+      record({ model: "gpt-5.6-terra" }),
+      record({ model: "gpt-5.3-codex" }),
     ]);
 
     expect(result.buckets).toHaveLength(3);

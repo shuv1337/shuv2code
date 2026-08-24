@@ -6905,7 +6905,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                     session: {
                       threadId,
                       status: "ready",
-                      providerName: "claudeAgent",
+                      providerName: "opencodeV2",
                       runtimeMode: "full-access",
                       activeTurnId: null,
                       lastError: null,
@@ -6983,7 +6983,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                         session: {
                           threadId,
                           status: "ready",
-                          providerName: "claudeAgent",
+                          providerName: "opencodeV2",
                           runtimeMode: "full-access",
                           activeTurnId: null,
                           lastError: null,
@@ -7107,7 +7107,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                       session: {
                         threadId,
                         status: "stopped",
-                        providerName: "claudeAgent",
+                        providerName: "opencodeV2",
                         runtimeMode: "full-access",
                         activeTurnId: null,
                         lastError: null,
@@ -7173,7 +7173,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                     session: {
                       threadId,
                       status: "ready",
-                      providerName: "claudeAgent",
+                      providerName: "opencodeV2",
                       runtimeMode: "full-access",
                       activeTurnId: null,
                       lastError: null,
@@ -7300,7 +7300,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                     session: {
                       threadId,
                       status: "ready",
-                      providerName: "claudeAgent",
+                      providerName: "opencodeV2",
                       runtimeMode: "full-access",
                       activeTurnId: null,
                       lastError: null,
@@ -7372,7 +7372,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                     session: {
                       threadId,
                       status: "ready",
-                      providerName: "claudeAgent",
+                      providerName: "opencodeV2",
                       runtimeMode: "full-access",
                       activeTurnId: null,
                       lastError: null,
@@ -8356,7 +8356,7 @@ it.live(
     Effect.gen(function* () {
       const providers = [
         ProviderDriverKind.make("codex"),
-        ProviderDriverKind.make("claudeAgent"),
+        ProviderDriverKind.make("opencodeV2"),
       ] as const;
 
       const runs = yield* Effect.forEach(

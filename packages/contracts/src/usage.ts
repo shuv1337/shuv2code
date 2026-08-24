@@ -2,7 +2,7 @@
  * Usage reporting contract.
  *
  * Each environment scans the provider CLIs' own on-disk session transcripts
- * (`~/.claude/projects/**\/*.jsonl`, `~/.codex/sessions/**\/*.jsonl`) rather than
+ * (`~/.codex/sessions/**\/*.jsonl`) rather than
  * relying on shuv2code's own orchestration projections, so usage stays complete
  * even for turns that were never driven through shuv2code. This mirrors the
  * approach `ccusage` takes.
@@ -21,9 +21,9 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
  */
-export const USAGE_CONTRACT_VERSION = 4 as const;
+export const USAGE_CONTRACT_VERSION = 5 as const;
 
-export const UsageProviderKind = Schema.Literals(["claude", "codex"]);
+export const UsageProviderKind = Schema.Literals(["codex"]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
 /**
@@ -116,7 +116,7 @@ export const UsageSourceFingerprint = Schema.Struct({
    * Filesystem identity of the transcript directory, as `device:inode`.
    *
    * Hostname and path alone are not enough: every Mac in a fleet resolves
-   * `/Users/<user>/.claude`, so two machines that happen to share a hostname
+   * `/Users/<user>/.codex`, so two machines that happen to share a hostname
    * would look like one source and have their usage silently dropped. The
    * device/inode pair is stable for two servers reading the same directory and
    * effectively never collides across machines. Empty when it cannot be read.

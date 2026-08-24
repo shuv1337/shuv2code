@@ -182,6 +182,27 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
       }),
     ).toThrow();
   });
+
+  it("still decodes legacy settings that carry stripped provider keys", () => {
+    // Settings written before the Claude/Cursor/Grok/OpenCode-v1 strip keep
+    // their per-provider blocks on disk. Those keys must fall away silently
+    // instead of failing the whole settings load.
+    const decoded = decodeServerSettings({
+      providers: {
+        codex: { binaryPath: "/opt/homebrew/bin/codex" },
+        claudeAgent: { enabled: true, binaryPath: "claude", homePath: "~/.claude" },
+        cursor: { enabled: false, binaryPath: "cursor-agent" },
+        grok: { enabled: true, binaryPath: "grok" },
+        opencode: { enabled: true, serverUrl: "http://127.0.0.1:4096" },
+      },
+    });
+
+    expect(decoded.providers.codex.binaryPath).toBe("/opt/homebrew/bin/codex");
+    expect(decoded.providers).not.toHaveProperty("claudeAgent");
+    expect(decoded.providers).not.toHaveProperty("cursor");
+    expect(decoded.providers).not.toHaveProperty("grok");
+    expect(decoded.providers).not.toHaveProperty("opencode");
+  });
 });
 
 describe("Codex thread history mode", () => {

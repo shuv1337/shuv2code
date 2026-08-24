@@ -179,9 +179,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             binaryPath: "/usr/local/bin/codex",
             homePath: "/Users/julius/.codex",
           },
-          claudeAgent: {
-            binaryPath: "/usr/local/bin/claude",
-            customModels: ["claude-custom"],
+          opencodeV2: {
+            binaryPath: "/usr/local/bin/opencode",
+            customModels: ["opencode-custom"],
           },
         },
         textGenerationModelSelection: {
@@ -218,12 +218,12 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         launchArgs: "",
         customModels: [],
       });
-      assert.deepEqual(next.providers.claudeAgent, {
+      assert.deepEqual(next.providers.opencodeV2, {
         enabled: true,
-        binaryPath: "/usr/local/bin/claude",
-        homePath: "",
-        customModels: ["claude-custom"],
-        launchArgs: "",
+        binaryPath: "/usr/local/bin/opencode",
+        serverUrl: "",
+        serverPassword: "",
+        customModels: ["opencode-custom"],
       });
       assert.deepEqual(
         next.textGenerationModelSelection,
@@ -266,21 +266,21 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
 
-      // Start with Claude text generation selection
+      // Start with an opencodeV2 text generation selection
       yield* serverSettings.updateSettings({
         textGenerationModelSelection: {
-          instanceId: ProviderInstanceId.make("claudeAgent"),
-          model: "claude-sonnet-4-6",
+          instanceId: ProviderInstanceId.make("opencodeV2"),
+          model: "anthropic/claude-sonnet-4-6",
           options: createModelSelection(
-            ProviderInstanceId.make("claudeAgent"),
-            "claude-sonnet-4-6",
+            ProviderInstanceId.make("opencodeV2"),
+            "anthropic/claude-sonnet-4-6",
             [{ id: "effort", value: "high" }],
           ).options!,
         },
       });
 
-      // Switch to Codex — the stale Claude "effort" in options must not
-      // cause the update to lose the selected model.
+      // Switch to Codex — the stale "effort" option must not cause the
+      // update to lose the selected model.
       const next = yield* serverSettings.updateSettings({
         textGenerationModelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -306,20 +306,20 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       const next = yield* serverSettings.updateSettings({
         providerInstances: {
-          [ProviderInstanceId.make("claude_openrouter")]: {
-            driver: ProviderDriverKind.make("claudeAgent"),
+          [ProviderInstanceId.make("opencode_openrouter")]: {
+            driver: ProviderDriverKind.make("opencodeV2"),
             enabled: true,
             config: { customModels: ["openai/gpt-5.5"] },
           },
         },
         textGenerationModelSelection: {
-          instanceId: ProviderInstanceId.make("claude_openrouter"),
+          instanceId: ProviderInstanceId.make("opencode_openrouter"),
           model: "openai/gpt-5.5",
         },
       });
 
       assert.deepEqual(next.textGenerationModelSelection, {
-        instanceId: ProviderInstanceId.make("claude_openrouter"),
+        instanceId: ProviderInstanceId.make("opencode_openrouter"),
         model: "openai/gpt-5.5",
       });
     }).pipe(Effect.provide(makeServerSettingsLayer())),
@@ -330,17 +330,17 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     () =>
       Effect.gen(function* () {
         const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
-        const instanceId = ProviderInstanceId.make("claude_openrouter");
+        const instanceId = ProviderInstanceId.make("opencode_openrouter");
 
         const next = yield* serverSettings.updateSettings({
           providers: {
-            claudeAgent: {
+            opencodeV2: {
               enabled: false,
             },
           },
           providerInstances: {
             [instanceId]: {
-              driver: ProviderDriverKind.make("claudeAgent"),
+              driver: ProviderDriverKind.make("opencodeV2"),
               enabled: true,
               config: { customModels: ["openai/gpt-5.5"] },
             },
@@ -531,10 +531,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             binaryPath: "  /opt/homebrew/bin/codex  ",
             homePath: "   ",
           },
-          claudeAgent: {
-            binaryPath: "  /opt/homebrew/bin/claude  ",
-          },
-          opencode: {
+          opencodeV2: {
             binaryPath: "  /opt/homebrew/bin/opencode  ",
             serverUrl: "  http://127.0.0.1:4096  ",
             serverPassword: "  secret-password  ",
@@ -551,14 +548,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         launchArgs: "",
         customModels: [],
       });
-      assert.deepEqual(next.providers.claudeAgent, {
-        enabled: true,
-        binaryPath: "/opt/homebrew/bin/claude",
-        homePath: "",
-        customModels: [],
-        launchArgs: "",
-      });
-      assert.deepEqual(next.providers.opencode, {
+      assert.deepEqual(next.providers.opencodeV2, {
         enabled: true,
         binaryPath: "/opt/homebrew/bin/opencode",
         serverUrl: "http://127.0.0.1:4096",
@@ -597,14 +587,14 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           codex: {
             binaryPath: "   ",
           },
-          claudeAgent: {
+          opencodeV2: {
             binaryPath: "",
           },
         },
       });
 
       assert.equal(next.providers.codex.binaryPath, "codex");
-      assert.equal(next.providers.claudeAgent.binaryPath, "claude");
+      assert.equal(next.providers.opencodeV2?.binaryPath, "opencode");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
@@ -623,7 +613,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           codex: {
             binaryPath: "/opt/homebrew/bin/codex",
           },
-          opencode: {
+          opencodeV2: {
             serverUrl: "http://127.0.0.1:4096",
             serverPassword: "secret-password",
           },
@@ -645,9 +635,12 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           codex: {
             binaryPath: "/opt/homebrew/bin/codex",
           },
-          opencode: {
+          opencodeV2: {
+            enabled: true,
+            binaryPath: "opencode",
             serverUrl: "http://127.0.0.1:4096",
             serverPassword: "secret-password",
+            customModels: [],
           },
         },
         backgroundActivity: {

@@ -85,18 +85,9 @@ export function normalizeModelName(model: string): string {
 /**
  * Models we never price, regardless of the table.
  *
- * `<synthetic>` marks locally generated messages that were never billed. Bare
- * family names ("opus", "sonnet") are genuinely ambiguous across generations,
- * so we report them as unpriced instead of guessing a generation.
+ * `<synthetic>` marks locally generated messages that were never billed.
  */
-const UNPRICEABLE_MODELS = new Set([
-  "<synthetic>",
-  "synthetic",
-  "opus",
-  "sonnet",
-  "haiku",
-  "fable",
-]);
+const UNPRICEABLE_MODELS = new Set(["<synthetic>", "synthetic"]);
 
 export function lookupRate(table: RateTable, model: string): ModelRate | null {
   const normalized = normalizeModelName(model);

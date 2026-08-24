@@ -67,73 +67,8 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * a 30-day window this skips roughly half the lines outright and is worth about
  * an order of magnitude.
  */
-export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  return provider === "claude" ? line.includes('"usage"') : line.includes('"token_count"');
-}
-
-/* -------------------------------------------------------------------------- */
-/* Claude Code                                                                */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Parses one line of a Claude Code transcript.
- *
- * shuv2code writes one record per assistant *content block*, and every one of
- * those records repeats the same complete `usage` object for the parent
- * message. Summing them overcounts by roughly 2.4x on a real workload, so the
- * caller must drop repeats by `dedupeKey` and keep the first.
- */
-export function parseClaudeLine(line: string): UsageRecord | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) return null;
-
-  const record = parsed as Record<string, unknown>;
-  if (record["type"] !== "assistant") return null;
-
-  const message = record["message"];
-  if (typeof message !== "object" || message === null) return null;
-  const messageRecord = message as Record<string, unknown>;
-
-  const usage = messageRecord["usage"];
-  if (typeof usage !== "object" || usage === null) return null;
-  const usageRecord = usage as Record<string, unknown>;
-
-  const timestampMs = parseTimestampMs(record["timestamp"]);
-  if (timestampMs === null) return null;
-
-  const model = typeof messageRecord["model"] === "string" ? messageRecord["model"] : "";
-  if (model.length === 0) return null;
-
-  const messageId = typeof messageRecord["id"] === "string" ? messageRecord["id"] : null;
-  const requestId = typeof record["requestId"] === "string" ? record["requestId"] : null;
-  // Matches ccusage: prefer the message/request pair, fall back to whichever
-  // half exists. Records with neither cannot be de-duplicated.
-  const dedupeKey =
-    messageId === null && requestId === null ? null : `${messageId ?? ""}:${requestId ?? ""}`;
-
-  const cost = record["costUSD"];
-
-  return {
-    provider: "claude",
-    timestampMs,
-    model,
-    sessionId: typeof record["sessionId"] === "string" ? record["sessionId"] : "",
-    totals: {
-      uncachedInputTokens: int(usageRecord["input_tokens"]),
-      cachedInputTokens: int(usageRecord["cache_read_input_tokens"]),
-      cacheCreationTokens: int(usageRecord["cache_creation_input_tokens"]),
-      outputTokens: int(usageRecord["output_tokens"]),
-      // Anthropic folds thinking tokens into output and does not break them out.
-      reasoningTokens: 0,
-    },
-    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
-    dedupeKey,
-  };
+export function mightCarryUsage(line: string): boolean {
+  return line.includes('"token_count"');
 }
 
 /* -------------------------------------------------------------------------- */

@@ -11,9 +11,9 @@ import type { UsageRecord } from "./usageTranscripts.ts";
 
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
   return {
-    provider: "claude",
+    provider: "codex",
     timestampMs: 1_786_000_000_000,
-    model: "claude-fable-5",
+    model: "gpt-5.6-sol",
     sessionId: "session-a",
     totals: {
       uncachedInputTokens: 2,
@@ -31,7 +31,7 @@ function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
 function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][]): ScanCache {
   const cache: ScanCache = new Map();
   for (const [path, mtimeMs, records] of entries) {
-    cache.set(path, { size: records.length * 10, mtimeMs, provider: "claude", records });
+    cache.set(path, { size: records.length * 10, mtimeMs, provider: "codex", records });
   }
   return cache;
 }
@@ -39,7 +39,7 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
 describe("scan cache round trip", () => {
   it("restores records unchanged", () => {
     const original = cacheWith([
-      ["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:", model: "claude-opus-5" })]],
+      ["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:", model: "gpt-5.6-terra" })]],
       ["/b.jsonl", 200, [record({ sessionId: "session-b", reportedCostUsd: 1.5 })]],
     ]);
 
@@ -55,7 +55,7 @@ describe("scan cache round trip", () => {
       cacheWith([["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:" }), record()]]]),
     );
 
-    expect(encoded.models).toEqual(["claude-fable-5"]);
+    expect(encoded.models).toEqual(["gpt-5.6-sol"]);
     expect(encoded.sessions).toEqual(["session-a"]);
   });
 
@@ -70,10 +70,23 @@ describe("scan cache round trip", () => {
     const encoded = encodeScanCache(cacheWith([["/good.jsonl", 100, [record()]]]));
     const withJunk = {
       ...encoded,
-      files: { ...encoded.files, "/bad.jsonl": { s: "nope", m: 1, p: "claude", r: [] } },
+      files: { ...encoded.files, "/bad.jsonl": { s: "nope", m: 1, p: "codex", r: [] } },
     };
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(withJunk)));
+    expect([...restored.keys()]).toEqual(["/good.jsonl"]);
+  });
+
+  it("drops entries for retired provider kinds without rejecting the cache", () => {
+    // Caches written before the Claude usage strip still carry `p: "claude"`
+    // entries; they must fall away silently while codex entries survive.
+    const encoded = encodeScanCache(cacheWith([["/good.jsonl", 100, [record()]]]));
+    const withStale = {
+      ...encoded,
+      files: { ...encoded.files, "/stale.jsonl": { s: 10, m: 1, p: "claude", r: [] } },
+    };
+
+    const restored = decodeScanCache(JSON.parse(JSON.stringify(withStale)));
     expect([...restored.keys()]).toEqual(["/good.jsonl"]);
   });
 
@@ -176,7 +189,7 @@ describe("pruneScanCache with an unwalked root", () => {
 
     const removed = pruneScanCache(cache, {
       livePaths: new Set(),
-      walkedRoots: ["/claude/projects"],
+      walkedRoots: ["/other/sessions"],
       windowStartMs: 4000,
       retentionCutoffMs: 1000,
     });
