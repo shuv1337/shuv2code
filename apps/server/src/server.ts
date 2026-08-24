@@ -481,7 +481,7 @@ const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
       CodexAppServerSupervisorLive.pipe(Layer.provide(ServerSettingsLayerLive)),
     ),
   ),
-  // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
+  // `OpenCodeV2Driver.create()` yields `OpenCodeRuntime`; previously the old
   // `ProviderRegistryLive` pulled `OpenCodeRuntimeLive` in for itself, but
   // the rewritten registry reads snapshots off the instance registry and
   // no longer transitively provides it. Exposing it at the runtime level
