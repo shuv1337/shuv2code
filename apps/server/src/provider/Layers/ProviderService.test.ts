@@ -81,10 +81,9 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const codexInstanceId = ProviderInstanceId.make("codex");
-const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
+const openCodeV2InstanceId = ProviderInstanceId.make("opencodeV2");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
-const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
-const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const OPENCODE_V2_DRIVER = ProviderDriverKind.make("opencodeV2");
 
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
@@ -363,12 +362,10 @@ const hasMetricSnapshot = (
 
 function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
-  const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
-  const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
+  const openCodeV2 = makeFakeCodexAdapter(OPENCODE_V2_DRIVER);
   const registry = makeAdapterRegistryMock({
     [ProviderDriverKind.make("codex")]: codex.adapter,
-    [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
-    [ProviderDriverKind.make("cursor")]: cursor.adapter,
+    [ProviderDriverKind.make("opencodeV2")]: openCodeV2.adapter,
   });
 
   const providerAdapterLayer = Layer.succeed(
@@ -404,8 +401,7 @@ function makeProviderServiceLayer() {
 
   return {
     codex,
-    claude,
-    cursor,
+    openCodeV2,
     layer,
   };
 }
@@ -465,23 +461,23 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
 it.effect("ProviderServiceLive rejects new sessions for disabled providers", () =>
   Effect.gen(function* () {
     const codex = makeFakeCodexAdapter();
-    const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+    const openCodeV2 = makeFakeCodexAdapter(OPENCODE_V2_DRIVER);
     const registryBase = makeAdapterRegistryMock({
       [CODEX_DRIVER]: codex.adapter,
-      [CLAUDE_AGENT_DRIVER]: claude.adapter,
+      [OPENCODE_V2_DRIVER]: openCodeV2.adapter,
     });
     const registry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
       ...registryBase,
       getInstanceInfo: (instanceId) =>
-        instanceId === claudeAgentInstanceId
+        instanceId === openCodeV2InstanceId
           ? Effect.succeed({
               instanceId,
-              driverKind: CLAUDE_AGENT_DRIVER,
+              driverKind: OPENCODE_V2_DRIVER,
               displayName: undefined,
               enabled: false,
               continuationIdentity: {
-                driverKind: CLAUDE_AGENT_DRIVER,
-                continuationKey: "claudeAgent:instance:claudeAgent",
+                driverKind: OPENCODE_V2_DRIVER,
+                continuationKey: "opencodeV2:instance:opencodeV2",
               },
             })
           : registryBase.getInstanceInfo(instanceId),
@@ -512,8 +508,8 @@ it.effect("ProviderServiceLive rejects new sessions for disabled providers", () 
       Effect.gen(function* () {
         const provider = yield* ProviderService.ProviderService;
         return yield* provider.startSession(asThreadId("thread-disabled"), {
-          provider: ProviderDriverKind.make("claudeAgent"),
-          providerInstanceId: claudeAgentInstanceId,
+          provider: ProviderDriverKind.make("opencodeV2"),
+          providerInstanceId: openCodeV2InstanceId,
           threadId: asThreadId("thread-disabled"),
           runtimeMode: "full-access",
         });
@@ -521,8 +517,8 @@ it.effect("ProviderServiceLive rejects new sessions for disabled providers", () 
     );
 
     assert.instanceOf(failure, ProviderValidationError);
-    assert.include(failure.issue, "Provider instance 'claudeAgent' is disabled");
-    assert.equal(claude.startSession.mock.calls.length, 0);
+    assert.include(failure.issue, "Provider instance 'opencodeV2' is disabled");
+    assert.equal(openCodeV2.startSession.mock.calls.length, 0);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
@@ -1526,7 +1522,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         false,
       );
       assert.equal(
-        yield* provider.hasDurableSessionRecovery(durableThreadId, claudeAgentInstanceId),
+        yield* provider.hasDurableSessionRecovery(durableThreadId, openCodeV2InstanceId),
         false,
       );
       assert.equal(
@@ -1679,21 +1675,21 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect("routes explicit claudeAgent provider session starts to the claude adapter", () =>
+  it.effect("routes explicit opencodeV2 provider session starts to the opencodeV2 adapter", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
 
-      const session = yield* provider.startSession(asThreadId("thread-claude"), {
-        provider: ProviderDriverKind.make("claudeAgent"),
-        providerInstanceId: claudeAgentInstanceId,
-        threadId: asThreadId("thread-claude"),
-        cwd: "/tmp/project-claude",
+      const session = yield* provider.startSession(asThreadId("thread-opencode-v2"), {
+        provider: ProviderDriverKind.make("opencodeV2"),
+        providerInstanceId: openCodeV2InstanceId,
+        threadId: asThreadId("thread-opencode-v2"),
+        cwd: "/tmp/project-opencode-v2",
         runtimeMode: "full-access",
       });
 
-      assert.equal(session.provider, "claudeAgent");
-      assert.equal(routing.claude.startSession.mock.calls.length, 1);
-      const startInput = routing.claude.startSession.mock.calls[0]?.[0];
+      assert.equal(session.provider, "opencodeV2");
+      assert.equal(routing.openCodeV2.startSession.mock.calls.length, 1);
+      const startInput = routing.openCodeV2.startSession.mock.calls[0]?.[0];
       assert.equal(typeof startInput === "object" && startInput !== null, true);
       if (startInput && typeof startInput === "object") {
         const startPayload = startInput as {
@@ -1701,9 +1697,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
           providerInstanceId?: ProviderInstanceId;
           cwd?: string;
         };
-        assert.equal(startPayload.provider, "claudeAgent");
-        assert.equal(startPayload.providerInstanceId, claudeAgentInstanceId);
-        assert.equal(startPayload.cwd, "/tmp/project-claude");
+        assert.equal(startPayload.provider, "opencodeV2");
+        assert.equal(startPayload.providerInstanceId, openCodeV2InstanceId);
+        assert.equal(startPayload.cwd, "/tmp/project-opencode-v2");
       }
     }),
   );
@@ -1723,8 +1719,8 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
       yield* directory.upsert({
         threadId,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        providerInstanceId: claudeAgentInstanceId,
+        provider: ProviderDriverKind.make("opencodeV2"),
+        providerInstanceId: openCodeV2InstanceId,
         runtimeMode: "full-access",
       });
 
@@ -1753,27 +1749,27 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
 
       routing.codex.stopSession.mockClear();
-      routing.claude.stopSession.mockClear();
+      routing.openCodeV2.stopSession.mockClear();
 
-      const claudeSession = yield* provider.startSession(threadId, {
-        provider: ProviderDriverKind.make("claudeAgent"),
-        providerInstanceId: claudeAgentInstanceId,
+      const openCodeV2Session = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("opencodeV2"),
+        providerInstanceId: openCodeV2InstanceId,
         threadId,
         cwd: "/tmp/project-provider-replacement",
         runtimeMode: "full-access",
       });
 
       assert.equal(codexSession.provider, "codex");
-      assert.equal(claudeSession.provider, "claudeAgent");
+      assert.equal(openCodeV2Session.provider, "opencodeV2");
       assert.deepEqual(routing.codex.stopSession.mock.calls, [[threadId]]);
-      assert.equal(routing.claude.stopSession.mock.calls.length, 0);
+      assert.equal(routing.openCodeV2.stopSession.mock.calls.length, 0);
 
       const sessions = yield* provider.listSessions();
       assert.deepEqual(
         sessions
           .filter((session) => session.threadId === threadId)
           .map((session) => session.provider),
-        ["claudeAgent"],
+        ["opencodeV2"],
       );
     }),
   );
@@ -1853,35 +1849,35 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect("recovers stale claudeAgent sessions for sendTurn using persisted cwd", () =>
+  it.effect("recovers stale opencodeV2 sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
 
-      const initial = yield* provider.startSession(asThreadId("thread-claude-send-turn"), {
-        provider: ProviderDriverKind.make("claudeAgent"),
-        providerInstanceId: claudeAgentInstanceId,
-        threadId: asThreadId("thread-claude-send-turn"),
-        cwd: "/tmp/project-claude-send-turn",
+      const initial = yield* provider.startSession(asThreadId("thread-opencode-v2-send-turn"), {
+        provider: ProviderDriverKind.make("opencodeV2"),
+        providerInstanceId: openCodeV2InstanceId,
+        threadId: asThreadId("thread-opencode-v2-send-turn"),
+        cwd: "/tmp/project-opencode-v2-send-turn",
         modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
+          ProviderInstanceId.make("opencodeV2"),
           "claude-opus-4-6",
           [{ id: "effort", value: "max" }],
         ),
         runtimeMode: "full-access",
       });
 
-      yield* routing.claude.stopAll();
-      routing.claude.startSession.mockClear();
-      routing.claude.sendTurn.mockClear();
+      yield* routing.openCodeV2.stopAll();
+      routing.openCodeV2.startSession.mockClear();
+      routing.openCodeV2.sendTurn.mockClear();
 
       yield* provider.sendTurn({
         threadId: initial.threadId,
-        input: "resume with claude",
+        input: "resume with opencodeV2",
         attachments: [],
       });
 
-      assert.equal(routing.claude.startSession.mock.calls.length, 1);
-      const resumedStartInput = routing.claude.startSession.mock.calls[0]?.[0];
+      assert.equal(routing.openCodeV2.startSession.mock.calls.length, 1);
+      const resumedStartInput = routing.openCodeV2.startSession.mock.calls[0]?.[0];
       assert.equal(typeof resumedStartInput === "object" && resumedStartInput !== null, true);
       if (resumedStartInput && typeof resumedStartInput === "object") {
         const startPayload = resumedStartInput as {
@@ -1891,18 +1887,18 @@ routing.layer("ProviderServiceLive routing", (it) => {
           resumeCursor?: unknown;
           threadId?: string;
         };
-        assert.equal(startPayload.provider, "claudeAgent");
-        assert.equal(startPayload.cwd, "/tmp/project-claude-send-turn");
+        assert.equal(startPayload.provider, "opencodeV2");
+        assert.equal(startPayload.cwd, "/tmp/project-opencode-v2-send-turn");
         assert.deepEqual(
           startPayload.modelSelection,
-          createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-4-6", [
+          createModelSelection(ProviderInstanceId.make("opencodeV2"), "claude-opus-4-6", [
             { id: "effort", value: "max" },
           ]),
         );
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
       }
-      assert.equal(routing.claude.sendTurn.mock.calls.length, 1);
+      assert.equal(routing.openCodeV2.sendTurn.mock.calls.length, 1);
     }),
   );
 
@@ -1924,7 +1920,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
 
       yield* routing.codex.stopAll();
-      yield* routing.claude.stopAll();
+      yield* routing.openCodeV2.stopAll();
 
       const remaining = yield* provider.listSessions();
       assert.equal(remaining.length, 0);
@@ -2137,9 +2133,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(persistenceLayer),
       );
 
-      const firstClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+      const firstOpenCodeV2 = makeFakeCodexAdapter(OPENCODE_V2_DRIVER);
       const firstRegistry = makeAdapterRegistryMock({
-        [ProviderDriverKind.make("claudeAgent")]: firstClaude.adapter,
+        [ProviderDriverKind.make("opencodeV2")]: firstOpenCodeV2.adapter,
       });
       const firstDirectoryLayer = ProviderSessionDirectoryLive.pipe(
         Layer.provide(runtimeRepositoryLayer),
@@ -2162,11 +2158,11 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
       const initial = yield* Effect.gen(function* () {
         const provider = yield* ProviderService.ProviderService;
-        return yield* provider.startSession(asThreadId("thread-claude-start"), {
-          provider: ProviderDriverKind.make("claudeAgent"),
-          providerInstanceId: claudeAgentInstanceId,
-          threadId: asThreadId("thread-claude-start"),
-          cwd: "/tmp/project-claude-start",
+        return yield* provider.startSession(asThreadId("thread-opencode-v2-start"), {
+          provider: ProviderDriverKind.make("opencodeV2"),
+          providerInstanceId: openCodeV2InstanceId,
+          threadId: asThreadId("thread-opencode-v2-start"),
+          cwd: "/tmp/project-opencode-v2-start",
           runtimeMode: "full-access",
         });
       }).pipe(Effect.provide(firstProviderLayer));
@@ -2176,9 +2172,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
         yield* provider.listSessions();
       }).pipe(Effect.provide(firstProviderLayer));
 
-      const secondClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+      const secondOpenCodeV2 = makeFakeCodexAdapter(OPENCODE_V2_DRIVER);
       const secondRegistry = makeAdapterRegistryMock({
-        [ProviderDriverKind.make("claudeAgent")]: secondClaude.adapter,
+        [ProviderDriverKind.make("opencodeV2")]: secondOpenCodeV2.adapter,
       });
       const secondDirectoryLayer = ProviderSessionDirectoryLive.pipe(
         Layer.provide(runtimeRepositoryLayer),
@@ -2199,21 +2195,21 @@ routing.layer("ProviderServiceLive routing", (it) => {
         ),
       );
 
-      secondClaude.startSession.mockClear();
+      secondOpenCodeV2.startSession.mockClear();
 
       yield* Effect.gen(function* () {
         const provider = yield* ProviderService.ProviderService;
         yield* provider.startSession(initial.threadId, {
-          provider: ProviderDriverKind.make("claudeAgent"),
-          providerInstanceId: claudeAgentInstanceId,
+          provider: ProviderDriverKind.make("opencodeV2"),
+          providerInstanceId: openCodeV2InstanceId,
           threadId: initial.threadId,
-          cwd: "/tmp/project-claude-start",
+          cwd: "/tmp/project-opencode-v2-start",
           runtimeMode: "full-access",
         });
       }).pipe(Effect.provide(secondProviderLayer));
 
-      assert.equal(secondClaude.startSession.mock.calls.length, 1);
-      const resumedStartInput = secondClaude.startSession.mock.calls[0]?.[0];
+      assert.equal(secondOpenCodeV2.startSession.mock.calls.length, 1);
+      const resumedStartInput = secondOpenCodeV2.startSession.mock.calls[0]?.[0];
       assert.equal(typeof resumedStartInput === "object" && resumedStartInput !== null, true);
       if (resumedStartInput && typeof resumedStartInput === "object") {
         const startPayload = resumedStartInput as {
@@ -2222,8 +2218,8 @@ routing.layer("ProviderServiceLive routing", (it) => {
           resumeCursor?: unknown;
           threadId?: string;
         };
-        assert.equal(startPayload.provider, "claudeAgent");
-        assert.equal(startPayload.cwd, "/tmp/project-claude-start");
+        assert.equal(startPayload.provider, "opencodeV2");
+        assert.equal(startPayload.cwd, "/tmp/project-opencode-v2-start");
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
       }
@@ -2233,7 +2229,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
   );
 
   it.effect(
-    "reuses persisted cwd when startSession resumes a claude session without cwd input",
+    "reuses persisted cwd when startSession resumes an opencodeV2 session without cwd input",
     () =>
       Effect.gen(function* () {
         const tempDir = NodeFS.mkdtempSync(
@@ -2245,9 +2241,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
           Layer.provide(persistenceLayer),
         );
 
-        const firstClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+        const firstOpenCodeV2 = makeFakeCodexAdapter(OPENCODE_V2_DRIVER);
         const firstRegistry = makeAdapterRegistryMock({
-          [ProviderDriverKind.make("claudeAgent")]: firstClaude.adapter,
+          [ProviderDriverKind.make("opencodeV2")]: firstOpenCodeV2.adapter,
         });
         const firstDirectoryLayer = ProviderSessionDirectoryLive.pipe(
           Layer.provide(runtimeRepositoryLayer),
@@ -2270,18 +2266,18 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
         const initial = yield* Effect.gen(function* () {
           const provider = yield* ProviderService.ProviderService;
-          return yield* provider.startSession(asThreadId("thread-claude-cwd"), {
-            provider: ProviderDriverKind.make("claudeAgent"),
-            providerInstanceId: claudeAgentInstanceId,
-            threadId: asThreadId("thread-claude-cwd"),
-            cwd: "/tmp/project-claude-cwd",
+          return yield* provider.startSession(asThreadId("thread-opencode-v2-cwd"), {
+            provider: ProviderDriverKind.make("opencodeV2"),
+            providerInstanceId: openCodeV2InstanceId,
+            threadId: asThreadId("thread-opencode-v2-cwd"),
+            cwd: "/tmp/project-opencode-v2-cwd",
             runtimeMode: "full-access",
           });
         }).pipe(Effect.provide(firstProviderLayer));
 
-        const secondClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+        const secondOpenCodeV2 = makeFakeCodexAdapter(OPENCODE_V2_DRIVER);
         const secondRegistry = makeAdapterRegistryMock({
-          [ProviderDriverKind.make("claudeAgent")]: secondClaude.adapter,
+          [ProviderDriverKind.make("opencodeV2")]: secondOpenCodeV2.adapter,
         });
         const secondDirectoryLayer = ProviderSessionDirectoryLive.pipe(
           Layer.provide(runtimeRepositoryLayer),
@@ -2302,20 +2298,20 @@ routing.layer("ProviderServiceLive routing", (it) => {
           ),
         );
 
-        secondClaude.startSession.mockClear();
+        secondOpenCodeV2.startSession.mockClear();
 
         yield* Effect.gen(function* () {
           const provider = yield* ProviderService.ProviderService;
           yield* provider.startSession(initial.threadId, {
-            provider: ProviderDriverKind.make("claudeAgent"),
-            providerInstanceId: claudeAgentInstanceId,
+            provider: ProviderDriverKind.make("opencodeV2"),
+            providerInstanceId: openCodeV2InstanceId,
             threadId: initial.threadId,
             runtimeMode: "full-access",
           });
         }).pipe(Effect.provide(secondProviderLayer));
 
-        assert.equal(secondClaude.startSession.mock.calls.length, 1);
-        const resumedStartInput = secondClaude.startSession.mock.calls[0]?.[0];
+        assert.equal(secondOpenCodeV2.startSession.mock.calls.length, 1);
+        const resumedStartInput = secondOpenCodeV2.startSession.mock.calls[0]?.[0];
         assert.equal(typeof resumedStartInput === "object" && resumedStartInput !== null, true);
         if (resumedStartInput && typeof resumedStartInput === "object") {
           const startPayload = resumedStartInput as {
@@ -2324,8 +2320,8 @@ routing.layer("ProviderServiceLive routing", (it) => {
             resumeCursor?: unknown;
             threadId?: string;
           };
-          assert.equal(startPayload.provider, "claudeAgent");
-          assert.equal(startPayload.cwd, "/tmp/project-claude-cwd");
+          assert.equal(startPayload.provider, "opencodeV2");
+          assert.equal(startPayload.cwd, "/tmp/project-opencode-v2-cwd");
           assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
           assert.equal(startPayload.threadId, initial.threadId);
         }
@@ -2516,8 +2512,8 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       const provider = yield* ProviderService.ProviderService;
 
       const session = yield* provider.startSession(asThreadId("thread-metrics"), {
-        provider: ProviderDriverKind.make("claudeAgent"),
-        providerInstanceId: claudeAgentInstanceId,
+        provider: ProviderDriverKind.make("opencodeV2"),
+        providerInstanceId: openCodeV2InstanceId,
         threadId: asThreadId("thread-metrics"),
         cwd: "/tmp/project",
         runtimeMode: "full-access",
@@ -2550,7 +2546,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
 
       assert.equal(
         hasMetricSnapshot(snapshots, "shuv2code_provider_turns_total", {
-          provider: ProviderDriverKind.make("claudeAgent"),
+          provider: ProviderDriverKind.make("opencodeV2"),
           operation: "interrupt",
           outcome: "success",
         }),
@@ -2558,7 +2554,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       );
       assert.equal(
         hasMetricSnapshot(snapshots, "shuv2code_provider_turns_total", {
-          provider: ProviderDriverKind.make("claudeAgent"),
+          provider: ProviderDriverKind.make("opencodeV2"),
           operation: "approval-response",
           outcome: "success",
         }),
@@ -2566,7 +2562,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       );
       assert.equal(
         hasMetricSnapshot(snapshots, "shuv2code_provider_turns_total", {
-          provider: ProviderDriverKind.make("claudeAgent"),
+          provider: ProviderDriverKind.make("opencodeV2"),
           operation: "user-input-response",
           outcome: "success",
         }),
@@ -2574,7 +2570,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       );
       assert.equal(
         hasMetricSnapshot(snapshots, "shuv2code_provider_turns_total", {
-          provider: ProviderDriverKind.make("claudeAgent"),
+          provider: ProviderDriverKind.make("opencodeV2"),
           operation: "rollback",
           outcome: "success",
         }),
@@ -2582,7 +2578,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       );
       assert.equal(
         hasMetricSnapshot(snapshots, "shuv2code_provider_sessions_total", {
-          provider: ProviderDriverKind.make("claudeAgent"),
+          provider: ProviderDriverKind.make("opencodeV2"),
           operation: "stop",
           outcome: "success",
         }),
@@ -2598,8 +2594,8 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         const provider = yield* ProviderService.ProviderService;
 
         const session = yield* provider.startSession(asThreadId("thread-send-metrics"), {
-          provider: ProviderDriverKind.make("claudeAgent"),
-          providerInstanceId: claudeAgentInstanceId,
+          provider: ProviderDriverKind.make("opencodeV2"),
+          providerInstanceId: openCodeV2InstanceId,
           threadId: asThreadId("thread-send-metrics"),
           cwd: "/tmp/project-send-metrics",
           runtimeMode: "full-access",
@@ -2615,7 +2611,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
 
         assert.equal(
           hasMetricSnapshot(snapshots, "shuv2code_provider_turns_total", {
-            provider: ProviderDriverKind.make("claudeAgent"),
+            provider: ProviderDriverKind.make("opencodeV2"),
             operation: "send",
             outcome: "success",
           }),
@@ -2623,7 +2619,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         );
         assert.equal(
           hasMetricSnapshot(snapshots, "shuv2code_provider_turn_duration", {
-            provider: ProviderDriverKind.make("claudeAgent"),
+            provider: ProviderDriverKind.make("opencodeV2"),
             operation: "send",
           }),
           true,
@@ -2882,11 +2878,11 @@ validation.layer("ProviderServiceLive validation", (it) => {
       const provider = yield* ProviderService.ProviderService;
 
       validation.codex.startSession.mockClear();
-      validation.claude.startSession.mockClear();
+      validation.openCodeV2.startSession.mockClear();
       const failure = yield* Effect.flip(
         provider.startSession(asThreadId("thread-instance-mismatch"), {
           provider: ProviderDriverKind.make("codex"),
-          providerInstanceId: claudeAgentInstanceId,
+          providerInstanceId: openCodeV2InstanceId,
           threadId: asThreadId("thread-instance-mismatch"),
           runtimeMode: "full-access",
         }),
@@ -2895,10 +2891,10 @@ validation.layer("ProviderServiceLive validation", (it) => {
       assert.instanceOf(failure, ProviderValidationError);
       assert.include(
         failure.issue,
-        "Provider instance 'claudeAgent' belongs to driver 'claudeAgent', not 'codex'.",
+        "Provider instance 'opencodeV2' belongs to driver 'opencodeV2', not 'codex'.",
       );
       assert.equal(validation.codex.startSession.mock.calls.length, 0);
-      assert.equal(validation.claude.startSession.mock.calls.length, 0);
+      assert.equal(validation.openCodeV2.startSession.mock.calls.length, 0);
     }),
   );
 

@@ -21,8 +21,7 @@ import {
 
 const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
-const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
-const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
+const OPENCODE_V2_DRIVER = ProviderDriverKind.make("opencodeV2");
 
 const makeProvider = (
   provider: ProviderDriverKind,
@@ -83,11 +82,7 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "shuv2code-provider-cache-" });
       const codexProvider = makeProvider(CODEX_DRIVER);
-      const claudeProvider = makeProvider(CLAUDE_AGENT_DRIVER, {
-        status: "warning",
-        auth: { status: "unknown" },
-      });
-      const openCodeProvider = makeProvider(OPENCODE_DRIVER, {
+      const openCodeProvider = makeProvider(OPENCODE_V2_DRIVER, {
         status: "warning",
         auth: { status: "unknown", type: "opencode" },
       });
@@ -95,13 +90,9 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
         cacheDir: tempDir,
         instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("codex")),
       });
-      const claudePath = yield* resolveProviderStatusCachePath({
-        cacheDir: tempDir,
-        instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("claudeAgent")),
-      });
       const openCodePath = yield* resolveProviderStatusCachePath({
         cacheDir: tempDir,
-        instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("opencode")),
+        instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("opencodeV2")),
       });
 
       yield* writeProviderStatusCache({
@@ -109,16 +100,11 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
         provider: codexProvider,
       });
       yield* writeProviderStatusCache({
-        filePath: claudePath,
-        provider: claudeProvider,
-      });
-      yield* writeProviderStatusCache({
         filePath: openCodePath,
         provider: openCodeProvider,
       });
 
       assert.deepStrictEqual(yield* readProviderStatusCache(codexPath), codexProvider);
-      assert.deepStrictEqual(yield* readProviderStatusCache(claudePath), claudeProvider);
       assert.deepStrictEqual(yield* readProviderStatusCache(openCodePath), openCodeProvider);
     }),
   );

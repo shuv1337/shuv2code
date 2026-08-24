@@ -71,8 +71,8 @@ function cliLabel(cliName: string): string {
 
 /**
  * Normalize an unknown error from a CLI text generation process into a
- * typed `TextGenerationError`. Parameterized by CLI name so both Codex
- * and Claude (and future providers) can share the same logic.
+ * typed `TextGenerationError`. Parameterized by CLI name so Codex and
+ * future providers can share the same logic.
  */
 export function normalizeCliError(
   cliName: string,
