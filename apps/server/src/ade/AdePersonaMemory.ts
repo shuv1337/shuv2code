@@ -55,6 +55,23 @@ export class AdePersonaContentInvalidError extends Schema.TaggedErrorClass<AdePe
   }
 }
 
+/** Optimistic-concurrency refusal: the document changed since it was read. */
+export class AdeMemoryConflictError extends Schema.TaggedErrorClass<AdeMemoryConflictError>()(
+  "AdeMemoryConflictError",
+  {
+    botId: Schema.String,
+    expectedUpdatedAt: Schema.String,
+    actualUpdatedAt: Schema.String,
+  },
+) {
+  override get message(): string {
+    return (
+      `Memory document for bot '${this.botId}' changed: expected updatedAt ` +
+      `'${this.expectedUpdatedAt}', found '${this.actualUpdatedAt}'.`
+    );
+  }
+}
+
 export class AdeMemoryLimitExceededError extends Schema.TaggedErrorClass<AdeMemoryLimitExceededError>()(
   "AdeMemoryLimitExceededError",
   {
@@ -82,6 +99,12 @@ export interface WriteMemoryInput {
   readonly botId: BotId;
   readonly content: string;
   readonly author: AdeMemoryWriteAuthor;
+  /**
+   * Optimistic-concurrency precondition: when present, the write only lands
+   * if the document's `updatedAt` still matches (mismatch →
+   * `AdeMemoryConflictError`). Absent = last-writer-wins.
+   */
+  readonly expectedUpdatedAt?: string;
 }
 
 export interface EditPersonaInput {
@@ -105,7 +128,7 @@ export interface AdePersonaMemoryShape {
     input: WriteMemoryInput,
   ) => Effect.Effect<
     MemoryDocument,
-    AdeBotNotFoundError | AdeMemoryLimitExceededError | PersistenceSqlError
+    AdeBotNotFoundError | AdeMemoryConflictError | AdeMemoryLimitExceededError | PersistenceSqlError
   >;
 }
 
@@ -202,17 +225,32 @@ export class AdePersonaMemory extends Context.Service<AdePersonaMemory, AdePerso
           });
         }
         const at = yield* nowIso;
+        const expected = input.expectedUpdatedAt ?? null;
         // Bootstrap seeds a memory row with every bot, so UPDATE is the
         // normal path; a missing row means the bot does not exist (the FK
-        // would also reject the insert half of an upsert).
+        // would also reject the insert half of an upsert). The optional
+        // updatedAt precondition rides the same statement, so the
+        // compare-and-set is atomic.
         const updated = yield* sql<{ bot_id: string }>`
           UPDATE ade_memory_documents
           SET content = ${input.content}, updated_at = ${at}, updated_by = ${input.author}
           WHERE bot_id = ${input.botId}
+            AND (${expected} IS NULL OR updated_at = ${expected})
           RETURNING bot_id
         `.pipe(Effect.mapError(toPersistenceSqlError("AdePersonaMemory.writeMemory")));
         if (updated.length === 0) {
-          return yield* new AdeBotNotFoundError({ botId: input.botId });
+          const current = yield* sql<{ updated_at: string }>`
+            SELECT updated_at FROM ade_memory_documents WHERE bot_id = ${input.botId}
+          `.pipe(Effect.mapError(toPersistenceSqlError("AdePersonaMemory.writeMemory")));
+          const row = current[0];
+          if (row === undefined) {
+            return yield* new AdeBotNotFoundError({ botId: input.botId });
+          }
+          return yield* new AdeMemoryConflictError({
+            botId: input.botId,
+            expectedUpdatedAt: expected ?? "",
+            actualUpdatedAt: row.updated_at,
+          });
         }
         return {
           botId: input.botId,

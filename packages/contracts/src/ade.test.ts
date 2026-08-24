@@ -108,6 +108,7 @@ it("round-trips a BotExecutionBinding", () => {
     sessionId: "sess-abc",
     purpose: "primary-text",
     status: "active",
+    rolloverSummary: null,
     createdAt: "2026-08-24T00:00:00.000Z",
     updatedAt: "2026-08-24T00:00:00.000Z",
   });
