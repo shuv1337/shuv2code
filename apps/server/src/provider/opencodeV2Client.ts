@@ -81,6 +81,38 @@ export class OpenCodeV2RequestError extends Error {
   }
 }
 
+/**
+ * Did this failure mean *the session is gone*, as opposed to *the endpoint
+ * does not exist*?
+ *
+ * Both arrive as 404 and conflating them is consequential: a missing endpoint
+ * is a kernel build without the dynamic-tool extension (the session is fine —
+ * keep the binding), while a missing session is a restarted kernel (the
+ * binding is stale and must be retired or the bot becomes permanently
+ * unopenable). Upstream distinguishes them in the body: a session-level 404
+ * carries a tagged `SessionNotFoundError`, a route-level 404 carries no body
+ * at all. The `cause` chain is walked because callers see the adapter's
+ * wrapper, not this error.
+ */
+export function isOpenCodeV2SessionNotFound(cause: unknown): boolean {
+  let current: unknown = cause;
+  for (let depth = 0; depth < 5 && current !== null && current !== undefined; depth += 1) {
+    const record = current as {
+      readonly status?: unknown;
+      readonly errorName?: unknown;
+      readonly body?: unknown;
+      readonly cause?: unknown;
+    };
+    if (record.status === 404) {
+      if (record.errorName === "SessionNotFoundError") return true;
+      const tag = (record.body as { readonly _tag?: unknown } | undefined)?._tag;
+      if (tag === "SessionNotFoundError") return true;
+    }
+    current = record.cause;
+  }
+  return false;
+}
+
 export interface OpenCodeV2Event {
   readonly id?: string;
   readonly type: string;

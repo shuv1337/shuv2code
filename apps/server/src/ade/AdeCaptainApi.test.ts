@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import type { AdeBotChatSession, BotId } from "@shuv2code/contracts";
@@ -13,6 +14,13 @@ import { AdeCaptainApi } from "./AdeCaptainApi.ts";
 import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
 import { AdePersonaMemory } from "./AdePersonaMemory.ts";
 import { AdeSessionRollover } from "./AdeSessionRollover.ts";
+import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
+
+/** Tagged so the stub's failure stays distinguishable in the error channel. */
+class StubWorkspacePathError extends Schema.TaggedErrorClass<StubWorkspacePathError>()(
+  "StubWorkspacePathError",
+  { message: Schema.String },
+) {}
 
 const chatSession: AdeBotChatSession = {
   botId: "bot" as BotId,
@@ -38,6 +46,16 @@ const makeLayer = (chatPort: Layer.Layer<AdeChatSessionPort> = chatPortOk) =>
         AdeSessionRollover.layer,
         AdeAssignmentEngine.layer,
         chatPort,
+        // Stands in for real path resolution: expands `~`, drops trailing
+        // slashes, and refuses anything that does not exist.
+        Layer.succeed(WorkspacePaths, {
+          normalizeWorkspaceRoot: (root: string) =>
+            root.startsWith("~/repos/demo")
+              ? Effect.succeed("/normalized/repos/demo")
+              : Effect.fail(
+                  new StubWorkspacePathError({ message: `workspace root does not exist: ${root}` }),
+                ),
+        } as unknown as WorkspacePaths["Service"]),
       ),
     ),
     Layer.provide(AdeAssignmentKernelPort.layerUnwired),
@@ -297,7 +315,7 @@ describe("AdeCaptainApi mutations", () => {
       const { api } = yield* setup;
       const created = yield* api.createProject({
         name: "Demo Fleet Project",
-        repoPath: "/repos/demo",
+        repoPath: "~/repos/demo",
       });
       assert.equal(created.project.name, "Demo Fleet Project");
 
@@ -314,6 +332,49 @@ describe("AdeCaptainApi mutations", () => {
       );
       // A bound repo is what lets the chat resolve somewhere to run.
       assert.equal(detail.projectName, "Demo Fleet Project");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("normalizes the repo path so later comparisons can match", () =>
+    Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      // What the captain typed vs what workspace projects store. Storing the
+      // raw form is what made the chat's project lookup miss and re-dispatch
+      // project.create on every visit.
+      const created = yield* api.createProject({ name: "Tilde", repoPath: "~/repos/demo/" });
+      const rows = yield* sql<{ repo_path: string | null }>`
+        SELECT repo_path FROM ade_projects WHERE project_id = ${created.project.id}
+      `;
+      assert.equal(rows[0]?.repo_path, "/normalized/repos/demo");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("is idempotent per repository: one project, one Second Mate", () =>
+    Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      const first = yield* api.createProject({ name: "Demo", repoPath: "~/repos/demo" });
+      // Same repo, different spelling and name — a captain pressing the CTA
+      // twice, or two tabs racing.
+      const second = yield* api.createProject({ name: "Demo again", repoPath: "~/repos/demo/" });
+
+      assert.equal(second.project.id, first.project.id);
+      assert.equal(second.secondMateBotId, first.secondMateBotId);
+      const projects = yield* sql<{ project_id: string }>`SELECT project_id FROM ade_projects`;
+      assert.lengthOf(projects, 1);
+      const mates = yield* sql<{ bot_id: string }>`
+        SELECT bot_id FROM ade_bots WHERE structural_role = 'second-mate'
+      `;
+      assert.lengthOf(mates, 1);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("refuses a repository path it cannot resolve", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      const error = yield* Effect.flip(
+        api.createProject({ name: "Bad", repoPath: "/does/not/exist" }),
+      );
+      assert.equal(error.reason, "project_invalid");
     }).pipe(Effect.provide(makeLayer())),
   );
 

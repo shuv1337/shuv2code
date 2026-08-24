@@ -54,6 +54,7 @@ const CAPTAIN_ERROR_TEXT: Record<AdeCaptainErrorReason, string> = {
   memory_too_large: "That memory document is too large to save.",
   persona_invalid: "That persona could not be saved.",
   session_unavailable: "No kernel session is available right now.",
+  project_invalid: "That project could not be created.",
   persistence_failed: "The change could not be saved.",
 };
 

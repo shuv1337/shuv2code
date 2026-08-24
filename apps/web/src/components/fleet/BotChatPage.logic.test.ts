@@ -1,7 +1,13 @@
 import type { AdeBotDetail, ThreadId } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { getBotChatBody, getBotChatHeaderView, getBotChatWelcomeCopy } from "./BotChatPage.logic";
+import {
+  CHAT_SYNC_TIMEOUT_MS,
+  getBotChatBody,
+  getBotChatHeaderView,
+  getBotChatWelcomeCopy,
+  resolveChatSyncOutcome,
+} from "./BotChatPage.logic";
 
 function detail(overrides: Partial<AdeBotDetail> = {}): AdeBotDetail {
   return {
@@ -166,5 +172,54 @@ describe("getBotChatBody load failures", () => {
       getBotChatBody({ detail: null, startedThreadId: null, hasProjects: true, loadError: null })
         .kind,
     ).toBe("loading");
+  });
+});
+
+describe("resolveChatSyncOutcome", () => {
+  const base = { threadShellExists: false, elapsedMs: 0 } as const;
+
+  it("waits while the thread is still on its way", () => {
+    expect(resolveChatSyncOutcome({ ...base, renderState: "loading" }).kind).toBe("waiting");
+  });
+
+  it("is ready once the detail lands, or once a shell exists", () => {
+    expect(resolveChatSyncOutcome({ ...base, renderState: "ready" }).kind).toBe("ready");
+    expect(
+      resolveChatSyncOutcome({ ...base, renderState: "loading", threadShellExists: true }).kind,
+    ).toBe("ready");
+  });
+
+  it("offers a way out when the thread is missing after bootstrap", () => {
+    const outcome = resolveChatSyncOutcome({ ...base, renderState: "missing" });
+    expect(outcome.kind).toBe("retry");
+    if (outcome.kind !== "retry") return;
+    expect(outcome.message).toContain("no longer available");
+  });
+
+  it("offers a way out when the shell query itself failed", () => {
+    const outcome = resolveChatSyncOutcome({
+      ...base,
+      renderState: "loading",
+      shellError: "connection lost",
+    });
+    expect(outcome.kind).toBe("retry");
+  });
+
+  it("stops waiting forever: a bounded fallback ends in retry", () => {
+    expect(
+      resolveChatSyncOutcome({
+        ...base,
+        renderState: "loading",
+        elapsedMs: CHAT_SYNC_TIMEOUT_MS - 1,
+      }).kind,
+    ).toBe("waiting");
+    const timedOut = resolveChatSyncOutcome({
+      ...base,
+      renderState: "loading",
+      elapsedMs: CHAT_SYNC_TIMEOUT_MS,
+    });
+    expect(timedOut.kind).toBe("retry");
+    if (timedOut.kind !== "retry") return;
+    expect(timedOut.message).toContain("try again");
   });
 });
