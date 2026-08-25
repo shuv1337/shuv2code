@@ -34,8 +34,13 @@ jobs:
           vp run icons:check
 
       - name: Lint
-        # Piped through cat: vp's direct writes to a non-blocking CI stdout intermittently
-        # die with EAGAIN (os error 11) and fail the job despite 0 lint errors.
+        # The self-hosted runner's job stdout is non-blocking, so any process
+        # writing to it directly (vp, or cat in a pipe) can die with EAGAIN
+        # (os error 11) despite 0 lint errors. Run vp against a regular file so
+        # its exit status reflects lint results only, then replay the log
+        # best-effort — a truncated replay must not fail the gate.
         run: |
-          set -o pipefail
-          vp check 2>&1 | cat
+          status=0
+          vp check > "$RUNNER_TEMP/lint.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/lint.log" || true
+          exit "$status"
