@@ -33,6 +33,7 @@ import { AdeAssignmentInlineChecks, AdeAssignmentToolHandlers } from "./ade/AdeA
 import { AdeBootstrap } from "./ade/AdeBootstrap.ts";
 import { AdeApprovalPortLayerLive } from "./ade/AdeApprovalPortLive.ts";
 import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
+import { AdeRosterFeed } from "./ade/AdeRosterFeed.ts";
 import { AdeVoiceChannel, AdeVoicePrimaryTranscript } from "./ade/AdeVoiceChannel.ts";
 import {
   AdeVoiceApprovalPortLayerLive,
@@ -450,6 +451,10 @@ const AdeCaptainLayerLive = Layer.mergeAll(
       Layer.provide(AdeVoicePrimaryTranscript.layerEmpty),
     ),
   ),
+  // The rail's live feed sits directly on top of the captain API: it is a
+  // subscription over `getRoster`, so it must be built after it and torn down
+  // before it (messenger pivot §4, M3).
+  Layer.provideMerge(AdeRosterFeed.layer),
   Layer.provideMerge(AdeCaptainApi.layer),
   // The captain's approval verdict reaches the integration service through
   // this port (spec §7 slice 5); it sits between the two so the captain API

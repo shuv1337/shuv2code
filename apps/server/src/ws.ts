@@ -78,6 +78,7 @@ import {
   type AdeNeedsYouItemIdInput,
   type AdeSetComputerUseInput,
   type AdeSubmitNeedsYouDecisionInput,
+  type AdeMarkBotChatReadInput,
   type AdeUpdateBotIdentityInput,
   type AdeUpsertBotGroupInput,
   type AdeWriteMemoryInput,
@@ -104,6 +105,7 @@ import {
   WsAdeStopBotDesktopRpc,
   WsAdeDeleteBotRpc,
   WsAdeStartBotChatRpc,
+  WsAdeMarkBotChatReadRpc,
   WsAdeWriteBotMemoryRpc,
   WS_METHODS,
   WsRpcGroup,
@@ -159,6 +161,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
+import { AdeRosterFeed } from "./ade/AdeRosterFeed.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
@@ -469,6 +472,11 @@ const makeAdeRpcHandlers = (
       ),
     [WS_METHODS.adeStartBotChat]: (input: { readonly botId: BotId }) =>
       observeRpcEffect(WS_METHODS.adeStartBotChat, adeCaptainApi.startBotChat(input.botId), ade),
+    // Roster liveness (messenger pivot §4, M3). Clearing an unread count is a
+    // captain-owned read receipt, not a decision — it rides the same
+    // orchestration scopes as the rest of the rail.
+    [WS_METHODS.adeMarkBotChatRead]: (input: AdeMarkBotChatReadInput) =>
+      observeRpcEffect(WS_METHODS.adeMarkBotChatRead, adeCaptainApi.markBotChatRead(input), ade),
     [WS_METHODS.adeGetBotScreen]: (input: { readonly botId: BotId }) =>
       observeRpcEffect(WS_METHODS.adeGetBotScreen, adeCaptainApi.getBotScreen(input.botId), ade),
     [WS_METHODS.adeStartBotDesktop]: (input: { readonly botId: BotId }) =>
@@ -509,6 +517,7 @@ export const AdeWsRpcGroup = RpcGroup.make(
   WsAdeGetNeedsYouItemRpc,
   WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeStartBotChatRpc,
+  WsAdeMarkBotChatReadRpc,
   WsAdeGetBotScreenRpc,
   WsAdeStartBotDesktopRpc,
   WsAdeStopBotDesktopRpc,
@@ -828,6 +837,7 @@ export const makeWsRpcLayer = (
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const adeHealthChecker = yield* AdeHealthChecker;
+      const adeRosterFeed = yield* AdeRosterFeed;
       const adeCaptainApi = yield* AdeCaptainApi;
       const automationService = yield* AutomationService.AutomationService;
       const voiceController = yield* VoiceController.VoiceControllerService;
@@ -2768,6 +2778,16 @@ export const makeWsRpcLayer = (
             WS_METHODS.subscribeAdeFleetHealth,
             Stream.unwrap(
               Effect.map(adeHealthChecker.subscribe, ({ latest, changes }) =>
+                Stream.concat(Stream.make(latest), changes),
+              ),
+            ),
+            { "rpc.aggregate": "ade" },
+          ),
+        [WS_METHODS.subscribeAdeRoster]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeAdeRoster,
+            Stream.unwrap(
+              Effect.map(adeRosterFeed.subscribe, ({ latest, changes }) =>
                 Stream.concat(Stream.make(latest), changes),
               ),
             ),

@@ -102,6 +102,7 @@ const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function
 import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
 import { AdeVoiceToolPlane } from "./ade/AdeVoiceToolPlane.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
+import { AdeRosterFeed } from "./ade/AdeRosterFeed.ts";
 import { AdeScreenboxRuntime } from "./ade/AdeScreenbox.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
@@ -686,6 +687,7 @@ const buildAppUnderTest = (options?: {
           // constructed without them. These tests never exercise `ade.*` RPCs —
           // `ws.ade.integration.test.ts` owns that seam with real services.
           Layer.mock(AdeHealthChecker)({}),
+          Layer.mock(AdeRosterFeed)({}),
           Layer.mock(AdeCaptainApi)({}),
           // Same reason: the controller MCP route resolves the ADE voice tool
           // plane while building. `layerAbsent` is the honest stand-in — these

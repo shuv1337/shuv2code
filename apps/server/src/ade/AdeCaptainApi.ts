@@ -34,6 +34,7 @@ import {
   type AdeAssignmentGraph,
   type AdeAssignmentGraphInput,
   type AdeAssignmentGraphNode,
+  type AdeBotChatReadReceipt,
   type AdeBotChatSession,
   type AdeBotDetail,
   type AdeBotGroup,
@@ -49,6 +50,7 @@ import {
   type AdeDeletedBotGroup,
   type AdeEditPersonaInput,
   type AdeListNeedsYouInput,
+  type AdeMarkBotChatReadInput,
   type AdeNeedsYouCount,
   type AdeNeedsYouEntry,
   type AdeNeedsYouList,
@@ -104,6 +106,15 @@ import {
   type NeedsYouNaming,
   type NeedsYouRow,
 } from "./adeNeedsYou.ts";
+import {
+  clampUnreadCount,
+  resolveAttention,
+  resolveLastMessage,
+  type LatestThreadMessageRow,
+  type OpenAttentionRow,
+  ADE_BOT_THREAD_ID_PREFIX,
+  botIdFromThreadId,
+} from "./adeRosterLiveness.ts";
 import { ADE_BOT_TEMPLATES } from "./personaTemplates.ts";
 
 // ---------------------------------------------------------------------------
@@ -525,6 +536,18 @@ export interface AdeCaptainApiShape {
     input: AdeSubmitNeedsYouDecisionInput,
   ) => Effect.Effect<AdeNeedsYouEntry, AdeCaptainError>;
   readonly startBotChat: (botId: BotId) => Effect.Effect<AdeBotChatSession, AdeCaptainError>;
+  /**
+   * Move a bot's read mark to now (messenger pivot §4, M3).
+   *
+   * Monotonic on purpose: the mark only ever moves forward. The conversation
+   * view fires this from more than one trigger (focus, and reaching the bottom
+   * of the thread), and a late-arriving call from a tab that had gone stale
+   * must not be able to rewind the mark and resurrect unread counts the captain
+   * has already cleared.
+   */
+  readonly markBotChatRead: (
+    input: AdeMarkBotChatReadInput,
+  ) => Effect.Effect<AdeBotChatReadReceipt, AdeCaptainError>;
   readonly getProject: (
     projectId: AdeProjectId,
   ) => Effect.Effect<AdeProjectDetail, AdeCaptainError>;
@@ -577,6 +600,112 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         (rows) => new Map(rows.map((row) => [row.project_id, row.name] as const)),
       );
 
+      /**
+       * The three liveness reads behind previews, unread and attention
+       * (messenger pivot §4, M3). One bounded pass per concern, keyed by bot —
+       * never one query per row.
+       *
+       * The S12 lesson is the reason for every `WHERE` clause here. The
+       * message reads are constrained to the fleet's own deterministic threads
+       * (`ade-bot-<botId>`, `AdeShuvcodeChatSession.ts`) and ride the
+       * `(thread_id, created_at, message_id)` and `(thread_id, role,
+       * created_at)` indexes, so their cost tracks the size of the fleet and
+       * the number of *unread* messages rather than the size of the projection
+       * table. `maxBots` (§18.1, default 24) is what bounds the fleet.
+       */
+      const readRosterLiveness = Effect.fn("AdeCaptainApi.readRosterLiveness")(function* (
+        botRows: ReadonlyArray<BotRow>,
+      ) {
+        const empty = {
+          latestMessages: new Map<string, ReadonlyArray<LatestThreadMessageRow>>(),
+          unread: new Map<string, number>(),
+          attention: new Map<string, ReadonlyArray<OpenAttentionRow>>(),
+        };
+        if (botRows.length === 0) {
+          return empty;
+        }
+        const threadIds = botRows.map((row) => `${ADE_BOT_THREAD_ID_PREFIX}${row.bot_id}`);
+
+        // Latest settled message per thread. `is_streaming = 0` keeps a
+        // half-arrived assistant token out of the rail: a preview that grows a
+        // word at a time is motion without information, and the finished
+        // message lands one frame later anyway. The window function is
+        // evaluated over an index range per thread rather than over the table.
+        const messageRows = yield* sql<LatestThreadMessageRow>`
+            SELECT thread_id, role, text, created_at FROM (
+              SELECT
+                thread_id,
+                role,
+                text,
+                created_at,
+                ROW_NUMBER() OVER (
+                  PARTITION BY thread_id
+                  ORDER BY created_at DESC, message_id DESC
+                ) AS tail_rank
+              FROM projection_thread_messages
+              WHERE thread_id IN ${sql.in(threadIds)} AND is_streaming = 0
+            )
+            -- Two rows per thread, not one: the tail can be a captain message
+            -- and a bot message written in the same clock tick, and preview
+            -- precedence (§4) is what picks between them.
+            WHERE tail_rank <= 2
+          `;
+        const latestMessages = new Map<string, Array<LatestThreadMessageRow>>();
+        for (const row of messageRows) {
+          const botId = botIdFromThreadId(row.thread_id);
+          const bucket = latestMessages.get(botId);
+          if (bucket === undefined) {
+            latestMessages.set(botId, [row]);
+          } else {
+            bucket.push(row);
+          }
+        }
+
+        // Unread is *bot* messages the captain has not seen. Their own sent
+        // messages are never unread, which is why `role = 'assistant'` is part
+        // of the predicate rather than a filter applied afterwards.
+        const unreadRows = yield* sql<{ bot_id: string; unread: number }>`
+            SELECT bot.bot_id AS bot_id, COUNT(message.message_id) AS unread
+            FROM ade_bots AS bot
+            LEFT JOIN projection_thread_messages AS message
+              ON message.thread_id = ${ADE_BOT_THREAD_ID_PREFIX} || bot.bot_id
+             AND message.role = 'assistant'
+             AND message.is_streaming = 0
+             AND (bot.chat_last_read_at IS NULL OR message.created_at > bot.chat_last_read_at)
+            WHERE bot.archived_at IS NULL
+            GROUP BY bot.bot_id
+          `;
+
+        // Open items, joined to names only. `projectNeedsYouRow` composes the
+        // title from `kind` plus bot/project names — never from an assignment
+        // instruction or anything the captain typed — which is what lets the
+        // attention line be rendered in a list without a redaction pass.
+        const needsYouRows = yield* sql<NeedsYouRow>`
+            SELECT * FROM ade_needs_you_items WHERE status = 'open'
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ${NEEDS_YOU_HISTORY_LIMIT}
+          `;
+        const naming = yield* needsYouNaming;
+        const attention = new Map<string, Array<OpenAttentionRow>>();
+        for (const row of needsYouRows) {
+          const entry = projectNeedsYouRow(row, naming);
+          if (entry.botId === null) continue;
+          const bucket = attention.get(entry.botId);
+          const item = { kind: entry.item.kind, title: entry.title };
+          if (bucket === undefined) {
+            attention.set(entry.botId, [item]);
+          } else {
+            bucket.push(item);
+          }
+        }
+
+        return {
+          latestMessages,
+          unread: new Map(unreadRows.map((row) => [row.bot_id, row.unread] as const)),
+          attention,
+        };
+      });
+
       const getRoster: AdeCaptainApiShape["getRoster"] = Effect.fn("AdeCaptainApi.getRoster")(
         function* () {
           const rows = yield* sql<BotRow>`
@@ -598,15 +727,23 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
           const openCounts = new Map(
             openRows.map((row) => [row.recipient_bot_id, row.open_count] as const),
           );
+          const liveness = yield* readRosterLiveness(rows);
 
           const entries = rows
             .map((row) => {
               const bot = rowToBot(row);
+              const attentionRows = liveness.attention.get(bot.id) ?? [];
               return {
                 bot,
                 projectName: bot.projectId === null ? null : (names.get(bot.projectId) ?? null),
                 hasActivePrimarySession: active.has(bot.id),
                 openAssignmentCount: openCounts.get(bot.id) ?? 0,
+                lastMessage: resolveLastMessage({
+                  rows: liveness.latestMessages.get(bot.id) ?? [],
+                  attentionRows,
+                }),
+                attention: resolveAttention(attentionRows),
+                unreadCount: clampUnreadCount(liveness.unread.get(bot.id) ?? 0),
               } satisfies AdeRosterEntry;
             })
             .sort(compareRosterEntries);
@@ -1317,6 +1454,45 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         return yield* chat.startPrimaryChat(botId);
       });
 
+      const markBotChatRead: AdeCaptainApiShape["markBotChatRead"] = Effect.fn(
+        "AdeCaptainApi.markBotChatRead",
+      )(function* (input: AdeMarkBotChatReadInput) {
+        const at = DateTime.formatIso(yield* DateTime.now);
+        // `MAX(…)` in SQL rather than a read-compare-write in TypeScript: the
+        // mark is monotonic, and making that one statement means two triggers
+        // firing at once cannot interleave into a rewind. `RETURNING` is also
+        // how a missing bot is detected without a second query.
+        const updated = yield* sql<{ chat_last_read_at: string }>`
+            UPDATE ade_bots
+            SET chat_last_read_at = MAX(COALESCE(chat_last_read_at, ''), ${at})
+            WHERE bot_id = ${input.botId}
+            RETURNING chat_last_read_at
+          `;
+        const readAt = updated[0]?.chat_last_read_at;
+        if (readAt === undefined) {
+          return yield* new AdeCaptainError({
+            reason: "bot_not_found",
+            message: `ADE bot '${input.botId}' does not exist.`,
+          });
+        }
+        // Not assumed to be zero. A bot that spoke between the captain reaching
+        // the bottom and this statement landing is genuinely unread, and the
+        // receipt is what lets the conversation view settle on the truth rather
+        // than on an optimistic clear the next roster frame would undo.
+        const remaining = yield* sql<{ unread: number }>`
+            SELECT COUNT(*) AS unread FROM projection_thread_messages
+            WHERE thread_id = ${`${ADE_BOT_THREAD_ID_PREFIX}${input.botId}`}
+              AND role = 'assistant'
+              AND is_streaming = 0
+              AND created_at > ${readAt}
+          `;
+        return {
+          botId: input.botId,
+          readAt,
+          unreadCount: clampUnreadCount(remaining[0]?.unread ?? 0),
+        } satisfies AdeBotChatReadReceipt;
+      }, captainize);
+
       // -- Project view + work graph (spec §7 slices 3, 4) -------------------
 
       const readProjectRow = Effect.fn("AdeCaptainApi.readProjectRow")(function* (
@@ -1545,6 +1721,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         getNeedsYouItem,
         submitNeedsYouDecision,
         startBotChat,
+        markBotChatRead,
       });
     }),
   );
