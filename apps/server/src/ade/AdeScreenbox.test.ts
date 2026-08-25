@@ -12,6 +12,7 @@ import type { BotId } from "@shuv2code/contracts";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import {
+  AdeServerOwnPorts,
   AdeScreenboxRuntime,
   AdeScreenboxToolPlaneLive,
   SCREENBOX_OPERATE_TOOLS,
@@ -34,6 +35,9 @@ import {
   type AdeScreenboxMock,
   type AdeScreenboxMockOptions,
 } from "./adeScreenboxMock.testSupport.ts";
+
+/** The first `vnc_port` `startAdeScreenboxMock` hands out. */
+const FIRST_MOCK_VNC_PORT = 16083;
 
 /** Past the default `LimitsConfig.screenboxIdleStopMinutes` (30). */
 const PAST_IDLE_WINDOW = Duration.minutes(31);
@@ -99,6 +103,14 @@ const buildHarness = (
     readonly mcpSse?: boolean;
     readonly tools?: AdeScreenboxMockOptions["tools"];
     readonly controlDelayMs?: number;
+    /**
+     * Replaces the mock's own loopback origin. The viewer path treats a
+     * non-loopback Screenbox as untrusted, and that can only be exercised by
+     * lying about where upstream lives.
+     */
+    readonly baseUrlOverride?: string;
+    /** Ports the viewer proxy must refuse to dial (this server's own). */
+    readonly ownPorts?: ReadonlySet<number>;
   } = {},
 ): Effect.Effect<Harness, never, SqlClient.SqlClient | Scope.Scope> =>
   Effect.gen(function* () {
@@ -117,11 +129,14 @@ const buildHarness = (
         Layer.provide(AdeScreenboxClient.layer),
         Layer.provide(
           AdeScreenboxConfig.layer({
-            baseUrl: options.configured === false ? null : mock.baseUrl,
+            baseUrl:
+              options.configured === false ? null : (options.baseUrlOverride ?? mock.baseUrl),
             adminToken: "admin-token",
           }),
         ),
         Layer.provide(FetchHttpClient.layer),
+        // Always provided; an empty set is the production default.
+        Layer.provide(Layer.succeed(AdeServerOwnPorts, options.ownPorts ?? new Set<number>())),
       ),
     );
     const runtime = yield* Effect.service(AdeScreenboxRuntime).pipe(Effect.provide(context));
@@ -950,6 +965,46 @@ describe("AdeScreenbox viewer target", () => {
       assert.strictEqual(outcome._tag, "Failure");
       if (outcome._tag === "Failure") {
         assert.strictEqual(outcome.failure.kind, "not-configured");
+      }
+    }),
+  );
+
+  testCase(
+    "refuses to view a desktop when the configured Screenbox is not on loopback",
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      yield* seedBot(sql, "bot-a", { computerUse: true });
+      yield* seedProvisioning(sql, "bot-a", "running");
+      // The port in a `list` entry is upstream's to choose. Against a remote or
+      // compromised Screenbox that makes the viewer a byte pipe from any
+      // operate-scoped captain to an arbitrary port on *this* host's loopback.
+      const { runtime } = yield* buildHarness({ baseUrlOverride: "https://screenbox.example.com" });
+
+      const outcome = yield* runtime.viewerTargetFor("bot-a" as BotId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.kind, "not-configured");
+      }
+    }),
+  );
+
+  testCase(
+    "refuses a desktop port that collides with this server's own listener",
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      yield* seedBot(sql, "bot-a", { computerUse: true });
+      // The mock hands out its first desktop port deterministically, so the
+      // guard can be armed with that exact number before the desktop exists.
+      const { mock, runtime } = yield* buildHarness({ ownPorts: new Set([FIRST_MOCK_VNC_PORT]) });
+      yield* runtime.startDesktopFor("bot-a" as BotId);
+      assert.strictEqual(mock.desktops.get("bot-a")!.vncPort, FIRST_MOCK_VNC_PORT);
+
+      // Dialling this would splice the captain's VNC socket into ADE's own
+      // HTTP/WS listener.
+      const outcome = yield* runtime.viewerTargetFor("bot-a" as BotId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.kind, "upstream");
       }
     }),
   );

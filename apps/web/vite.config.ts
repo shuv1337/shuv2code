@@ -10,7 +10,10 @@ import "vite-plus/test/config";
 import { defineConfig, type Connect, type Plugin } from "vite-plus";
 import pkg from "./package.json" with { type: "json" };
 
-import { DEV_PROXIED_PATH_PREFIXES } from "@shuv2code/shared/devProxy";
+import {
+  DEV_PROXIED_PATH_PREFIXES,
+  DEV_PROXIED_WEBSOCKET_PREFIXES,
+} from "@shuv2code/shared/devProxy";
 
 import { loadRepoEnv } from "../../scripts/lib/public-config";
 
@@ -236,7 +239,7 @@ export default defineConfig(() => {
                 {
                   target: devProxyTarget,
                   changeOrigin: true,
-                  ...(prefix === "/ws" ? { ws: true } : {}),
+                  ...(DEV_PROXIED_WEBSOCKET_PREFIXES.has(prefix) ? { ws: true } : {}),
                 },
               ]),
             ),

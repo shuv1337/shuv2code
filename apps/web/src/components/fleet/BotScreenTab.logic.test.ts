@@ -93,27 +93,54 @@ describe("getBotScreenView", () => {
 });
 
 describe("viewerSocketUrl", () => {
-  it("keeps the viewer on the page's own origin", () => {
+  it("carries the upgrade ticket on the page's own origin", () => {
+    // The ticket is not optional: a WebSocket cannot send an Authorization
+    // header, so without it every client that is not a plain cookie-bearing
+    // browser tab is refused with a 401 the viewer cannot explain.
     assert.strictEqual(
-      viewerSocketUrl({ pageOrigin: "http://localhost:5173", viewerPath: "/ade/screen/bot-a" }),
-      "ws://localhost:5173/ade/screen/bot-a",
+      viewerSocketUrl({
+        pageOrigin: "http://localhost:5173",
+        viewerPath: "/ade/screen/bot-a",
+        wsTicket: "tkt-1",
+      }),
+      "ws://localhost:5173/ade/screen/bot-a?wsTicket=tkt-1",
     );
   });
 
   it("upgrades to wss on a secure page", () => {
     assert.strictEqual(
-      viewerSocketUrl({ pageOrigin: "https://box.example:8228", viewerPath: "/ade/screen/bot-a" }),
-      "wss://box.example:8228/ade/screen/bot-a",
+      viewerSocketUrl({
+        pageOrigin: "https://box.example:8228",
+        viewerPath: "/ade/screen/bot-a",
+        wsTicket: "tkt-1",
+      }),
+      "wss://box.example:8228/ade/screen/bot-a?wsTicket=tkt-1",
     );
+  });
+
+  it("escapes a ticket that would otherwise break out of the query", () => {
+    const url = new URL(
+      viewerSocketUrl({
+        pageOrigin: "https://box.example",
+        viewerPath: "/ade/screen/bot-a",
+        wsTicket: "a&b=c d",
+      }),
+    );
+    assert.strictEqual(url.searchParams.get("wsTicket"), "a&b=c d");
   });
 
   it("cannot be pointed at another host by the path", () => {
     // Even a fully-qualified path resolves against the page origin, so a
     // server bug cannot send the captain's keystrokes somewhere else.
-    assert.strictEqual(
-      viewerSocketUrl({ pageOrigin: "https://box.example", viewerPath: "/ade/screen/bot%2Fa" }),
-      "wss://box.example/ade/screen/bot%2Fa",
+    const url = new URL(
+      viewerSocketUrl({
+        pageOrigin: "https://box.example",
+        viewerPath: "/ade/screen/bot%2Fa",
+        wsTicket: "tkt-1",
+      }),
     );
+    assert.strictEqual(url.host, "box.example");
+    assert.strictEqual(url.pathname, "/ade/screen/bot%2Fa");
   });
 });
 

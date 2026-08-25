@@ -131,6 +131,17 @@ export const toAdeCaptainError = (error: unknown): AdeCaptainError => {
 const captainize = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, AdeCaptainError> =>
   Effect.mapError(effect, toAdeCaptainError);
 
+/**
+ * Escapes SQL `LIKE` metacharacters so an interpolated value matches literally.
+ *
+ * Bot ids are generated, but they are not a closed alphabet this code controls,
+ * and a `%` in one would silently widen a `LIKE` from "this bot" to "any bot" —
+ * which on the Needs You sweep below would resolve other bots' open items.
+ * Must be paired with an explicit `ESCAPE '\'` clause.
+ */
+export const escapeLikePattern = (value: string): string =>
+  value.replace(/[\\%_]/g, (match) => `\\${match}`);
+
 // ---------------------------------------------------------------------------
 // Row projection
 // ---------------------------------------------------------------------------
@@ -722,8 +733,10 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         });
 
       /** A desktop refusal is never a persistence failure; keep the reason. */
-      const screenboxError = (error: AdeScreenboxProvisionError): AdeCaptainError =>
-        new AdeCaptainError({ reason: "screenbox_unavailable", message: error.reason });
+      const screenboxError = (error: AdeScreenboxProvisionError) =>
+        Effect.fail(
+          new AdeCaptainError({ reason: "screenbox_unavailable", message: error.reason }),
+        );
 
       const requireBot = (botId: BotId) =>
         Effect.gen(function* () {
@@ -758,7 +771,9 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
             message: "Turn on computer use for this bot before starting a desktop.",
           });
         }
-        yield* screenbox.startDesktopFor(botId).pipe(Effect.mapError(screenboxError));
+        yield* screenbox
+          .startDesktopFor(botId)
+          .pipe(Effect.catchTag("AdeScreenboxProvisionError", screenboxError));
         return yield* projectScreen(botId);
       }, captainize);
 
@@ -766,7 +781,9 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         "AdeCaptainApi.stopBotDesktop",
       )(function* (botId: BotId) {
         yield* requireBot(botId);
-        yield* screenbox.stopDesktopFor(botId).pipe(Effect.mapError(screenboxError));
+        yield* screenbox
+          .stopDesktopFor(botId)
+          .pipe(Effect.catchTag("AdeScreenboxProvisionError", screenboxError));
         return yield* projectScreen(botId);
       }, captainize);
 
@@ -791,25 +808,31 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
               message: `Bot '${botId}' is the Firstmate and cannot be deleted.`,
             });
           }
-          const screen = yield* screenbox.statusFor(botId);
-          const hadDesktop = screen.status !== "none";
-          if (hadDesktop) {
-            yield* screenbox.destroyDesktopFor(botId).pipe(Effect.mapError(screenboxError));
-          }
-          // 055's cascades take the persona versions, memory documents,
-          // execution bindings, assignments, and any surviving provisioning
-          // record with the row.
-          yield* captainize(sql`DELETE FROM ade_bots WHERE bot_id = ${botId}`);
-          // Needs You items have no FK to bots (their subject refs are free
-          // form), so a provision-failure raised for this bot would otherwise
-          // outlive it as an inbox item pointing at nothing.
-          yield* captainize(
-            sql`
-              UPDATE ade_needs_you_items SET status = 'resolved'
-              WHERE status = 'open' AND subject_refs_json LIKE ${`%"${botId}"%`}
-            `,
-          );
-          return { botId, desktopPurged: hadDesktop } satisfies AdeDeletedBot;
+          // The purge and the row delete run under one per-bot lock. Releasing
+          // between them would let a tool forward re-provision into the gap,
+          // and the cascade would then eat the fresh provisioning record and
+          // strand a live container.
+          return yield* screenbox
+            .deleteDesktopAndFinalize(botId, ({ desktopPurged }) =>
+              Effect.gen(function* () {
+                // 055's cascades take the persona versions, memory documents,
+                // execution bindings, assignments, and any surviving
+                // provisioning record with the row.
+                yield* sql`DELETE FROM ade_bots WHERE bot_id = ${botId}`;
+                // Needs You items have no FK to bots (their subject refs are
+                // free form), so a provision-failure raised for this bot would
+                // otherwise outlive it as an inbox item pointing at nothing.
+                yield* sql`
+                  UPDATE ade_needs_you_items SET status = 'resolved'
+                  WHERE status = 'open'
+                    AND subject_refs_json LIKE ${`%"${escapeLikePattern(botId)}"%`} ESCAPE '\'
+                `;
+                return { botId, desktopPurged } satisfies AdeDeletedBot;
+              }),
+            )
+            // Only the desktop refusal needs narrowing here; a SQL failure
+            // falls through to `captainize` as a persistence failure.
+            .pipe(Effect.catchTag("AdeScreenboxProvisionError", (error) => screenboxError(error)));
         },
         captainize,
       );

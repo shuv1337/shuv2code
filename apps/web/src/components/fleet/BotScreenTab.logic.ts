@@ -25,22 +25,33 @@ export const deleteVolumeWorkaroundFor = (botId: string): string =>
 export const DELETE_VOLUME_WORKAROUND_NOTE =
   "Screenbox reports success even when it cannot remove the desktop's home volume. If you need the disk space back, run this on the Screenbox host afterwards:";
 
+/** Endpoint that mints the short-lived ticket a WebSocket upgrade carries. */
+export const WEBSOCKET_TICKET_PATH = "/api/auth/websocket-ticket";
+
 /**
  * Turns the server-issued viewer path into the WebSocket URL noVNC opens.
  *
- * Same-origin by construction. ADE is a primary-environment-only surface and
- * the primary environment is the server that served this page, so the browser's
- * own session cookie authenticates the upgrade — exactly as it does for the RPC
- * socket at `/ws`. Building the URL from an origin the server did not name is
- * what this signature is shaped to prevent: the path always comes from
- * `AdeBotScreen.viewerPath`, never from the client.
+ * Same-origin by construction: ADE is a primary-environment-only surface and
+ * the primary environment is the server that served this page. Building the URL
+ * from an origin the server did not name is what this signature is shaped to
+ * prevent — the path always comes from `AdeBotScreen.viewerPath`, never from
+ * the client.
+ *
+ * The `wsTicket` is not optional. A browser cannot set an `Authorization`
+ * header on a WebSocket, so header-bearing clients (the desktop app, anything
+ * on a bearer or DPoP token) have no way to authenticate an upgrade *except*
+ * this query parameter — the RPC socket at `/ws` carries one for exactly that
+ * reason. Relying on the session cookie alone works only in a plain browser
+ * tab and fails silently with a 401 everywhere else.
  */
 export function viewerSocketUrl(input: {
   readonly pageOrigin: string;
   readonly viewerPath: string;
+  readonly wsTicket: string;
 }): string {
   const url = new URL(input.viewerPath, input.pageOrigin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("wsTicket", input.wsTicket);
   return url.toString();
 }
 

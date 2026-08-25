@@ -72,6 +72,35 @@ const normalizeBaseUrl = (raw: string): string | null => {
   }
 };
 
+/**
+ * Whether a Screenbox origin is on this machine's loopback interface.
+ *
+ * The viewer proxy dials `127.0.0.1:<port>` with a port upstream chose. That is
+ * only safe while upstream *is* this machine: against a remote or hostile
+ * Screenbox, `vnc_port` becomes an attacker-chosen number and the proxy turns
+ * into a raw byte pipe from any operate-scoped captain to an arbitrary port on
+ * the ADE server's own loopback — every other local service included. The spec
+ * says Screenbox is operator-run and loopback (§4.6); this makes that a checked
+ * precondition of viewing rather than an assumption.
+ */
+export const isLoopbackScreenboxOrigin = (baseUrl: string | null): boolean => {
+  if (baseUrl === null) return false;
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  // Strip the brackets Node keeps on IPv6 hostnames.
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (bare === "localhost" || bare === "::1" || bare === "0:0:0:0:0:0:0:1") return true;
+  // The whole 127.0.0.0/8 block, not just 127.0.0.1.
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare);
+  if (ipv4 === null) return false;
+  const octets = ipv4.slice(1).map(Number);
+  return octets.every((octet) => octet <= 255) && octets[0] === 127;
+};
+
 export class AdeScreenboxConfig extends Context.Service<
   AdeScreenboxConfig,
   AdeScreenboxConfigShape
@@ -428,6 +457,15 @@ export interface AdeScreenboxClientShape {
   /** True when this install has an upstream origin configured at all. */
   readonly isConfigured: boolean;
   /**
+   * Whether the configured Screenbox is on this machine's loopback interface.
+   *
+   * Carried here because this is where the base URL lives. The viewer proxy
+   * needs it: it dials a loopback port that *upstream* chose, which is only
+   * safe while upstream is this same machine (see
+   * {@link isLoopbackScreenboxOrigin}).
+   */
+  readonly isLoopback: boolean;
+  /**
    * `GET /api/health`. Resolves with the parsed body: upstream returns 200
    * even while degraded, so callers must read {@link AdeScreenboxHealth.ok}.
    */
@@ -741,6 +779,7 @@ export const makeAdeScreenboxClient = (
 
     return {
       isConfigured: baseUrl !== null,
+      isLoopback: isLoopbackScreenboxOrigin(baseUrl),
       health: httpJson({ operation: "health", method: "GET", path: "/api/health" }).pipe(
         Effect.map(parseHealth),
       ),

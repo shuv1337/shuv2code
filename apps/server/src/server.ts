@@ -44,6 +44,7 @@ import {
   AdeScreenboxHealthProbesLive,
   AdeScreenboxRuntime,
   AdeScreenboxToolPlaneLive,
+  AdeServerOwnPorts,
 } from "./ade/AdeScreenbox.ts";
 import { AdeScreenboxClient, AdeScreenboxConfig } from "./ade/AdeScreenboxClient.ts";
 import { adeScreenViewerRouteLayer } from "./ade/AdeScreenViewerRoute.ts";
@@ -343,6 +344,19 @@ const AdeScreenboxLayerLive = AdeScreenboxRuntime.bootLive().pipe(
   Layer.provide(AdeScreenboxConfig.layerFromEnv()),
   Layer.provide(FetchHttpClient.layer),
   Layer.provide(PersistenceLayerLive),
+  // Names this server's own listener so the viewer proxy refuses to dial it.
+  // Upstream chooses the desktop port; without this a Screenbox that reported
+  // our own port would splice a captain's VNC socket into ADE's HTTP/WS
+  // listener. `config.port` is the configured one — an ephemeral 0 resolves at
+  // listen time, which this layer is built before, so the guard is
+  // best-effort and the loopback-origin check remains the real boundary.
+  Layer.provide(
+    Layer.unwrap(
+      Effect.map(ServerConfig.ServerConfig, (config) =>
+        Layer.succeed(AdeServerOwnPorts, new Set(config.port > 0 ? [config.port] : [])),
+      ),
+    ),
+  ),
 );
 
 // Also exports `AdeScreenboxRuntime` for the viewer/Screen-tab slice (S15).
