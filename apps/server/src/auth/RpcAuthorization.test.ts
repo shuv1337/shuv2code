@@ -94,6 +94,23 @@ describe("RPC authorization scopes", () => {
     ).toEqual([[WS_METHODS.adeSubmitNeedsYouDecision, AuthAdeApproveScope]]);
   });
 
+  /**
+   * Loose bot identity (messenger pivot §4, #197). Relabelling a bot and
+   * filing it into a group is organizing, which is exactly what
+   * `orchestration:operate` names — the same power that already creates bots
+   * and edits personas, and deliberately not the approval scope asserted
+   * above.
+   */
+  it("gates bot identity and contact groups as fleet organization", () => {
+    for (const method of [
+      WS_METHODS.adeUpdateBotIdentity,
+      WS_METHODS.adeUpsertBotGroup,
+      WS_METHODS.adeDeleteBotGroup,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("reads the reviewer menu under the same scope as the pull request it belongs to", () => {
     // The candidate list is a read like the detail beside it, and asking somebody for a review is
     // a write like every other pull request operation.

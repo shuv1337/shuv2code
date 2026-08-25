@@ -296,6 +296,55 @@ export function createAdeEnvironmentAtoms<R, E>(
         refreshBot(target, registry).pipe(Effect.andThen(refreshRoster(target, registry))),
     }),
     /**
+     * Rename / re-decorate / re-tag / re-group one bot (messenger pivot §4,
+     * #197).
+     *
+     * `latest` rather than `serial`: the identity sheet saves on every keystroke
+     * pause, and only the last label the captain typed is worth writing.
+     * Both the bot detail and the roster carry the name, so both are re-read —
+     * a rail still showing the old name after a rename is the bug this ticket
+     * exists to avoid.
+     */
+    updateBotIdentity: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:update-bot-identity",
+      tag: WS_METHODS.adeUpdateBotIdentity,
+      scheduler,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) => `${environmentId}:${input.botId}`,
+      },
+      onSettled: (target, registry) =>
+        refreshBot(target, registry).pipe(Effect.andThen(refreshRoster(target, registry))),
+    }),
+    /**
+     * Create or rename/reorder a contact group. The roster carries the group
+     * list, so it is the one read that has to move.
+     */
+    upsertBotGroup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:upsert-bot-group",
+      tag: WS_METHODS.adeUpsertBotGroup,
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId }) => environmentId,
+      },
+      onSettled: (target, registry) => refreshRoster(target, registry),
+    }),
+    /**
+     * Delete a group. Its members are ungrouped, not deleted, so the roster
+     * still lists every one of them — under the trailing Ungrouped header.
+     */
+    deleteBotGroup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:delete-bot-group",
+      tag: WS_METHODS.adeDeleteBotGroup,
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId }) => environmentId,
+      },
+      onSettled: (target, registry) => refreshRoster(target, registry),
+    }),
+    /**
      * Explicit captain Start from the Screen tab. Single-flight per bot: a
      * double click must not race two provisions against the desktop cap.
      */

@@ -8,12 +8,15 @@ import {
   AdeBotChatSession,
   AdeBotDetail,
   AdeBotIdInput,
+  AdeBotGroup,
   AdeBotScreen,
   AdeCaptainError,
   AdeCreateBotFromTemplateInput,
   AdeCreateProjectInput,
   AdeCreatedProject,
+  AdeDeleteBotGroupInput,
   AdeDeletedBot,
+  AdeDeletedBotGroup,
   AdeEditPersonaInput,
   AdeListNeedsYouInput,
   AdeNeedsYouCount,
@@ -27,6 +30,8 @@ import {
   AdeRoster,
   AdeSubmitNeedsYouDecisionInput,
   AdeSetComputerUseInput,
+  AdeUpdateBotIdentityInput,
+  AdeUpsertBotGroupInput,
   AdeWriteMemoryInput,
   Bot,
   FleetHealthSnapshot,
@@ -428,6 +433,9 @@ export const WS_METHODS = {
   adeWriteBotMemory: "ade.writeBotMemory",
   adeEditBotPersona: "ade.editBotPersona",
   adeSetBotComputerUse: "ade.setBotComputerUse",
+  adeUpdateBotIdentity: "ade.updateBotIdentity",
+  adeUpsertBotGroup: "ade.upsertBotGroup",
+  adeDeleteBotGroup: "ade.deleteBotGroup",
   adeGetNeedsYouCount: "ade.getNeedsYouCount",
   adeListNeedsYou: "ade.listNeedsYou",
   adeGetNeedsYouItem: "ade.getNeedsYouItem",
@@ -1335,6 +1343,34 @@ export const WsAdeSetBotComputerUseRpc = Rpc.make(WS_METHODS.adeSetBotComputerUs
 });
 
 /**
+ * The captain's editable label for a bot (messenger pivot §4, #197): name,
+ * emoji/color, role tag, rail group — allowed on every bot, the Firstmate
+ * included, because permanence protects its existence and not its name.
+ *
+ * `structuralRole` and template lineage are absent from `AdeUpdateBotIdentityInput`
+ * by construction, so no client can spell a request that moves them.
+ */
+export const WsAdeUpdateBotIdentityRpc = Rpc.make(WS_METHODS.adeUpdateBotIdentity, {
+  payload: AdeUpdateBotIdentityInput,
+  success: Bot,
+  error: AdeCaptainRpcError,
+});
+
+/** Create or rename/reorder one captain-defined contact group. */
+export const WsAdeUpsertBotGroupRpc = Rpc.make(WS_METHODS.adeUpsertBotGroup, {
+  payload: AdeUpsertBotGroupInput,
+  success: AdeBotGroup,
+  error: AdeCaptainRpcError,
+});
+
+/** Delete a group. Members fall to Ungrouped — this never deletes a bot. */
+export const WsAdeDeleteBotGroupRpc = Rpc.make(WS_METHODS.adeDeleteBotGroup, {
+  payload: AdeDeleteBotGroupInput,
+  success: AdeDeletedBotGroup,
+  error: AdeCaptainRpcError,
+});
+
+/**
  * Screen tab state (spec §4.6). A pure read: polling it must never provision
  * or start a desktop, because viewing never spawns.
  */
@@ -1473,6 +1509,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsAdeWriteBotMemoryRpc,
   WsAdeEditBotPersonaRpc,
   WsAdeSetBotComputerUseRpc,
+  WsAdeUpdateBotIdentityRpc,
+  WsAdeUpsertBotGroupRpc,
+  WsAdeDeleteBotGroupRpc,
   WsAdeGetNeedsYouCountRpc,
   WsAdeListNeedsYouRpc,
   WsAdeGetNeedsYouItemRpc,

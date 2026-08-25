@@ -41,7 +41,7 @@ const decodeLimitsConfig = Schema.decodeUnknownSync(LimitsConfig);
 const decodeFleetHealthSnapshot = Schema.decodeUnknownSync(FleetHealthSnapshot);
 const decodeAdeBotChatSession = Schema.decodeUnknownSync(AdeBotChatSession);
 
-it("round-trips a Bot and defaults computerUse to false", () => {
+it("round-trips a Bot and defaults computerUse and groupId", () => {
   const bot = roundTrip(Bot, {
     id: "bot-firstmate",
     name: "Firstmate",
@@ -49,6 +49,7 @@ it("round-trips a Bot and defaults computerUse to false", () => {
     structuralRole: "firstmate",
     roleTag: "Coordinator",
     projectId: null,
+    groupId: null,
     activePersonaVersionId: "persona-1",
     computerUse: false,
     createdAt: "2026-08-24T00:00:00.000Z",
@@ -68,6 +69,9 @@ it("round-trips a Bot and defaults computerUse to false", () => {
     archivedAt: null,
   });
   assert.strictEqual(defaulted.computerUse, false);
+  // A bot minted before migration 057 has no rail group; Ungrouped is the
+  // absence of one, so the default has to be null rather than a sentinel.
+  assert.strictEqual(defaulted.groupId, null);
 
   assert.throws(() =>
     decodeBot({
@@ -437,6 +441,7 @@ it("round-trips a roster with a pinned Firstmate and its crew templates", () => 
           structuralRole: "firstmate",
           roleTag: "Coordinator",
           projectId: null,
+          groupId: "group-1",
           activePersonaVersionId: "persona-1",
           computerUse: false,
           createdAt: "2026-08-24T00:00:00.000Z",
@@ -449,10 +454,18 @@ it("round-trips a roster with a pinned Firstmate and its crew templates", () => 
     ],
     projects: [{ id: "project-1", name: "shuv2code" }],
     templates: [{ templateId: "coder", defaultName: "Coder", roleTag: "Coder" }],
+    groups: [
+      { id: "group-1", name: "Backend", orderIndex: 0, createdAt: "2026-08-24T00:00:00.000Z" },
+    ],
   });
   assert.strictEqual(roster.entries[0]!.bot.structuralRole, "firstmate");
   assert.strictEqual(roster.entries[0]!.openAssignmentCount, 2);
   assert.strictEqual(roster.templates[0]!.templateId, "coder");
+  // Membership is on the bot; the rail buckets by matching this id against
+  // `groups`, and anything unmatched falls to the synthesized Ungrouped
+  // header rather than to a server-stored row.
+  assert.strictEqual(roster.groups[0]!.name, "Backend");
+  assert.strictEqual(roster.entries[0]!.bot.groupId, roster.groups[0]!.id);
 });
 
 it("rejects a negative open-assignment count", () => {
