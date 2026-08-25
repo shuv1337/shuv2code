@@ -102,6 +102,7 @@ const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function
 import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
 import { AdeVoiceToolPlane } from "./ade/AdeVoiceToolPlane.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
+import { AdeScreenboxRuntime } from "./ade/AdeScreenbox.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
 import * as ServerConfig from "./config.ts";
@@ -690,6 +691,14 @@ const buildAppUnderTest = (options?: {
           // plane while building. `layerAbsent` is the honest stand-in — these
           // tests run no ADE call, so every controller thread is a classic one.
           AdeVoiceToolPlane.layerAbsent,
+          // Same reason again: `makeRoutesLayer` now registers the ADE screen
+          // viewer proxy (S15) ahead of the static catch-all, and that route
+          // resolves the Screenbox runtime while the router layer is built.
+          // These tests never dial `/ade/screen` — `AdeScreenViewerRoute.wired.test.ts`
+          // owns that seam with a real runtime shape.
+          // `isConfigured: false` is what the real runtime reports when no
+          // Screenbox upstream is configured, which is this harness's world.
+          Layer.mock(AdeScreenboxRuntime)({ isConfigured: false }),
           Layer.mock(ControllerActionContextResolver)({}),
           Layer.mock(VoiceControllerBindingRepository)({}),
         ),

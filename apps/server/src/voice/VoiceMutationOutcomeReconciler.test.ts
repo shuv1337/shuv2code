@@ -104,6 +104,9 @@ const seedMutationRows = Effect.gen(function* () {
       transport_session_id,
       environment_id,
       controller_thread_id,
+      owner_kind,
+      owner_id,
+      provider_anchor_thread_id,
       transport_thread_id,
       runtime_instance_id,
       generation,
@@ -116,6 +119,13 @@ const seedMutationRows = Effect.gen(function* () {
       'transport-1',
       'environment-1',
       'controller-1',
+      -- Migration 049 made ownership explicit and backfilled every pre-existing
+      -- row as a controller session owned by its controller thread, with no
+      -- provider anchor. This fixture is exactly such a session, so it carries
+      -- the same triple the migration would have written for it.
+      'controller',
+      'controller-1',
+      NULL,
       'transport-thread-1',
       'transport-runtime-1',
       1,
