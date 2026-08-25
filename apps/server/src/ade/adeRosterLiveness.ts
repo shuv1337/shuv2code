@@ -43,9 +43,35 @@ export const botIdFromThreadId = (threadId: string): string =>
 /** The tail row of one bot's primary thread, as read from the projection. */
 export interface LatestThreadMessageRow {
   readonly thread_id: string;
+  readonly message_id: string;
   readonly role: string;
   readonly text: string;
   readonly created_at: string;
+}
+
+/**
+ * Message-id markers for rows the *fleet* put in a bot's thread rather than the
+ * captain (`AdeAssignmentRunner.ts:142`, `OpenCodeV2Adapter.ts:194`,
+ * `AutomationService.ts:151`).
+ *
+ * These all arrive as `role: "user"`, because that is the only role a kernel
+ * accepts input on — the role says "this was input", not "a human typed it".
+ * The rail is the one surface where that distinction is load-bearing: an
+ * assignment brief rendered as "You: Implement the retry…" tells the captain
+ * they said something they never said, on a row they will act on.
+ *
+ * `msg_ade_` is matched as a substring rather than a prefix because the
+ * synthetic item id is minted provider-side and the ingestion path may prefix
+ * it; the other two are minted here and are always leading.
+ */
+const ADE_INJECTED_ID_PREFIXES = ["ade-assignment:", "automation:"] as const;
+const ADE_SYNTHETIC_ID_MARKER = "msg_ade_";
+
+export function isFleetInjectedMessageId(messageId: string): boolean {
+  return (
+    ADE_INJECTED_ID_PREFIXES.some((prefix) => messageId.startsWith(prefix)) ||
+    messageId.includes(ADE_SYNTHETIC_ID_MARKER)
+  );
 }
 
 /** One open Needs You item, flattened to what an attention line needs. */
@@ -86,15 +112,24 @@ export const compareLatestMessageRows = (
 /**
  * Who the rail names as the author.
  *
- * `user` is the captain because the captain is the only human on an ADE bot
- * thread — a bot's own sub-agent traffic never lands in `ade-bot-<botId>`.
- * Anything else is `system`: a role this build does not recognise is not
- * silently attributed to either party.
+ * `role` alone is not enough. Everything a kernel accepts as input arrives as
+ * `role: "user"`, including the assignment briefs the runner injects and the
+ * synthetic deliveries the provider adapter admits — so the role means "this
+ * was input", not "a human typed it". Attributing those to the captain makes
+ * the rail print "You: Implement the retry budget…" under a bot's name, which
+ * tells the captain they said something they never said.
+ *
+ * `system` is the honest third answer, and it is what an unrecognised role gets
+ * too: a role this build has not been taught is not silently credited to either
+ * party.
  */
-export function messageAuthorFor(role: string): AdeRosterLastMessage["author"] {
-  if (role === "assistant") return "bot";
-  if (role === "user") return "captain";
-  return "system";
+export function messageAuthorFor(input: {
+  readonly role: string;
+  readonly messageId: string;
+}): AdeRosterLastMessage["author"] {
+  if (input.role === "assistant") return "bot";
+  if (input.role !== "user") return "system";
+  return isFleetInjectedMessageId(input.messageId) ? "system" : "captain";
 }
 
 /**
@@ -102,22 +137,39 @@ export function messageAuthorFor(role: string): AdeRosterLastMessage["author"] {
  *
  * Newlines become spaces before truncation, not after: a message whose first
  * line is short would otherwise render as a preview with dead space and no
- * ellipsis, which reads as "that is the whole message" when it is not. The
- * ellipsis replaces the last character rather than being appended, so the
- * result is bounded by `ADE_ROSTER_PREVIEW_MAX_LENGTH` *code points* — the same
- * unit the contract checks, so an emoji-dense message cannot overflow the wire
- * bound by measuring in UTF-16 units.
+ * ellipsis, which reads as "that is the whole message" when it is not.
+ *
+ * ## The unit is UTF-16 code units, because that is what the contract checks
+ *
+ * `Schema.isMaxLength` measures `String.prototype.length`. Truncating to 160
+ * *code points* therefore ships up to 320 code units for an emoji-dense
+ * message, the frame fails to decode, and — because one roster frame carries
+ * the whole fleet — a single astral character in one bot's last message takes
+ * the entire rail's liveness down. So the budget below is code units, and the
+ * only care needed is never to cut between a surrogate pair (which would emit a
+ * lone surrogate, and is what makes naïve `slice` wrong here).
+ *
+ * A grapheme *cluster* at the boundary — a ZWJ family emoji, a flag, a combining
+ * mark — can still be split, which renders as a partial glyph before the
+ * ellipsis. Known cosmetic, deliberately not fixed: `Intl.Segmenter` for one
+ * truncated character costs more than the artefact does, and the string is
+ * always valid UTF-16 either way.
  */
 export function toPreviewLine(text: string, limit = ADE_ROSTER_PREVIEW_MAX_LENGTH): string {
   const collapsed = text.replace(/\s+/gu, " ").trim();
-  const points = [...collapsed];
-  if (points.length <= limit) {
+  if (collapsed.length <= limit) {
     return collapsed;
   }
-  return `${points
-    .slice(0, limit - 1)
-    .join("")
-    .trimEnd()}…`;
+  // One unit is reserved for the ellipsis, which replaces the last character
+  // rather than being appended — otherwise the result is `limit + 1` units.
+  let end = limit - 1;
+  const beforeEnd = collapsed.charCodeAt(end - 1);
+  if (beforeEnd >= 0xd800 && beforeEnd <= 0xdbff) {
+    // Cutting here would leave a high surrogate with nothing after it. Drop the
+    // whole astral character instead of emitting half of one.
+    end -= 1;
+  }
+  return `${collapsed.slice(0, end).trimEnd()}…`;
 }
 
 /**
@@ -202,7 +254,11 @@ export function resolveLastMessage(input: {
     // would print an empty dim line under the name and read as a rendering bug.
     return null;
   }
-  return { preview, at: winner.created_at, author: messageAuthorFor(winner.role) };
+  return {
+    preview,
+    at: winner.created_at,
+    author: messageAuthorFor({ role: winner.role, messageId: winner.message_id }),
+  };
 }
 
 /** Clamp the unread count to what the badge can print. */

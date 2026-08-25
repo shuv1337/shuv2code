@@ -25,6 +25,7 @@ import type {
   AdeBotGroup,
   AdeBotGroupId,
   AdeBotTemplateSummary,
+  AdeNeedsYouEntry,
   AdeRoster,
   AdeRosterEntry,
   BotDisplayMeta,
@@ -322,6 +323,25 @@ export type ContactRailFilter = (typeof CONTACT_RAIL_FILTERS)[number];
  */
 export function parseContactRailFilter(raw: unknown): ContactRailFilter {
   return raw === "attention" ? "attention" : "all";
+}
+
+/**
+ * Open items with no bot to sit under.
+ *
+ * A `kernel-down` names an engine and a bounced change whose author is gone
+ * names only an integration candidate, so neither can appear on a contact row —
+ * but both are counted by the sidebar badge. With the standalone inbox retired,
+ * the Attention view has to show them or the badge points at a page that cannot
+ * display what it counts: "1" on the sidebar, "Nothing needs you" underneath.
+ *
+ * Resolved items are filtered out here as well as by the query, because this
+ * feeds the *attention* view specifically: the inbox had a "done" tab and this
+ * does not.
+ */
+export function fleetLevelNeedsYouEntries(
+  entries: ReadonlyArray<AdeNeedsYouEntry> | undefined,
+): ReadonlyArray<AdeNeedsYouEntry> {
+  return (entries ?? []).filter((entry) => entry.botId === null && entry.item.status === "open");
 }
 
 /**

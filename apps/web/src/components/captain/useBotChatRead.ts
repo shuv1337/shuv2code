@@ -31,6 +31,7 @@ import { useEffect, useRef } from "react";
 
 import { adeEnvironment, useAdeEnvironmentId } from "../../state/ade";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { botChatReadMarkKey, shouldMarkBotChatRead } from "./botChatRead.logic";
 
 /**
  * Fire at most this often per bot. The rail is already live, so a read receipt
@@ -44,19 +45,42 @@ export function useBotChatRead(input: {
   /** Whether the captain can actually be said to be reading this conversation. */
   readonly enabled: boolean;
   /**
-   * The tail the rail last reported. Re-marking when this moves is what keeps
-   * an open conversation's unread count at zero while messages keep arriving —
-   * without it, the first message after focus would leave a dot on the row the
-   * captain is currently staring at.
+   * The rail's current unread count for this bot, and the **primary** re-fire
+   * trigger: while the conversation is open this is what has to keep returning
+   * to zero as messages arrive.
+   *
+   * It is primary rather than `lastMessageAt` because the preview is not always
+   * a signal. A bot with an open `form` request has `lastMessage === null` *by
+   * construction* — the suppression rule that keeps secure answers off the rail
+   * — so a preview-keyed trigger is permanently dead for exactly the bot most
+   * actively talking to the captain. Streaming tails have the same problem from
+   * the other side: an assistant row keeps its first-chunk `created_at`, so the
+   * preview timestamp can stand still across a whole reply.
+   *
+   * `unreadCount` moves independently of both.
+   */
+  readonly unreadCount: number;
+  /**
+   * The tail the rail last reported. Secondary, and still worth having: it
+   * moves when the *captain's own* message lands, which never changes the
+   * unread count but does mean the conversation advanced.
    */
   readonly lastMessageAt: string | null;
 }): void {
   const environmentId = useAdeEnvironmentId();
   const markRead = useAtomCommand(adeEnvironment.markBotChatRead, { reportFailure: false });
   const lastFiredAt = useRef(0);
+  /**
+   * What the last successful mark was *for*, so the effect can tell "the
+   * conversation moved" from "the conversation settled because of the mark I
+   * just sent". Without this, clearing three unread messages fires twice: once
+   * for the three, and once more when the roster frame reports zero.
+   */
+  const markedFor = useRef<string | null>(null);
 
   useEffect(() => {
     if (!input.enabled || environmentId === null) {
+      markedFor.current = null;
       return;
     }
 
@@ -69,6 +93,7 @@ export function useBotChatRead(input: {
         return;
       }
       lastFiredAt.current = Date.now();
+      markedFor.current = botChatReadMarkKey(input);
       void markRead({ environmentId, input: { botId: input.botId } });
     };
 
@@ -87,7 +112,10 @@ export function useBotChatRead(input: {
       fire();
     };
 
-    fire();
+    if (shouldMarkBotChatRead({ ...input, markedFor: markedFor.current })) {
+      fire();
+    }
+
     if (typeof window === "undefined") {
       return;
     }
@@ -97,7 +125,8 @@ export function useBotChatRead(input: {
       window.removeEventListener("focus", fireOnEvent);
       document.removeEventListener("visibilitychange", fireOnEvent);
     };
-    // `lastMessageAt` is a dependency on purpose: a new tail while the
-    // conversation is open is exactly when the mark has to move again.
-  }, [environmentId, input.botId, input.enabled, input.lastMessageAt, markRead]);
+    // Both liveness fields are dependencies on purpose: a bot speaking while
+    // the conversation is open is exactly when the mark has to move again, and
+    // `unreadCount` is the only one of the two that always notices.
+  }, [environmentId, input.botId, input.enabled, input.unreadCount, input.lastMessageAt, markRead]);
 }

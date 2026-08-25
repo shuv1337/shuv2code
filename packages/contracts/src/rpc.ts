@@ -1313,7 +1313,12 @@ export const WsSubscribeAdeFleetHealthRpc = Rpc.make(WS_METHODS.subscribeAdeFlee
 export const WsSubscribeAdeRosterRpc = Rpc.make(WS_METHODS.subscribeAdeRoster, {
   payload: Schema.Struct({}),
   success: AdeRoster,
-  error: EnvironmentAuthorizationError,
+  // Carries `AdeCaptainError` as well as the authorization failure, unlike the
+  // other subscriptions: this one is backed by a database read that can fail on
+  // subscribe, and the alternative to reporting that is handing the rail an
+  // empty roster — which renders as "you have no bots" and offers to create the
+  // first project. A read failure and an empty fleet must not look alike.
+  error: Schema.Union([AdeCaptainError, EnvironmentAuthorizationError]),
   stream: true,
 });
 

@@ -8,13 +8,19 @@
  * `AdeCaptainApiRosterLiveness.test.ts`, against a real database.
  */
 import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
 
-import { ADE_ROSTER_PREVIEW_MAX_LENGTH } from "@shuv2code/contracts";
+import {
+  ADE_ROSTER_PREVIEW_MAX_LENGTH,
+  AdeRosterAttention as AdeRosterAttentionSchema,
+  AdeRosterLastMessage,
+} from "@shuv2code/contracts";
 
 import {
   ADE_UNREAD_DISPLAY_CAP,
   attentionLineFor,
   clampUnreadCount,
+  isFleetInjectedMessageId,
   messageAuthorFor,
   resolveAttention,
   resolveLastMessage,
@@ -41,6 +47,7 @@ describe("ADE_BOT_THREAD_ID_PREFIX", () => {
 
 const message = (overrides: Partial<LatestThreadMessageRow> = {}): LatestThreadMessageRow => ({
   thread_id: "ade-bot-bot_1",
+  message_id: "m1",
   role: "assistant",
   text: "On it.",
   created_at: "2026-08-24T10:00:00.000Z",
@@ -48,15 +55,57 @@ const message = (overrides: Partial<LatestThreadMessageRow> = {}): LatestThreadM
 });
 
 describe("messageAuthorFor", () => {
-  it("names the captain as the only human on a bot thread", () => {
-    expect(messageAuthorFor("user")).toBe("captain");
-    expect(messageAuthorFor("assistant")).toBe("bot");
+  it("names the captain on a message the captain actually typed", () => {
+    expect(messageAuthorFor({ role: "user", messageId: "m1" })).toBe("captain");
+    expect(messageAuthorFor({ role: "assistant", messageId: "assistant:x" })).toBe("bot");
   });
 
   it("attributes an unrecognised role to neither party", () => {
     // A future provider role must not be silently printed as the bot speaking.
-    expect(messageAuthorFor("tool")).toBe("system");
-    expect(messageAuthorFor("")).toBe("system");
+    expect(messageAuthorFor({ role: "tool", messageId: "m1" })).toBe("system");
+    expect(messageAuthorFor({ role: "", messageId: "m1" })).toBe("system");
+  });
+
+  /**
+   * The two row classes the fleet injects as `role: "user"`. Both used to read
+   * as the captain, which made the rail print "You: " over text the captain
+   * never wrote — an assignment brief the *runner* sent, or a delivery the
+   * provider adapter admitted.
+   */
+  it("does not credit the captain with an assignment brief the runner injected", () => {
+    // `AdeAssignmentRunner.ts:142` mints exactly this shape.
+    expect(messageAuthorFor({ role: "user", messageId: "ade-assignment:asg_7:brief" })).toBe(
+      "system",
+    );
+  });
+
+  it("does not credit the captain with a synthetic delivery", () => {
+    // `OpenCodeV2Adapter.ts:194` — matched as a substring, because the id is
+    // minted provider-side and the ingestion path may prefix it.
+    expect(messageAuthorFor({ role: "user", messageId: "msg_ade_ab12" })).toBe("system");
+    expect(messageAuthorFor({ role: "user", messageId: "user:msg_ade_ab12" })).toBe("system");
+  });
+
+  it("does not credit the captain with an automation prompt", () => {
+    expect(messageAuthorFor({ role: "user", messageId: "automation:run_3:prompt" })).toBe("system");
+  });
+
+  it("still names the captain when the id merely mentions a bot", () => {
+    // The markers are anchored; a captain message about an assignment is not
+    // an assignment brief.
+    expect(messageAuthorFor({ role: "user", messageId: "user:talk-ade-assignment" })).toBe(
+      "captain",
+    );
+  });
+});
+
+describe("isFleetInjectedMessageId", () => {
+  it("recognises every injection marker and nothing else", () => {
+    expect(isFleetInjectedMessageId("ade-assignment:a:brief")).toBe(true);
+    expect(isFleetInjectedMessageId("automation:a:prompt")).toBe(true);
+    expect(isFleetInjectedMessageId("msg_ade_key")).toBe(true);
+    expect(isFleetInjectedMessageId("m1")).toBe(false);
+    expect(isFleetInjectedMessageId("")).toBe(false);
   });
 });
 
@@ -69,20 +118,75 @@ describe("toPreviewLine", () => {
   it("truncates to the wire bound with an ellipsis inside it, not appended", () => {
     const long = "a".repeat(400);
     const preview = toPreviewLine(long);
-    expect([...preview]).toHaveLength(ADE_ROSTER_PREVIEW_MAX_LENGTH);
+    expect(preview.length).toBe(ADE_ROSTER_PREVIEW_MAX_LENGTH);
     expect(preview.endsWith("…")).toBe(true);
   });
 
-  it("measures the bound in code points, so an emoji-dense message cannot overflow it", () => {
-    // Each of these is two UTF-16 units. Measured in `.length` this would ship
-    // roughly twice the contract's bound and fail decoding on the client.
-    const preview = toPreviewLine("🚢".repeat(400));
-    expect([...preview]).toHaveLength(ADE_ROSTER_PREVIEW_MAX_LENGTH);
+  /**
+   * The unit is UTF-16 code units, because `Schema.isMaxLength` measures
+   * `.length`. Truncating to 160 code *points* shipped up to 320 units for an
+   * emoji-dense message, which fails to decode — and one roster frame carries
+   * the whole fleet, so a single astral character in one bot's last message
+   * took the entire rail's liveness down.
+   */
+  it("bounds the preview in the same unit the contract checks", () => {
+    for (const body of ["🚢".repeat(400), `${"a".repeat(158)}🚢${"b".repeat(200)}`]) {
+      const preview = toPreviewLine(body);
+      expect(preview.length).toBeLessThanOrEqual(ADE_ROSTER_PREVIEW_MAX_LENGTH);
+    }
+  });
+
+  it("never emits a lone surrogate at the cut", () => {
+    // Cutting mid-pair would produce an unpaired high surrogate: still
+    // `.length`-legal, but not valid text, and it renders as a replacement box.
+    for (let pad = 0; pad < 8; pad += 1) {
+      const preview = toPreviewLine(`${"a".repeat(pad)}${"🚢".repeat(200)}`);
+      expect(preview.length).toBeLessThanOrEqual(ADE_ROSTER_PREVIEW_MAX_LENGTH);
+      expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u.test(preview)).toBe(false);
+      expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(preview)).toBe(false);
+    }
   });
 
   it("leaves a message that already fits exactly alone", () => {
     const exact = "b".repeat(ADE_ROSTER_PREVIEW_MAX_LENGTH);
     expect(toPreviewLine(exact)).toBe(exact);
+  });
+});
+
+/**
+ * The bound is only worth anything if the *contract* agrees, so this pushes a
+ * real emoji-laden preview through the actual decoder rather than re-asserting
+ * the same `.length` arithmetic the implementation already used. This is the
+ * test that would have caught the code-point/code-unit mismatch.
+ */
+describe("preview round-trips through the contract", () => {
+  const decodeMessage = Schema.decodeUnknownSync(AdeRosterLastMessage);
+  const decodeAttention = Schema.decodeUnknownSync(AdeRosterAttentionSchema);
+
+  it("decodes an emoji-dense preview that would have overflowed in code points", () => {
+    const resolved = resolveLastMessage({
+      rows: [message({ text: `Shipping ${"🚢".repeat(300)} done` })],
+      attentionRows: [],
+    });
+    expect(resolved).not.toBeNull();
+    expect(() => decodeMessage(resolved)).not.toThrow();
+  });
+
+  it("decodes an emoji-dense attention line too", () => {
+    const attention = resolveAttention([{ kind: "approval", title: "🚢".repeat(300) }]);
+    expect(attention).not.toBeNull();
+    expect(() => decodeAttention(attention)).not.toThrow();
+  });
+
+  it("decodes every boundary offset, not just a convenient one", () => {
+    // The interesting cases are the ones where the cut lands inside a pair.
+    for (let pad = 0; pad < 8; pad += 1) {
+      const resolved = resolveLastMessage({
+        rows: [message({ text: `${"a".repeat(pad)}${"🚢".repeat(200)}` })],
+        attentionRows: [],
+      });
+      expect(() => decodeMessage(resolved)).not.toThrow();
+    }
   });
 });
 
@@ -208,7 +312,7 @@ describe("resolveAttention", () => {
 
   it("truncates the amber line to the same wire bound as a preview", () => {
     const attention = resolveAttention([{ kind: "approval", title: "x".repeat(400) }]);
-    expect([...(attention?.line ?? "")]).toHaveLength(ADE_ROSTER_PREVIEW_MAX_LENGTH);
+    expect((attention?.line ?? "").length).toBe(ADE_ROSTER_PREVIEW_MAX_LENGTH);
   });
 });
 

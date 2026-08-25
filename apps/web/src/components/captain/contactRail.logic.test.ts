@@ -1,6 +1,7 @@
 import type {
   AdeBotGroup,
   AdeBotGroupId,
+  AdeNeedsYouEntry,
   AdeRoster,
   AdeRosterEntry,
   Bot,
@@ -22,6 +23,7 @@ import {
   botAvatarInitials,
   contactRailEmptyCopy,
   filterContactRows,
+  fleetLevelNeedsYouEntries,
   getBotAvatarView,
   getContactGroupSections,
   getContactRowView,
@@ -692,6 +694,83 @@ describe("applyContactRailFilter", () => {
 
   it("preserves the server's order among what it keeps", () => {
     expect(applyContactRailFilter(rows, "attention").map((row) => row.botId)).toEqual(["bot_2"]);
+  });
+});
+
+/**
+ * D4: the sidebar badge counts every open item, including the two kinds that
+ * name no bot — a `kernel-down` names an engine, and a bounced change whose
+ * author is gone names only an integration candidate. Neither can sit on a
+ * contact row, and with the standalone inbox retired the Attention view is the
+ * badge's only target. If it cannot show them, the badge reads "1" over
+ * "Nothing needs you" — and the unroutable repair is one of exactly two items
+ * *nothing ever clears on its own*, so an unreachable one counts forever.
+ */
+describe("fleetLevelNeedsYouEntries", () => {
+  const needsYouEntry = (overrides: Partial<AdeNeedsYouEntry> = {}): AdeNeedsYouEntry =>
+    ({
+      item: {
+        id: "ny_1",
+        kind: "kernel-down",
+        subjectRefs: [],
+        status: "open",
+        createdAt: "2026-08-24T00:00:00.000Z",
+        updatedAt: "2026-08-24T00:00:00.000Z",
+        resolvedAt: null,
+      },
+      title: "The Codex supervisor is not responding",
+      detail: "Work on that kernel is blocked rather than failed.",
+      actionable: false,
+      action: null,
+      botId: null,
+      projectId: null,
+      assignmentId: null,
+      integrationCandidateId: null,
+      kernelEngine: "codex",
+      ...overrides,
+    }) as unknown as AdeNeedsYouEntry;
+
+  it("reads nothing before the inbox answers", () => {
+    expect(fleetLevelNeedsYouEntries(undefined)).toEqual([]);
+  });
+
+  it("keeps the kernel-down item the rail has no row for", () => {
+    const entries = fleetLevelNeedsYouEntries([needsYouEntry()]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.kernelEngine).toBe("codex");
+  });
+
+  it("keeps an unroutable repair, which nothing but the captain will ever clear", () => {
+    const entries = fleetLevelNeedsYouEntries([
+      needsYouEntry({
+        item: { ...needsYouEntry().item, id: "ny_2", kind: "stall" },
+        integrationCandidateId: "cand_1",
+        action: "acknowledge",
+        actionable: true,
+      } as Partial<AdeNeedsYouEntry>),
+    ]);
+    expect(entries).toHaveLength(1);
+    // It has to arrive still carrying its control, or the card renders a
+    // dead-end and the item stays on the badge.
+    expect(entries[0]?.action).toBe("acknowledge");
+  });
+
+  /**
+   * Anything with a bot already has a contact row to sit under. Showing it
+   * twice would make the fleet-wide section a duplicate of the list below it.
+   */
+  it("leaves anything with a bot to the contact rows", () => {
+    expect(fleetLevelNeedsYouEntries([needsYouEntry({ botId: "bot_2" as BotId })])).toEqual([]);
+  });
+
+  it("drops a resolved item — the attention view has no done tab", () => {
+    expect(
+      fleetLevelNeedsYouEntries([
+        needsYouEntry({
+          item: { ...needsYouEntry().item, status: "resolved" },
+        } as Partial<AdeNeedsYouEntry>),
+      ]),
+    ).toEqual([]);
   });
 });
 
