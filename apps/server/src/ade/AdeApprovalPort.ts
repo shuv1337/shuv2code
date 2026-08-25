@@ -17,23 +17,33 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import {
-  AdeCaptainError,
-  type IntegrationCandidateId,
-  type NeedsYouDecision,
-} from "@shuv2code/contracts";
+import { AdeCaptainError, type IntegrationCandidateId } from "@shuv2code/contracts";
 
 export interface AdeApprovalPortShape {
   /**
    * Apply the captain's verdict to an integration candidate parked on
-   * `awaiting-approval`. Failing means the verdict did *not* land, and the
-   * inbox reopens the item rather than quietly swallowing the decision.
+   * `awaiting-approval`. Failure is ambiguous on its own — see
+   * {@link AdeApprovalPortShape.readCandidateStatus}.
    */
   readonly submitIntegrationApproval: (input: {
     readonly candidateId: IntegrationCandidateId;
-    readonly decision: NeedsYouDecision;
+    readonly decision: "approve" | "deny";
     readonly note?: string;
   }) => Effect.Effect<void, AdeCaptainError>;
+  /**
+   * Where the candidate stands right now. The inbox needs this to read a
+   * failed submission correctly: a candidate still on `awaiting-approval` means
+   * the verdict never landed and the item must come back, while one that has
+   * moved on means the decision was applied (or superseded) and reopening the
+   * item would strand it — the candidate can never re-enter the only state that
+   * retires it.
+   *
+   * Null when the candidate is unknown, which is treated as "moved on": an item
+   * pointing at nothing is better left retired than left open forever.
+   */
+  readonly readCandidateStatus: (
+    candidateId: IntegrationCandidateId,
+  ) => Effect.Effect<string | null>;
 }
 
 /**
@@ -48,6 +58,9 @@ export const adeApprovalPortUnavailable: AdeApprovalPortShape = {
         message: "No integration service is wired to receive this approval in this build.",
       }),
     ),
+  // Nothing is running, so nothing has moved: the item comes back and the
+  // captain can retry once a kernel is wired.
+  readCandidateStatus: () => Effect.succeed("awaiting-approval"),
 };
 
 export class AdeApprovalPort extends Context.Service<AdeApprovalPort, AdeApprovalPortShape>()(

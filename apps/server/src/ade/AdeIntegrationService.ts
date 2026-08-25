@@ -819,54 +819,54 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
      * dedupe as the stall item above: parking is re-derived on every recovery
      * pass (ADR §16.2 has no journal), so without it a restart loop would pile
      * up one inbox row per pass for a single waiting candidate.
+     *
+     * Deliberately opens no transaction of its own: the caller wraps this
+     * together with the state transition it belongs to, so a crash cannot leave
+     * a parked candidate with no item (which nothing would ever recover —
+     * recovery only touches `running` rows, and the queue pass short-circuits
+     * on a candidate already sitting on its gate).
      */
     const openApprovalItem = Effect.fn("AdeIntegrationService.openApprovalItem")(function* (input: {
       readonly candidateId: string;
       readonly projectId: string;
       readonly originatingBotId: string | null;
     }) {
-      yield* sql
-        .withTransaction(
-          Effect.gen(function* () {
-            const open = yield* sql<{ readonly subject_refs_json: string }>`
-              SELECT subject_refs_json FROM ade_needs_you_items
-              WHERE kind = 'approval' AND status = 'open'
-            `;
-            for (const row of open) {
-              const refs = yield* Effect.orElseSucceed(
-                decodeSubjectRefs(row.subject_refs_json),
-                () => [],
-              );
-              if (
-                refs.some(
-                  (ref) =>
-                    ref._tag === "integrationCandidate" &&
-                    ref.integrationCandidateId === input.candidateId,
-                )
-              ) {
-                return;
-              }
-            }
-            const id = yield* uuid;
-            const at = yield* nowIso;
-            const subjectRefs = yield* Effect.orDie(
-              encodeSubjectRefs([
-                { _tag: "integrationCandidate", integrationCandidateId: input.candidateId },
-                { _tag: "project", projectId: input.projectId },
-                ...(input.originatingBotId === null
-                  ? []
-                  : ([{ _tag: "bot", botId: input.originatingBotId }] as const)),
-              ] as Parameters<typeof encodeSubjectRefs>[0]),
-            );
-            yield* sql`
-              INSERT INTO ade_needs_you_items (
-                needs_you_item_id, kind, subject_refs_json, status,
-                created_at, updated_at, resolved_at
-              ) VALUES (${id}, 'approval', ${subjectRefs}, 'open', ${at}, ${at}, NULL)
-            `;
-          }),
-        )
-        .pipe(Effect.mapError(mapSql("openApprovalItem")));
+      const open = yield* sql<{ readonly subject_refs_json: string }>`
+        SELECT subject_refs_json FROM ade_needs_you_items
+        WHERE kind = 'approval' AND status = 'open'
+      `;
+      for (const row of open) {
+        const refs = yield* Effect.orElseSucceed(
+          decodeSubjectRefs(row.subject_refs_json),
+          () => [],
+        );
+        if (
+          refs.some(
+            (ref) =>
+              ref._tag === "integrationCandidate" &&
+              ref.integrationCandidateId === input.candidateId,
+          )
+        ) {
+          return;
+        }
+      }
+      const id = yield* uuid;
+      const at = yield* nowIso;
+      const subjectRefs = yield* Effect.orDie(
+        encodeSubjectRefs([
+          { _tag: "integrationCandidate", integrationCandidateId: input.candidateId },
+          { _tag: "project", projectId: input.projectId },
+          ...(input.originatingBotId === null
+            ? []
+            : ([{ _tag: "bot", botId: input.originatingBotId }] as const)),
+        ] as Parameters<typeof encodeSubjectRefs>[0]),
+      );
+      yield* sql`
+        INSERT INTO ade_needs_you_items (
+          needs_you_item_id, kind, subject_refs_json, status,
+          created_at, updated_at, resolved_at
+        ) VALUES (${id}, 'approval', ${subjectRefs}, 'open', ${at}, ${at}, NULL)
+      `;
     });
 
     /**
@@ -875,18 +875,23 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
      * even when the verdict never came from a rendering at all. This is what
      * makes the item resolve exactly once: `claimForVerdict` is the single
      * conditional exit from `awaiting-approval`.
+     *
+     * Like {@link openApprovalItem}, transaction-free by design: it runs inside
+     * the claim's transaction, so a candidate can never be recorded as decided
+     * while its item stays open — the state that would strand an item whose
+     * only retire path has already been consumed.
      */
     const resolveApprovalItems = Effect.fn("AdeIntegrationService.resolveApprovalItems")(function* (
       candidateId: string,
     ) {
       const at = yield* nowIso;
       yield* sql`
-          UPDATE ade_needs_you_items
-          SET status = 'resolved', resolved_at = ${at}, updated_at = ${at}
-          WHERE kind = 'approval'
-            AND status = 'open'
-            AND subject_refs_json LIKE ${`%"integrationCandidateId":"${candidateId}"%`}
-        `.pipe(Effect.mapError(mapSql("resolveApprovalItems")));
+        UPDATE ade_needs_you_items
+        SET status = 'resolved', resolved_at = ${at}, updated_at = ${at}
+        WHERE kind = 'approval'
+          AND status = 'open'
+          AND subject_refs_json LIKE ${`%"integrationCandidateId":"${candidateId}"%`}
+      `;
     });
 
     // -----------------------------------------------------------------------
@@ -1319,22 +1324,29 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
           reason: "no-eligible-reviewer",
         });
       }
-      yield* settle({
-        candidateId,
-        status: "awaiting-approval",
-        gate: "human-approval",
-        reviewerBotId: null,
-        workspacePath: prepared.workspacePath,
-        leaseHolder: null,
-        leaseExpiresAt: null,
-      });
       // Parking is only real once the captain can see it: an approval that
-      // waits without an inbox row is an assignment nobody will ever answer.
-      yield* openApprovalItem({
-        candidateId,
-        projectId: project.projectId,
-        originatingBotId: candidate.originating_bot_id,
-      });
+      // waits without an inbox row is an assignment nobody will ever answer,
+      // and nothing recovers it. Both writes land together or neither does.
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* settle({
+              candidateId,
+              status: "awaiting-approval",
+              gate: "human-approval",
+              reviewerBotId: null,
+              workspacePath: prepared.workspacePath,
+              leaseHolder: null,
+              leaseExpiresAt: null,
+            });
+            yield* openApprovalItem({
+              candidateId,
+              projectId: project.projectId,
+              originatingBotId: candidate.originating_bot_id,
+            });
+          }),
+        )
+        .pipe(Effect.catchTag("SqlError", (cause) => Effect.fail(mapSql("park")(cause))));
       return advancedTo(candidateId, "awaiting-approval");
     });
 
@@ -1491,30 +1503,41 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
     }) {
       const at = yield* nowIso;
       const expiresAt = yield* leaseExpiryIso;
-      const rows = yield* sql<CandidateRow>`
-        UPDATE ade_integration_candidates
-        SET status = 'running',
-            verdict = ${input.verdict},
-            verdict_at = ${at},
-            verdict_by_bot_id = ${input.verdictByBotId},
-            verdict_detail = ${input.verdictDetail},
-            lease_holder = ${input.leaseHolder},
-            lease_expires_at = ${expiresAt},
-            updated_at = ${at}
-        WHERE integration_candidate_id = ${input.candidateId}
-          AND status = ${input.fromStatus}
-          AND (${input.reviewerBotId ?? null} IS NULL OR reviewer_bot_id = ${input.reviewerBotId ?? null})
-        RETURNING *
-      `.pipe(Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<CandidateRow>)));
-      const claimed = rows[0] ?? null;
-      // The single conditional exit from `awaiting-approval`, so this is the
-      // one place the durable Needs You item can be retired — no matter which
-      // rendering (inbox, inline, or a later voice confirmation) produced the
-      // verdict. Second callers lose the claim and resolve nothing.
-      if (claimed !== null && input.fromStatus === "awaiting-approval") {
-        yield* resolveApprovalItems(input.candidateId);
-      }
-      return claimed;
+      // Recording the verdict and retiring the item are one act. Split, a crash
+      // between them leaves an open item on a candidate that has already left
+      // `awaiting-approval` — and `claimForVerdict` is that item's only retire
+      // path, so nothing would ever close it again.
+      const rows = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const claimedRows = yield* sql<CandidateRow>`
+              UPDATE ade_integration_candidates
+              SET status = 'running',
+                  verdict = ${input.verdict},
+                  verdict_at = ${at},
+                  verdict_by_bot_id = ${input.verdictByBotId},
+                  verdict_detail = ${input.verdictDetail},
+                  lease_holder = ${input.leaseHolder},
+                  lease_expires_at = ${expiresAt},
+                  updated_at = ${at}
+              WHERE integration_candidate_id = ${input.candidateId}
+                AND status = ${input.fromStatus}
+                AND (${input.reviewerBotId ?? null} IS NULL OR reviewer_bot_id = ${input.reviewerBotId ?? null})
+              RETURNING *
+            `;
+            // The single conditional exit from `awaiting-approval`, so this is
+            // the one place the durable Needs You item is retired — no matter
+            // which rendering (inbox, inline, or a later voice confirmation)
+            // produced the verdict. Second callers lose the claim and resolve
+            // nothing.
+            if (claimedRows[0] !== undefined && input.fromStatus === "awaiting-approval") {
+              yield* resolveApprovalItems(input.candidateId);
+            }
+            return claimedRows;
+          }),
+        )
+        .pipe(Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<CandidateRow>)));
+      return rows[0] ?? null;
     });
 
     const applyVerdict = Effect.fn("AdeIntegrationService.applyVerdict")(function* (input: {
@@ -1661,12 +1684,29 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
           candidateId: input.candidateId,
         });
       }
+      // Past the claim the verdict is durable and the item is already retired,
+      // so a persistence failure here is a convergence problem, not a rejected
+      // decision. Failing the caller would tell the captain their approval did
+      // not land — and the inbox would reopen an item whose only retire path
+      // has already been consumed, stranding it open forever. The sweeper
+      // re-runs the candidate exactly as it does after a crash in this window
+      // (ADR §16.2), so report success and let recovery finish the work.
       const row = yield* applyVerdict({
         claimed,
         project,
         leaseHolder,
         reason: "approval-denied",
-      });
+      }).pipe(
+        Effect.catchTag("PersistenceSqlError", (cause) =>
+          Effect.as(
+            Effect.logWarning("ADE approval recorded but not yet applied", {
+              candidateId: input.candidateId,
+              cause,
+            }),
+            claimed,
+          ),
+        ),
+      );
       return yield* rowToCandidate(row);
     });
 

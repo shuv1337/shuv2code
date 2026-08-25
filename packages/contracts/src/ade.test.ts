@@ -523,11 +523,11 @@ it("defaults the Needs You inbox to open items and closes the decision union", (
   assert.deepStrictEqual(decodeList({ includeResolved: true }), { includeResolved: true });
 
   const decodeDecision = Schema.decodeUnknownSync(AdeSubmitNeedsYouDecisionInput);
-  assert.strictEqual(
-    decodeDecision({ needsYouItemId: "item-1", decision: "deny" }).decision,
-    "deny",
-  );
-  // No "dismiss" or "snooze": the only verdicts are the two that move the work.
+  for (const decision of ["approve", "deny", "acknowledge"] as const) {
+    assert.strictEqual(decodeDecision({ needsYouItemId: "item-1", decision }).decision, decision);
+  }
+  // No "dismiss" or "snooze": two verdicts that move work, and one that clears
+  // a notice nothing else can clear.
   assert.throws(() => decodeDecision({ needsYouItemId: "item-1", decision: "maybe" }));
 });
 

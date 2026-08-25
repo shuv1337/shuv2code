@@ -84,7 +84,6 @@ import { AdePersonaMemory } from "./AdePersonaMemory.ts";
 import { AdeSessionRollover } from "./AdeSessionRollover.ts";
 import {
   compareNeedsYouEntries,
-  isActionableKind,
   projectNeedsYouRow,
   type NeedsYouNaming,
   type NeedsYouRow,
@@ -751,9 +750,16 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         const entries = rows
           .map((row) => projectNeedsYouRow(row, naming))
           .toSorted(compareNeedsYouEntries);
+        // Counted, not derived from the page. The history view is capped, so a
+        // fleet with more than `NEEDS_YOU_HISTORY_LIMIT` items would otherwise
+        // report an `open` that undercounts the badge it is supposed to agree
+        // with.
+        const counted = yield* sql<{ open_count: number }>`
+            SELECT COUNT(*) AS open_count FROM ade_needs_you_items WHERE status = 'open'
+          `;
         return {
           entries,
-          open: entries.filter((entry) => entry.item.status === "open").length,
+          open: counted[0]?.open_count ?? 0,
         } satisfies AdeNeedsYouList;
       }, captainize);
 
@@ -767,13 +773,37 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         "AdeCaptainApi.submitNeedsYouDecision",
       )(function* (input: AdeSubmitNeedsYouDecisionInput) {
         const entry = yield* requireNeedsYouEntry(input.needsYouItemId);
-        if (!isActionableKind(entry.item.kind)) {
+        // Order matters: an item that is merely *finished* must read as the
+        // benign conflict, not as "this kind takes no decision". That is what
+        // the other rendering sees when it presses a beat later.
+        if (entry.item.status !== "open") {
+          return yield* new AdeCaptainError({
+            reason: "needs_you_already_resolved",
+            message: "That item was already resolved.",
+          });
+        }
+        if (entry.action === null) {
           return yield* new AdeCaptainError({
             reason: "needs_you_not_actionable",
             message: `A '${entry.item.kind}' item carries no captain decision; it resolves when the condition clears.`,
           });
         }
-        if (entry.integrationCandidateId === null) {
+        // The control the captain pressed has to be the one the item offers.
+        // Acknowledging an approval would retire a decision nothing made, and
+        // approving an unroutable repair would name a verdict with no recipient.
+        const expected = entry.action === "acknowledge" ? "acknowledge" : "approve/deny";
+        const matches =
+          entry.action === "acknowledge"
+            ? input.decision === "acknowledge"
+            : input.decision !== "acknowledge";
+        if (!matches) {
+          return yield* new AdeCaptainError({
+            reason: "needs_you_not_actionable",
+            message: `That item takes ${expected}, not '${input.decision}'.`,
+          });
+        }
+        const candidateId = entry.integrationCandidateId;
+        if (entry.action === "approve-deny" && candidateId === null) {
           return yield* new AdeCaptainError({
             reason: "needs_you_not_actionable",
             message: "That approval names no integration candidate to decide.",
@@ -797,23 +827,43 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
           });
         }
 
-        // The verdict has to land or the item has to come back: an item
-        // resolved against a decision nothing applied is work silently dropped.
-        yield* approvals
+        // Acknowledging is the whole act: nothing is waiting on a verdict, so
+        // there is nothing to forward and nothing that can fail afterwards.
+        if (entry.action === "acknowledge" || candidateId === null) {
+          return yield* requireNeedsYouEntry(input.needsYouItemId);
+        }
+
+        const forwarded = yield* approvals
           .submitIntegrationApproval({
-            candidateId: entry.integrationCandidateId,
-            decision: input.decision,
+            candidateId,
+            // Narrowed above: an `approve-deny` item never carries "acknowledge".
+            decision: input.decision === "deny" ? "deny" : "approve",
             ...(input.note === undefined ? {} : { note: input.note }),
           })
-          .pipe(
-            Effect.tapError(() =>
-              sql`
-                  UPDATE ade_needs_you_items
-                  SET status = 'open', resolved_at = NULL, updated_at = ${at}
-                  WHERE needs_you_item_id = ${input.needsYouItemId}
-                `.pipe(Effect.ignore),
-            ),
-          );
+          .pipe(Effect.result);
+        if (forwarded._tag === "Failure") {
+          // A failed submission is ambiguous, and getting it wrong is expensive
+          // in one direction only. The candidate's own state disambiguates:
+          // still parked means nothing landed, so the item comes back; anything
+          // else means the verdict is durable somewhere and reopening would
+          // strand the item — `awaiting-approval` is the only state that retires
+          // it, and the candidate can never return to it.
+          const status = yield* approvals.readCandidateStatus(candidateId);
+          if (status !== "awaiting-approval") {
+            return yield* new AdeCaptainError({
+              reason: "needs_you_already_resolved",
+              message: "That decision was already applied elsewhere.",
+            });
+          }
+          // Guarded on `status = 'resolved'` so this can only ever undo *our*
+          // claim, never reopen an item something else has since retired.
+          yield* sql`
+              UPDATE ade_needs_you_items
+              SET status = 'open', resolved_at = NULL, updated_at = ${at}
+              WHERE needs_you_item_id = ${input.needsYouItemId} AND status = 'resolved'
+            `.pipe(Effect.ignore);
+          return yield* forwarded.failure;
+        }
 
         return yield* requireNeedsYouEntry(input.needsYouItemId);
       }, captainize);

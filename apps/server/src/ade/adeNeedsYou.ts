@@ -18,6 +18,7 @@ import type {
   IntegrationCandidateId,
   KernelEngine,
   NeedsYouItem,
+  NeedsYouAction,
   NeedsYouItemId,
   NeedsYouKind,
   NeedsYouItemStatus,
@@ -122,11 +123,33 @@ const truncate = (value: string, limit: number): string =>
   value.length <= limit ? value : `${value.slice(0, limit - 1).trimEnd()}…`;
 
 /**
- * Approval is the only kind the captain *decides*; every other kind is
- * resolved by the service that raised it once the condition clears (§4.6,
- * §4.8). A resolved item is never actionable, however it got there.
+ * An **unroutable repair**: the integration service bounced a change, went to
+ * assign the repair back to its author, and found nobody to assign it to
+ * (ADR §7.2, §13.3). It files a `stall` item naming only the candidate.
+ *
+ * That shape has to be told apart from an ordinary stall, twice over. It reads
+ * nothing like one — there is no bot to steer and no assignment to cancel — and
+ * more importantly nothing will ever clear it: the assignment engine's stall
+ * resolver keys on an assignment id this item does not carry, so left alone it
+ * counts on the badge forever. It is the one item the captain retires by hand.
  */
-export const isActionableKind = (kind: NeedsYouKind): boolean => kind === "approval";
+const isUnroutableRepair = (kind: NeedsYouKind, flat: FlatSubjects): boolean =>
+  kind === "stall" && flat.integrationCandidateId !== null && flat.assignmentId === null;
+
+/**
+ * What the captain can press. Approval is the only kind anything *waits* on;
+ * every other kind is resolved by the service that raised it once the condition
+ * clears (§4.6, §4.8) — except the unroutable repair above, which nothing
+ * clears. A resolved item offers nothing, however it got there.
+ */
+export function needsYouActionFor(
+  row: Pick<NeedsYouRow, "kind" | "status">,
+  flat: FlatSubjects,
+): NeedsYouAction | null {
+  if (row.status !== "open") return null;
+  if (row.kind === "approval") return "approve-deny";
+  return isUnroutableRepair(row.kind, flat) ? "acknowledge" : null;
+}
 
 function describe(
   row: NeedsYouRow,
@@ -156,6 +179,17 @@ function describe(
           "Work on that kernel is blocked rather than failed, and resumes on its own when the kernel comes back.",
       };
     case "stall": {
+      if (isUnroutableRepair(row.kind, flat)) {
+        // Say the actual thing. "A bot has gone quiet — steer it or cancel the
+        // assignment" names a bot that is gone and an assignment that does not
+        // exist, which sends the captain looking for controls that are not
+        // there.
+        const project = projectName === null ? "A change" : `A change in ${projectName}`;
+        return {
+          title: "A bounced change cannot be repaired automatically",
+          detail: `${project} bounced, and its author bot is archived or gone, so no repair could be assigned. Review integration candidate ${flat.integrationCandidateId ?? "(unknown)"} yourself, then acknowledge this to clear it.`,
+        };
+      }
       const instruction =
         flat.assignmentId === null
           ? null
@@ -224,11 +258,13 @@ export function projectNeedsYouRow(row: NeedsYouRow, naming: NeedsYouNaming): Ad
       ? []
       : [{ _tag: "kernel" as const, engine: flat.kernelEngine as KernelEngine }]),
   ];
+  const action = needsYouActionFor(row, flat);
   return {
     item: { ...rowToNeedsYouItem(row), subjectRefs },
     title,
     detail,
-    actionable: row.status === "open" && isActionableKind(row.kind),
+    actionable: action !== null,
+    action,
     botId: flat.botId as BotId | null,
     projectId: flat.projectId as AdeProjectId | null,
     assignmentId: flat.assignmentId as AssignmentId | null,

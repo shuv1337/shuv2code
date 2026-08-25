@@ -49,6 +49,15 @@ export const AdeApprovalPortLayerLive: Layer.Layer<AdeApprovalPort, never, AdeIn
                 Effect.fail(rejected(`The approval could not be applied: ${String(cause)}`)),
               ),
             ),
+        readCandidateStatus: (candidateId) =>
+          integration.getCandidate(candidateId).pipe(
+            Effect.map((candidate) => candidate?.status ?? null),
+            // A read that itself fails says nothing about where the candidate
+            // went. Report "moved on": leaving the item retired is recoverable
+            // by a captain re-reading the queue, while reopening one whose
+            // retire path is gone is not recoverable at all.
+            Effect.catchCause(() => Effect.succeed(null)),
+          ),
       } satisfies AdeApprovalPortShape;
     }),
   );
