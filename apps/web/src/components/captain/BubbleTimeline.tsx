@@ -75,6 +75,7 @@ export function BubbleTimeline({
   botAvatar,
   botNameById,
   avatarByBotId,
+  onIsAtEndChange,
   className,
 }: {
   readonly thread: EnvironmentThread | null;
@@ -86,6 +87,12 @@ export function BubbleTimeline({
   /** Roster projection used to name folded sub-agent traffic. */
   readonly botNameById?: ReadonlyMap<string, string> | undefined;
   readonly avatarByBotId?: ReadonlyMap<string, BotAvatarView> | undefined;
+  /**
+   * Reported upward because the read receipt needs it (M3 → M4 seam,
+   * `useBotChatRead`): a captain scrolled up a long thread is reading history,
+   * not clearing the tail. This timeline is the only thing that knows.
+   */
+  readonly onIsAtEndChange?: ((isAtEnd: boolean) => void) | undefined;
   readonly className?: string;
 }) {
   const { resolvedTheme } = useTheme();
@@ -122,7 +129,8 @@ export function BubbleTimeline({
     setExpandedItemIds(EMPTY_IDS);
     setExpandedImage(null);
     setIsAtEnd(true);
-  }, [threadKey]);
+    onIsAtEndChange?.(true);
+  }, [onIsAtEndChange, threadKey]);
 
   useEffect(() => {
     return () => {
@@ -276,8 +284,9 @@ export function BubbleTimeline({
     const atEnd = resolveTimelineIsAtEnd(listRef.current?.getState?.());
     if (atEnd !== undefined) {
       setIsAtEnd(atEnd);
+      onIsAtEndChange?.(atEnd);
     }
-  }, []);
+  }, [onIsAtEndChange]);
 
   const jumpToLatest = useCallback(() => {
     void listRef.current?.scrollToEnd({ animated: true });
