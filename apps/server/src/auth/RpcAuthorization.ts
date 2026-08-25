@@ -113,6 +113,10 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeVcsStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeResourceTelemetry]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAdeFleetHealth]: AuthOrchestrationReadScope,
+  // The live contact rail (messenger pivot §4, M3). Same payload as
+  // `ade.getRoster`, so it can only carry the same scope: a client that may
+  // read the roster may watch it change.
+  [WS_METHODS.subscribeAdeRoster]: AuthOrchestrationReadScope,
   // ADE captain surface (spec §7). Organizing the fleet rides the
   // orchestration scopes like every other captain-facing RPC; only the
   // approval verdict is held apart, under `ade:approve` (spec §5, ADR §10.4).
@@ -151,6 +155,10 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.adeDeleteBot]: AuthOrchestrationOperateScope,
   // Starting a chat mints a kernel session — a mutation, not a read.
   [WS_METHODS.adeStartBotChat]: AuthOrchestrationOperateScope,
+  // A read receipt writes a column, so it is `operate` rather than `read` —
+  // but deliberately not `ade:approve`. Clearing an unread dot is bookkeeping
+  // about what the captain has looked at, never a verdict on their behalf.
+  [WS_METHODS.adeMarkBotChatRead]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsRefreshStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.vcsPull]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsFetch]: AuthOrchestrationOperateScope,

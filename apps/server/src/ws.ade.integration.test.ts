@@ -187,6 +187,12 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
         sessionId: "oc-1",
         startedNow: true,
       } as unknown as never),
+    markBotChatRead: () =>
+      note("markBotChatRead", {
+        botId: BOT_ID,
+        readAt: "2026-08-24T00:00:00.000Z",
+        unreadCount: 0,
+      } as unknown as never),
   };
 };
 
@@ -255,6 +261,9 @@ describe("authenticated ADE captain RPCs", () => {
         yield* Effect.flip(
           readClient[WS_METHODS.adeDeleteBotGroup]({ groupId: "group-1" as AdeBotGroupId }),
         ),
+        // A read receipt writes the captain's read mark (M3), so watching the
+        // rail is not enough to clear somebody else's unread dots.
+        yield* Effect.flip(readClient[WS_METHODS.adeMarkBotChatRead]({ botId: BOT_ID })),
       ];
 
       for (const denial of denials) {
@@ -310,7 +319,9 @@ describe("authenticated ADE captain RPCs", () => {
       });
       const group = yield* fullClient[WS_METHODS.adeUpsertBotGroup]({ name: "Backend" });
       const removed = yield* fullClient[WS_METHODS.adeDeleteBotGroup]({ groupId: group.id });
+      const receipt = yield* fullClient[WS_METHODS.adeMarkBotChatRead]({ botId: BOT_ID });
 
+      assert.strictEqual(receipt.unreadCount, 0);
       assert.strictEqual(chat.threadId, `ade-bot-${BOT_ID}`);
       // Deleting a bucket hands its members back, never deletes them.
       assert.deepStrictEqual(removed.ungroupedBotIds, [BOT_ID]);
@@ -323,6 +334,7 @@ describe("authenticated ADE captain RPCs", () => {
         "updateBotIdentity",
         "upsertBotGroup",
         "deleteBotGroup",
+        "markBotChatRead",
       ]);
     }),
   );

@@ -772,6 +772,47 @@ export const AdeBotTemplateSummary = Schema.Struct({
 });
 export type AdeBotTemplateSummary = typeof AdeBotTemplateSummary.Type;
 
+/**
+ * Wire bound for anything the rail prints on a contact's one dim line
+ * (`docs/ade/MESSENGER-PIVOT.md` §4, ticket M3). A rail row is one truncated
+ * line at 380px; shipping a whole message body so the client can throw it away
+ * puts unbounded transcript text on the wire for no rendered benefit.
+ */
+export const ADE_ROSTER_PREVIEW_MAX_LENGTH = 160;
+
+/**
+ * Who spoke last, as the rail attributes it. `captain` is the human, `bot` is
+ * the contact, `system` is anything the thread recorded that was neither.
+ */
+export const AdeRosterMessageAuthor = Schema.Literals(["bot", "captain", "system"]);
+export type AdeRosterMessageAuthor = typeof AdeRosterMessageAuthor.Type;
+
+/**
+ * The tail of a bot's primary thread, as one line.
+ *
+ * `preview` is already truncated server-side and carries no markup, no
+ * attachments and no tool payloads — it exists to answer "what happened last",
+ * not to be a second transcript.
+ */
+export const AdeRosterLastMessage = Schema.Struct({
+  preview: Schema.String.check(Schema.isMaxLength(ADE_ROSTER_PREVIEW_MAX_LENGTH)),
+  at: IsoDateTime,
+  author: AdeRosterMessageAuthor,
+});
+export type AdeRosterLastMessage = typeof AdeRosterLastMessage.Type;
+
+/**
+ * The amber line that replaces the preview when something is waiting on the
+ * captain. Derived entirely from the item's `kind` plus bot/project *names* —
+ * never from anything the captain or a bot typed, which is what keeps a secure
+ * answer structurally unable to reach the rail.
+ */
+export const AdeRosterAttention = Schema.Struct({
+  kind: NeedsYouKind,
+  line: Schema.String.check(Schema.isMaxLength(ADE_ROSTER_PREVIEW_MAX_LENGTH)),
+});
+export type AdeRosterAttention = typeof AdeRosterAttention.Type;
+
 /** One roster row: the durable bot plus the counts the list renders. */
 export const AdeRosterEntry = Schema.Struct({
   bot: Bot,
@@ -780,6 +821,20 @@ export const AdeRosterEntry = Schema.Struct({
   hasActivePrimarySession: Schema.Boolean,
   /** `queued | running | blocked` assignments addressed to this bot. */
   openAssignmentCount: NonNegativeInt,
+  /**
+   * Tail of `ade-bot-<botId>`; null when the thread is empty **or when the bot
+   * has an open `form` request**. Defaulted on decode so a payload minted
+   * before M3 still reads as a valid entry.
+   */
+  lastMessage: Schema.NullOr(AdeRosterLastMessage).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** Highest-priority open Needs You item for this bot; null when none. */
+  attention: Schema.NullOr(AdeRosterAttention).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** Bot messages newer than the captain's read mark, capped for display. */
+  unreadCount: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 });
 export type AdeRosterEntry = typeof AdeRosterEntry.Type;
 
@@ -1158,6 +1213,28 @@ export const AdeSubmitNeedsYouDecisionInput = Schema.Struct({
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))),
 });
 export type AdeSubmitNeedsYouDecisionInput = typeof AdeSubmitNeedsYouDecisionInput.Type;
+
+/**
+ * "I have seen this conversation" (§4, M3). The payload deliberately carries no
+ * timestamp: the read mark is the *server's* clock at the moment the captain
+ * was demonstrably at the bottom of the thread. A client-supplied `at` would
+ * let a stale tab reset the mark backwards and resurrect unread counts the
+ * captain already cleared, or — worse, and silently — push it forwards past
+ * messages nobody read.
+ */
+export const AdeMarkBotChatReadInput = Schema.Struct({ botId: BotId });
+export type AdeMarkBotChatReadInput = typeof AdeMarkBotChatReadInput.Type;
+
+/**
+ * What the read mark landed on. `unreadCount` comes back so the surface that
+ * marked the read can settle without waiting for the next roster frame.
+ */
+export const AdeBotChatReadReceipt = Schema.Struct({
+  botId: BotId,
+  readAt: IsoDateTime,
+  unreadCount: NonNegativeInt,
+});
+export type AdeBotChatReadReceipt = typeof AdeBotChatReadReceipt.Type;
 
 // ---------------------------------------------------------------------------
 // Project view + work graph (spec §7 slices 3, 4 — issue #166)

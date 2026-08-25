@@ -27,6 +27,8 @@ import {
   AdeProjectDetail,
   AdeProjectIdInput,
   AdePublicationStackView,
+  AdeBotChatReadReceipt,
+  AdeMarkBotChatReadInput,
   AdeRoster,
   AdeSubmitNeedsYouDecisionInput,
   AdeSetComputerUseInput,
@@ -445,6 +447,7 @@ export const WS_METHODS = {
   adeStartBotDesktop: "ade.startBotDesktop",
   adeStopBotDesktop: "ade.stopBotDesktop",
   adeDeleteBot: "ade.deleteBot",
+  adeMarkBotChatRead: "ade.markBotChatRead",
 
   // Streaming subscriptions
   subscribeVcsStatus: "subscribeVcsStatus",
@@ -459,6 +462,7 @@ export const WS_METHODS = {
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
   subscribeVoiceEvents: "subscribeVoiceEvents",
   subscribeAdeFleetHealth: "subscribeAdeFleetHealth",
+  subscribeAdeRoster: "subscribeAdeRoster",
 } as const;
 
 export const WsAutomationsListRpc = Rpc.make(WS_METHODS.automationsList, {
@@ -1296,6 +1300,23 @@ export const WsSubscribeAdeFleetHealthRpc = Rpc.make(WS_METHODS.subscribeAdeFlee
   stream: true,
 });
 
+/**
+ * The live contact rail (`docs/ade/MESSENGER-PIVOT.md` §4, M3): the current
+ * `AdeRoster` on subscribe, then one frame per *observable* change.
+ *
+ * Modelled on `subscribeAdeFleetHealth` rather than left as `ade.getRoster` on
+ * a timer because previews, unread counts and attention lines are the fields a
+ * poll interval is most visibly wrong about — a 15s poll makes a messenger
+ * that looks broken. Frames are debounced and change-gated server-side, so an
+ * idle fleet costs one subscription and no traffic.
+ */
+export const WsSubscribeAdeRosterRpc = Rpc.make(WS_METHODS.subscribeAdeRoster, {
+  payload: Schema.Struct({}),
+  success: AdeRoster,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 // ---------------------------------------------------------------------------
 // ADE captain surface (spec §7 slices 1, 2, 8)
 // ---------------------------------------------------------------------------
@@ -1306,6 +1327,16 @@ const AdeCaptainRpcError = Schema.Union([AdeCaptainError, EnvironmentAuthorizati
 export const WsAdeGetRosterRpc = Rpc.make(WS_METHODS.adeGetRoster, {
   payload: Schema.Struct({}),
   success: AdeRoster,
+  error: AdeCaptainRpcError,
+});
+
+/**
+ * Clear a bot's unread count (§4, M3). Fired when the captain is demonstrably
+ * looking at the bottom of that conversation, never merely on navigation.
+ */
+export const WsAdeMarkBotChatReadRpc = Rpc.make(WS_METHODS.adeMarkBotChatRead, {
+  payload: AdeMarkBotChatReadInput,
+  success: AdeBotChatReadReceipt,
   error: AdeCaptainRpcError,
 });
 
@@ -1499,6 +1530,7 @@ export const WsAdeGetAssignmentGraphRpc = Rpc.make(WS_METHODS.adeGetAssignmentGr
 
 export const WsRpcGroup = RpcGroup.make(
   WsAdeGetRosterRpc,
+  WsAdeMarkBotChatReadRpc,
   WsAdeGetProjectRpc,
   WsAdeListProjectCandidatesRpc,
   WsAdeGetProjectPublicationStackRpc,
@@ -1638,6 +1670,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
   WsSubscribeAdeFleetHealthRpc,
+  WsSubscribeAdeRosterRpc,
   WsSubscribeVoiceEventsRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetWorkflowScriptRpc,
