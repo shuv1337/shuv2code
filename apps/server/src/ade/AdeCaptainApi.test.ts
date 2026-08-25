@@ -2,7 +2,9 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { FetchHttpClient } from "effect/unstable/http";
 
 import {
   AdeCaptainError,
@@ -21,6 +23,9 @@ import { AdeBootstrap } from "./AdeBootstrap.ts";
 import { AdeCaptainApi } from "./AdeCaptainApi.ts";
 import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
 import { AdePersonaMemory } from "./AdePersonaMemory.ts";
+import { AdeScreenboxRuntime } from "./AdeScreenbox.ts";
+import { AdeScreenboxClient, AdeScreenboxConfig } from "./AdeScreenboxClient.ts";
+import { startAdeScreenboxMock } from "./adeScreenboxMock.testSupport.ts";
 import { AdeSessionRollover } from "./AdeSessionRollover.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
 
@@ -51,9 +56,25 @@ const approvalPortOk = Layer.succeed(AdeApprovalPort, {
   readCandidateStatus: () => Effect.succeed("awaiting-approval" as string | null),
 });
 
+/**
+ * A real `AdeScreenboxRuntime` over a real client. `baseUrl` null is an
+ * unconfigured host, which is what most captain-API cases want; the Screen tab
+ * and delete cases point it at the mock upstream so the desktop lifecycle is
+ * genuinely exercised rather than stubbed.
+ */
+const screenboxLayer = (baseUrl: string | null) =>
+  AdeScreenboxRuntime.layer.pipe(
+    Layer.provide(AdeScreenboxClient.layer),
+    Layer.provide(AdeScreenboxConfig.layer({ baseUrl, adminToken: "admin-token" })),
+    Layer.provide(FetchHttpClient.layer),
+  );
+
 const makeLayer = (
-  chatPort: Layer.Layer<AdeChatSessionPort> = chatPortOk,
-  approvalPort: Layer.Layer<AdeApprovalPort> = approvalPortOk,
+  options: {
+    readonly chatPort?: Layer.Layer<AdeChatSessionPort>;
+    readonly approvalPort?: Layer.Layer<AdeApprovalPort>;
+    readonly screenboxBaseUrl?: string | null;
+  } = {},
 ) =>
   AdeCaptainApi.layer.pipe(
     Layer.provideMerge(
@@ -62,8 +83,9 @@ const makeLayer = (
         AdePersonaMemory.layer,
         AdeSessionRollover.layer,
         AdeAssignmentEngine.layer,
-        chatPort,
-        approvalPort,
+        screenboxLayer(options.screenboxBaseUrl ?? null),
+        options.chatPort ?? chatPortOk,
+        options.approvalPort ?? approvalPortOk,
         // Stands in for real path resolution: expands `~`, drops trailing
         // slashes, and refuses anything that does not exist.
         Layer.succeed(WorkspacePaths, {
@@ -455,7 +477,7 @@ describe("AdeCaptainApi.startBotChat", () => {
       // …and the rest of the captain surface still works while degraded.
       const roster = yield* api.getRoster();
       assert.isAbove(roster.entries.length, 0);
-    }).pipe(Effect.provide(makeLayer(AdeChatSessionPort.layerUnavailable))),
+    }).pipe(Effect.provide(makeLayer({ chatPort: AdeChatSessionPort.layerUnavailable }))),
   );
 });
 
@@ -585,7 +607,7 @@ describe("AdeCaptainApi.submitNeedsYouDecision", () => {
       assert.equal(resolved.actionable, false);
       assert.deepEqual(verdicts, [{ candidateId: "candidate-1", decision: "approve" }]);
       assert.deepEqual(yield* api.getNeedsYouCount(), { open: 0 });
-    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+    }).pipe(Effect.provide(makeLayer({ approvalPort: recordingApprovalPort(verdicts) })));
   });
 
   it.effect("denies, and forwards the denial rather than swallowing it", () => {
@@ -606,7 +628,7 @@ describe("AdeCaptainApi.submitNeedsYouDecision", () => {
 
       assert.equal(resolved.item.status, "resolved");
       assert.deepEqual(verdicts, [{ candidateId: "candidate-1", decision: "deny" }]);
-    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+    }).pipe(Effect.provide(makeLayer({ approvalPort: recordingApprovalPort(verdicts) })));
   });
 
   it.effect("resolves one item exactly once — the second decision is a benign conflict", () => {
@@ -631,7 +653,7 @@ describe("AdeCaptainApi.submitNeedsYouDecision", () => {
       // The point of the claim: the integration service saw exactly one
       // verdict, whichever rendering the second press came from.
       assert.equal(verdicts.length, 1);
-    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+    }).pipe(Effect.provide(makeLayer({ approvalPort: recordingApprovalPort(verdicts) })));
   });
 
   it.effect("refuses to decide a kind that resolves itself", () => {
@@ -651,7 +673,7 @@ describe("AdeCaptainApi.submitNeedsYouDecision", () => {
       // Still open: refusing to decide it must not retire it.
       assert.deepEqual(yield* api.getNeedsYouCount(), { open: 1 });
       assert.equal(verdicts.length, 0);
-    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+    }).pipe(Effect.provide(makeLayer({ approvalPort: recordingApprovalPort(verdicts) })));
   });
 
   it.effect("reopens the item when the verdict does not land", () =>
@@ -677,7 +699,7 @@ describe("AdeCaptainApi.submitNeedsYouDecision", () => {
       assert.equal(entry.item.status, "open");
       assert.equal(entry.actionable, true);
       assert.deepEqual(yield* api.getNeedsYouCount(), { open: 1 });
-    }).pipe(Effect.provide(makeLayer(chatPortOk, refusingApprovalPort))),
+    }).pipe(Effect.provide(makeLayer({ approvalPort: refusingApprovalPort }))),
   );
 
   it.effect("leaves the item retired when the verdict landed before the failure", () =>
@@ -703,7 +725,7 @@ describe("AdeCaptainApi.submitNeedsYouDecision", () => {
       const entry = yield* api.getNeedsYouItem("item-1" as NeedsYouItemId);
       assert.equal(entry.item.status, "resolved");
       assert.deepEqual(yield* api.getNeedsYouCount(), { open: 0 });
-    }).pipe(Effect.provide(makeLayer(chatPortOk, verdictLandedThenFailedPort))),
+    }).pipe(Effect.provide(makeLayer({ approvalPort: verdictLandedThenFailedPort }))),
   );
 
   it.effect("never reopens an item something else retired in the meantime", () => {
@@ -741,7 +763,7 @@ describe("AdeCaptainApi.submitNeedsYouDecision", () => {
       // since retired stays retired rather than springing back open.
       const entry = yield* api.getNeedsYouItem("item-1" as NeedsYouItemId);
       assert.equal(entry.item.status, "dismissed");
-    }).pipe(Effect.provide(makeLayer(chatPortOk, racingPort)));
+    }).pipe(Effect.provide(makeLayer({ approvalPort: racingPort })));
   });
 
   it.effect("reports a missing item rather than failing opaquely", () =>
@@ -792,7 +814,7 @@ describe("AdeCaptainApi.submitNeedsYouDecision (acknowledge)", () => {
       // nothing is waiting on.
       assert.deepEqual(verdicts, []);
       assert.deepEqual(yield* api.getNeedsYouCount(), { open: 0 });
-    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+    }).pipe(Effect.provide(makeLayer({ approvalPort: recordingApprovalPort(verdicts) })));
   });
 
   it.effect("refuses a control the item does not offer, in either direction", () => {
@@ -828,7 +850,7 @@ describe("AdeCaptainApi.submitNeedsYouDecision (acknowledge)", () => {
       // Neither refusal retired anything, and no verdict escaped.
       assert.deepEqual(yield* api.getNeedsYouCount(), { open: 2 });
       assert.deepEqual(verdicts, []);
-    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+    }).pipe(Effect.provide(makeLayer({ approvalPort: recordingApprovalPort(verdicts) })));
   });
 
   it.effect("acknowledging is exactly-once like every other resolution", () =>
@@ -1266,5 +1288,199 @@ describe("AdeCaptainApi.getAssignmentGraph", () => {
       );
       assert.equal(graph.unreadableRows, 1);
     }).pipe(Effect.provide(makeLayer())),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Screen tab + confirm-gated delete (spec §4.6, S15)
+// ---------------------------------------------------------------------------
+
+/** `setup`, but against a live mock Screenbox so desktops really exist. */
+const screenSetup = Effect.gen(function* () {
+  const mock = yield* Effect.acquireRelease(
+    Effect.promise(() => startAdeScreenboxMock({})),
+    (started) => Effect.promise(() => started.close()),
+  );
+  const context = yield* Layer.build(makeLayer({ screenboxBaseUrl: mock.baseUrl }));
+  const sql = yield* Effect.service(SqlClient.SqlClient).pipe(Effect.provide(context));
+  const api = yield* Effect.service(AdeCaptainApi).pipe(Effect.provide(context));
+  const bootstrap = yield* Effect.service(AdeBootstrap).pipe(Effect.provide(context));
+  yield* runMigrations().pipe(Effect.provide(context));
+  yield* sql`PRAGMA foreign_keys = ON`;
+  const seeded = yield* bootstrap.ensureSeeded();
+  return { mock, sql, api, bootstrap, firstmateId: seeded.firstmateBotId };
+});
+
+const screenCase = <E>(name: string, body: Effect.Effect<void, E, Scope.Scope>) =>
+  it.effect(name, () => Effect.scoped(body).pipe(Effect.orDie));
+
+/** Creates a crew bot with computer use already enabled. */
+const seedComputerUseBot = (
+  api: AdeCaptainApi["Service"],
+  bootstrap: AdeBootstrap["Service"],
+) =>
+  Effect.gen(function* () {
+    const bot = yield* bootstrap.instantiateTemplate({ templateId: "coder", projectId: null });
+    yield* api.setBotComputerUse({ botId: bot.botId, computerUse: true });
+    return bot.botId;
+  });
+
+describe("AdeCaptainApi Screen tab", () => {
+  screenCase(
+    "reports a fresh bot as having no desktop and offers no viewer",
+    Effect.gen(function* () {
+      const { api, bootstrap, mock } = yield* screenSetup;
+      const botId = yield* seedComputerUseBot(api, bootstrap);
+
+      const screen = yield* api.getBotScreen(botId);
+      assert.strictEqual(screen.status, "none");
+      assert.isNull(screen.viewerPath);
+      assert.isTrue(screen.screenboxConfigured);
+      assert.strictEqual(screen.viewers, 0);
+      // Reading the Screen tab must not provision anything.
+      assert.strictEqual(mock.desktops.size, 0);
+    }),
+  );
+
+  screenCase(
+    "starts a desktop on request and only then offers a viewer path",
+    Effect.gen(function* () {
+      const { api, bootstrap, mock } = yield* screenSetup;
+      const botId = yield* seedComputerUseBot(api, bootstrap);
+
+      const started = yield* api.startBotDesktop(botId);
+      assert.strictEqual(started.status, "running");
+      assert.strictEqual(started.viewerPath, `/ade/screen/${botId}`);
+      assert.isTrue(mock.desktops.has(botId));
+
+      const stopped = yield* api.stopBotDesktop(botId);
+      assert.strictEqual(stopped.status, "stopped");
+      // No viewer path once stopped: the client must not be able to open a
+      // socket the proxy would refuse.
+      assert.isNull(stopped.viewerPath);
+    }),
+  );
+
+  screenCase(
+    "refuses to start a desktop for a bot whose computer use is off",
+    Effect.gen(function* () {
+      const { api, bootstrap, mock } = yield* screenSetup;
+      const bot = yield* bootstrap.instantiateTemplate({ templateId: "coder", projectId: null });
+
+      const outcome = yield* api.startBotDesktop(bot.botId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.reason, "screenbox_unavailable");
+      }
+      // A bot nothing is allowed to drive must not get a desktop.
+      assert.strictEqual(mock.desktops.size, 0);
+    }),
+  );
+
+  screenCase(
+    "reports an unknown bot as not found rather than as an empty screen",
+    Effect.gen(function* () {
+      const { api } = yield* screenSetup;
+      const outcome = yield* api.getBotScreen("no-such-bot" as BotId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.reason, "bot_not_found");
+      }
+    }),
+  );
+});
+
+describe("AdeCaptainApi.deleteBot", () => {
+  screenCase(
+    "purges the desktop upstream before deleting the row that cascades its record",
+    Effect.gen(function* () {
+      const { api, bootstrap, mock, sql } = yield* screenSetup;
+      const botId = yield* seedComputerUseBot(api, bootstrap);
+      yield* api.startBotDesktop(botId);
+      assert.isTrue(mock.desktops.has(botId));
+
+      const deleted = yield* api.deleteBot(botId);
+      assert.deepStrictEqual(deleted, { botId, desktopPurged: true });
+
+      // Upstream saw both halves of the purge, in order, before the row went.
+      const purge = mock.requests
+        .map((request) => request.path)
+        .filter((path) => path === "/api/desktop/destroy" || path === "/api/desktop/delete-data");
+      assert.deepStrictEqual(purge, ["/api/desktop/destroy", "/api/desktop/delete-data"]);
+      assert.isFalse(mock.desktops.has(botId));
+
+      const bots = yield* sql<{ bot_id: string }>`
+        SELECT bot_id FROM ade_bots WHERE bot_id = ${botId}
+      `;
+      assert.strictEqual(bots.length, 0);
+      // 055's cascade graph takes the children with the row.
+      const provisionings = yield* sql<{ bot_id: string }>`
+        SELECT bot_id FROM ade_screenbox_provisionings WHERE bot_id = ${botId}
+      `;
+      assert.strictEqual(provisionings.length, 0);
+      const personas = yield* sql<{ bot_id: string }>`
+        SELECT bot_id FROM ade_persona_versions WHERE bot_id = ${botId}
+      `;
+      assert.strictEqual(personas.length, 0);
+      const memory = yield* sql<{ bot_id: string }>`
+        SELECT bot_id FROM ade_memory_documents WHERE bot_id = ${botId}
+      `;
+      assert.strictEqual(memory.length, 0);
+    }),
+  );
+
+  screenCase(
+    "deletes a bot that never had a desktop without calling upstream",
+    Effect.gen(function* () {
+      const { api, bootstrap, mock, sql } = yield* screenSetup;
+      const bot = yield* bootstrap.instantiateTemplate({ templateId: "coder", projectId: null });
+
+      const deleted = yield* api.deleteBot(bot.botId);
+      assert.deepStrictEqual(deleted, { botId: bot.botId, desktopPurged: false });
+      assert.deepStrictEqual(
+        mock.requests
+          .map((request) => request.path)
+          .filter((path) => path.startsWith("/api/desktop/")),
+        [],
+      );
+
+      const bots = yield* sql<{ bot_id: string }>`
+        SELECT bot_id FROM ade_bots WHERE bot_id = ${bot.botId}
+      `;
+      assert.strictEqual(bots.length, 0);
+    }),
+  );
+
+  screenCase(
+    "refuses to delete the Firstmate and leaves its desktop alone",
+    Effect.gen(function* () {
+      const { api, mock, sql, firstmateId } = yield* screenSetup;
+      yield* api.setBotComputerUse({ botId: firstmateId, computerUse: true });
+      yield* api.startBotDesktop(firstmateId);
+
+      const outcome = yield* api.deleteBot(firstmateId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.reason, "firstmate_permanent");
+      }
+      // The refusal is total: neither the desktop nor the row is touched.
+      assert.isTrue(mock.desktops.has(firstmateId));
+      const bots = yield* sql<{ bot_id: string }>`
+        SELECT bot_id FROM ade_bots WHERE bot_id = ${firstmateId}
+      `;
+      assert.strictEqual(bots.length, 1);
+    }),
+  );
+
+  screenCase(
+    "refuses an unknown bot",
+    Effect.gen(function* () {
+      const { api } = yield* screenSetup;
+      const outcome = yield* api.deleteBot("no-such-bot" as BotId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.reason, "bot_not_found");
+      }
+    }),
   );
 });

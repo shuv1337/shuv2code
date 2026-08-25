@@ -46,6 +46,7 @@ import {
   AdeScreenboxToolPlaneLive,
 } from "./ade/AdeScreenbox.ts";
 import { AdeScreenboxClient, AdeScreenboxConfig } from "./ade/AdeScreenboxClient.ts";
+import { adeScreenViewerRouteLayer } from "./ade/AdeScreenViewerRoute.ts";
 import { AdeSessionRollover } from "./ade/AdeSessionRollover.ts";
 import { AdeShuvcodeChatSession } from "./ade/AdeShuvcodeChatSession.ts";
 import { AdeShuvcodeDispatchLoop } from "./ade/AdeShuvcodeDispatchLoop.ts";
@@ -706,6 +707,9 @@ export const makeRoutesLayer = Layer.mergeAll(
     otlpTracesProxyRouteLayer,
     textToSpeechRouteLayer,
     assetRouteLayer,
+    // Ahead of the `GET *` static catch-all, which would otherwise answer the
+    // viewer upgrade with the app's index.html.
+    adeScreenViewerRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
