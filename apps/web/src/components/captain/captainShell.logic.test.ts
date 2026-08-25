@@ -19,7 +19,12 @@ import {
   resolveCaptainLayoutMode,
   resolveCaptainLayoutModeFromMediaMatches,
   resolveCaptainShellRegions,
+  shouldInsetConversationHeaderForTitlebar,
 } from "./captainShell.logic";
+import { MACOS_TRAFFIC_LIGHTS_LEFT_INSET } from "../../workspaceTitlebar";
+
+/** The clearance the frame reserves, as a number to compare rail widths against. */
+const MACOS_TRAFFIC_LIGHTS_REACH_PX = Number.parseInt(MACOS_TRAFFIC_LIGHTS_LEFT_INSET, 10);
 
 function regions(
   overrides: {
@@ -323,10 +328,63 @@ describe("left rail toggle", () => {
     );
   });
 
+  /*
+   * Since #216 this predicate gates two things, not one: the visible control
+   * and the `sidebar.toggle` keybinding, which the captain shell rebinds to the
+   * rail because the app sidebar that used to own that command is not mounted
+   * on these routes. Both read this, so they cannot disagree about whether the
+   * rail is toggleable at a given width.
+   */
   it("is not offered where the width already decides", () => {
     expect(canToggleCaptainLeftRail("three-rails")).toBe(true);
     expect(canToggleCaptainLeftRail("right-overlay")).toBe(true);
     expect(canToggleCaptainLeftRail("icon-left-rail")).toBe(false);
     expect(canToggleCaptainLeftRail("single-column")).toBe(false);
+  });
+});
+
+describe("shouldInsetConversationHeaderForTitlebar", () => {
+  /*
+   * The rail is the leftmost surface on the captain routes now (#216), so the
+   * macOS traffic-light clearance the app sidebar used to provide is the
+   * shell's problem. The regression these guard is the middle case: at the 64px
+   * icon strip the header is *not* leftmost, but the lights still reach past
+   * the strip and land on its leading control.
+   */
+  it("clears the lights whenever the rail is too narrow to cover them", () => {
+    expect(shouldInsetConversationHeaderForTitlebar(regions({ mode: "icon-left-rail" }))).toBe(
+      true,
+    );
+    expect(shouldInsetConversationHeaderForTitlebar(regions({ leftRailCollapsed: true }))).toBe(
+      true,
+    );
+    // Single column with a conversation routed: no rail is rendered at all.
+    expect(shouldInsetConversationHeaderForTitlebar(regions({ mode: "single-column" }))).toBe(true);
+  });
+
+  it("leaves the expanded rail to cover them itself", () => {
+    expect(shouldInsetConversationHeaderForTitlebar(regions())).toBe(false);
+    expect(shouldInsetConversationHeaderForTitlebar(regions({ mode: "right-overlay" }))).toBe(
+      false,
+    );
+  });
+
+  it("agrees with the rail width the inset is computed from", () => {
+    // `RAIL_TITLEBAR_INSET_CLASS` subtracts the rail width from the lights'
+    // reach, so "needs an inset" has to mean "the rail is narrower than they
+    // are" at every band — otherwise the predicate and the arithmetic drift.
+    for (const mode of [
+      "three-rails",
+      "right-overlay",
+      "icon-left-rail",
+      "single-column",
+    ] as const) {
+      for (const leftRailCollapsed of [false, true]) {
+        const resolved = regions({ mode, leftRailCollapsed });
+        expect(shouldInsetConversationHeaderForTitlebar(resolved)).toBe(
+          captainLeftRailWidth(resolved) < MACOS_TRAFFIC_LIGHTS_REACH_PX,
+        );
+      }
+    }
   });
 });
