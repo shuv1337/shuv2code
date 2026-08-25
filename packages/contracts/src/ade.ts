@@ -723,6 +723,7 @@ export class AdeCaptainError extends Schema.TaggedErrorClass<AdeCaptainError>()(
     "persona_invalid",
     "session_unavailable",
     "project_invalid",
+    "project_not_found",
     "persistence_failed",
   ]),
   message: Schema.String,
@@ -778,3 +779,108 @@ export const AdeSetComputerUseInput = Schema.Struct({
   computerUse: Schema.Boolean,
 });
 export type AdeSetComputerUseInput = typeof AdeSetComputerUseInput.Type;
+
+// ---------------------------------------------------------------------------
+// Project view + work graph (spec §7 slices 3, 4 — issue #166)
+// ---------------------------------------------------------------------------
+
+export const AdeProjectIdInput = Schema.Struct({ projectId: AdeProjectId });
+export type AdeProjectIdInput = typeof AdeProjectIdInput.Type;
+
+/**
+ * One row of the project view's crew panel (slice 3, panel 1). Mirrors
+ * `AdeRosterEntry` minus `projectName` — every member shares this project, so
+ * repeating its name on each row says nothing.
+ */
+export const AdeProjectCrewMember = Schema.Struct({
+  bot: Bot,
+  /** The project's own Second Mate, pinned first and never archivable here. */
+  isSecondMate: Schema.Boolean,
+  hasActivePrimarySession: Schema.Boolean,
+  /** `queued | running | blocked` assignments addressed to this bot. */
+  openAssignmentCount: NonNegativeInt,
+});
+export type AdeProjectCrewMember = typeof AdeProjectCrewMember.Type;
+
+/**
+ * Project view header + crew panel (slice 3). The integration queue and the
+ * publication stack are deliberately *not* inlined: they change on their own
+ * cadence (a queue pass is seconds, a stack pass is minutes), so each panel
+ * reads its own RPC rather than forcing the whole page to re-poll at the
+ * fastest panel's rate.
+ */
+export const AdeProjectDetail = Schema.Struct({
+  project: AdeProject,
+  /** Second Mate first, then crew, then workspace specialists; ties on name. */
+  crew: Schema.Array(AdeProjectCrewMember),
+});
+export type AdeProjectDetail = typeof AdeProjectDetail.Type;
+
+export const AdeListProjectCandidatesInput = Schema.Struct({
+  projectId: AdeProjectId,
+  /** Omit for every status; the panel's filter chips narrow it. */
+  statuses: Schema.optional(Schema.Array(IntegrationCandidateStatus)),
+});
+export type AdeListProjectCandidatesInput = typeof AdeListProjectCandidatesInput.Type;
+
+/** Integration queue panel (slice 3, panel 2), oldest first — queue order. */
+export const AdeProjectCandidates = Schema.Struct({
+  candidates: Schema.Array(IntegrationCandidate),
+});
+export type AdeProjectCandidates = typeof AdeProjectCandidates.Type;
+
+/**
+ * Publication stack panel (slice 3, panel 3). Read straight off the §2.4
+ * tables rather than through the publication service (S11): the panel only
+ * ever renders recorded state, so a read-only projection keeps the UI landed
+ * and correct before — and unchanged after — the service arrives.
+ */
+export const AdePublicationStackView = Schema.Struct({
+  stack: PublicationStack,
+  /** Bottom layer first (`PublicationLayer.order` ascending). */
+  layers: Schema.Array(PublicationLayer),
+});
+export type AdePublicationStackView = typeof AdePublicationStackView.Type;
+
+/**
+ * Work graph scope (slice 4). `projectId: null` is the fleet-wide graph;
+ * bot and status filtering is client-side so that narrowing the list cannot
+ * silently sever the lineage the tree is drawing.
+ */
+export const AdeAssignmentGraphInput = Schema.Struct({
+  projectId: Schema.NullOr(AdeProjectId),
+});
+export type AdeAssignmentGraphInput = typeof AdeAssignmentGraphInput.Type;
+
+export const AdeAssignmentGraphNode = Schema.Struct({
+  assignment: Assignment,
+  /** Recipient's name, so the graph renders without a roster round-trip. */
+  botName: Schema.String,
+  projectName: Schema.NullOr(Schema.String),
+  /**
+   * Children recorded in the store, *including* any outside this scope — a
+   * child may be addressed to a bot on another project (spec §2.2), so the
+   * node has to admit to descendants the graph is not showing.
+   */
+  childCount: NonNegativeInt,
+});
+export type AdeAssignmentGraphNode = typeof AdeAssignmentGraphNode.Type;
+
+/** One entry of the work graph's bot filter. */
+export const AdeAssignmentGraphBot = Schema.Struct({
+  id: BotId,
+  name: Schema.String,
+});
+export type AdeAssignmentGraphBot = typeof AdeAssignmentGraphBot.Type;
+
+/**
+ * Assignment lineage payload (slice 4). Nodes arrive oldest-first; lineage is
+ * `Assignment.parentAssignmentId`. A node whose parent is absent from `nodes`
+ * is a root *of this scope* — the tree builder must not drop it.
+ */
+export const AdeAssignmentGraph = Schema.Struct({
+  nodes: Schema.Array(AdeAssignmentGraphNode),
+  /** Distinct recipients present in `nodes`, name-ordered. */
+  bots: Schema.Array(AdeAssignmentGraphBot),
+});
+export type AdeAssignmentGraph = typeof AdeAssignmentGraph.Type;

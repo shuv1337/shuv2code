@@ -12,6 +12,7 @@ import {
   AuthOrchestrationReadScope,
   AuthSessionId,
   type AdeBotDetail,
+  type AdeProjectId,
   type AdeRoster,
   type BotId,
   WS_METHODS,
@@ -36,6 +37,7 @@ const authenticatedSession = (
 });
 
 const BOT_ID = "bot-1" as BotId;
+const PROJECT_ID = "project-1" as AdeProjectId;
 
 const emptyRoster: AdeRoster = { entries: [], projects: [], templates: [] };
 
@@ -88,6 +90,25 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
       } as unknown as never),
     setBotComputerUse: () => note("setBotComputerUse", botDetail.bot),
     getNeedsYouCount: () => note("getNeedsYouCount", { open: 3 }),
+    getProject: () =>
+      note("getProject", {
+        project: {
+          id: PROJECT_ID,
+          name: "Demo",
+          secondMateBotId: BOT_ID,
+          repoBinding: null,
+          integrationPolicyDefault: "agent-review",
+          checkCommands: [],
+          sharedSpecialistAllowList: "all",
+          limitsOverrides: null,
+          createdAt: "2026-08-24T00:00:00.000Z",
+          updatedAt: "2026-08-24T00:00:00.000Z",
+        },
+        crew: [],
+      } as unknown as never),
+    listProjectCandidates: () => note("listProjectCandidates", { candidates: [] }),
+    getProjectPublicationStack: () => note("getProjectPublicationStack", null),
+    getAssignmentGraph: () => note("getAssignmentGraph", { nodes: [], bots: [] }),
     startBotChat: () =>
       note("startBotChat", {
         botId: BOT_ID,
@@ -119,6 +140,25 @@ describe("authenticated ADE captain RPCs", () => {
         BOT_ID,
       );
 
+      // The project view and work graph are projections over ADE tables, so a
+      // read-only client must reach all four without an operate scope (S12).
+      assert.deepStrictEqual(
+        (yield* readClient[WS_METHODS.adeGetProject]({ projectId: PROJECT_ID })).crew,
+        [],
+      );
+      assert.deepStrictEqual(
+        yield* readClient[WS_METHODS.adeListProjectCandidates]({ projectId: PROJECT_ID }),
+        { candidates: [] },
+      );
+      assert.strictEqual(
+        yield* readClient[WS_METHODS.adeGetProjectPublicationStack]({ projectId: PROJECT_ID }),
+        null,
+      );
+      assert.deepStrictEqual(
+        yield* readClient[WS_METHODS.adeGetAssignmentGraph]({ projectId: null }),
+        { nodes: [], bots: [] },
+      );
+
       const denials = [
         yield* Effect.flip(
           readClient[WS_METHODS.adeCreateBotFromTemplate]({
@@ -146,7 +186,15 @@ describe("authenticated ADE captain RPCs", () => {
       }
 
       // Refusal happens before the service, not inside it.
-      assert.deepStrictEqual(yield* Ref.get(calls), ["getRoster", "getNeedsYouCount", "getBot"]);
+      assert.deepStrictEqual(yield* Ref.get(calls), [
+        "getRoster",
+        "getNeedsYouCount",
+        "getBot",
+        "getProject",
+        "listProjectCandidates",
+        "getProjectPublicationStack",
+        "getAssignmentGraph",
+      ]);
     }),
   );
 

@@ -30,9 +30,11 @@ import { Route as DevVoiceRouteImport } from './routes/dev.voice'
 import { Route as ConnectCallbackRouteImport } from './routes/connect_.callback'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatFleetRouteImport } from './routes/_chat.fleet'
+import { Route as ChatFleetWorkRouteImport } from './routes/_chat.fleet_.work'
 import { Route as ChatFleetBotIdRouteImport } from './routes/_chat.fleet_.$botId'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
+import { Route as ChatFleetProjectsAdeProjectIdRouteImport } from './routes/_chat.fleet_.projects_.$adeProjectId'
 import { Route as ChatFleetBotIdChatRouteImport } from './routes/_chat.fleet_.$botId_.chat'
 
 const UsageRoute = UsageRouteImport.update({
@@ -139,6 +141,11 @@ const ChatFleetRoute = ChatFleetRouteImport.update({
   path: '/fleet',
   getParentRoute: () => ChatRoute,
 } as any)
+const ChatFleetWorkRoute = ChatFleetWorkRouteImport.update({
+  id: '/fleet_/work',
+  path: '/fleet/work',
+  getParentRoute: () => ChatRoute,
+} as any)
 const ChatFleetBotIdRoute = ChatFleetBotIdRouteImport.update({
   id: '/fleet_/$botId',
   path: '/fleet/$botId',
@@ -153,6 +160,12 @@ const ChatEnvironmentIdThreadIdRoute =
   ChatEnvironmentIdThreadIdRouteImport.update({
     id: '/$environmentId/$threadId',
     path: '/$environmentId/$threadId',
+    getParentRoute: () => ChatRoute,
+  } as any)
+const ChatFleetProjectsAdeProjectIdRoute =
+  ChatFleetProjectsAdeProjectIdRouteImport.update({
+    id: '/fleet_/projects_/$adeProjectId',
+    path: '/fleet/projects/$adeProjectId',
     getParentRoute: () => ChatRoute,
   } as any)
 const ChatFleetBotIdChatRoute = ChatFleetBotIdChatRouteImport.update({
@@ -185,7 +198,9 @@ export interface FileRoutesByFullPath {
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/fleet/$botId': typeof ChatFleetBotIdRoute
+  '/fleet/work': typeof ChatFleetWorkRoute
   '/fleet/$botId/chat': typeof ChatFleetBotIdChatRoute
+  '/fleet/projects/$adeProjectId': typeof ChatFleetProjectsAdeProjectIdRoute
 }
 export interface FileRoutesByTo {
   '/connect': typeof ConnectRoute
@@ -211,7 +226,9 @@ export interface FileRoutesByTo {
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/fleet/$botId': typeof ChatFleetBotIdRoute
+  '/fleet/work': typeof ChatFleetWorkRoute
   '/fleet/$botId/chat': typeof ChatFleetBotIdChatRoute
+  '/fleet/projects/$adeProjectId': typeof ChatFleetProjectsAdeProjectIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -239,7 +256,9 @@ export interface FileRoutesById {
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/_chat/fleet_/$botId': typeof ChatFleetBotIdRoute
+  '/_chat/fleet_/work': typeof ChatFleetWorkRoute
   '/_chat/fleet_/$botId_/chat': typeof ChatFleetBotIdChatRoute
+  '/_chat/fleet_/projects_/$adeProjectId': typeof ChatFleetProjectsAdeProjectIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -267,7 +286,9 @@ export interface FileRouteTypes {
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
     | '/fleet/$botId'
+    | '/fleet/work'
     | '/fleet/$botId/chat'
+    | '/fleet/projects/$adeProjectId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/connect'
@@ -293,7 +314,9 @@ export interface FileRouteTypes {
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
     | '/fleet/$botId'
+    | '/fleet/work'
     | '/fleet/$botId/chat'
+    | '/fleet/projects/$adeProjectId'
   id:
     | '__root__'
     | '/_chat'
@@ -320,7 +343,9 @@ export interface FileRouteTypes {
     | '/_chat/$environmentId/$threadId'
     | '/_chat/draft/$draftId'
     | '/_chat/fleet_/$botId'
+    | '/_chat/fleet_/work'
     | '/_chat/fleet_/$botId_/chat'
+    | '/_chat/fleet_/projects_/$adeProjectId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -483,6 +508,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatFleetRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/fleet_/work': {
+      id: '/_chat/fleet_/work'
+      path: '/fleet/work'
+      fullPath: '/fleet/work'
+      preLoaderRoute: typeof ChatFleetWorkRouteImport
+      parentRoute: typeof ChatRoute
+    }
     '/_chat/fleet_/$botId': {
       id: '/_chat/fleet_/$botId'
       path: '/fleet/$botId'
@@ -504,6 +536,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatEnvironmentIdThreadIdRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/fleet_/projects_/$adeProjectId': {
+      id: '/_chat/fleet_/projects_/$adeProjectId'
+      path: '/fleet/projects/$adeProjectId'
+      fullPath: '/fleet/projects/$adeProjectId'
+      preLoaderRoute: typeof ChatFleetProjectsAdeProjectIdRouteImport
+      parentRoute: typeof ChatRoute
+    }
     '/_chat/fleet_/$botId_/chat': {
       id: '/_chat/fleet_/$botId_/chat'
       path: '/fleet/$botId/chat'
@@ -521,7 +560,9 @@ interface ChatRouteChildren {
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
   ChatDraftDraftIdRoute: typeof ChatDraftDraftIdRoute
   ChatFleetBotIdRoute: typeof ChatFleetBotIdRoute
+  ChatFleetWorkRoute: typeof ChatFleetWorkRoute
   ChatFleetBotIdChatRoute: typeof ChatFleetBotIdChatRoute
+  ChatFleetProjectsAdeProjectIdRoute: typeof ChatFleetProjectsAdeProjectIdRoute
 }
 
 const ChatRouteChildren: ChatRouteChildren = {
@@ -531,7 +572,9 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,
   ChatDraftDraftIdRoute: ChatDraftDraftIdRoute,
   ChatFleetBotIdRoute: ChatFleetBotIdRoute,
+  ChatFleetWorkRoute: ChatFleetWorkRoute,
   ChatFleetBotIdChatRoute: ChatFleetBotIdChatRoute,
+  ChatFleetProjectsAdeProjectIdRoute: ChatFleetProjectsAdeProjectIdRoute,
 }
 
 const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)

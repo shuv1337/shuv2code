@@ -351,7 +351,11 @@ export interface AdeIntegrationServiceShape {
 // Rows
 // ---------------------------------------------------------------------------
 
-interface CandidateRow {
+/**
+ * Exported so read-only captain projections (S12's project view) reuse this
+ * service's decode rules instead of re-deriving them from the DDL.
+ */
+export interface CandidateRow {
   readonly integration_candidate_id: string;
   readonly project_id: string;
   readonly idempotency_key: string;
@@ -411,7 +415,7 @@ const SubjectRefsJson = Schema.fromJsonString(
 const encodeSubjectRefs = Schema.encodeEffect(SubjectRefsJson);
 const decodeSubjectRefs = Schema.decodeUnknownEffect(SubjectRefsJson);
 
-const rowToCandidate = Effect.fn("AdeIntegrationService.rowToCandidate")(function* (
+export const rowToCandidate = Effect.fn("AdeIntegrationService.rowToCandidate")(function* (
   row: CandidateRow,
 ) {
   const sourceAssignmentIds = yield* decodeStringArray(row.source_assignment_ids_json);

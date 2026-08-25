@@ -3,6 +3,8 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import {
+  AdeAssignmentGraph,
+  AdeAssignmentGraphInput,
   AdeBotChatSession,
   AdeBotDetail,
   AdeBotIdInput,
@@ -11,7 +13,12 @@ import {
   AdeCreateProjectInput,
   AdeCreatedProject,
   AdeEditPersonaInput,
+  AdeListProjectCandidatesInput,
   AdeNeedsYouCount,
+  AdeProjectCandidates,
+  AdeProjectDetail,
+  AdeProjectIdInput,
+  AdePublicationStackView,
   AdeRoster,
   AdeSetComputerUseInput,
   AdeWriteMemoryInput,
@@ -406,6 +413,10 @@ export const WS_METHODS = {
   // ADE captain-surface methods (spec §7 slices 1, 2, 8)
   adeGetRoster: "ade.getRoster",
   adeGetBot: "ade.getBot",
+  adeGetProject: "ade.getProject",
+  adeListProjectCandidates: "ade.listProjectCandidates",
+  adeGetProjectPublicationStack: "ade.getProjectPublicationStack",
+  adeGetAssignmentGraph: "ade.getAssignmentGraph",
   adeCreateBotFromTemplate: "ade.createBotFromTemplate",
   adeCreateProject: "ade.createProject",
   adeWriteBotMemory: "ade.writeBotMemory",
@@ -1339,8 +1350,47 @@ export const WsAdeStartBotChatRpc = Rpc.make(WS_METHODS.adeStartBotChat, {
   error: AdeCaptainRpcError,
 });
 
+/** Project view header + crew panel (slice 3, panel 1). */
+export const WsAdeGetProjectRpc = Rpc.make(WS_METHODS.adeGetProject, {
+  payload: AdeProjectIdInput,
+  success: AdeProjectDetail,
+  error: AdeCaptainRpcError,
+});
+
+/** Integration queue panel (slice 3, panel 2), optionally status-filtered. */
+export const WsAdeListProjectCandidatesRpc = Rpc.make(WS_METHODS.adeListProjectCandidates, {
+  payload: AdeListProjectCandidatesInput,
+  success: AdeProjectCandidates,
+  error: AdeCaptainRpcError,
+});
+
+/**
+ * Publication stack panel (slice 3, panel 3). Null when the project has never
+ * published — a repo-bound project with no stack yet is the normal case, not
+ * an error.
+ */
+export const WsAdeGetProjectPublicationStackRpc = Rpc.make(
+  WS_METHODS.adeGetProjectPublicationStack,
+  {
+    payload: AdeProjectIdInput,
+    success: Schema.NullOr(AdePublicationStackView),
+    error: AdeCaptainRpcError,
+  },
+);
+
+/** Assignment lineage for the work graph (slice 4); `projectId: null` is fleet-wide. */
+export const WsAdeGetAssignmentGraphRpc = Rpc.make(WS_METHODS.adeGetAssignmentGraph, {
+  payload: AdeAssignmentGraphInput,
+  success: AdeAssignmentGraph,
+  error: AdeCaptainRpcError,
+});
+
 export const WsRpcGroup = RpcGroup.make(
   WsAdeGetRosterRpc,
+  WsAdeGetProjectRpc,
+  WsAdeListProjectCandidatesRpc,
+  WsAdeGetProjectPublicationStackRpc,
+  WsAdeGetAssignmentGraphRpc,
   WsAdeGetBotRpc,
   WsAdeCreateBotFromTemplateRpc,
   WsAdeCreateProjectRpc,

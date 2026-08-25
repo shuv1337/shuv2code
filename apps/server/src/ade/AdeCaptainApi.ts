@@ -23,6 +23,9 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  type AdeAssignmentGraph,
+  type AdeAssignmentGraphInput,
+  type AdeAssignmentGraphNode,
   type AdeBotChatSession,
   type AdeBotDetail,
   type AdeBotTemplateSummary,
@@ -30,8 +33,14 @@ import {
   type AdeCreateProjectInput,
   type AdeCreatedProject,
   type AdeEditPersonaInput,
+  type AdeListProjectCandidatesInput,
   type AdeNeedsYouCount,
+  type AdeProject,
+  type AdeProjectCandidates,
+  type AdeProjectCrewMember,
+  type AdeProjectDetail,
   type AdeProjectId,
+  type AdePublicationStackView,
   type AdeRoster,
   type AdeRosterEntry,
   type AdeSetComputerUseInput,
@@ -43,14 +52,22 @@ import {
   type BotName,
   type BotRoleTag,
   type BotStructuralRole,
+  type IntegrationPolicy,
+  type LimitsOverrides,
   type MemoryDocument,
   type PersonaVersion,
   type PersonaVersionId,
+  type PublicationLayer,
+  type PublicationLayerId,
+  type PublicationStack,
+  type PublicationStackId,
+  type SharedSpecialistAllowList,
 } from "@shuv2code/contracts";
 
 import { type PersistenceSqlError } from "../persistence/Errors.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
-import { AdeAssignmentEngine } from "./AdeAssignmentEngine.ts";
+import { AdeAssignmentEngine, type AssignmentRow, rowToAssignment } from "./AdeAssignmentEngine.ts";
+import { type CandidateRow, rowToCandidate } from "./AdeIntegrationService.ts";
 import { AdeBootstrap } from "./AdeBootstrap.ts";
 import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
 import { AdePersonaMemory } from "./AdePersonaMemory.ts";
@@ -157,6 +174,152 @@ export const compareRosterEntries = (left: AdeRosterEntry, right: AdeRosterEntry
 /** Statuses that count as "open work" on a roster row and in bot detail. */
 const OPEN_STATUSES = ["queued", "running", "blocked"] as const;
 
+// ---------------------------------------------------------------------------
+// Project view + work graph projection (spec §7 slices 3, 4 — issue #166)
+// ---------------------------------------------------------------------------
+
+interface ProjectRow {
+  readonly project_id: string;
+  readonly name: string;
+  readonly second_mate_bot_id: string;
+  readonly repo_path: string | null;
+  readonly repo_remote: string | null;
+  readonly integration_policy_default: IntegrationPolicy;
+  readonly check_commands_json: string;
+  readonly shared_specialist_allow_list_json: string;
+  readonly limits_overrides_json: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+/**
+ * Tolerant JSON read for the project's decoration columns. These are settings
+ * blobs, not invariants: a corrupt `check_commands_json` must degrade the
+ * project *view* to "no check commands", never 500 the page that would let the
+ * captain see what is wrong.
+ */
+const parseJsonOr = <A>(raw: string | null, fallback: A): A => {
+  if (raw === null || raw.length === 0) return fallback;
+  try {
+    return JSON.parse(raw) as A;
+  } catch {
+    return fallback;
+  }
+};
+
+export const rowToProject = (row: ProjectRow): AdeProject => ({
+  id: row.project_id as AdeProjectId,
+  name: row.name as AdeProject["name"],
+  secondMateBotId: row.second_mate_bot_id as BotId,
+  repoBinding:
+    row.repo_path === null
+      ? null
+      : {
+          path: row.repo_path as AdeProject["name"],
+          remote: row.repo_remote as AdeProject["name"] | null,
+        },
+  integrationPolicyDefault: row.integration_policy_default,
+  checkCommands: parseJsonOr<AdeProject["checkCommands"]>(row.check_commands_json, []),
+  sharedSpecialistAllowList: parseJsonOr<SharedSpecialistAllowList>(
+    row.shared_specialist_allow_list_json,
+    "all",
+  ),
+  limitsOverrides: parseJsonOr<LimitsOverrides | null>(row.limits_overrides_json, null),
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+/**
+ * Crew panel order: the project's own Second Mate is pinned, then crew, then
+ * borrowed workspace specialists. Ties break on name, then id, so the panel is
+ * stable across reloads exactly like the roster.
+ */
+export const compareCrewMembers = (
+  left: AdeProjectCrewMember,
+  right: AdeProjectCrewMember,
+): number => {
+  const byRole = ROLE_RANK[left.bot.structuralRole] - ROLE_RANK[right.bot.structuralRole];
+  if (byRole !== 0) return byRole;
+  const byName = left.bot.name.localeCompare(right.bot.name);
+  return byName !== 0 ? byName : left.bot.id.localeCompare(right.bot.id);
+};
+
+/**
+ * Stack statuses the §2.4 partial unique index treats as "the live one". The
+ * panel prefers a live stack; a project whose last stack merged still shows it
+ * rather than going blank, because "merged" is the answer the captain wants.
+ */
+const LIVE_STACK_STATUSES: ReadonlyArray<PublicationStack["status"]> = new Set([
+  "building",
+  "review-frozen",
+  "merging",
+]);
+
+interface StackRow {
+  readonly publication_stack_id: string;
+  readonly project_id: string;
+  readonly mode: PublicationStack["mode"];
+  readonly status: PublicationStack["status"];
+  readonly stack_url: string | null;
+  readonly native_stack_number: number | null;
+  readonly native_stack_node_id: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+interface LayerRow {
+  readonly publication_layer_id: string;
+  readonly publication_stack_id: string;
+  readonly layer_order: number;
+  readonly change_ids_json: string;
+  readonly bookmark_name: string;
+  readonly pr_number: number | null;
+  readonly head_sha: string | null;
+  readonly submitted_sha: string | null;
+  readonly merge_sha: string | null;
+  readonly pr_state: PublicationLayer["prState"];
+  readonly status: PublicationLayer["status"];
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+export const rowToStack = (row: StackRow): PublicationStack => ({
+  id: row.publication_stack_id as PublicationStackId,
+  projectId: row.project_id as AdeProjectId,
+  mode: row.mode,
+  status: row.status,
+  stackUrl: row.stack_url as PublicationStack["stackUrl"],
+  nativeStackNumber: row.native_stack_number,
+  nativeStackNodeId: row.native_stack_node_id as PublicationStack["nativeStackNodeId"],
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+export const rowToLayer = (row: LayerRow): PublicationLayer => ({
+  id: row.publication_layer_id as PublicationLayerId,
+  stackId: row.publication_stack_id as PublicationStackId,
+  order: row.layer_order,
+  changeIds: parseJsonOr<PublicationLayer["changeIds"]>(row.change_ids_json, []),
+  bookmarkName: row.bookmark_name as PublicationLayer["bookmarkName"],
+  prNumber: row.pr_number as PublicationLayer["prNumber"],
+  headSha: row.head_sha as PublicationLayer["headSha"],
+  submittedSha: row.submitted_sha as PublicationLayer["submittedSha"],
+  mergeSha: row.merge_sha as PublicationLayer["mergeSha"],
+  prState: row.pr_state,
+  status: row.status,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+/**
+ * Picks the stack the panel renders: the live one if the project has it,
+ * otherwise the most recently created. There is at most one live stack per
+ * project (055's partial unique index), so this never has to break a tie
+ * between two building stacks.
+ */
+export const selectStackRow = (rows: ReadonlyArray<StackRow>): StackRow | null =>
+  rows.find((row) => LIVE_STACK_STATUSES.has(row.status)) ?? rows[0] ?? null;
+
 const TEMPLATE_SUMMARIES: ReadonlyArray<AdeBotTemplateSummary> = Object.entries(
   ADE_BOT_TEMPLATES,
 ).map(([templateId, template]) => ({
@@ -189,6 +352,18 @@ export interface AdeCaptainApiShape {
   ) => Effect.Effect<Bot, AdeCaptainError>;
   readonly getNeedsYouCount: () => Effect.Effect<AdeNeedsYouCount, AdeCaptainError>;
   readonly startBotChat: (botId: BotId) => Effect.Effect<AdeBotChatSession, AdeCaptainError>;
+  readonly getProject: (
+    projectId: AdeProjectId,
+  ) => Effect.Effect<AdeProjectDetail, AdeCaptainError>;
+  readonly listProjectCandidates: (
+    input: AdeListProjectCandidatesInput,
+  ) => Effect.Effect<AdeProjectCandidates, AdeCaptainError>;
+  readonly getProjectPublicationStack: (
+    projectId: AdeProjectId,
+  ) => Effect.Effect<AdePublicationStackView | null, AdeCaptainError>;
+  readonly getAssignmentGraph: (
+    input: AdeAssignmentGraphInput,
+  ) => Effect.Effect<AdeAssignmentGraph, AdeCaptainError>;
 }
 
 export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiShape>()(
@@ -459,8 +634,168 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         return yield* chat.startPrimaryChat(botId);
       });
 
+      // -- Project view + work graph (spec §7 slices 3, 4) -------------------
+
+      const readProjectRow = Effect.fn("AdeCaptainApi.readProjectRow")(function* (
+        projectId: AdeProjectId,
+      ) {
+        const rows = yield* sql<ProjectRow>`
+          SELECT * FROM ade_projects WHERE project_id = ${projectId}
+        `;
+        const row = rows[0];
+        if (row === undefined) {
+          return yield* new AdeCaptainError({
+            reason: "project_not_found",
+            message: `ADE project '${projectId}' does not exist.`,
+          });
+        }
+        return row;
+      });
+
+      const getProject: AdeCaptainApiShape["getProject"] = Effect.fn("AdeCaptainApi.getProject")(
+        function* (projectId: AdeProjectId) {
+          const row = yield* readProjectRow(projectId);
+          const project = rowToProject(row);
+          // Crew is "bots whose home is this project". A borrowed fleet-shared
+          // specialist has no `project_id` and so is deliberately absent: it is
+          // on loan (spec §2.3 `sharedSpecialistAllowList`), not on the crew.
+          const botRows = yield* sql<BotRow>`
+            SELECT * FROM ade_bots
+            WHERE project_id = ${projectId} AND archived_at IS NULL
+          `;
+          const activeRows = yield* sql<{ bot_id: string }>`
+            SELECT bot_id FROM ade_bot_execution_bindings
+            WHERE purpose = 'primary-text' AND status = 'active'
+          `;
+          const active = new Set(activeRows.map((binding) => binding.bot_id));
+          const openRows = yield* sql<{ recipient_bot_id: string; open_count: number }>`
+            SELECT recipient_bot_id, COUNT(*) AS open_count FROM ade_assignments
+            WHERE status IN ('queued', 'running', 'blocked')
+            GROUP BY recipient_bot_id
+          `;
+          const openCounts = new Map(
+            openRows.map((open) => [open.recipient_bot_id, open.open_count] as const),
+          );
+
+          const crew = botRows
+            .map((botRow) => {
+              const bot = rowToBot(botRow);
+              return {
+                bot,
+                isSecondMate: bot.id === project.secondMateBotId,
+                hasActivePrimarySession: active.has(bot.id),
+                openAssignmentCount: openCounts.get(bot.id) ?? 0,
+              } satisfies AdeProjectCrewMember;
+            })
+            .sort(compareCrewMembers);
+
+          return { project, crew } satisfies AdeProjectDetail;
+        },
+        captainize,
+      );
+
+      const listProjectCandidates: AdeCaptainApiShape["listProjectCandidates"] = Effect.fn(
+        "AdeCaptainApi.listProjectCandidates",
+      )(function* (input: AdeListProjectCandidatesInput) {
+        yield* readProjectRow(input.projectId);
+        // Queue order, oldest first — the same order the integration service
+        // itself walks (ADR §7.2), so the panel's top row is the head.
+        const rows = yield* sql<CandidateRow>`
+          SELECT * FROM ade_integration_candidates
+          WHERE project_id = ${input.projectId}
+          ORDER BY created_at ASC, rowid ASC
+        `;
+        const statuses = input.statuses;
+        const filtered =
+          statuses === undefined || statuses.length === 0
+            ? rows
+            : rows.filter((row) => statuses.includes(row.status as (typeof statuses)[number]));
+        const candidates = yield* Effect.forEach(filtered, rowToCandidate);
+        return { candidates } satisfies AdeProjectCandidates;
+      }, captainize);
+
+      const getProjectPublicationStack: AdeCaptainApiShape["getProjectPublicationStack"] =
+        Effect.fn("AdeCaptainApi.getProjectPublicationStack")(function* (projectId: AdeProjectId) {
+          yield* readProjectRow(projectId);
+          const stackRows = yield* sql<StackRow>`
+            SELECT * FROM ade_publication_stacks
+            WHERE project_id = ${projectId}
+            ORDER BY created_at DESC, rowid DESC
+          `;
+          const stackRow = selectStackRow(stackRows);
+          if (stackRow === null) return null;
+          const layerRows = yield* sql<LayerRow>`
+            SELECT * FROM ade_publication_layers
+            WHERE publication_stack_id = ${stackRow.publication_stack_id}
+            ORDER BY layer_order ASC
+          `;
+          return {
+            stack: rowToStack(stackRow),
+            layers: layerRows.map(rowToLayer),
+          } satisfies AdePublicationStackView;
+        }, captainize);
+
+      const getAssignmentGraph: AdeCaptainApiShape["getAssignmentGraph"] = Effect.fn(
+        "AdeCaptainApi.getAssignmentGraph",
+      )(function* (input: AdeAssignmentGraphInput) {
+        const projectId = input.projectId;
+        if (projectId !== null) yield* readProjectRow(projectId);
+        // Scope narrows on project only. Bot and status filtering stays on the
+        // client (spec §7 slice 4) precisely so narrowing the list cannot cut
+        // the lineage chain the tree is drawing.
+        const rows =
+          projectId === null
+            ? yield* sql<AssignmentRow>`
+                SELECT * FROM ade_assignments ORDER BY created_at ASC, rowid ASC
+              `
+            : yield* sql<AssignmentRow>`
+                SELECT * FROM ade_assignments
+                WHERE project_id = ${projectId}
+                ORDER BY created_at ASC, rowid ASC
+              `;
+        // Counted across the whole table, not just this scope: a child may be
+        // addressed to a bot on another project, and the node has to admit to
+        // descendants the graph is not showing.
+        const childRows = yield* sql<{ parent_assignment_id: string; child_count: number }>`
+          SELECT parent_assignment_id, COUNT(*) AS child_count FROM ade_assignments
+          WHERE parent_assignment_id IS NOT NULL
+          GROUP BY parent_assignment_id
+        `;
+        const childCounts = new Map(
+          childRows.map((child) => [child.parent_assignment_id, child.child_count] as const),
+        );
+        const botRows = yield* sql<{ bot_id: string; name: string }>`
+          SELECT bot_id, name FROM ade_bots
+        `;
+        const botNames = new Map(botRows.map((bot) => [bot.bot_id, bot.name] as const));
+        const projects = yield* projectNames;
+
+        const nodes = rows.map((row) => {
+          const assignment = rowToAssignment(row);
+          return {
+            assignment,
+            // A deleted bot leaves forensic rows behind (055's delete graph);
+            // the graph names it rather than dropping the lineage.
+            botName: botNames.get(assignment.recipientBotId) ?? assignment.recipientBotId,
+            projectName:
+              assignment.projectId === null ? null : (projects.get(assignment.projectId) ?? null),
+            childCount: childCounts.get(assignment.id) ?? 0,
+          } satisfies AdeAssignmentGraphNode;
+        });
+
+        const bots = [...new Map(nodes.map((node) => [node.assignment.recipientBotId, node]))]
+          .map(([id, node]) => ({ id, name: node.botName }))
+          .sort((left, right) => left.name.localeCompare(right.name));
+
+        return { nodes, bots } satisfies AdeAssignmentGraph;
+      }, captainize);
+
       return AdeCaptainApi.of({
         getRoster,
+        getProject,
+        listProjectCandidates,
+        getProjectPublicationStack,
+        getAssignmentGraph,
         getBot,
         createBotFromTemplate,
         createProject,

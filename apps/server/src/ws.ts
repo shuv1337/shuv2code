@@ -66,16 +66,23 @@ import {
   WsVoiceResetControllerRpc,
   WsVoiceStartRpc,
   WsVoiceStopRpc,
+  type AdeAssignmentGraphInput,
   type AdeCreateBotFromTemplateInput,
   type AdeCreateProjectInput,
   type AdeEditPersonaInput,
+  type AdeListProjectCandidatesInput,
+  type AdeProjectId,
   type AdeSetComputerUseInput,
   type AdeWriteMemoryInput,
   type BotId,
   WsAdeCreateBotFromTemplateRpc,
   WsAdeCreateProjectRpc,
   WsAdeEditBotPersonaRpc,
+  WsAdeGetAssignmentGraphRpc,
   WsAdeGetBotRpc,
+  WsAdeGetProjectPublicationStackRpc,
+  WsAdeGetProjectRpc,
+  WsAdeListProjectCandidatesRpc,
   WsAdeGetNeedsYouCountRpc,
   WsAdeGetRosterRpc,
   WsAdeSetBotComputerUseRpc,
@@ -352,6 +359,26 @@ const makeAdeRpcHandlers = (
       observeRpcEffect(WS_METHODS.adeGetRoster, adeCaptainApi.getRoster(), ade),
     [WS_METHODS.adeGetBot]: (input: { readonly botId: BotId }) =>
       observeRpcEffect(WS_METHODS.adeGetBot, adeCaptainApi.getBot(input.botId), ade),
+    [WS_METHODS.adeGetProject]: (input: { readonly projectId: AdeProjectId }) =>
+      observeRpcEffect(WS_METHODS.adeGetProject, adeCaptainApi.getProject(input.projectId), ade),
+    [WS_METHODS.adeListProjectCandidates]: (input: AdeListProjectCandidatesInput) =>
+      observeRpcEffect(
+        WS_METHODS.adeListProjectCandidates,
+        adeCaptainApi.listProjectCandidates(input),
+        ade,
+      ),
+    [WS_METHODS.adeGetProjectPublicationStack]: (input: { readonly projectId: AdeProjectId }) =>
+      observeRpcEffect(
+        WS_METHODS.adeGetProjectPublicationStack,
+        adeCaptainApi.getProjectPublicationStack(input.projectId),
+        ade,
+      ),
+    [WS_METHODS.adeGetAssignmentGraph]: (input: AdeAssignmentGraphInput) =>
+      observeRpcEffect(
+        WS_METHODS.adeGetAssignmentGraph,
+        adeCaptainApi.getAssignmentGraph(input),
+        ade,
+      ),
     [WS_METHODS.adeCreateBotFromTemplate]: (input: AdeCreateBotFromTemplateInput) =>
       observeRpcEffect(
         WS_METHODS.adeCreateBotFromTemplate,
@@ -381,6 +408,10 @@ const makeAdeRpcHandlers = (
 export const AdeWsRpcGroup = RpcGroup.make(
   WsAdeGetRosterRpc,
   WsAdeGetBotRpc,
+  WsAdeGetProjectRpc,
+  WsAdeListProjectCandidatesRpc,
+  WsAdeGetProjectPublicationStackRpc,
+  WsAdeGetAssignmentGraphRpc,
   WsAdeCreateBotFromTemplateRpc,
   WsAdeCreateProjectRpc,
   WsAdeWriteBotMemoryRpc,

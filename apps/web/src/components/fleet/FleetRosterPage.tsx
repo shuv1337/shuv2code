@@ -1,7 +1,7 @@
 import type { AdeBotTemplateId, AdeProjectId, EnvironmentId } from "@shuv2code/contracts";
 import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtime";
 import { Link } from "@tanstack/react-router";
-import { AnchorIcon, MessageSquareIcon, PlusIcon } from "lucide-react";
+import { AnchorIcon, FolderGit2Icon, MessageSquareIcon, NetworkIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 
 import { isElectron } from "../../env";
@@ -57,6 +57,7 @@ export function FleetRosterPage() {
         <ScrollArea className="min-h-0 flex-1">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6 sm:px-6">
             {needsFirstProject ? <FirstProjectCta environmentId={environmentId} /> : null}
+            <ProjectLinks projects={roster.data?.projects ?? []} />
             <AddFromTemplateControl
               environmentId={environmentId}
               projects={roster.data?.projects ?? []}
@@ -145,6 +146,45 @@ export function FleetRosterPage() {
  * no ADE projects at all: the Project combobox below stayed permanently empty,
  * every bot was fleet-wide, and the auto-Second-Mate hook was unreachable.
  */
+/**
+ * Entry points to the project view and the fleet-wide work graph (spec §7
+ * slices 3, 4). The roster already knows every project, so it is the cheapest
+ * place to hang the links rather than inventing a second navigation surface.
+ */
+function ProjectLinks({
+  projects,
+}: {
+  readonly projects: ReadonlyArray<{ readonly id: AdeProjectId; readonly name: string }>;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {projects.map((project) => (
+        <Button
+          key={project.id}
+          size="sm"
+          variant="outline"
+          render={
+            <Link to="/fleet/projects/$adeProjectId" params={{ adeProjectId: project.id }}>
+              <FolderGit2Icon aria-hidden />
+              {project.name}
+            </Link>
+          }
+        />
+      ))}
+      <Button
+        size="sm"
+        variant="ghost"
+        render={
+          <Link to="/fleet/work">
+            <NetworkIcon aria-hidden />
+            Work graph
+          </Link>
+        }
+      />
+    </div>
+  );
+}
+
 function FirstProjectCta({ environmentId }: { readonly environmentId: EnvironmentId | null }) {
   const createProject = useAtomCommand(adeEnvironment.createProject, { reportFailure: false });
   const [name, setName] = useState("");

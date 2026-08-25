@@ -483,7 +483,8 @@ export interface AdeAssignmentEngineShape {
 // Rows & rendering
 // ---------------------------------------------------------------------------
 
-interface AssignmentRow {
+/** Exported for read-only captain projections (S12's work graph). */
+export interface AssignmentRow {
   readonly assignment_id: string;
   readonly idempotency_key: string;
   readonly requester_kind: "bot" | "captain";
@@ -514,7 +515,7 @@ const isTerminal = (status: AssignmentStatus): boolean => TERMINAL_STATUSES.has(
 const parseResult = (json: string | null): AssignmentResult | null =>
   json === null ? null : (JSON.parse(json) as AssignmentResult);
 
-const rowToAssignment = (row: AssignmentRow): Assignment => ({
+export const rowToAssignment = (row: AssignmentRow): Assignment => ({
   id: row.assignment_id as AssignmentId,
   idempotencyKey: row.idempotency_key as Assignment["idempotencyKey"],
   requester:
