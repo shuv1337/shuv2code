@@ -51,7 +51,6 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   EyeIcon,
-  FileTextIcon,
   GlobeIcon,
   HammerIcon,
   LoaderCircleIcon,
@@ -118,6 +117,12 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
+import { UserMessageFileList, UserMessageImageGrid } from "./UserMessageAttachments";
+import {
+  selectUserMessageFiles,
+  selectUserMessageImages,
+  selectUserMessagePreviewAnnotationImages,
+} from "./userMessageAttachments.logic";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import {
   buildReviewCommentRenderablePatch,
@@ -1050,89 +1055,16 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     ...displayedUserMessage.elementContexts,
     ...elementContextState.contexts,
   ];
-  const previewImages = userAttachments.filter(
-    (attachment) =>
-      attachment.type === "image" && attachment.name.startsWith("preview-annotation-"),
-  );
-  const regularImages = userAttachments.filter(
-    (attachment) =>
-      attachment.type === "image" && !attachment.name.startsWith("preview-annotation-"),
-  );
-  const regularFiles = userAttachments.filter((attachment) => attachment.type === "file");
+  const previewImages = selectUserMessagePreviewAnnotationImages(userAttachments);
+  const regularImages = selectUserMessageImages(userAttachments);
+  const regularFiles = selectUserMessageFiles(userAttachments);
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
 
   return (
     <div className="group flex flex-col items-end gap-1">
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
-        {regularImages.length > 0 && (
-          <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
-            {regularImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
-              <div
-                key={image.id}
-                className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
-              >
-                {image.previewUrl ? (
-                  <button
-                    type="button"
-                    className="h-full w-full cursor-zoom-in"
-                    aria-label={`Preview ${image.name}`}
-                    onClick={() => {
-                      const preview = buildExpandedImagePreview(regularImages, image.id);
-                      if (!preview) return;
-                      ctx.onImageExpand(preview);
-                    }}
-                  >
-                    <img
-                      src={image.previewUrl}
-                      alt={image.name}
-                      className="block h-auto max-h-[220px] w-full object-cover"
-                    />
-                  </button>
-                ) : (
-                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-secondary-label text-[11px]">
-                    {image.name}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {regularFiles.length > 0 ? (
-          <div className="mb-2 flex max-w-[420px] flex-col gap-1.5">
-            {regularFiles.map((file) => {
-              const content = (
-                <>
-                  <FileTextIcon className="size-5 shrink-0 text-red-500/80" aria-hidden="true" />
-                  <span className="min-w-0">
-                    <span className="block truncate text-xs font-medium">{file.name}</span>
-                    <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">
-                      PDF
-                    </span>
-                  </span>
-                </>
-              );
-              return file.previewUrl ? (
-                <a
-                  key={file.id}
-                  href={file.previewUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center gap-2 rounded-lg border border-border/80 bg-background/70 px-2.5 py-2 hover:bg-background"
-                  aria-label={`Open ${file.name}`}
-                >
-                  {content}
-                </a>
-              ) : (
-                <div
-                  key={file.id}
-                  className="flex items-center gap-2 rounded-lg border border-border/80 bg-background/70 px-2.5 py-2"
-                >
-                  {content}
-                </div>
-              );
-            })}
-          </div>
-        ) : null}
+        <UserMessageImageGrid images={regularImages} onImageExpand={ctx.onImageExpand} />
+        <UserMessageFileList files={regularFiles} />
         {previewAnnotations.map((annotation, index) => (
           <UserMessagePreviewAnnotationCard
             key={annotation.id}

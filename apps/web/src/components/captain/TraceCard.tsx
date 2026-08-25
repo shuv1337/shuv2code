@@ -6,12 +6,14 @@ import {
   ListChecksIcon,
   TerminalIcon,
 } from "lucide-react";
-import { useState } from "react";
-
 import { cn } from "../../lib/utils";
 import { DiffStatLabel, hasNonZeroStat } from "../chat/DiffStatLabel";
 import type { MessagesTimelineRow } from "../chat/MessagesTimeline.logic";
-import { CaptainRowHost, type CaptainRowHostDisplayState } from "./CaptainRowHost";
+import {
+  CaptainRowHost,
+  type CaptainRowHostActivity,
+  type CaptainRowHostDisplayState,
+} from "./CaptainRowHost";
 import { formatTraceDuration, resolveTraceCardSummary } from "./bubbleTimeline.logic";
 
 const TONE_ICON = {
@@ -35,19 +37,31 @@ const TONE_ICON = {
  * rather than to a blank bubble. The collapsed summary is pure
  * (`resolveTraceCardSummary`) so what the captain reads before expanding is
  * pinned by tests instead of by a screenshot.
+ *
+ * Expansion is **controlled by the timeline**, not held here: `LegendList`
+ * unmounts rows that scroll out of the window, and card-local state would let a
+ * card the captain opened silently re-collapse behind their back. The same
+ * reason `MessagesTimeline` hoists its disclosure sets.
+ *
+ * `activity` is likewise real, not assumed. A row rendered with
+ * `activeTurnInProgress: false` claims the work it describes has *finished*;
+ * hard-coding that painted running tools with success chrome.
  */
 export function TraceCard({
   row,
   display,
-  defaultExpanded = false,
+  activity,
+  expanded,
+  onToggle,
   className,
 }: {
   readonly row: MessagesTimelineRow;
   readonly display: CaptainRowHostDisplayState;
-  readonly defaultExpanded?: boolean;
+  readonly activity: CaptainRowHostActivity;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
   readonly className?: string;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
   const summary = resolveTraceCardSummary(row);
   const Icon = TONE_ICON[summary.tone];
   const duration = formatTraceDuration(summary.durationMs);
@@ -60,7 +74,7 @@ export function TraceCard({
   if (row.kind === "turn-fold" || row.kind === "work-toggle") {
     return (
       <div className={cn("my-1", className)} data-trace-row-kind={row.kind}>
-        <CaptainRowHost display={display} row={row} />
+        <CaptainRowHost activity={activity} display={display} row={row} />
       </div>
     );
   }
@@ -77,7 +91,7 @@ export function TraceCard({
       <button
         aria-expanded={expanded}
         className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={onToggle}
         type="button"
       >
         <ChevronRightIcon
@@ -105,7 +119,7 @@ export function TraceCard({
            * The genuine IDE row, mounted outside `MessagesTimeline` through the
            * one exported host. No captain-specific branch runs inside it.
            */}
-          <CaptainRowHost display={display} row={row} />
+          <CaptainRowHost activity={activity} display={display} row={row} />
         </div>
       ) : null}
     </div>

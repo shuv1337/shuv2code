@@ -1,5 +1,4 @@
 import { ChevronRightIcon } from "lucide-react";
-import { useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { AssignmentResultCard } from "../fleet/AssignmentResultCard";
@@ -18,17 +17,24 @@ import type { BubbleTimelineItem } from "./bubbleTimeline.logic";
  *
  * The bot names on the line are roster-resolved by `buildBubbleTimelineItems`;
  * this component only draws the result.
+ *
+ * Expansion is controlled by the timeline for the same reason `TraceCard`'s is:
+ * `LegendList` unmounts off-window rows, so a fold the captain opened would
+ * quietly close itself on the way back.
  */
 export function AttributionLine({
   item,
   avatarByBotId,
+  expanded,
+  onToggle,
   className,
 }: {
   readonly item: Extract<BubbleTimelineItem, { kind: "attribution" }>;
   readonly avatarByBotId?: ReadonlyMap<string, BotAvatarView> | undefined;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
   readonly className?: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const avatars = item.botIds
     .map((botId) => avatarByBotId?.get(botId))
     .filter((avatar): avatar is BotAvatarView => avatar !== undefined);
@@ -38,7 +44,7 @@ export function AttributionLine({
       <button
         aria-expanded={expanded}
         className="flex items-center gap-2 self-center rounded-full px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={onToggle}
         type="button"
       >
         {avatars.length === 0 ? null : (

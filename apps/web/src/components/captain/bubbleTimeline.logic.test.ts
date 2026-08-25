@@ -7,7 +7,11 @@ import {
   formatAttributionLabel,
   formatTraceDuration,
   resolveBubbleDayKey,
+  resolveBubbleMessageDisplay,
+  resolveBubbleTimelineActivity,
   resolveTraceCardSummary,
+  resolveTurnFoldAnchorKey,
+  shouldRestoreBubblePosition,
 } from "./bubbleTimeline.logic";
 
 /**
@@ -534,5 +538,182 @@ describe("formatTraceDuration", () => {
     expect(formatTraceDuration(340)).toBe("340ms");
     expect(formatTraceDuration(1_240)).toBe("1.2s");
     expect(formatTraceDuration(125_000)).toBe("2m 05s");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Disclosure anchoring — expanding a card must not scroll the captain away
+// ---------------------------------------------------------------------------
+
+describe("disclosure anchoring", () => {
+  it("anchors only the toggled row while a disclosure settles", () => {
+    expect(shouldRestoreBubblePosition("trace-row-9", "trace-row-9")).toBe(true);
+    expect(shouldRestoreBubblePosition("trace-row-9", "trace-row-2")).toBe(false);
+    // Nothing in flight: ordinary "content above me grew" restoration.
+    expect(shouldRestoreBubblePosition(null, "trace-row-2")).toBe(true);
+  });
+
+  it("uses the same anchor key the row model mints for a turn fold", () => {
+    const rows = rowsFrom([
+      messageEntry({ id: "u1", role: "user", text: "Ship it", at: localNoon(2026, 3, 17) }),
+      workEntry({ id: "w1", label: "Ran command", at: localNoon(2026, 3, 17, 1) }),
+      messageEntry({
+        id: "a1",
+        role: "assistant",
+        text: "Done",
+        at: localNoon(2026, 3, 17, 2),
+        turnId: "turn-1",
+      }),
+    ]);
+    const foldRow = rows.find((row) => row.kind === "turn-fold");
+    if (foldRow === undefined || foldRow.kind !== "turn-fold") {
+      throw new Error("fixture produced no turn-fold row");
+    }
+    // The anchor the messenger suspends on has to be the *item* id LegendList
+    // will ask about; a trace item carries the row id verbatim.
+    expect(resolveTurnFoldAnchorKey(foldRow.foldId)).toBe(foldRow.id);
+    const items = buildBubbleTimelineItems({ rows });
+    expect(items.some((item) => item.id === resolveTurnFoldAnchorKey(foldRow.foldId))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Activity — an in-flight tool call must not render as a finished one
+// ---------------------------------------------------------------------------
+
+describe("resolveBubbleTimelineActivity", () => {
+  it("reports a running turn as in progress and carries its id", () => {
+    expect(
+      resolveBubbleTimelineActivity({
+        isWorking: true,
+        latestTurn: { turnId: "turn-1" as never, state: "running" },
+      }),
+    ).toEqual({
+      isWorking: true,
+      activeTurnInProgress: true,
+      latestTurnId: "turn-1",
+      workingStepLabel: null,
+    });
+  });
+
+  it("stops claiming progress once the turn settles, and keeps the turn id", () => {
+    expect(
+      resolveBubbleTimelineActivity({
+        isWorking: false,
+        latestTurn: { turnId: "turn-1" as never, state: "completed" },
+      }),
+    ).toEqual({
+      isWorking: false,
+      activeTurnInProgress: false,
+      latestTurnId: "turn-1",
+      workingStepLabel: null,
+    });
+  });
+
+  it("has no turn to report before the first one", () => {
+    expect(resolveBubbleTimelineActivity({ isWorking: false, latestTurn: null })).toEqual({
+      isWorking: false,
+      activeTurnInProgress: false,
+      latestTurnId: null,
+      workingStepLabel: null,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bubble contents — attachments and send-time trailers
+// ---------------------------------------------------------------------------
+
+function bubbleRow(input: {
+  readonly role: "user" | "assistant";
+  readonly text: string;
+  readonly attachments?: ReadonlyArray<{
+    readonly type: "image" | "file";
+    readonly id: string;
+    readonly name: string;
+    readonly previewUrl?: string;
+  }>;
+}): Extract<MessagesTimelineRow, { kind: "message" }> {
+  const at = localNoon(2026, 3, 17);
+  return {
+    kind: "message",
+    id: "row-1",
+    createdAt: at,
+    message: {
+      id: "message-1" as never,
+      role: input.role,
+      text: input.text,
+      turnId: null as never,
+      createdAt: at,
+      updatedAt: at,
+      streaming: false,
+      ...(input.attachments ? { attachments: input.attachments as never } : {}),
+    },
+    durationStart: at,
+    showAssistantMeta: false,
+    showAssistantCopyButton: false,
+    assistantCopyStreaming: false,
+  } as Extract<MessagesTimelineRow, { kind: "message" }>;
+}
+
+describe("resolveBubbleMessageDisplay", () => {
+  it("renders an image-only captain message as content, not as an empty bubble", () => {
+    const display = resolveBubbleMessageDisplay(
+      bubbleRow({
+        role: "user",
+        text: "",
+        attachments: [
+          { type: "image", id: "img-1", name: "screenshot.png", previewUrl: "blob:one" },
+        ],
+      }),
+    );
+
+    expect(display.text).toBe("");
+    expect(display.images.map((image) => image.id)).toEqual(["img-1"]);
+    // The whole point: there is something to draw.
+    expect(display.hasContent).toBe(true);
+  });
+
+  it("keeps file attachments and separates them from images", () => {
+    const display = resolveBubbleMessageDisplay(
+      bubbleRow({
+        role: "user",
+        text: "Have a look",
+        attachments: [
+          { type: "image", id: "img-1", name: "shot.png", previewUrl: "blob:one" },
+          { type: "file", id: "file-1", name: "spec.pdf", previewUrl: "blob:two" },
+        ],
+      }),
+    );
+
+    expect(display.images.map((image) => image.id)).toEqual(["img-1"]);
+    expect(display.files.map((file) => file.id)).toEqual(["file-1"]);
+  });
+
+  it("strips send-time trailers from the bubble while the copy keeps them", () => {
+    const raw =
+      "Fix the retry path\n\n" +
+      "<terminal_context>\n- Terminal 1 lines 1-2:\npnpm test\n</terminal_context>";
+    const display = resolveBubbleMessageDisplay(bubbleRow({ role: "user", text: raw }));
+
+    expect(display.text).toBe("Fix the retry path");
+    expect(display.text).not.toContain("terminal_context");
+    // Copying still yields exactly what was sent.
+    expect(display.copyText).toBe(raw);
+  });
+
+  it("leaves a bot message alone — it carries no send-time trailers", () => {
+    const display = resolveBubbleMessageDisplay(
+      bubbleRow({ role: "assistant", text: "Fixed it in `retry.ts`." }),
+    );
+
+    expect(display.text).toBe("Fixed it in `retry.ts`.");
+    expect(display.hasContent).toBe(true);
+  });
+
+  it("reports a message with neither text nor attachments as having nothing to draw", () => {
+    expect(resolveBubbleMessageDisplay(bubbleRow({ role: "user", text: "   " })).hasContent).toBe(
+      false,
+    );
   });
 });
