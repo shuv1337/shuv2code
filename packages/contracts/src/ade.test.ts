@@ -491,19 +491,26 @@ it("round-trips a chat session binding a thread to a kernel session", () => {
   assert.strictEqual(session.engine, "shuvcode");
 });
 
-it("defaults the tool probe for a payload minted before the tri-state existed", () => {
-  // An older peer only knows the boolean. Decoding must not invent a
-  // "missing", because that is the false negative issue #199 was.
-  const session = decodeAdeBotChatSession({
-    botId: "bot-firstmate",
-    threadId: "ade-bot-bot-firstmate",
-    engine: "shuvcode",
-    bindingId: "binding-1",
-    sessionId: "oc-session-1",
-    startedNow: false,
-  });
-  assert.strictEqual(session.toolsProbe, "attached");
-  assert.isTrue(session.toolsAttached);
+it("derives the tool probe from the legacy boolean, both ways", () => {
+  const legacy = (toolsAttached?: boolean) =>
+    decodeAdeBotChatSession({
+      botId: "bot-firstmate",
+      threadId: "ade-bot-bot-firstmate",
+      engine: "shuvcode",
+      bindingId: "binding-1",
+      sessionId: "oc-session-1",
+      startedNow: false,
+      ...(toolsAttached === undefined ? {} : { toolsAttached }),
+    });
+
+  // An older server that only knows the boolean still reports a *genuine*
+  // missing catalog that way. Defaulting to "attached" would swallow it and
+  // trade issue #199's false positive for a false negative.
+  assert.strictEqual(legacy(false).toolsProbe, "missing");
+  assert.strictEqual(legacy(true).toolsProbe, "attached");
+  // Nothing said at all is not a complaint.
+  assert.strictEqual(legacy().toolsProbe, "attached");
+  assert.isTrue(legacy().toolsAttached);
 });
 
 it("offers only the one-click crew templates, never a coordinator", () => {

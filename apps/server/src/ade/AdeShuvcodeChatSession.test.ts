@@ -68,6 +68,12 @@ interface Spy {
    * fails locally before any HTTP happens.
    */
   readonly adapterSessionLive: Ref.Ref<boolean>;
+  /**
+   * Make the probe fail adapter-locally even though `hasSession` says yes —
+   * the session dropped between the check and the probe. The one case where
+   * nothing ever asked the kernel and no start was attempted.
+   */
+  readonly probeSessionGone: Ref.Ref<boolean>;
   /** Kernel session `startSession` reports, or null to make it fail. */
   readonly mintedSessionId: Ref.Ref<string | null>;
   /** Every `ProviderService.startSession`, as `threadId|cwd`. */
@@ -128,9 +134,9 @@ const makeLayer = (spy: Spy) =>
                 // no kernel round-trip, no answer about the catalog.
                 listTools: (): StubCatalog =>
                   Effect.flatMap(
-                    Ref.get(spy.adapterSessionLive),
-                    (live): StubCatalog =>
-                      live
+                    Effect.all([Ref.get(spy.adapterSessionLive), Ref.get(spy.probeSessionGone)]),
+                    ([live, gone]): StubCatalog =>
+                      live && !gone
                         ? Effect.flatMap(Ref.get(spy.catalog), (catalog) =>
                             catalog === null
                               ? Effect.fail(new StubAttachError())
@@ -139,6 +145,11 @@ const makeLayer = (spy: Spy) =>
                         : Effect.fail(new StubAdapterSessionNotFoundError()),
                   ),
               },
+              // The same map `listTools` is gated on: this is what tells the
+              // resume path whether standing a session up would *replace* a
+              // live one (tearing down its pump and cancelling in-flight tool
+              // calls) rather than create the missing one.
+              hasSession: () => Ref.get(spy.adapterSessionLive),
               syntheticInput: { isLive: () => Effect.succeed(true) },
             }),
           streamChanges: Stream.empty,
@@ -166,6 +177,12 @@ const makeLayer = (spy: Spy) =>
               ]);
               const minted = yield* Ref.get(spy.mintedSessionId);
               if (minted === null) return yield* new StubAttachError();
+              // The real adapter connects, subscribes, and creates upstream
+              // before it records the session — a wide window in which a
+              // second caller can pass the same `hasSession` check. Modelled
+              // here so an unserialized start is caught rather than hidden by
+              // a synchronous stub.
+              yield* Effect.yieldNow;
               yield* Ref.set(spy.adapterSessionLive, true);
               return { threadId, providerThreadId: minted };
             }),
@@ -233,6 +250,7 @@ const withChat = <A, E>(body: (spy: Spy) => Effect.Effect<A, E, ChatEnv>) =>
       shellThreads: yield* Ref.make<ReadonlyArray<{ id: string }>>([]),
       rejectProjectCreate: yield* Ref.make(false),
       adapterSessionLive: yield* Ref.make(true),
+      probeSessionGone: yield* Ref.make(false),
       mintedSessionId: yield* Ref.make<string | null>(null),
       startedSessions: yield* Ref.make<ReadonlyArray<string>>([]),
     };
@@ -352,7 +370,33 @@ describe("AdeShuvcodeChatSession.startPrimaryChat", () => {
     ),
   );
 
-  it.effect("says 'unknown', not 'missing', when the probe never reached the kernel", () =>
+  it.effect("says 'unknown', not 'missing', when nothing ever asked the kernel", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { rollover, chat, botId } = yield* setup;
+        yield* rollover.startPrimarySession({
+          botId,
+          engine: "shuvcode",
+          sessionId: "oc-vanished" as KernelSessionId,
+        });
+        // The adapter reports it holds the thread — so no start is attempted —
+        // but the session is gone by the time the probe runs. The probe failed
+        // inside the adapter, before any kernel round-trip: that is not
+        // evidence the kernel dropped the catalog, and treating it as such is
+        // what pinned a permanent "fleet tools unavailable" banner (#199).
+        yield* Ref.set(spy.probeSessionGone, true);
+
+        const resolved = yield* chat.startPrimaryChat(botId);
+
+        assert.deepEqual(yield* Ref.get(spy.startedSessions), []);
+        assert.equal(resolved.toolsProbe, "unknown");
+        // The deprecated boolean must not carry the false negative either.
+        assert.isTrue(resolved.toolsAttached);
+      }),
+    ),
+  );
+
+  it.effect("reports missing when the session could not be stood up at all", () =>
     withChat((spy) =>
       Effect.gen(function* () {
         const { rollover, chat, botId } = yield* setup;
@@ -361,18 +405,16 @@ describe("AdeShuvcodeChatSession.startPrimaryChat", () => {
           engine: "shuvcode",
           sessionId: "oc-restarted" as KernelSessionId,
         });
-        // Issue #199 exactly: the process restarted, so the adapter holds no
-        // session for this thread and the probe fails locally — and here the
-        // repair cannot run either (no project). A local failure is not
-        // evidence the kernel dropped the catalog, and reporting it as such is
-        // what pinned a permanent "fleet tools unavailable" banner.
+        // Restarted process, and the repair cannot run: no project (or an
+        // unreachable kernel). Delegation really is down and the captain has
+        // to be told — silence here would hide a broken bot behind a working
+        // chat.
         yield* Ref.set(spy.adapterSessionLive, false);
 
         const resolved = yield* chat.startPrimaryChat(botId);
 
-        assert.equal(resolved.toolsProbe, "unknown");
-        // The deprecated boolean must not carry the false negative either.
-        assert.isTrue(resolved.toolsAttached);
+        assert.equal(resolved.toolsProbe, "missing");
+        assert.isFalse(resolved.toolsAttached);
       }),
     ),
   );
@@ -407,6 +449,75 @@ describe("AdeShuvcodeChatSession.startPrimaryChat", () => {
         assert.isFalse(resolved.startedNow);
         assert.equal(resolved.bindingId, opened.binding.id);
         assert.equal(resolved.sessionId, "oc-survivor");
+      }),
+    ),
+  );
+
+  it.effect("never restarts a session the adapter is already holding", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { sql, rollover, chat, botId } = yield* setup;
+        yield* seedProject(sql);
+        yield* Ref.set(spy.shellProjects, [
+          { id: "p-demo", workspaceRoot: "/home/captain/repos/demo" },
+        ]);
+        yield* rollover.startPrimarySession({
+          botId,
+          engine: "shuvcode",
+          sessionId: "oc-live" as KernelSessionId,
+        });
+        // The adapter holds this thread: same process, second visit.
+        yield* Ref.set(spy.adapterSessionLive, true);
+        // Set, so a start that should not happen would visibly succeed.
+        yield* Ref.set(spy.mintedSessionId, "oc-live");
+
+        const resolved = yield* chat.startPrimaryChat(botId);
+
+        // Against an external shuvcode server the adapter cannot take its
+        // adopt fast path, so `startSession` on a thread it already holds is a
+        // *replace*: pump torn down, in-flight dynamic tool calls cancelled,
+        // and an interrupted call re-run — double-executing side-effecting
+        // fleet tools just because the captain opened a chat. Opening a chat
+        // must stay inert here; the probe already has its answer.
+        assert.deepEqual(yield* Ref.get(spy.startedSessions), []);
+        assert.equal(resolved.toolsProbe, "attached");
+        assert.equal(resolved.sessionId, "oc-live");
+      }),
+    ),
+  );
+
+  it.effect("serializes concurrent starts into one adapter session", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { sql, rollover, chat, botId } = yield* setup;
+        yield* seedProject(sql);
+        yield* Ref.set(spy.shellProjects, [
+          { id: "p-demo", workspaceRoot: "/home/captain/repos/demo" },
+        ]);
+        yield* rollover.startPrimarySession({
+          botId,
+          engine: "shuvcode",
+          sessionId: "oc-survivor" as KernelSessionId,
+        });
+        yield* Ref.set(spy.adapterSessionLive, false);
+        yield* Ref.set(spy.mintedSessionId, "oc-survivor");
+
+        // The captain pressing "Start chat" while the assignment runner briefs
+        // the same bot. Nothing else serializes this path — the provider
+        // service's lane only wraps `sendTurn` — and a second start would
+        // orphan the first event pump: two pumps feeding the dynamic-tool
+        // queue means every call id is dispatched twice.
+        const [first, second] = yield* Effect.all(
+          [chat.startPrimaryChat(botId), chat.startPrimaryChat(botId)],
+          { concurrency: "unbounded" },
+        );
+
+        assert.deepEqual(yield* Ref.get(spy.startedSessions), [
+          `ade-bot-${botId}|/home/captain/repos/demo`,
+        ]);
+        // The loser waits, re-reads, and reports the same thing.
+        assert.deepEqual(first, second);
+        assert.equal(first.toolsProbe, "attached");
       }),
     ),
   );

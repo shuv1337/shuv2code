@@ -5,6 +5,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import {
   IsoDateTime,
@@ -727,12 +728,6 @@ export const AdeBotDetail = Schema.Struct({
 export type AdeBotDetail = typeof AdeBotDetail.Type;
 
 /**
- * Chat bootstrap result (UI slice 1). An ADE bot chat is an ordinary
- * shuv2code thread: `threadId` is what the existing conversation stack
- * renders, while `bindingId`/`sessionId` name the `BotExecutionBinding` the
- * tool gate and the assignment engine key on.
- */
-/**
  * What the provider-authoritative tool probe learned about a session.
  *
  * The third state is the load-bearing one. "The kernel says this session has
@@ -746,7 +741,7 @@ export type AdeBotDetail = typeof AdeBotDetail.Type;
 export const AdeToolProbe = Schema.Literals(["attached", "missing", "unknown"]);
 export type AdeToolProbe = typeof AdeToolProbe.Type;
 
-export const AdeBotChatSession = Schema.Struct({
+const AdeBotChatSessionFields = {
   botId: BotId,
   threadId: ThreadId,
   engine: KernelEngine,
@@ -754,22 +749,67 @@ export const AdeBotChatSession = Schema.Struct({
   sessionId: KernelSessionId,
   /** False when an existing active primary binding was reused. */
   startedNow: Schema.Boolean,
+};
+
+/**
+ * The decoded shape. `toolsProbe` says whether the fleet tool catalog is
+ * registered on this session (spec §3.1): `missing` means the conversation
+ * works but delegation does not, so the captain is told rather than left
+ * watching a bot fail to delegate for no visible reason.
+ */
+const AdeBotChatSessionWire = Schema.Struct({
+  ...AdeBotChatSessionFields,
+  toolsProbe: AdeToolProbe,
   /**
-   * Whether the fleet tool catalog is registered on this session (spec §3.1).
-   * `missing` means the conversation works but delegation does not — the
-   * kernel build has no session-scoped dynamic-tool support. Surfaced so the
-   * captain is told, rather than watching a bot fail to delegate for no
-   * visible reason.
+   * @deprecated Use `toolsProbe`. Kept so an older peer keeps decoding; it is
+   * `false` only for `missing`, never for `unknown`, because a client that
+   * cannot distinguish them must not be pushed into the false negative that
+   * issue #199 was.
    */
-  toolsProbe: AdeToolProbe.pipe(Schema.withDecodingDefault(Effect.succeed("attached" as const))),
-  /**
-   * @deprecated Use {@link AdeBotChatSession.toolsProbe}. Kept so an older
-   * client keeps decoding; it is `false` only for `missing`, never for
-   * `unknown`, because a client that cannot distinguish them must not be
-   * pushed into the false-negative that issue #199 was.
-   */
-  toolsAttached: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  toolsAttached: Schema.Boolean,
 });
+
+/**
+ * Both tool fields are optional on the wire so payloads minted before the
+ * tri-state — and before the boolean — still decode.
+ */
+const AdeBotChatSessionSource = Schema.Struct({
+  ...AdeBotChatSessionFields,
+  toolsProbe: Schema.optional(AdeToolProbe),
+  toolsAttached: Schema.optional(Schema.Boolean),
+});
+
+/**
+ * Chat bootstrap result (UI slice 1). An ADE bot chat is an ordinary
+ * shuv2code thread: `threadId` is what the existing conversation stack
+ * renders, while `bindingId`/`sessionId` name the `BotExecutionBinding` the
+ * tool gate and the assignment engine key on.
+ *
+ * The missing `toolsProbe` is derived from the legacy boolean rather than
+ * defaulted to `attached`: an older server that only knows `toolsAttached`
+ * still reports a *genuine* missing catalog that way, and swallowing it would
+ * trade issue #199's false positive for a false negative.
+ */
+export const AdeBotChatSession = AdeBotChatSessionSource.pipe(
+  Schema.decodeTo(
+    AdeBotChatSessionWire,
+    SchemaTransformation.transformOrFail<
+      typeof AdeBotChatSessionWire.Encoded,
+      typeof AdeBotChatSessionSource.Type
+    >({
+      decode: (raw) =>
+        Effect.succeed({
+          ...raw,
+          toolsProbe: raw.toolsProbe ?? (raw.toolsAttached === false ? "missing" : "attached"),
+          toolsAttached: raw.toolsAttached ?? raw.toolsProbe !== "missing",
+        } satisfies typeof AdeBotChatSessionWire.Encoded),
+      // Both tool fields are always written back, so an older peer that only
+      // reads the boolean still sees the same verdict. The cast only restores
+      // the brands the encoded side erases; the values are unchanged.
+      encode: (value) => Effect.succeed(value as typeof AdeBotChatSessionSource.Type),
+    }),
+  ),
+);
 export type AdeBotChatSession = typeof AdeBotChatSession.Type;
 
 /** Sidebar "Needs You" badge (UI slice 8): count of open `NeedsYouItem`s. */
