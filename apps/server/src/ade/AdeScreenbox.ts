@@ -238,6 +238,14 @@ export interface AdeScreenboxDesktopStatus {
 }
 
 export interface AdeScreenboxRuntimeShape {
+  /**
+   * Whether this host has Screenbox configured at all. False makes every
+   * desktop action unavailable rather than failing, so the Screen tab can say
+   * "not available on this host" instead of showing a Start button that only
+   * ever errors.
+   */
+  readonly isConfigured: boolean;
+
   // -- tool plane ------------------------------------------------------------
   /** Cached last-good operate-only catalog (empty until the first refresh). */
   readonly toolCatalog: Effect.Effect<ReadonlyArray<AdeToolDefinition>>;
@@ -1125,6 +1133,7 @@ export const makeAdeScreenboxRuntime = (
     });
 
     return {
+      isConfigured: client.isConfigured,
       toolCatalog: Ref.get(catalogRef),
       refreshToolCatalog,
       isComputerUseEnabled,

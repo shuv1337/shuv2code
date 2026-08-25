@@ -92,6 +92,10 @@ import {
   WsAdeListNeedsYouRpc,
   WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeSetBotComputerUseRpc,
+  WsAdeGetBotScreenRpc,
+  WsAdeStartBotDesktopRpc,
+  WsAdeStopBotDesktopRpc,
+  WsAdeDeleteBotRpc,
   WsAdeStartBotChatRpc,
   WsAdeWriteBotMemoryRpc,
   WS_METHODS,
@@ -435,6 +439,18 @@ const makeAdeRpcHandlers = (
       ),
     [WS_METHODS.adeStartBotChat]: (input: { readonly botId: BotId }) =>
       observeRpcEffect(WS_METHODS.adeStartBotChat, adeCaptainApi.startBotChat(input.botId), ade),
+    [WS_METHODS.adeGetBotScreen]: (input: { readonly botId: BotId }) =>
+      observeRpcEffect(WS_METHODS.adeGetBotScreen, adeCaptainApi.getBotScreen(input.botId), ade),
+    [WS_METHODS.adeStartBotDesktop]: (input: { readonly botId: BotId }) =>
+      observeRpcEffect(
+        WS_METHODS.adeStartBotDesktop,
+        adeCaptainApi.startBotDesktop(input.botId),
+        ade,
+      ),
+    [WS_METHODS.adeStopBotDesktop]: (input: { readonly botId: BotId }) =>
+      observeRpcEffect(WS_METHODS.adeStopBotDesktop, adeCaptainApi.stopBotDesktop(input.botId), ade),
+    [WS_METHODS.adeDeleteBot]: (input: { readonly botId: BotId }) =>
+      observeRpcEffect(WS_METHODS.adeDeleteBot, adeCaptainApi.deleteBot(input.botId), ade),
   };
 };
 
@@ -456,6 +472,10 @@ export const AdeWsRpcGroup = RpcGroup.make(
   WsAdeGetNeedsYouItemRpc,
   WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeStartBotChatRpc,
+  WsAdeGetBotScreenRpc,
+  WsAdeStartBotDesktopRpc,
+  WsAdeStopBotDesktopRpc,
+  WsAdeDeleteBotRpc,
 );
 
 /**

@@ -150,14 +150,13 @@ const fakeViewerSocket = Effect.gen(function* () {
   const inbound = yield* Queue.bounded<Uint8Array>(32);
   const sent: Array<Uint8Array> = [];
   const socket = Socket.make({
+    // `runRaw`'s handler may answer with an Effect or with nothing; normalize
+    // both so the pump is one uniform loop.
     runRaw: (handler) =>
       Queue.take(inbound).pipe(
-        Effect.flatMap((chunk) => {
-          const result = handler(chunk);
-          return Effect.isEffect(result) ? (result as Effect.Effect<unknown>) : Effect.void;
-        }),
+        Effect.flatMap((chunk) => Effect.asVoid(Effect.succeed(handler(chunk)).pipe(Effect.flatten))),
         Effect.forever,
-      ) as Effect.Effect<void, never, never>,
+      ),
     writer: Effect.succeed((chunk: Uint8Array | string | Socket.CloseEvent) =>
       Effect.sync(() => {
         if (chunk instanceof Uint8Array) sent.push(chunk);

@@ -32,10 +32,12 @@ import {
   type AdeAssignmentGraphNode,
   type AdeBotChatSession,
   type AdeBotDetail,
+  type AdeBotScreen,
   type AdeBotTemplateSummary,
   type AdeCreateBotFromTemplateInput,
   type AdeCreateProjectInput,
   type AdeCreatedProject,
+  type AdeDeletedBot,
   type AdeEditPersonaInput,
   type AdeListNeedsYouInput,
   type AdeNeedsYouCount,
@@ -81,6 +83,8 @@ import { type CandidateRow, rowToCandidate } from "./AdeIntegrationService.ts";
 import { AdeBootstrap } from "./AdeBootstrap.ts";
 import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
 import { AdePersonaMemory } from "./AdePersonaMemory.ts";
+import { AdeScreenboxRuntime, type AdeScreenboxProvisionError } from "./AdeScreenbox.ts";
+import { screenViewerPathFor } from "./AdeScreenViewerRoute.ts";
 import { AdeSessionRollover } from "./AdeSessionRollover.ts";
 import {
   compareNeedsYouEntries,
@@ -400,6 +404,14 @@ export interface AdeCaptainApiShape {
   readonly setBotComputerUse: (
     input: AdeSetComputerUseInput,
   ) => Effect.Effect<Bot, AdeCaptainError>;
+  /** Screen tab state (spec §4.6). A pure read: never provisions or starts. */
+  readonly getBotScreen: (botId: BotId) => Effect.Effect<AdeBotScreen, AdeCaptainError>;
+  /** Explicit captain Start. Refused unless the bot's computer use is on. */
+  readonly startBotDesktop: (botId: BotId) => Effect.Effect<AdeBotScreen, AdeCaptainError>;
+  /** Explicit captain Stop. The home volume survives. */
+  readonly stopBotDesktop: (botId: BotId) => Effect.Effect<AdeBotScreen, AdeCaptainError>;
+  /** Confirm-gated delete: purge the desktop, then delete the bot row. */
+  readonly deleteBot: (botId: BotId) => Effect.Effect<AdeDeletedBot, AdeCaptainError>;
   readonly getNeedsYouCount: () => Effect.Effect<AdeNeedsYouCount, AdeCaptainError>;
   readonly listNeedsYou: (
     input: AdeListNeedsYouInput,
@@ -444,6 +456,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
     | AdeAssignmentEngine
     | AdeChatSessionPort
     | AdeApprovalPort
+    | AdeScreenboxRuntime
     | WorkspacePaths
   > = Layer.effect(
     AdeCaptainApi,
@@ -455,6 +468,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
       const assignments = yield* AdeAssignmentEngine;
       const chat = yield* AdeChatSessionPort;
       const approvals = yield* AdeApprovalPort;
+      const screenbox = yield* AdeScreenboxRuntime;
       const workspacePaths = yield* WorkspacePaths;
 
       const readBotRow = (botId: BotId) =>
@@ -678,6 +692,127 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         }
         return rowToBot(row);
       }, captainize);
+
+      /**
+       * Projects one bot's desktop state for the Screen tab.
+       *
+       * `viewerPath` is populated only when a viewer would actually connect —
+       * it is derived from `viewerTargetFor`, the same read the proxy route
+       * performs — so the client never opens a socket the server would refuse,
+       * and a desktop that upstream lost is reported as not running rather
+       * than as a broken viewer.
+       */
+      const projectScreen = (botId: BotId): Effect.Effect<AdeBotScreen, AdeCaptainError> =>
+        Effect.gen(function* () {
+          const status = yield* screenbox.statusFor(botId);
+          const computerUse = yield* screenbox.isComputerUseEnabled(botId);
+          const target =
+            status.status === "running"
+              ? yield* screenbox.viewerTargetFor(botId).pipe(Effect.result)
+              : null;
+          return {
+            botId,
+            status: status.status,
+            computerUse,
+            viewers: status.viewers,
+            lastNeededAt: status.lastNeededAt,
+            viewerPath: target?._tag === "Success" ? screenViewerPathFor(botId) : null,
+            screenboxConfigured: screenbox.isConfigured,
+          } satisfies AdeBotScreen;
+        });
+
+      /** A desktop refusal is never a persistence failure; keep the reason. */
+      const screenboxError = (error: AdeScreenboxProvisionError): AdeCaptainError =>
+        new AdeCaptainError({ reason: "screenbox_unavailable", message: error.reason });
+
+      const requireBot = (botId: BotId) =>
+        Effect.gen(function* () {
+          const rows = yield* captainize(readBotRow(botId));
+          if (rows[0] === undefined) {
+            return yield* new AdeCaptainError({
+              reason: "bot_not_found",
+              message: `ADE bot '${botId}' does not exist.`,
+            });
+          }
+          return rows[0];
+        });
+
+      const getBotScreen: AdeCaptainApiShape["getBotScreen"] = Effect.fn(
+        "AdeCaptainApi.getBotScreen",
+      )(function* (botId: BotId) {
+        yield* requireBot(botId);
+        return yield* projectScreen(botId);
+      }, captainize);
+
+      const startBotDesktop: AdeCaptainApiShape["startBotDesktop"] = Effect.fn(
+        "AdeCaptainApi.startBotDesktop",
+      )(function* (botId: BotId) {
+        yield* requireBot(botId);
+        // The per-bot computer-use toggle is the eligibility gate for a
+        // desktop existing at all (spec §4.6). Starting one for a bot with the
+        // toggle off would create a desktop nothing is allowed to drive.
+        const computerUse = yield* screenbox.isComputerUseEnabled(botId);
+        if (!computerUse) {
+          return yield* new AdeCaptainError({
+            reason: "screenbox_unavailable",
+            message: "Turn on computer use for this bot before starting a desktop.",
+          });
+        }
+        yield* screenbox.startDesktopFor(botId).pipe(Effect.mapError(screenboxError));
+        return yield* projectScreen(botId);
+      }, captainize);
+
+      const stopBotDesktop: AdeCaptainApiShape["stopBotDesktop"] = Effect.fn(
+        "AdeCaptainApi.stopBotDesktop",
+      )(function* (botId: BotId) {
+        yield* requireBot(botId);
+        yield* screenbox.stopDesktopFor(botId).pipe(Effect.mapError(screenboxError));
+        return yield* projectScreen(botId);
+      }, captainize);
+
+      /**
+       * Confirm-gated bot delete (spec §4.6).
+       *
+       * Ordering is load-bearing. `ade_screenbox_provisionings.bot_id`
+       * cascades from `ade_bots`, so deleting the bot row first would drop the
+       * provisioning record and strand a running container and its home volume
+       * with nothing left that knows they exist. The upstream purge therefore
+       * runs first, and a failed purge aborts the delete rather than trading a
+       * visible error for a silent leak.
+       */
+      const deleteBot: AdeCaptainApiShape["deleteBot"] = Effect.fn("AdeCaptainApi.deleteBot")(
+        function* (botId: BotId) {
+          const row = yield* requireBot(botId);
+          // The Firstmate is structural: refusing here keeps the fleet's single
+          // permanent role from being deleted out from under every project.
+          if (row.structural_role === "firstmate") {
+            return yield* new AdeCaptainError({
+              reason: "firstmate_permanent",
+              message: `Bot '${botId}' is the Firstmate and cannot be deleted.`,
+            });
+          }
+          const screen = yield* screenbox.statusFor(botId);
+          const hadDesktop = screen.status !== "none";
+          if (hadDesktop) {
+            yield* screenbox.destroyDesktopFor(botId).pipe(Effect.mapError(screenboxError));
+          }
+          // 055's cascades take the persona versions, memory documents,
+          // execution bindings, assignments, and any surviving provisioning
+          // record with the row.
+          yield* captainize(sql`DELETE FROM ade_bots WHERE bot_id = ${botId}`);
+          // Needs You items have no FK to bots (their subject refs are free
+          // form), so a provision-failure raised for this bot would otherwise
+          // outlive it as an inbox item pointing at nothing.
+          yield* captainize(
+            sql`
+              UPDATE ade_needs_you_items SET status = 'resolved'
+              WHERE status = 'open' AND subject_refs_json LIKE ${`%"${botId}"%`}
+            `,
+          );
+          return { botId, desktopPurged: hadDesktop } satisfies AdeDeletedBot;
+        },
+        captainize,
+      );
 
       const getNeedsYouCount: AdeCaptainApiShape["getNeedsYouCount"] = Effect.fn(
         "AdeCaptainApi.getNeedsYouCount",
@@ -1097,6 +1232,10 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         writeBotMemory,
         editBotPersona,
         setBotComputerUse,
+        getBotScreen,
+        startBotDesktop,
+        stopBotDesktop,
+        deleteBot,
         getNeedsYouCount,
         listNeedsYou,
         getNeedsYouItem,

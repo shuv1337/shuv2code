@@ -13,6 +13,7 @@ import {
   AuthOrchestrationReadScope,
   AuthSessionId,
   type AdeBotDetail,
+  type AdeBotScreen,
   type AdeProjectId,
   type AdeNeedsYouEntry,
   type AdeRoster,
@@ -92,6 +93,16 @@ const needsYouEntry: AdeNeedsYouEntry = {
   kernelEngine: null,
 };
 
+const botScreen = {
+  botId: BOT_ID,
+  status: "none",
+  computerUse: false,
+  viewers: 0,
+  lastNeededAt: null,
+  viewerPath: null,
+  screenboxConfigured: true,
+} as unknown as AdeBotScreen;
+
 /** Records which methods actually reached the service. */
 const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"] => {
   const note = <A>(method: string, value: A) =>
@@ -115,6 +126,15 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
         activatedAt: null,
       } as unknown as never),
     setBotComputerUse: () => note("setBotComputerUse", botDetail.bot),
+    getBotScreen: () => note("getBotScreen", botScreen),
+    startBotDesktop: () =>
+      note("startBotDesktop", {
+        ...botScreen,
+        status: "running",
+        viewerPath: `/ade/screen/${BOT_ID}`,
+      }),
+    stopBotDesktop: () => note("stopBotDesktop", { ...botScreen, status: "stopped" }),
+    deleteBot: () => note("deleteBot", { botId: BOT_ID, desktopPurged: true }),
     getNeedsYouCount: () => note("getNeedsYouCount", { open: 3 }),
     listNeedsYou: () =>
       note("listNeedsYou", { entries: [needsYouEntry], open: 1 } as unknown as never),
