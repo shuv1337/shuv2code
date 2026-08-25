@@ -1,7 +1,11 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { cn } from "../../lib/utils";
-import { WEBSOCKET_TICKET_PATH, viewerSocketUrl } from "./BotScreenTab.logic";
+import {
+  WEBSOCKET_TICKET_PATH,
+  resolveRfbConstructor,
+  viewerSocketUrl,
+} from "./BotScreenTab.logic";
 
 /**
  * Mounts noVNC against the ADE-terminated proxy.
@@ -84,8 +88,14 @@ export function BotScreenViewer({
 
       // Loaded lazily: noVNC is a large, browser-only bundle and no other
       // surface in the app needs it, so it must not sit in the main chunk.
-      const { default: RFB } = await import("@novnc/novnc/lib/rfb.js");
+      const rfbModule: unknown = await import("@novnc/novnc/lib/rfb.js");
       if (disposed) return;
+      const RFB = resolveRfbConstructor(rfbModule) as
+        | (typeof import("@novnc/novnc/lib/rfb.js"))["default"]
+        | null;
+      if (RFB === null) {
+        throw new Error("The desktop viewer failed to load (noVNC export shape).");
+      }
       const rfb = new RFB(
         target,
         viewerSocketUrl({ pageOrigin: window.location.origin, viewerPath, wsTicket: ticket }),

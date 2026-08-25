@@ -2,7 +2,36 @@ import { assert, describe, it } from "@effect/vitest";
 
 import type { AdeBotScreen, BotId } from "@shuv2code/contracts";
 
-import { deleteVolumeWorkaroundFor, getBotScreenView, viewerSocketUrl } from "./BotScreenTab.logic";
+import {
+  deleteVolumeWorkaroundFor,
+  getBotScreenView,
+  resolveRfbConstructor,
+  viewerSocketUrl,
+} from "./BotScreenTab.logic";
+
+describe("resolveRfbConstructor", () => {
+  class Rfb {}
+
+  it("accepts the dev-server interop shape ({ default: RFB })", () => {
+    assert.strictEqual(resolveRfbConstructor({ default: Rfb }), Rfb);
+  });
+
+  it("accepts the production-bundle shape (default is the raw CJS exports object)", () => {
+    // The built app hands the dynamic import `module.exports` verbatim; this
+    // shape is what produced "s is not a constructor" in a packaged server.
+    assert.strictEqual(resolveRfbConstructor({ default: { __esModule: true, default: Rfb } }), Rfb);
+  });
+
+  it("accepts a bare constructor", () => {
+    assert.strictEqual(resolveRfbConstructor(Rfb), Rfb);
+  });
+
+  it("returns null rather than a non-callable for anything else", () => {
+    assert.isNull(resolveRfbConstructor({ default: { __esModule: true } }));
+    assert.isNull(resolveRfbConstructor(undefined));
+    assert.isNull(resolveRfbConstructor("rfb"));
+  });
+});
 
 const screen = (overrides: Partial<AdeBotScreen> = {}): AdeBotScreen =>
   ({
