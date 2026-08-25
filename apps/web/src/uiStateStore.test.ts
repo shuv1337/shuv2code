@@ -11,7 +11,6 @@ import {
   persistState,
   reorderProjects,
   resolveProjectExpanded,
-  setCaptainBubbleViewEnabled,
   setCaptainRailCollapsed,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
@@ -28,7 +27,6 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     defaultAdvertisedEndpointKey: null,
     captainLeftRailCollapsed: false,
     captainRightRailCollapsed: false,
-    captainBubbleViewEnabled: false,
     ...overrides,
   };
 }
@@ -206,9 +204,6 @@ describe("parsePersistedState", () => {
       },
       captainLeftRailCollapsed: false,
       captainRightRailCollapsed: false,
-      // Per-session by design: hydration always yields the default, never a
-      // stored value (MESSENGER-PIVOT §5 step 3).
-      captainBubbleViewEnabled: false,
     });
   });
 
@@ -351,24 +346,21 @@ describe("uiStateStore persistence", () => {
   });
 });
 
-describe("setCaptainBubbleViewEnabled", () => {
-  it("flips the toggle and returns the same reference when nothing changes", () => {
-    const state = makeUiState();
-    const enabled = setCaptainBubbleViewEnabled(state, true);
-    expect(enabled.captainBubbleViewEnabled).toBe(true);
-    expect(setCaptainBubbleViewEnabled(enabled, true)).toBe(enabled);
-    expect(setCaptainBubbleViewEnabled(enabled, false).captainBubbleViewEnabled).toBe(false);
-  });
-
-  it("is never written to storage — the M4 toggle lives for one session", () => {
+describe("the retired bubble-view toggle (M6 cutover)", () => {
+  it("leaves no trace in persisted state", () => {
+    // The M4 gate is gone: the bubble renderer *is* the conversation, and
+    // "Open in workspace view" is per-conversation React state owned by the
+    // route. A stale key here would be a captain's months-old default-off
+    // quietly outliving the release it was scheduled to die in.
     const localStorageStub = createLocalStorageStub();
     vi.stubGlobal("window", { localStorage: localStorageStub });
     vi.stubGlobal("localStorage", localStorageStub);
     try {
-      persistState(setCaptainBubbleViewEnabled(makeUiState(), true));
+      persistState(makeUiState());
       expect(localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}").not.toContain(
-        "captainBubbleViewEnabled",
+        "captainBubbleView",
       );
+      expect(Object.keys(makeUiState())).not.toContain("captainBubbleViewEnabled");
     } finally {
       vi.unstubAllGlobals();
     }

@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 
 import { useThread } from "../../state/entities";
 import { useAdeBotDetail, useAdeEnvironmentId, useAdeRoster } from "../../state/ade";
-import { useUiStateStore } from "../../uiStateStore";
 import { BotChatPage } from "../fleet/BotChatPage";
 import { Button } from "../ui/button";
 import { BubbleTimeline } from "./BubbleTimeline";
@@ -12,22 +11,40 @@ import { CaptainComposer } from "./CaptainComposer";
 import { getBotAvatarView, type BotAvatarView } from "./contactRail.logic";
 
 /**
- * The conversation region of the captain shell (MESSENGER-PIVOT §5 step 3).
+ * The conversation region of the captain shell (MESSENGER-PIVOT §5 step 5 —
+ * the cutover).
  *
- * Two renderings of the same conversation, chosen by a per-session toggle that
- * defaults **off**:
- * - off — today's `BotChatPage` mounting `ChatView`, byte-identical to M1;
- * - on — `BubbleTimeline` + `CaptainComposer` over the *same* thread,
- *   with `BotChatPage` still owning start/sync so there is one state machine.
+ * **The bubble renderer is the conversation.** For one release it sat behind a
+ * per-session toggle that defaulted off while `classifyBubbleRow` and the
+ * `TraceCard` seam were tuned; that gate is gone, along with the store field
+ * that held it. The precondition the design set for removing it — a test per
+ * arm of `MessagesTimelineRow` plus a default-to-trace assertion — is met and
+ * pinned by an exhaustiveness check in `MessagesTimeline.logic.test.ts`, so an
+ * added row kind fails a test rather than reaching a captain as a blank bubble.
  *
- * The toggle is the escape hatch. While `classifyBubbleRow` and the `TraceCard`
- * seam are being tuned, a captain who hits something the bubble renderer folds
- * badly is one click from the workspace rendering, and does not have to leave
- * the conversation to get there. M6 removes both the toggle and this file's
- * branch.
+ * **The escape hatch stays, and stops being a gate.** "Open in workspace view"
+ * still mounts today's `BotChatPage`/`ChatView` for the same thread, because
+ * some turns are genuinely easier to read with the IDE's chrome. What changed
+ * is its shape: it is per-mount React state, not persisted preference. A
+ * captain who opens it for one turn gets the messenger back at the next
+ * conversation, rather than latching a default-off months ago and later
+ * reporting the messenger's arrival as a regression.
+ *
+ * `BotChatPage` still owns start/sync and the hook-count gate on both sides, so
+ * there remains exactly one session state machine.
  */
-export function CaptainConversation({ botId }: { readonly botId: BotId }) {
-  const bubbleView = useUiStateStore((state) => state.captainBubbleViewEnabled);
+export function CaptainConversation({
+  botId,
+  workspaceView,
+}: {
+  readonly botId: BotId;
+  /**
+   * The escape hatch, owned by the route so the affordance can live in the
+   * shell's header beside the identity controls. Per-conversation, not
+   * persisted (see above).
+   */
+  readonly workspaceView: boolean;
+}) {
   const environmentId = useAdeEnvironmentId();
   const roster = useAdeRoster();
   const detail = useAdeBotDetail(botId);
@@ -68,7 +85,15 @@ export function CaptainConversation({ botId }: { readonly botId: BotId }) {
    */
   const [isAtEnd, setIsAtEnd] = useState(true);
 
-  if (!bubbleView || environmentId === null) {
+  /*
+   * `environmentId === null` still falls back to the workspace rendering, and
+   * that is not a leftover of the toggle: `BubbleTimeline` and
+   * `CaptainComposer` are both scoped to an environment, so with none resolved
+   * there is nothing for them to read. `BotChatPage` handles the unresolved
+   * case on its own, so the captain sees its loading state rather than an
+   * empty messenger.
+   */
+  if (workspaceView || environmentId === null) {
     return <BotChatPage botId={botId} identityChrome="shell" />;
   }
 
@@ -133,28 +158,36 @@ function CaptainConversationBody({
 }
 
 /**
- * The toggle itself, mounted into the shell's `conversationHeaderActions` seam
- * beside M2's identity controls. Labelled by destination rather than by state,
- * so pressing it says where it goes instead of what it currently is.
+ * The escape hatch, mounted into the shell's `conversationHeaderActions` seam
+ * beside M2's identity controls.
+ *
+ * Still labelled by destination rather than by state, so pressing it says where
+ * it goes instead of what it currently is — and it is now a *detour* rather
+ * than a mode: the state it flips lives for one conversation, so the way back
+ * is always the messenger.
  */
-export function CaptainConversationViewToggle() {
-  const bubbleView = useUiStateStore((state) => state.captainBubbleViewEnabled);
-  const setBubbleView = useUiStateStore((state) => state.setCaptainBubbleViewEnabled);
+export function CaptainConversationViewToggle({
+  workspaceView,
+  onWorkspaceViewChange,
+}: {
+  readonly workspaceView: boolean;
+  readonly onWorkspaceViewChange: (next: boolean) => void;
+}) {
   return (
     <Button
       className="gap-1.5"
-      onClick={() => setBubbleView(!bubbleView)}
+      onClick={() => onWorkspaceViewChange(!workspaceView)}
       size="sm"
-      title={bubbleView ? "Open in workspace view" : "Open in message view"}
+      title={workspaceView ? "Open in message view" : "Open in workspace view"}
       variant="ghost"
     >
-      {bubbleView ? (
-        <PanelsTopLeftIcon aria-hidden className="size-3.5" />
-      ) : (
+      {workspaceView ? (
         <MessageSquareIcon aria-hidden className="size-3.5" />
+      ) : (
+        <PanelsTopLeftIcon aria-hidden className="size-3.5" />
       )}
       <span className="max-lg:sr-only">
-        {bubbleView ? "Open in workspace view" : "Open in message view"}
+        {workspaceView ? "Open in message view" : "Open in workspace view"}
       </span>
     </Button>
   );
