@@ -52,6 +52,19 @@ export function TraceCard({
   const Icon = TONE_ICON[summary.tone];
   const duration = formatTraceDuration(summary.durationMs);
 
+  // Two row kinds already *are* a collapsed one-liner with their own
+  // disclosure — a turn fold and a work-group toggle. Wrapping those in a
+  // second disclosure showed the captain the same label twice and made them
+  // click through two chevrons to reach one thing. They get the genuine row
+  // and nothing else; the seam is the same, the chrome is not doubled.
+  if (row.kind === "turn-fold" || row.kind === "work-toggle") {
+    return (
+      <div className={cn("my-1", className)} data-trace-row-kind={row.kind}>
+        <CaptainRowHost display={display} row={row} />
+      </div>
+    );
+  }
+
   return (
     <div
       className={cn(

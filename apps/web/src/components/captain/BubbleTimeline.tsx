@@ -178,6 +178,10 @@ export function BubbleTimeline({
         maintainScrollAtEnd={isAtEnd}
         onScroll={handleScroll}
         ref={listRef}
+        // Explicit false: messenger rows hold their own disclosure state (a
+        // TraceCard's expansion), and recycling would carry it onto whatever
+        // row reuses the slot.
+        recycleItems={false}
         renderItem={renderItem}
       />
       <JumpToLatestPill onJump={jumpToLatest} visible={!isAtEnd} />
