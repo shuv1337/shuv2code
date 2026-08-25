@@ -43,7 +43,7 @@ const authenticatedSession = (
 const BOT_ID = "bot-1" as BotId;
 const PROJECT_ID = "project-1" as AdeProjectId;
 
-const emptyRoster: AdeRoster = { entries: [], projects: [], templates: [] };
+const emptyRoster: AdeRoster = { entries: [], projects: [], templates: [], groups: [] };
 
 const botDetail = {
   bot: {
@@ -53,6 +53,7 @@ const botDetail = {
     structuralRole: "firstmate",
     roleTag: "Coordinator",
     projectId: null,
+    groupId: null,
     activePersonaVersionId: null,
     computerUse: false,
     createdAt: "2026-08-24T00:00:00.000Z",
@@ -126,6 +127,16 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
         activatedAt: null,
       } as unknown as never),
     setBotComputerUse: () => note("setBotComputerUse", botDetail.bot),
+    updateBotIdentity: () => note("updateBotIdentity", botDetail.bot),
+    upsertBotGroup: () =>
+      note("upsertBotGroup", {
+        id: "group-1",
+        name: "Backend",
+        orderIndex: 0,
+        createdAt: "2026-08-24T00:00:00.000Z",
+      } as unknown as never),
+    deleteBotGroup: () =>
+      note("deleteBotGroup", { groupId: "group-1", ungroupedBotIds: [BOT_ID] } as unknown as never),
     getBotScreen: () => note("getBotScreen", botScreen),
     startBotDesktop: () =>
       note("startBotDesktop", {

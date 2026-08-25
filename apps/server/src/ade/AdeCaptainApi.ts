@@ -17,10 +17,13 @@
  * attach the tool gate catalog, open the primary binding) belongs to the
  * provider runtime, while everything else here is pure persistence.
  */
+import * as NodeCrypto from "node:crypto";
+
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -32,12 +35,17 @@ import {
   type AdeAssignmentGraphNode,
   type AdeBotChatSession,
   type AdeBotDetail,
+  type AdeBotGroup,
+  type AdeBotGroupId,
+  type AdeBotGroupName,
   type AdeBotScreen,
   type AdeBotTemplateSummary,
   type AdeCreateBotFromTemplateInput,
   type AdeCreateProjectInput,
   type AdeCreatedProject,
+  type AdeDeleteBotGroupInput,
   type AdeDeletedBot,
+  type AdeDeletedBotGroup,
   type AdeEditPersonaInput,
   type AdeListNeedsYouInput,
   type AdeNeedsYouCount,
@@ -52,8 +60,11 @@ import {
   type AdeRoster,
   type AdeRosterEntry,
   type AdeSetComputerUseInput,
+  type AdeUpdateBotIdentityInput,
+  type AdeUpsertBotGroupInput,
   type AdeWriteMemoryInput,
   AdeCaptainError,
+  BotDisplayMeta as BotDisplayMetaSchema,
   type Assignment,
   type Bot,
   type BotDisplayMeta,
@@ -153,11 +164,19 @@ interface BotRow {
   readonly structural_role: BotStructuralRole;
   readonly role_tag: string;
   readonly project_id: string | null;
+  readonly group_id: string | null;
   readonly active_persona_version_id: string | null;
   readonly computer_use: number;
   readonly created_at: string;
   readonly archived_at: string | null;
 }
+
+/**
+ * The one encoder for the `display_meta_json` column. Schema rather than
+ * `JSON.stringify` so the stored blob is whatever `BotDisplayMeta` says it is,
+ * not whatever shape happened to reach the call site.
+ */
+const encodeDisplayMeta = Schema.encodeSync(Schema.fromJsonString(BotDisplayMetaSchema));
 
 /** Display meta is captain-authored decoration; a corrupt blob must not 500. */
 const parseDisplayMeta = (raw: string | null): BotDisplayMeta | null => {
@@ -177,10 +196,25 @@ export const rowToBot = (row: BotRow): Bot => ({
   structuralRole: row.structural_role,
   roleTag: row.role_tag as BotRoleTag,
   projectId: row.project_id as AdeProjectId | null,
+  groupId: (row.group_id ?? null) as AdeBotGroupId | null,
   activePersonaVersionId: row.active_persona_version_id as PersonaVersionId | null,
   computerUse: row.computer_use !== 0,
   createdAt: row.created_at,
   archivedAt: row.archived_at,
+});
+
+interface BotGroupRow {
+  readonly group_id: string;
+  readonly name: string;
+  readonly order_index: number;
+  readonly created_at: string;
+}
+
+export const rowToBotGroup = (row: BotGroupRow): AdeBotGroup => ({
+  id: row.group_id as AdeBotGroupId,
+  name: row.name as AdeBotGroupName,
+  orderIndex: row.order_index,
+  createdAt: row.created_at,
 });
 
 /**
@@ -415,6 +449,26 @@ export interface AdeCaptainApiShape {
   readonly setBotComputerUse: (
     input: AdeSetComputerUseInput,
   ) => Effect.Effect<Bot, AdeCaptainError>;
+  /**
+   * The captain's editable label: name, emoji/color, role tag, rail group
+   * (messenger pivot §4, #197).
+   *
+   * Allowed on **every** bot, the Firstmate included — permanence forbids
+   * archiving and deleting it (spec §2.2), not renaming it. `structuralRole`
+   * and the template a bot was instantiated from are absent from the input
+   * type, so this method has no branch that could write them.
+   */
+  readonly updateBotIdentity: (
+    input: AdeUpdateBotIdentityInput,
+  ) => Effect.Effect<Bot, AdeCaptainError>;
+  /** Create or rename/reorder one captain-defined contact group. */
+  readonly upsertBotGroup: (
+    input: AdeUpsertBotGroupInput,
+  ) => Effect.Effect<AdeBotGroup, AdeCaptainError>;
+  /** Delete a group; its members fall to Ungrouped. Never deletes a bot. */
+  readonly deleteBotGroup: (
+    input: AdeDeleteBotGroupInput,
+  ) => Effect.Effect<AdeDeletedBotGroup, AdeCaptainError>;
   /** Screen tab state (spec §4.6). A pure read: never provisions or starts. */
   readonly getBotScreen: (botId: BotId) => Effect.Effect<AdeBotScreen, AdeCaptainError>;
   /** Explicit captain Start. Refused unless the bot's computer use is on. */
@@ -526,10 +580,16 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
             })
             .sort(compareRosterEntries);
 
+          const groupRows = yield* sql<BotGroupRow>`
+            SELECT group_id, name, order_index, created_at FROM ade_bot_groups
+            ORDER BY order_index, created_at, group_id
+          `;
+
           return {
             entries,
             projects: [...names].map(([id, name]) => ({ id: id as AdeProjectId, name })),
             templates: TEMPLATE_SUMMARIES,
+            groups: groupRows.map(rowToBotGroup),
           } satisfies AdeRoster;
         },
         captainize,
@@ -702,6 +762,177 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
           });
         }
         return rowToBot(row);
+      }, captainize);
+
+      const readGroupRow = (groupId: AdeBotGroupId) =>
+        Effect.gen(function* () {
+          const rows = yield* sql<BotGroupRow>`
+            SELECT group_id, name, order_index, created_at FROM ade_bot_groups
+            WHERE group_id = ${groupId}
+          `;
+          const row = rows[0];
+          if (row === undefined) {
+            return yield* new AdeCaptainError({
+              reason: "bot_group_not_found",
+              message: `Contact group '${groupId}' does not exist.`,
+            });
+          }
+          return row;
+        });
+
+      /**
+       * Rename / re-decorate / re-tag / re-group one bot (messenger pivot §4).
+       *
+       * Read-then-write rather than a dynamically assembled `SET` clause: the
+       * patch has four independently-optional fields, and the alternative is
+       * string-built SQL whose column list is decided at runtime. Here the
+       * column list is literal and auditable — `structural_role`,
+       * `project_id`, `active_persona_version_id` and `created_at` are simply
+       * not in it, so no input shape can reach them. That is the unwritability
+       * guarantee expressed as code rather than as a comment.
+       *
+       * There is no Firstmate branch on purpose. The Firstmate is permanent,
+       * which is a statement about whether it can stop existing, not about
+       * what it is called.
+       */
+      const updateBotIdentity: AdeCaptainApiShape["updateBotIdentity"] = Effect.fn(
+        "AdeCaptainApi.updateBotIdentity",
+      )(function* (input: AdeUpdateBotIdentityInput) {
+        const current = yield* readBotRow(input.botId);
+        const row = current[0];
+        if (row === undefined) {
+          return yield* new AdeCaptainError({
+            reason: "bot_not_found",
+            message: `ADE bot '${input.botId}' does not exist.`,
+          });
+        }
+
+        // A group the captain cannot see anymore must not become a dangling
+        // membership: reject the assignment rather than silently ungrouping,
+        // because the two outcomes look identical in the rail and only one of
+        // them is what was asked for.
+        if (input.groupId !== undefined && input.groupId !== null) {
+          yield* readGroupRow(input.groupId);
+        }
+
+        const name = input.name ?? (row.name as BotName);
+        const roleTag = input.roleTag ?? (row.role_tag as BotRoleTag);
+        const displayMetaJson =
+          input.displayMeta === undefined
+            ? row.display_meta_json
+            : input.displayMeta === null
+              ? null
+              : encodeDisplayMeta(input.displayMeta);
+        const groupId = input.groupId === undefined ? row.group_id : input.groupId;
+
+        const updated = yield* sql<BotRow>`
+            UPDATE ade_bots SET
+              name = ${name},
+              role_tag = ${roleTag},
+              display_meta_json = ${displayMetaJson},
+              group_id = ${groupId}
+            WHERE bot_id = ${input.botId}
+            RETURNING *
+          `;
+        const next = updated[0];
+        if (next === undefined) {
+          return yield* new AdeCaptainError({
+            reason: "bot_not_found",
+            message: `ADE bot '${input.botId}' does not exist.`,
+          });
+        }
+        return rowToBot(next);
+      }, captainize);
+
+      /**
+       * Create or edit one contact group.
+       *
+       * Names are unique because a rail cannot render two identical headers
+       * distinguishably; the conflict is reported rather than silently merged,
+       * since merging two groups is a data move the captain did not ask for.
+       */
+      const upsertBotGroup: AdeCaptainApiShape["upsertBotGroup"] = Effect.fn(
+        "AdeCaptainApi.upsertBotGroup",
+      )(function* (input: AdeUpsertBotGroupInput) {
+        const clash = yield* sql<{ group_id: string }>`
+            SELECT group_id FROM ade_bot_groups WHERE name = ${input.name}
+          `;
+        const clashing = clash[0];
+        if (clashing !== undefined && clashing.group_id !== input.groupId) {
+          return yield* new AdeCaptainError({
+            reason: "bot_group_name_conflict",
+            message: `A contact group named '${input.name}' already exists.`,
+          });
+        }
+
+        if (input.groupId !== undefined) {
+          const existing = yield* readGroupRow(input.groupId);
+          const orderIndex = input.orderIndex ?? existing.order_index;
+          const updated = yield* sql<BotGroupRow>`
+              UPDATE ade_bot_groups SET name = ${input.name}, order_index = ${orderIndex}
+              WHERE group_id = ${input.groupId}
+              RETURNING group_id, name, order_index, created_at
+            `;
+          const next = updated[0];
+          if (next === undefined) {
+            return yield* new AdeCaptainError({
+              reason: "bot_group_not_found",
+              message: `Contact group '${input.groupId}' does not exist.`,
+            });
+          }
+          return rowToBotGroup(next);
+        }
+
+        // New groups land at the end of the rail unless the captain said
+        // where: appending is the only placement that never reorders
+        // something the captain already arranged.
+        const tail = yield* sql<{ next_index: number | null }>`
+            SELECT MAX(order_index) + 1 AS next_index FROM ade_bot_groups
+          `;
+        const orderIndex = input.orderIndex ?? tail[0]?.next_index ?? 0;
+        const groupId = (yield* Effect.sync(() => NodeCrypto.randomUUID())) as AdeBotGroupId;
+        const createdAt = DateTime.formatIso(yield* DateTime.now);
+        const inserted = yield* sql<BotGroupRow>`
+            INSERT INTO ade_bot_groups (group_id, name, order_index, created_at)
+            VALUES (${groupId}, ${input.name}, ${orderIndex}, ${createdAt})
+            RETURNING group_id, name, order_index, created_at
+          `;
+        const next = inserted[0];
+        if (next === undefined) {
+          return yield* new AdeCaptainError({
+            reason: "bot_group_not_found",
+            message: `Contact group '${input.name}' could not be created.`,
+          });
+        }
+        return rowToBotGroup(next);
+      }, captainize);
+
+      /**
+       * Delete one group.
+       *
+       * Deleting an organizational bucket ungroups its members and stops. The
+       * `ON DELETE SET NULL` in migration 057 already guarantees that at the
+       * schema level; the member ids are read *before* the delete so the
+       * result can name who moved, which is also what lets a test assert those
+       * bots are still there afterwards.
+       */
+      const deleteBotGroup: AdeCaptainApiShape["deleteBotGroup"] = Effect.fn(
+        "AdeCaptainApi.deleteBotGroup",
+      )(function* (input: AdeDeleteBotGroupInput) {
+        yield* readGroupRow(input.groupId);
+        const members = yield* sql<{ bot_id: string }>`
+            SELECT bot_id FROM ade_bots WHERE group_id = ${input.groupId} ORDER BY name, bot_id
+          `;
+        yield* sql`DELETE FROM ade_bot_groups WHERE group_id = ${input.groupId}`;
+        // Belt and braces: the FK clause does this, but a database opened
+        // without `PRAGMA foreign_keys = ON` would silently leave dangling
+        // memberships, and a rail full of bots in a group that no longer
+        // exists is indistinguishable from bots that vanished.
+        yield* sql`UPDATE ade_bots SET group_id = NULL WHERE group_id = ${input.groupId}`;
+        return {
+          groupId: input.groupId,
+          ungroupedBotIds: members.map((member) => member.bot_id as BotId),
+        } satisfies AdeDeletedBotGroup;
       }, captainize);
 
       /**
@@ -1255,6 +1486,9 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         writeBotMemory,
         editBotPersona,
         setBotComputerUse,
+        updateBotIdentity,
+        upsertBotGroup,
+        deleteBotGroup,
         getBotScreen,
         startBotDesktop,
         stopBotDesktop,

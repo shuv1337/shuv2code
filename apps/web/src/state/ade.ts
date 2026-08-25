@@ -1,6 +1,7 @@
 import type {
   AdeAssignmentGraph,
   AdeBotDetail,
+  AdeBotGroup,
   AdeBotScreen,
   AdeNeedsYouCount,
   AdeNeedsYouEntry,
@@ -64,6 +65,19 @@ export function useAdeRoster(): EnvironmentQueryView<AdeRoster> {
     environmentId === null ? null : adeEnvironment.roster({ environmentId, input: {} }),
   );
 }
+
+/**
+ * The captain's contact groups (messenger pivot §4). Read off the roster
+ * rather than through a second RPC: groups and the bots filed into them have
+ * to agree, and two independent reads is how a rail ends up rendering a header
+ * whose members it has not heard about yet.
+ */
+export function useAdeBotGroups(): ReadonlyArray<AdeBotGroup> {
+  return useAdeRoster().data?.groups ?? EMPTY_BOT_GROUPS;
+}
+
+/** Stable identity so an empty roster does not re-render every consumer. */
+const EMPTY_BOT_GROUPS: ReadonlyArray<AdeBotGroup> = [];
 
 /**
  * One bot's desktop state for the Screen tab (spec §4.6).

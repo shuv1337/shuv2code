@@ -54,6 +54,13 @@ export type NeedsYouItemId = typeof NeedsYouItemId.Type;
 export const BotExecutionBindingId = entityId("BotExecutionBindingId");
 export type BotExecutionBindingId = typeof BotExecutionBindingId.Type;
 
+/**
+ * Captain-defined contact group (`docs/ade/MESSENGER-PIVOT.md` §4). Pure
+ * organization: a group names a bucket in the contact rail and owns nothing.
+ */
+export const AdeBotGroupId = entityId("AdeBotGroupId");
+export type AdeBotGroupId = typeof AdeBotGroupId.Type;
+
 /** Kernel-native session identifier (shuvcode session / Codex thread). */
 export const KernelSessionId = entityId("KernelSessionId");
 export type KernelSessionId = typeof KernelSessionId.Type;
@@ -102,6 +109,26 @@ export const BotDisplayMeta = Schema.Struct({
 });
 export type BotDisplayMeta = typeof BotDisplayMeta.Type;
 
+/** Rail header text for a captain-defined group. */
+export const AdeBotGroupName = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
+export type AdeBotGroupName = typeof AdeBotGroupName.Type;
+
+/**
+ * One captain-defined contact group.
+ *
+ * `orderIndex` is the captain's chosen rail position; the server breaks ties
+ * on `createdAt` so two groups added in the same tick cannot swap places
+ * between reloads. There is no "Ungrouped" row — ungrouped is the absence of a
+ * `groupId`, which is what keeps deleting a group a pure ungrouping.
+ */
+export const AdeBotGroup = Schema.Struct({
+  id: AdeBotGroupId,
+  name: AdeBotGroupName,
+  orderIndex: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+export type AdeBotGroup = typeof AdeBotGroup.Type;
+
 /**
  * Durable, engine-neutral bot identity (ADR §3.1). The Firstmate bot is
  * permanent — rename/persona edits allowed, archive/delete forbidden — which
@@ -116,6 +143,11 @@ export const Bot = Schema.Struct({
   structuralRole: BotStructuralRole,
   roleTag: BotRoleTag,
   projectId: Schema.NullOr(AdeProjectId),
+  /**
+   * Captain-defined rail group; null is Ungrouped. Defaulted on decode so a
+   * payload minted before migration 057 still reads as a valid bot.
+   */
+  groupId: Schema.NullOr(AdeBotGroupId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   activePersonaVersionId: Schema.NullOr(PersonaVersionId),
   computerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   createdAt: IsoDateTime,
@@ -711,6 +743,12 @@ export const AdeRoster = Schema.Struct({
   entries: Schema.Array(AdeRosterEntry),
   projects: Schema.Array(AdeProjectSummary),
   templates: Schema.Array(AdeBotTemplateSummary),
+  /**
+   * Captain-defined rail groups in render order. Ungrouped bots are the ones
+   * whose `groupId` matches no entry here — the rail synthesizes that trailing
+   * bucket, the server never stores it.
+   */
+  groups: Schema.Array(AdeBotGroup).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type AdeRoster = typeof AdeRoster.Type;
 
@@ -851,6 +889,10 @@ export class AdeCaptainError extends Schema.TaggedErrorClass<AdeCaptainError>()(
     // Screenbox viewer + delete (spec §4.6, S15).
     /** The Firstmate cannot be archived or deleted (spec §2.2). */
     "firstmate_permanent",
+    /** The named contact group does not exist (messenger pivot §4). */
+    "bot_group_not_found",
+    /** Another group already carries that name; rail headers must be distinct. */
+    "bot_group_name_conflict",
     /** Screenbox refused or is unreachable; the desktop state is unchanged. */
     "screenbox_unavailable",
   ]),
@@ -907,6 +949,72 @@ export const AdeSetComputerUseInput = Schema.Struct({
   computerUse: Schema.Boolean,
 });
 export type AdeSetComputerUseInput = typeof AdeSetComputerUseInput.Type;
+
+// ---------------------------------------------------------------------------
+// Loose bot identity (`docs/ade/MESSENGER-PIVOT.md` §4, #197)
+// ---------------------------------------------------------------------------
+
+/**
+ * The captain's editable label for a bot: name, avatar decoration, role tag,
+ * and rail group. One RPC covers all four because they are one act — "make
+ * this contact look like what it is" — and splitting them would invite three
+ * round trips for one sheet save.
+ *
+ * Partial patch semantics: a field left `undefined` is untouched, and an
+ * explicitly `null` field is cleared. That distinction is why `displayMeta`
+ * and `groupId` are `optional(NullOr(...))` rather than merely nullable — the
+ * sheet must be able to say "drop the emoji" without also saying "drop the
+ * group".
+ *
+ * What is deliberately **absent** is the whole point of the ticket:
+ * `structuralRole` and the template lineage a bot was instantiated from are
+ * server-owned facts, not labels. They are not in this payload, so there is no
+ * request a client can spell that changes them — strictness that is invisible
+ * rather than merely styled as a disabled input. Renaming, by contrast, is
+ * allowed on **every** bot including the Firstmate: permanence protects the
+ * Firstmate's existence (spec §2.2), not the string on its contact row.
+ */
+export const AdeUpdateBotIdentityInput = Schema.Struct({
+  botId: BotId,
+  /** Rename. Absent leaves the name alone; a bot always has one. */
+  name: Schema.optional(BotName),
+  /** Free-form role chip. Absent leaves it alone; a bot always has one. */
+  roleTag: Schema.optional(BotRoleTag),
+  /** Emoji/color/description blob. `null` clears the decoration entirely. */
+  displayMeta: Schema.optional(Schema.NullOr(BotDisplayMeta)),
+  /** Rail group membership. `null` moves the bot to Ungrouped. */
+  groupId: Schema.optional(Schema.NullOr(AdeBotGroupId)),
+});
+export type AdeUpdateBotIdentityInput = typeof AdeUpdateBotIdentityInput.Type;
+
+/**
+ * Create or rename/reorder a group. Omitting `groupId` creates; supplying one
+ * updates that group, and a missing id is an error rather than a silent
+ * create — a stale rail must not resurrect a group the captain deleted.
+ */
+export const AdeUpsertBotGroupInput = Schema.Struct({
+  groupId: Schema.optional(AdeBotGroupId),
+  name: AdeBotGroupName,
+  orderIndex: Schema.optional(NonNegativeInt),
+});
+export type AdeUpsertBotGroupInput = typeof AdeUpsertBotGroupInput.Type;
+
+/** Delete a group. Its members fall to Ungrouped; no bot is ever deleted. */
+export const AdeDeleteBotGroupInput = Schema.Struct({
+  groupId: AdeBotGroupId,
+});
+export type AdeDeleteBotGroupInput = typeof AdeDeleteBotGroupInput.Type;
+
+/**
+ * What deleting a group did. `ungroupedBotIds` is returned rather than implied
+ * so the surface can say "3 bots moved to Ungrouped" instead of leaving the
+ * captain to notice — and so a test can assert those bots still exist.
+ */
+export const AdeDeletedBotGroup = Schema.Struct({
+  groupId: AdeBotGroupId,
+  ungroupedBotIds: Schema.Array(BotId),
+});
+export type AdeDeletedBotGroup = typeof AdeDeletedBotGroup.Type;
 
 // ---------------------------------------------------------------------------
 // Needs You inbox (spec §7 slice 5 — S13)

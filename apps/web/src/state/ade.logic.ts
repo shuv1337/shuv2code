@@ -64,6 +64,10 @@ const CAPTAIN_ERROR_TEXT: Record<AdeCaptainErrorReason, string> = {
   needs_you_not_actionable: "This item resolves on its own; there is nothing to approve.",
   needs_you_decision_rejected: "That decision could not be applied — the item is still waiting.",
   firstmate_permanent: "The Firstmate is permanent and cannot be deleted.",
+  // Organizational, not destructive: both of these leave every bot exactly
+  // where it was, so the sentence says what to change rather than what broke.
+  bot_group_not_found: "That group no longer exists — pick another.",
+  bot_group_name_conflict: "A group with that name already exists.",
   // The server appends the upstream detail, which is the part that says what
   // to do next — cap reached, computer use off, Screenbox unreachable.
   screenbox_unavailable: "The desktop is unavailable.",

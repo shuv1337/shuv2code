@@ -138,6 +138,13 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.adeWriteBotMemory]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeEditBotPersona]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeSetBotComputerUse]: AuthOrchestrationOperateScope,
+  // Renaming a bot, decorating it, and filing it into a group is organizing
+  // the fleet — `orchestration:operate`, deliberately not `ade:approve`. A
+  // paired device may tidy the roster without being able to decide anything
+  // on the captain's behalf.
+  [WS_METHODS.adeUpdateBotIdentity]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeUpsertBotGroup]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeDeleteBotGroup]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeGetBotScreen]: AuthOrchestrationReadScope,
   [WS_METHODS.adeStartBotDesktop]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeStopBotDesktop]: AuthOrchestrationOperateScope,

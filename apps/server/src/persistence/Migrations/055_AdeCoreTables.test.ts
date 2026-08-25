@@ -13,7 +13,10 @@ layer("055_AdeCoreTables", (it) => {
     Effect.gen(function* () {
       const first = yield* runMigrations();
       assert.isAtLeast(first.length, 55);
-      assert.deepEqual(first[first.length - 1], [55, "AdeCoreTables"]);
+      // Membership, not position: this file is about 055 landing on an empty
+      // database, and pinning it to the tail of the manifest made every later
+      // migration break a test that has nothing to do with it.
+      assert.isTrue(first.some(([id, name]) => id === 55 && name === "AdeCoreTables"));
 
       const second = yield* runMigrations();
       assert.deepEqual(second, []);

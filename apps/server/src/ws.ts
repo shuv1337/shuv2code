@@ -71,12 +71,15 @@ import {
   type AdeAssignmentGraphInput,
   type AdeCreateBotFromTemplateInput,
   type AdeCreateProjectInput,
+  type AdeDeleteBotGroupInput,
   type AdeEditPersonaInput,
   type AdeProjectId,
   type AdeListNeedsYouInput,
   type AdeNeedsYouItemIdInput,
   type AdeSetComputerUseInput,
   type AdeSubmitNeedsYouDecisionInput,
+  type AdeUpdateBotIdentityInput,
+  type AdeUpsertBotGroupInput,
   type AdeWriteMemoryInput,
   type BotId,
   WsAdeCreateBotFromTemplateRpc,
@@ -93,6 +96,9 @@ import {
   WsAdeListNeedsYouRpc,
   WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeSetBotComputerUseRpc,
+  WsAdeUpdateBotIdentityRpc,
+  WsAdeUpsertBotGroupRpc,
+  WsAdeDeleteBotGroupRpc,
   WsAdeGetBotScreenRpc,
   WsAdeStartBotDesktopRpc,
   WsAdeStopBotDesktopRpc,
@@ -430,6 +436,18 @@ const makeAdeRpcHandlers = (
         adeCaptainApi.setBotComputerUse(input),
         ade,
       ),
+    // Loose bot identity (messenger pivot §4, #197). One RPC for the whole
+    // editable label; the structural facts are not in its payload type.
+    [WS_METHODS.adeUpdateBotIdentity]: (input: AdeUpdateBotIdentityInput) =>
+      observeRpcEffect(
+        WS_METHODS.adeUpdateBotIdentity,
+        adeCaptainApi.updateBotIdentity(input),
+        ade,
+      ),
+    [WS_METHODS.adeUpsertBotGroup]: (input: AdeUpsertBotGroupInput) =>
+      observeRpcEffect(WS_METHODS.adeUpsertBotGroup, adeCaptainApi.upsertBotGroup(input), ade),
+    [WS_METHODS.adeDeleteBotGroup]: (input: AdeDeleteBotGroupInput) =>
+      observeRpcEffect(WS_METHODS.adeDeleteBotGroup, adeCaptainApi.deleteBotGroup(input), ade),
     [WS_METHODS.adeGetNeedsYouCount]: (_input: Record<never, never>) =>
       observeRpcEffect(WS_METHODS.adeGetNeedsYouCount, adeCaptainApi.getNeedsYouCount(), ade),
     [WS_METHODS.adeListNeedsYou]: (input: AdeListNeedsYouInput) =>
@@ -483,6 +501,9 @@ export const AdeWsRpcGroup = RpcGroup.make(
   WsAdeWriteBotMemoryRpc,
   WsAdeEditBotPersonaRpc,
   WsAdeSetBotComputerUseRpc,
+  WsAdeUpdateBotIdentityRpc,
+  WsAdeUpsertBotGroupRpc,
+  WsAdeDeleteBotGroupRpc,
   WsAdeGetNeedsYouCountRpc,
   WsAdeListNeedsYouRpc,
   WsAdeGetNeedsYouItemRpc,
