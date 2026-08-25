@@ -81,9 +81,12 @@ export function resolveCaptainDispatchValidationMessage(input: {
   if (input.turnDispatch._tag !== "blocked") {
     return null;
   }
+  // #217: state the state and the next action. The old copy narrated provider
+  // internals ("this provider cannot steer it") and the app's own machinery
+  // ("still synchronizing") at a captain who only wanted to send a message.
   return input.turnDispatch.reason === "turn-steering-unsupported"
-    ? `${input.botName} is mid-turn and this provider cannot steer it. Try again when it finishes.`
-    : "This conversation is still synchronizing. Try again in a moment.";
+    ? `${input.botName} is still working. Send this when it finishes.`
+    : "Not connected yet. Try again in a moment.";
 }
 
 export type CaptainPendingUserInputAdvance =

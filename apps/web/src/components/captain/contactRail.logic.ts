@@ -448,10 +448,11 @@ export function contactRailEmptyCopy(input: {
   // An empty Attention view is the good outcome, and the one the retired
   // needs-you inbox used to report. It must never read as "no bots".
   if (input.filter === "attention" && normalizeSearchText(input.query).length === 0) {
-    return {
-      title: "Nothing needs you",
-      description: "No bot is waiting on a decision right now.",
-    };
+    // #217: states the state rather than narrating the transient absence of
+    // one. "No bot is waiting on a decision right now" restated the title and
+    // hedged it; every consumer renders this description, so it stays a
+    // sentence rather than becoming empty.
+    return { title: "Nothing needs you", description: "Every decision is answered." };
   }
   if (input.totalRows > 0) {
     return {
@@ -459,8 +460,5 @@ export function contactRailEmptyCopy(input: {
       description: `No bot matches “${input.query.trim()}”.`,
     };
   }
-  return {
-    title: "No bots yet",
-    description: "Add one from a template to start building your crew.",
-  };
+  return { title: "No bots yet", description: "Add a bot from a template." };
 }

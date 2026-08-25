@@ -102,12 +102,13 @@ export function CaptainConversation({
       botId={botId}
       conversationAtEnd={isAtEnd}
       identityChrome="shell"
-      renderConversation={({ threadRef, botName }) => (
+      renderConversation={({ threadRef, botName, composerDisabled }) => (
         <CaptainConversationBody
           avatarByBotId={avatarByBotId}
           botAvatar={botAvatar}
           botName={detail.data?.bot.name ?? botName}
           botNameById={botNameById}
+          composerDisabled={composerDisabled}
           onIsAtEndChange={setIsAtEnd}
           threadRef={threadRef}
         />
@@ -122,6 +123,7 @@ function CaptainConversationBody({
   botAvatar,
   botNameById,
   avatarByBotId,
+  composerDisabled,
   onIsAtEndChange,
 }: {
   readonly threadRef: ScopedThreadRef;
@@ -129,6 +131,8 @@ function CaptainConversationBody({
   readonly botAvatar: BotAvatarView | null;
   readonly botNameById: ReadonlyMap<string, string>;
   readonly avatarByBotId: ReadonlyMap<string, BotAvatarView>;
+  /** Owned by `BotChatPage`'s connect state — see its `renderConversation`. */
+  readonly composerDisabled: boolean;
   readonly onIsAtEndChange: (isAtEnd: boolean) => void;
 }) {
   const thread = useThread(threadRef);
@@ -139,6 +143,7 @@ function CaptainConversationBody({
         <BubbleTimeline
           avatarByBotId={avatarByBotId}
           botAvatar={botAvatar}
+          botName={botName}
           botNameById={botNameById}
           environmentId={threadRef.environmentId}
           isWorking={isWorking}
@@ -149,6 +154,7 @@ function CaptainConversationBody({
       </div>
       <CaptainComposer
         botName={botName}
+        disabled={composerDisabled}
         environmentId={threadRef.environmentId}
         thread={thread}
         threadRef={threadRef}

@@ -6,6 +6,7 @@ import {
   getRoutineRowViews,
   routinesEmptyState,
   routinesSummaryLabel,
+  ROUTINES_PENDING_PROJECT,
 } from "./routinesPanel.logic";
 
 const BOT = "bot-1" as BotId;
@@ -58,7 +59,7 @@ describe("routinesEmptyState", () => {
     const noProject = routinesEmptyState(context({ reason: "no-project" }));
     const noRepo = routinesEmptyState(context({ reason: "no-repo-binding" }));
     const noWorkspace = routinesEmptyState(context({ reason: "no-workspace-project" }));
-    expect(noProject?.detail).toContain("Create one");
+    expect(noProject?.detail).toContain("Create a project");
     expect(noRepo?.detail).toContain("repository path");
     expect(noWorkspace?.detail).toContain("Send this bot a message");
     expect(new Set([noProject?.detail, noRepo?.detail, noWorkspace?.detail]).size).toBe(3);
@@ -80,7 +81,7 @@ describe("routinesEmptyState", () => {
       context({ reason: "no-workspace-project", projectName: "Ledger" as never }),
     );
     expect(noWorkspace?.detail).toContain('"Ledger"');
-    expect(noWorkspace?.detail).not.toContain("its workspace,");
+    expect(noWorkspace?.detail).not.toContain("its workspace");
   });
 
   it("falls back to a sayable sentence when the project has no name", () => {
@@ -88,8 +89,30 @@ describe("routinesEmptyState", () => {
       const state = routinesEmptyState(context({ reason, projectName: null }));
       expect(state?.detail).not.toContain('""');
       expect(state?.detail).not.toContain("null");
-      expect(state?.detail.length ?? 0).toBeGreaterThan(20);
+      expect(state?.detail.trim().length ?? 0).toBeGreaterThan(0);
     }
+  });
+
+  it("states one next action and nothing else (#217)", () => {
+    // The previous copy explained the domain ("Routines run inside a project")
+    // and narrated the UI's own follow-on behaviour ("That opens its
+    // workspace, and routines can be added after"). Both are banned: the
+    // detail is a single imperative sentence.
+    for (const reason of ["no-project", "no-repo-binding", "no-workspace-project"] as const) {
+      const state = routinesEmptyState(context({ reason, projectName: "Ledger" as never }));
+      const detail = state?.detail ?? "";
+      expect(detail.split(".").filter((part) => part.trim().length > 0)).toHaveLength(1);
+      expect(detail).not.toContain("Routines run inside");
+      expect(detail).not.toContain("somewhere to run");
+      expect(detail).not.toContain("can be added after");
+    }
+  });
+
+  it("says nothing to fix while it is merely loading", () => {
+    // A pending read is not an empty state: there is no remedy, so it offers
+    // none rather than inventing a sentence about what the UI is doing.
+    expect(ROUTINES_PENDING_PROJECT.detail).toBe("");
+    expect(ROUTINES_PENDING_PROJECT.headline).toBe("Loading routines");
   });
 
   it("does not name a project in the state that means there is no project", () => {

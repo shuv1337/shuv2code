@@ -177,8 +177,8 @@ export function BotIdentitySheet({
             </div>
             {state.changedElsewhere ? (
               <p className="text-xs text-muted-foreground" role="status">
-                This bot changed elsewhere while you were editing. Your changes are kept; saving
-                overwrites the other ones.
+                {/* #217: state + consequence in one line, not a paragraph. */}
+                Changed elsewhere — saving overwrites those changes.
               </p>
             ) : null}
             {validation === null ? null : (

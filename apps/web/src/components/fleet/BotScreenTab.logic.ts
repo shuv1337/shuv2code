@@ -85,34 +85,53 @@ export interface BotScreenView {
   readonly viewers: number;
 }
 
+/**
+ * Poster copy for every phase the panel and the full Screen tab share.
+ *
+ * De-narrated in #217. The headline states the state; the detail is the one
+ * next action, or empty when the affordance beside it already is the action.
+ * Three rules the earlier copy broke:
+ *
+ *  - Never describe this UI's own behaviour. "Opening this tab never starts
+ *    one" and "You are watching this bot's live desktop" both told a captain
+ *    what the screen they are looking at is doing.
+ *  - Never restate the headline. "The desktop is stopped." under "Desktop
+ *    stopped" is the same fact with more words.
+ *  - Keep system vocabulary out of primary copy. "Waiting for Screenbox to
+ *    bring the container up" names a container runtime at a captain who wants
+ *    to know whether to keep waiting.
+ *
+ * `detail: ""` is a deliberate value, not a gap: the phases whose next action
+ * is the Start/Resume button beside them say nothing rather than narrating it.
+ */
 const PHASE_COPY: Record<BotScreenPhase, { headline: string; detail: string }> = {
   unavailable: {
     headline: "Screenbox is not configured",
-    detail: "This server has no Screenbox host, so bots cannot have desktops.",
+    detail: "Configure a Screenbox host to give bots desktops.",
   },
   disabled: {
     headline: "Computer use is off",
-    detail: "Turn on computer use for this bot to give it a desktop.",
+    detail: "Turn on computer use for this bot.",
   },
   "not-started": {
     headline: "No desktop running",
-    detail: "Start a desktop to watch this bot work. Opening this tab never starts one.",
+    detail: "",
   },
   starting: {
     headline: "Starting a desktop",
-    detail: "Waiting for Screenbox to bring the container up.",
+    detail: "",
   },
   live: {
     headline: "Desktop running",
-    detail: "You are watching this bot's live desktop.",
+    detail: "",
   },
   stopped: {
     headline: "Desktop stopped",
-    detail: "The desktop is stopped. Its files are kept, so starting it again resumes the data.",
+    detail: "Files are kept — resuming picks up where it left off.",
   },
   failed: {
     headline: "Desktop failed to start",
-    detail: "Screenbox could not provide a desktop for this bot. Check Needs You for details.",
+    detail: "Check Needs You for the reason.",
   },
 };
 

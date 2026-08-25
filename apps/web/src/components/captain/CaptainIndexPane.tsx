@@ -8,7 +8,7 @@ import { adeEnvironment, useAdeEnvironmentId, useAdeRoster } from "../../state/a
 import { adeCaptainErrorMessage } from "../../state/ade.logic";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
+import { Empty, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
 import { rosterNeedsFirstProject, type ContactRailFilter } from "./contactRail.logic";
 
@@ -37,11 +37,12 @@ export function CaptainIndexPane({ filter = "all" }: { readonly filter?: Contact
               <EmptyTitle>
                 {filter === "attention" ? "Pick what to answer" : "Pick a bot"}
               </EmptyTitle>
-              <EmptyDescription>
-                {filter === "attention"
-                  ? "The rail is showing only the bots waiting on you. Open one to decide it."
-                  : "Choose a contact to open the conversation, or add a new bot from a template."}
-              </EmptyDescription>
+              {/*
+                #217: the description used to describe the rail's own filter
+                ("The rail is showing only the bots waiting on you") and then
+                explain how to operate the layout. The title already states the
+                one thing to do, and the rail beside it is the affordance.
+              */}
             </EmptyHeader>
           </Empty>
         )}
@@ -123,9 +124,11 @@ export function FirstProjectCta({
     <Empty className={cn("rounded-lg border border-border", className)}>
       <EmptyHeader>
         <EmptyTitle>Create your first project</EmptyTitle>
-        <EmptyDescription>
-          Bots do their work inside a project. Creating one also creates its Second Mate.
-        </EmptyDescription>
+        {/*
+          #217: "Bots do their work inside a project" is a fact about the
+          domain model, not a state the captain can act on. The form below is
+          the action and the title names it.
+        */}
       </EmptyHeader>
       <div className="flex w-full max-w-md flex-col gap-2">
         <Input
@@ -149,9 +152,7 @@ export function FirstProjectCta({
           than a deferred decision. Requiring it here removes the trap at the
           only moment the captain can act on it.
         */}
-        <p className="text-xs text-muted-foreground">
-          Bots run inside this repository, so a project needs one before it can chat.
-        </p>
+        <p className="text-xs text-muted-foreground">Required.</p>
         <Button
           className="self-start"
           disabled={!canSubmitFirstProject({ environmentId, name, repoPath, busy })}

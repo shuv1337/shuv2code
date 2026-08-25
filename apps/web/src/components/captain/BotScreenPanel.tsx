@@ -162,7 +162,10 @@ export function BotScreenPanel({
          */
         <div className="flex flex-col items-start gap-2 rounded-lg border border-dashed border-border bg-muted/30 p-3">
           <p className="text-sm font-medium">{view.headline}</p>
-          <p className="text-xs text-muted-foreground">{detachedNote ?? view.detail}</p>
+          {/* Phases whose next action is the button beside them say nothing (#217). */}
+          {(detachedNote ?? view.detail).length === 0 ? null : (
+            <p className="text-xs text-muted-foreground">{detachedNote ?? view.detail}</p>
+          )}
         </div>
       )}
 

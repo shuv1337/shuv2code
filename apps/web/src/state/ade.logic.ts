@@ -53,7 +53,10 @@ const CAPTAIN_ERROR_TEXT: Record<AdeCaptainErrorReason, string> = {
   memory_conflict: "Memory changed elsewhere — reload before saving.",
   memory_too_large: "That memory document is too large to save.",
   persona_invalid: "That persona could not be saved.",
-  session_unavailable: "No kernel session is available right now.",
+  // Names the remedy in product terms; the exact provider instance, binary
+  // path or `shuvcode service` invocation is technical remediation and rides in
+  // the detail half of `adeCaptainErrorParts`.
+  session_unavailable: "This bot isn't connected — check its provider settings.",
   project_invalid: "That project could not be created.",
   project_not_found: "That project no longer exists.",
   persistence_failed: "The change could not be saved.",
@@ -90,6 +93,35 @@ export function adeCaptainErrorMessage(error: unknown, fallback: string): string
       : CAPTAIN_ERROR_TEXT[reason];
   }
   return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+}
+
+/**
+ * The same error, split rather than concatenated (#217).
+ *
+ * `adeCaptainErrorMessage` glues the closed-reason sentence onto the server's
+ * message, which is how a captain ended up reading "No kernel session is
+ * available right now. No 'opencode2' provider instance is configured. Add one
+ * in Settings → Providers (point Binary path at your shuvcode CLI)…" as
+ * primary UI copy. The headline is the part a captain reads at a glance; the
+ * detail is technical remediation and belongs behind a disclosure. Callers that
+ * genuinely want one string (toasts, `role="alert"` one-liners) keep using
+ * `adeCaptainErrorMessage`, which is now defined in terms of this.
+ */
+export interface AdeCaptainErrorParts {
+  readonly headline: string;
+  readonly details: string | null;
+}
+
+export function adeCaptainErrorParts(error: unknown, fallback: string): AdeCaptainErrorParts {
+  const reason = adeCaptainErrorReason(error);
+  const raw = (error as { readonly message?: unknown } | null)?.message;
+  const detail = typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+  if (reason !== null) {
+    return { headline: CAPTAIN_ERROR_TEXT[reason], details: detail };
+  }
+  return error instanceof Error && error.message.trim().length > 0
+    ? { headline: fallback, details: error.message }
+    : { headline: fallback, details: null };
 }
 
 const STRUCTURAL_ROLE_LABELS: Record<BotStructuralRole, string> = {

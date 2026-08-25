@@ -1,7 +1,7 @@
 import type { BotId, ScopedThreadRef, ThreadId } from "@shuv2code/contracts";
 import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtime";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { openCommandPalette } from "../../commandPaletteBus";
 import { cn } from "../../lib/utils";
@@ -11,7 +11,6 @@ import {
   useAdeEnvironmentId,
   useAdeRoster,
 } from "../../state/ade";
-import { adeCaptainErrorMessage } from "../../state/ade.logic";
 import { useAtomCommand } from "../../state/use-atom-command";
 import ChatView from "../ChatView";
 import { useThreadDetail, useThreadShell, useThreadStatus } from "../../state/entities";
@@ -21,14 +20,22 @@ import { resolveThreadRouteRenderState } from "../../threadRoutes";
 import { resolveThreadSyncPhase } from "../../threadSync";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { Skeleton } from "../ui/skeleton";
+import { BotChatConnectNoticeStrip, BotChatPendingConversation } from "./BotChatConnect";
 import {
+  BOT_CHAT_NO_PROJECT_ACTION,
+  BOT_CHAT_NO_PROJECT_NOTICE,
+  BOT_CHAT_TOOLS_MISSING_NOTICE,
+  botChatStartNotice,
   getBotChatBody,
   getBotChatHeaderView,
+  isBotChatComposerDisabled,
+  resolveBotChatConnectState,
   resolveChatSyncOutcome,
+  shouldAutoStartChat,
   shouldWarnToolsMissing,
+  type BotChatConnectNotice,
 } from "./BotChatPage.logic";
 import { NeedsYouInline } from "./NeedsYouInline";
 import { useBotChatRead } from "../captain/useBotChatRead";
@@ -36,8 +43,20 @@ import { useBotChatRead } from "../captain/useBotChatRead";
 /**
  * Firstmate/bot chat (spec §7 slice 1). The conversation itself is the
  * ordinary shuv2code stack — an ADE bot chat is an ordinary thread — wrapped
- * in a persona header strip. No kernel session is started on mount (§4.1);
- * that only happens when the captain presses the button.
+ * in a persona header strip.
+ *
+ * **Opening the conversation is the request to connect (M8, #217).** §4.1's
+ * lazy-session rule used to read "on button press", which put a greeting, a
+ * paragraph of kernel setup and a Start/Resume fork between the captain and
+ * the bot. It now reads "on conversation open": this page starts the session
+ * once per mount and renders the conversation shell throughout. The server is
+ * already safe for that — `startPrimaryChat` takes a per-thread lock and gates
+ * on `hasSession`, so an auto-start against a bot that is already live is a
+ * probe-only pass that adopts the running session rather than tearing it down.
+ *
+ * §4.1's other half is unchanged: the app is never gated on kernels. A refusal
+ * is a compact strip over the conversation, never a landing page, and the page
+ * stays navigable.
  */
 export function BotChatPage({
   botId,
@@ -59,16 +78,26 @@ export function BotChatPage({
    */
   readonly identityChrome?: "own" | "shell";
   /**
-   * M4's seam (MESSENGER-PIVOT §5 step 3). The start/sync state machine, the
-   * welcome copy, and the hook-count gate above are the *only* thing that knows
-   * when a bot conversation is safe to mount, so the bubble renderer borrows
-   * them rather than growing a second copy. Absent — the default and the
-   * workspace-view escape hatch — the conversation is `ChatView`, unchanged.
+   * M4's seam (MESSENGER-PIVOT §5 step 3). The connect/sync state machine and
+   * the hook-count gate above are the *only* thing that knows when a bot
+   * conversation is safe to mount, so the bubble renderer borrows them rather
+   * than growing a second copy — and is called only in the `ready` state, so
+   * neither it nor `ChatView` ever sees a thread the store has not got.
+   * Absent — the default and the workspace-view escape hatch — the
+   * conversation is `ChatView`, unchanged.
    */
   readonly renderConversation?: (args: {
     readonly threadRef: ScopedThreadRef;
     readonly threadSyncPhase: ReturnType<typeof resolveThreadSyncPhase>;
     readonly botName: string;
+    /**
+     * True when the thread is mountable but the session is not live — the
+     * conversation region is reachable while a failure notice sits above it
+     * (a bot whose detail read failed after the thread had already synced, for
+     * instance). The timeline stays readable; only sending is shut off, so the
+     * captain reads history instead of pressing send into a dead session.
+     */
+    readonly composerDisabled: boolean;
   }) => ReactNode;
   /**
    * The other half of M3's read signal, which M3 deliberately left for M4.
@@ -89,20 +118,18 @@ export function BotChatPage({
   /** When the current session was started, for the bounded sync fallback. */
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [syncElapsedMs, setSyncElapsedMs] = useState(0);
-  const [starting, setStarting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [startError, setStartError] = useState<BotChatConnectNotice | null>(null);
 
+  const hasProjects = (roster.data?.projects.length ?? 0) > 0;
   const body = getBotChatBody({
     detail: detail.data,
     startedThreadId,
-    hasProjects: (roster.data?.projects.length ?? 0) > 0,
     loadError: detail.error ?? roster.error,
   });
   const header = detail.data === null ? null : getBotChatHeaderView(detail.data);
   // `body` is a discriminated union; JSX cannot narrow it across branches, so
-  // the two shapes are pulled out here.
+  // the shape the rest of the render needs is pulled out here.
   const chatThreadId = body.kind === "chat" ? body.threadId : null;
-  const welcome = body.kind === "welcome" ? body.copy : null;
 
   /**
    * ChatView must not be mounted until the client actually holds the thread.
@@ -171,31 +198,21 @@ export function BotChatPage({
     lastMessageAt: rosterEntry?.lastMessage?.at ?? null,
   });
 
-  const retrySync = () => {
-    // Waiting must have an exit. Drop back to the welcome state so the captain
-    // gets a button instead of a spinner; `startBotChat` is idempotent, so
-    // pressing it re-adopts the existing session rather than buying a second.
-    setStartedThreadId(null);
-    setStartedAt(null);
-    setSyncElapsedMs(0);
-    setError(syncOutcome.kind === "retry" ? syncOutcome.message : null);
-  };
+  const connectState = resolveBotChatConnectState({
+    body,
+    syncOutcome,
+    startError,
+    chatReady,
+  });
 
-  const handleStart = async () => {
+  const handleStart = useCallback(async () => {
     if (environmentId === null) return;
-    setStarting(true);
-    setError(null);
+    setStartError(null);
     const result = await startChat({ environmentId, input: { botId } });
-    setStarting(false);
     if (result._tag === "Failure") {
       // A kernel that cannot answer is reported here and nowhere else: the
       // page stays navigable, because the app is never gated on kernels.
-      setError(
-        adeCaptainErrorMessage(
-          squashAtomCommandFailure(result),
-          "This bot's session could not be started.",
-        ),
-      );
+      setStartError(botChatStartNotice(squashAtomCommandFailure(result)));
       return;
     }
     // Re-taken on every start, so an `unknown` probe (or a kernel upgraded
@@ -204,7 +221,48 @@ export function BotChatPage({
     setStartedAt(Date.now());
     setSyncElapsedMs(0);
     setStartedThreadId(result.value.threadId);
-  };
+  }, [botId, environmentId, startChat]);
+
+  /**
+   * The direct connect (#217).
+   *
+   * The ref — not state — is what makes this safe under React's development
+   * double-invoke of mount effects: it is written synchronously before the
+   * `await`, so the second invocation sees the bot it just recorded and
+   * `shouldAutoStartChat` returns false. State would not have committed yet and
+   * both passes would fire. Keying it by `botId` rather than by a boolean lets
+   * the same mount reconnect when the shell swaps conversations under it, which
+   * is how the captain rail navigates.
+   */
+  const autoStartedFor = useRef<BotId | null>(null);
+  useEffect(() => {
+    if (
+      !shouldAutoStartChat({
+        botId,
+        environmentReady: environmentId !== null,
+        startedFor: autoStartedFor.current,
+      })
+    ) {
+      return;
+    }
+    autoStartedFor.current = botId;
+    void handleStart();
+  }, [botId, environmentId, handleStart]);
+
+  /**
+   * Waiting must have an exit, and after #217 that exit is a Retry in the
+   * notice rather than a return to a landing page. Clearing `startedThreadId`
+   * drops the sync clock; re-running the start is safe because
+   * `startPrimaryChat` adopts an existing session rather than buying a second.
+   */
+  const retryConnect = useCallback(() => {
+    setStartedThreadId(null);
+    setStartedAt(null);
+    setSyncElapsedMs(0);
+    setStartError(null);
+    autoStartedFor.current = botId;
+    void handleStart();
+  }, [botId, handleStart]);
 
   return (
     <SidebarInset className="isolate flex h-dvh min-h-0 flex-col overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -268,24 +326,40 @@ export function BotChatPage({
           variant={renderConversation === undefined ? "inline" : "bubble"}
         />
       </div>
-      {chatReady && threadRef !== null ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          {toolsMissing ? (
-            // The conversation works; delegation does not. Saying so beats
-            // letting the captain watch the bot fail to delegate silently.
-            //
-            // NOTE: a *start-time snapshot*. It reflects what the catalog
-            // probe saw when the session was opened and is never re-checked, so
-            // a kernel upgraded mid-session keeps showing this until reopened.
-            <p
-              className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground"
-              role="status"
+      {/*
+       * One conversation shell for all three connect states (#217). The strips
+       * stack above it; what changes underneath is only whether the real
+       * timeline or the pending stand-in is mounted.
+       */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        {connectState.kind === "failed" ? (
+          <BotChatConnectNoticeStrip notice={connectState.notice} onRetry={retryConnect} />
+        ) : null}
+        {/*
+         * A workspace with no project has nowhere for the bot to work. This is
+         * a real precondition with a real next action, not conversation
+         * narration, so it survives as a strip rather than as a paragraph.
+         */}
+        {!hasProjects && roster.data !== null ? (
+          <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+            <span>{BOT_CHAT_NO_PROJECT_NOTICE}</span>
+            <Button
+              className="h-6 px-2 text-xs"
+              onClick={() => openCommandPalette({ open: "add-project" })}
+              size="sm"
+              variant="outline"
             >
-              Fleet tools are not available on this kernel build, so this bot cannot delegate
-              assignments or update its memory. Chat still works.
-            </p>
-          ) : null}
-          {renderConversation === undefined ? (
+              {BOT_CHAT_NO_PROJECT_ACTION}
+            </Button>
+          </div>
+        ) : null}
+        {toolsMissing ? (
+          // The conversation works; delegation does not. Saying so beats
+          // letting the captain watch the bot fail to delegate silently.
+          <BotChatConnectNoticeStrip notice={BOT_CHAT_TOOLS_MISSING_NOTICE} tone="muted" />
+        ) : null}
+        {chatReady && threadRef !== null ? (
+          renderConversation === undefined ? (
             <ChatView
               environmentId={threadRef.environmentId}
               routeKind="server"
@@ -297,71 +371,16 @@ export function BotChatPage({
               threadRef,
               threadSyncPhase,
               botName: header?.name ?? "this bot",
+              composerDisabled: isBotChatComposerDisabled(connectState),
             })
-          )}
-        </div>
-      ) : (
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="mx-auto flex w-full max-w-xl flex-col gap-4 px-4 py-10">
-            {body.kind === "chat" && syncOutcome.kind === "retry" ? (
-              // This bot already owns a live kernel session, so a permanent
-              // spinner would strand the captain with no way back to Start.
-              <>
-                <p className="text-sm text-destructive" role="alert">
-                  {syncOutcome.message}
-                </p>
-                <Button className="self-start" onClick={retrySync} size="sm">
-                  Try again
-                </Button>
-              </>
-            ) : body.kind === "chat" ? (
-              // A session exists; the client is still catching up on the
-              // thread. Showing the welcome again here would invite a second
-              // "Start chatting" press on a bot that already has a session.
-              <>
-                <p className="text-sm text-muted-foreground">Opening the conversation…</p>
-                <Skeleton className="h-20 w-full" />
-              </>
-            ) : body.kind === "error" ? (
-              <p className="text-sm text-destructive">{body.message}</p>
-            ) : welcome === null ? (
-              <>
-                <Skeleton className="h-6 w-2/3" />
-                <Skeleton className="h-20 w-full" />
-              </>
-            ) : (
-              <>
-                <p className="text-base">{welcome.greeting}</p>
-                {welcome.projectCta === null ? null : (
-                  <div className="flex flex-col items-start gap-2">
-                    <p className="text-sm text-muted-foreground">{welcome.projectCta}</p>
-                    <Button
-                      onClick={() => openCommandPalette({ open: "add-project" })}
-                      size="sm"
-                      variant="outline"
-                    >
-                      Create your first project
-                    </Button>
-                  </div>
-                )}
-                <p className="text-sm text-muted-foreground">{welcome.kernelHint}</p>
-                <Button
-                  className={cn("self-start")}
-                  disabled={starting || environmentId === null}
-                  onClick={() => void handleStart()}
-                >
-                  {welcome.startLabel}
-                </Button>
-                {error === null ? null : (
-                  <p className="text-sm text-destructive" role="alert">
-                    {error}
-                  </p>
-                )}
-              </>
-            )}
-          </div>
-        </ScrollArea>
-      )}
+          )
+        ) : (
+          <BotChatPendingConversation
+            botName={header?.name ?? "this bot"}
+            shimmer={connectState.kind === "connecting"}
+          />
+        )}
+      </div>
     </SidebarInset>
   );
 }

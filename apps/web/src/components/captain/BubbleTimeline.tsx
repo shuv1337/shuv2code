@@ -75,6 +75,7 @@ export function BubbleTimeline({
   threadRef,
   isWorking = false,
   botAvatar,
+  botName,
   botNameById,
   avatarByBotId,
   onIsAtEndChange,
@@ -86,6 +87,8 @@ export function BubbleTimeline({
   readonly isWorking?: boolean;
   /** The conversation's own bot, drawn beside its bubbles. */
   readonly botAvatar: BotAvatarView | null;
+  /** The conversation's own bot, named in the empty state (#217). */
+  readonly botName?: string | undefined;
   /** Roster projection used to name folded sub-agent traffic. */
   readonly botNameById?: ReadonlyMap<string, string> | undefined;
   readonly avatarByBotId?: ReadonlyMap<string, BotAvatarView> | undefined;
@@ -326,9 +329,20 @@ export function BubbleTimeline({
   );
 
   if (items.length === 0 && !isWorking) {
+    /*
+     * The minimal empty state (#217): who this is, and that there is nothing
+     * here yet. No CTA — the composer directly below *is* the call to action,
+     * and a button that only focuses it is a second affordance for the same
+     * act. No kernel setup, no explanation of when sessions start.
+     */
     return (
-      <div className={cn("flex h-full items-center justify-center", className)}>
-        <p className="text-placeholder text-sm">No messages yet. Say hello.</p>
+      <div
+        className={cn("flex h-full flex-col items-center justify-center gap-2", className)}
+        role="status"
+      >
+        {botAvatar === null ? null : <BotAvatar avatar={botAvatar} size="lg" />}
+        {botName === undefined ? null : <p className="text-sm font-medium">{botName}</p>}
+        <p className="text-placeholder text-sm">No messages yet</p>
       </div>
     );
   }
