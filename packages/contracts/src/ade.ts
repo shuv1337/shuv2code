@@ -732,6 +732,20 @@ export type AdeBotDetail = typeof AdeBotDetail.Type;
  * renders, while `bindingId`/`sessionId` name the `BotExecutionBinding` the
  * tool gate and the assignment engine key on.
  */
+/**
+ * What the provider-authoritative tool probe learned about a session.
+ *
+ * The third state is the load-bearing one. "The kernel says this session has
+ * no fleet tools" and "this process could not ask the kernel at all" are
+ * different facts, and collapsing them into one boolean is what made a
+ * restarted server tell every captain their fleet tools were gone: the probe
+ * failed locally (no in-process session yet), reported `false`, and the banner
+ * stuck. Only `missing` is evidence of a degraded bot; `unknown` means ask
+ * again later.
+ */
+export const AdeToolProbe = Schema.Literals(["attached", "missing", "unknown"]);
+export type AdeToolProbe = typeof AdeToolProbe.Type;
+
 export const AdeBotChatSession = Schema.Struct({
   botId: BotId,
   threadId: ThreadId,
@@ -741,11 +755,18 @@ export const AdeBotChatSession = Schema.Struct({
   /** False when an existing active primary binding was reused. */
   startedNow: Schema.Boolean,
   /**
-   * Whether the fleet tool catalog is registered on this session. False means
-   * the conversation works but delegation does not — the kernel build has no
-   * session-scoped dynamic-tool support (spec §3.1). Surfaced so the captain
-   * is told, rather than watching a bot fail to delegate for no visible
-   * reason.
+   * Whether the fleet tool catalog is registered on this session (spec §3.1).
+   * `missing` means the conversation works but delegation does not — the
+   * kernel build has no session-scoped dynamic-tool support. Surfaced so the
+   * captain is told, rather than watching a bot fail to delegate for no
+   * visible reason.
+   */
+  toolsProbe: AdeToolProbe.pipe(Schema.withDecodingDefault(Effect.succeed("attached" as const))),
+  /**
+   * @deprecated Use {@link AdeBotChatSession.toolsProbe}. Kept so an older
+   * client keeps decoding; it is `false` only for `missing`, never for
+   * `unknown`, because a client that cannot distinguish them must not be
+   * pushed into the false-negative that issue #199 was.
    */
   toolsAttached: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });

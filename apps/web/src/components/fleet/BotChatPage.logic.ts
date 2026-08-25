@@ -8,7 +8,7 @@
  *  2. The app is never gated on kernels. A `session_unavailable` refusal is
  *     shown inline and the page stays navigable.
  */
-import type { AdeBotDetail, ThreadId } from "@shuv2code/contracts";
+import type { AdeBotChatSession, AdeBotDetail, ThreadId } from "@shuv2code/contracts";
 
 import {
   activePrimaryBinding,
@@ -166,6 +166,19 @@ export function getBotChatBody(input: {
       startLabel: "Resume chatting",
     },
   };
+}
+
+/**
+ * Should the "fleet tools unavailable" strip be shown for this start?
+ *
+ * Only a `missing` probe is evidence — the kernel answered and the catalog is
+ * not there. `unknown` means the server could not ask (no live adapter session
+ * at probe time, the state every restart starts in), and telling the captain
+ * their fleet is broken on a question nobody managed to ask is issue #199. The
+ * answer is simply re-taken on the next start, so silence here costs nothing.
+ */
+export function shouldWarnToolsMissing(session: AdeBotChatSession): boolean {
+  return session.toolsProbe === "missing";
 }
 
 export function getBotChatHeaderView(detail: AdeBotDetail): BotChatHeaderView {

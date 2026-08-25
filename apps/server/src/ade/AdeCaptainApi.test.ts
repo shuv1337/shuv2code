@@ -43,6 +43,7 @@ const chatSession: AdeBotChatSession = {
   bindingId: "binding" as AdeBotChatSession["bindingId"],
   sessionId: "oc-1" as AdeBotChatSession["sessionId"],
   startedNow: true,
+  toolsProbe: "attached",
   toolsAttached: true,
 };
 

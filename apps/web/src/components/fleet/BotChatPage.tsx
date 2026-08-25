@@ -24,7 +24,12 @@ import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { Skeleton } from "../ui/skeleton";
-import { getBotChatBody, getBotChatHeaderView, resolveChatSyncOutcome } from "./BotChatPage.logic";
+import {
+  getBotChatBody,
+  getBotChatHeaderView,
+  resolveChatSyncOutcome,
+  shouldWarnToolsMissing,
+} from "./BotChatPage.logic";
 import { NeedsYouInline } from "./NeedsYouInline";
 
 /**
@@ -138,7 +143,9 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
       );
       return;
     }
-    setToolsMissing(!result.value.toolsAttached);
+    // Re-taken on every start, so an `unknown` probe (or a kernel upgraded
+    // between visits) clears a strip a previous start put up.
+    setToolsMissing(shouldWarnToolsMissing(result.value));
     setStartedAt(Date.now());
     setSyncElapsedMs(0);
     setStartedThreadId(result.value.threadId);
