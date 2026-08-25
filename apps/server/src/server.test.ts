@@ -100,6 +100,7 @@ const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function
 });
 
 import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
+import { AdeVoiceToolPlane } from "./ade/AdeVoiceToolPlane.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
@@ -685,6 +686,10 @@ const buildAppUnderTest = (options?: {
           // `ws.ade.integration.test.ts` owns that seam with real services.
           Layer.mock(AdeHealthChecker)({}),
           Layer.mock(AdeCaptainApi)({}),
+          // Same reason: the controller MCP route resolves the ADE voice tool
+          // plane while building. `layerAbsent` is the honest stand-in — these
+          // tests run no ADE call, so every controller thread is a classic one.
+          AdeVoiceToolPlane.layerAbsent,
           Layer.mock(ControllerActionContextResolver)({}),
           Layer.mock(VoiceControllerBindingRepository)({}),
         ),

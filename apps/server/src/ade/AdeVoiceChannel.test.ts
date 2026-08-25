@@ -3,6 +3,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { FetchHttpClient } from "effect/unstable/http";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -30,6 +31,8 @@ import { AdeBootstrap } from "./AdeBootstrap.ts";
 import { AdeCaptainApi } from "./AdeCaptainApi.ts";
 import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
 import { AdePersonaMemory } from "./AdePersonaMemory.ts";
+import { AdeScreenboxRuntime } from "./AdeScreenbox.ts";
+import { AdeScreenboxClient, AdeScreenboxConfig } from "./AdeScreenboxClient.ts";
 import {
   AdeSessionRollover,
   UNTRUSTED_CONTENT_OPEN,
@@ -75,6 +78,13 @@ interface RecordedVerdict {
 }
 
 const CONTROLLER_THREAD = ThreadId.make("voice-controller:test");
+
+/** Unprovisioned Screenbox: builds, never reachable. */
+const screenboxLayer = AdeScreenboxRuntime.layer.pipe(
+  Layer.provide(AdeScreenboxClient.layer),
+  Layer.provide(AdeScreenboxConfig.layer({ baseUrl: null, adminToken: "admin-token" })),
+  Layer.provide(FetchHttpClient.layer),
+);
 
 class StubWorkspacePathError extends Schema.TaggedErrorClass<StubWorkspacePathError>()(
   "StubWorkspacePathError",
@@ -156,6 +166,11 @@ const makeLayer = (harness: Harness) => {
         AdePersonaMemory.layer,
         AdeSessionRollover.layer,
         AdeAssignmentEngine.layer,
+        // S15 gave the captain API a Screenbox dependency. Voice never touches
+        // it, so it is wired unprovisioned (`baseUrl: null`) — present enough
+        // to build the real captain API, inert enough that a voice test cannot
+        // accidentally depend on a desktop runtime.
+        screenboxLayer,
         chatPortOk,
         approvalPort,
         Layer.succeed(WorkspacePaths, {
