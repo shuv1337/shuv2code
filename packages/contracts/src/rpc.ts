@@ -26,6 +26,7 @@ import {
   AdeProjectCandidates,
   AdeProjectDetail,
   AdeProjectIdInput,
+  AdePublicationStackIdInput,
   AdePublicationStackView,
   AdeBotChatReadReceipt,
   AdeMarkBotChatReadInput,
@@ -429,6 +430,7 @@ export const WS_METHODS = {
   adeGetProject: "ade.getProject",
   adeListProjectCandidates: "ade.listProjectCandidates",
   adeGetProjectPublicationStack: "ade.getProjectPublicationStack",
+  adeGetPublicationStack: "ade.getPublicationStack",
   adeGetAssignmentGraph: "ade.getAssignmentGraph",
   adeCreateBotFromTemplate: "ade.createBotFromTemplate",
   adeCreateProject: "ade.createProject",
@@ -1526,6 +1528,17 @@ export const WsAdeGetProjectPublicationStackRpc = Rpc.make(
   },
 );
 
+/**
+ * One publication stack by its own id (MESSENGER-PIVOT §6 M5). Null when the
+ * stack no longer exists — a card citing a retired stack shows the plain
+ * assignment result, which is not an error.
+ */
+export const WsAdeGetPublicationStackRpc = Rpc.make(WS_METHODS.adeGetPublicationStack, {
+  payload: AdePublicationStackIdInput,
+  success: Schema.NullOr(AdePublicationStackView),
+  error: AdeCaptainRpcError,
+});
+
 /** Assignment lineage for the work graph (slice 4); `projectId: null` is fleet-wide. */
 export const WsAdeGetAssignmentGraphRpc = Rpc.make(WS_METHODS.adeGetAssignmentGraph, {
   payload: AdeAssignmentGraphInput,
@@ -1539,6 +1552,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAdeGetProjectRpc,
   WsAdeListProjectCandidatesRpc,
   WsAdeGetProjectPublicationStackRpc,
+  WsAdeGetPublicationStackRpc,
   WsAdeGetAssignmentGraphRpc,
   WsAdeGetBotRpc,
   WsAdeCreateBotFromTemplateRpc,

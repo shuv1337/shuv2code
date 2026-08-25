@@ -127,6 +127,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.adeGetProject]: AuthOrchestrationReadScope,
   [WS_METHODS.adeListProjectCandidates]: AuthOrchestrationReadScope,
   [WS_METHODS.adeGetProjectPublicationStack]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeGetPublicationStack]: AuthOrchestrationReadScope,
   [WS_METHODS.adeGetAssignmentGraph]: AuthOrchestrationReadScope,
   // Reading the inbox is reading. A client that may look at the fleet may see
   // what is waiting on the captain — it just cannot answer it.

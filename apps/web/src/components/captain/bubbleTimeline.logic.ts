@@ -9,6 +9,11 @@ import {
   parseAssignmentDeliveryText,
   type ParsedAssignmentDelivery,
 } from "../fleet/assignmentResult.logic";
+import {
+  hasPublicationArtifacts,
+  resolveInstructionCardView,
+  type InstructionCardView,
+} from "./richCards.logic";
 import { deriveDisplayedUserMessageState } from "../../lib/terminalContext";
 import { extractTrailingElementContexts } from "../../lib/elementContext";
 import { extractTrailingPreviewAnnotation } from "../../lib/previewAnnotation";
@@ -58,6 +63,24 @@ export type BubbleTimelineItem =
       readonly id: string;
       readonly row: MessageRow;
       readonly delivery: ParsedAssignmentDelivery;
+    }
+  /**
+   * A finished assignment that published something (M5). The same row and the
+   * same delivery as `assignment-result` — a different *card*, chosen because
+   * this delivery reported a publication layer or a URL.
+   */
+  | {
+      readonly kind: "pr-result";
+      readonly id: string;
+      readonly row: MessageRow;
+      readonly delivery: ParsedAssignmentDelivery;
+    }
+  /** A bot-authored task list (M5). */
+  | {
+      readonly kind: "instruction";
+      readonly id: string;
+      readonly row: MessageRow;
+      readonly view: InstructionCardView;
     }
   | {
       readonly kind: "attribution";
@@ -115,6 +138,23 @@ function isAssignmentDeliveryRow(row: MessagesTimelineRow): ParsedAssignmentDeli
     return null;
   }
   return parseAssignmentDeliveryText(row.message.text ?? "");
+}
+
+/**
+ * The instruction card's view for a row, or null.
+ *
+ * Bot-authored only. A captain who types a checklist is writing a *request*,
+ * not reporting progress, and repainting their own message as a tracked list
+ * would claim the fleet had accepted it.
+ */
+function instructionViewFor(
+  row: MessageRow,
+  author: "captain" | "bot",
+): InstructionCardView | null {
+  if (author !== "bot") return null;
+  const text = row.message.text;
+  if (text === null || text === undefined) return null;
+  return resolveInstructionCardView(text);
 }
 
 function bubbleAuthor(row: MessageRow): "captain" | "bot" {
@@ -182,11 +222,16 @@ export function buildBubbleTimelineItems(input: {
       emitDayDivider(row.createdAt);
       const firstRow = runRows[0] as MessageRow;
       if (runRows.length === 1) {
+        const only = deliveries[0] as ParsedAssignmentDelivery;
+        // The work/PR card wins over the plain result card when — and only
+        // when — the delivery named something publishable. A delivery whose
+        // artifacts are touched files is *work*, not a publication, and
+        // promoting it would offer a "View PR" for a PR that does not exist.
         items.push({
-          kind: "assignment-result",
+          kind: hasPublicationArtifacts(only) ? "pr-result" : "assignment-result",
           id: firstRow.id,
           row: firstRow,
-          delivery: deliveries[0] as ParsedAssignmentDelivery,
+          delivery: only,
         });
       } else {
         const botIds: Array<string> = [];
@@ -247,6 +292,16 @@ export function buildBubbleTimelineItems(input: {
     }
     emitDayDivider(messageRow.createdAt);
     runRows.forEach((runRow, runIndex) => {
+      // A bot's task list becomes a card rather than a bubble, and does so
+      // *inside* the run: a plan is usually one message in the middle of a
+      // paragraph of them, and breaking the run to hoist it would reorder the
+      // conversation. The neighbours keep their run geometry; only this item's
+      // rendering changes.
+      const instruction = instructionViewFor(runRow, author);
+      if (instruction !== null) {
+        items.push({ kind: "instruction", id: runRow.id, row: runRow, view: instruction });
+        return;
+      }
       const isFirst = runIndex === 0;
       const isLast = runIndex === runRows.length - 1;
       items.push({
@@ -419,6 +474,28 @@ function elapsedMs(from: string, to: string): number | null {
 }
 
 /**
+ * The changed-line totals for a row's turn, or null when the row has none.
+ *
+ * The summary is per *assistant message*, which is why a captain turn and a
+ * synthetic assignment delivery both answer null: the work they describe
+ * happened somewhere this thread's checkpoints do not reach.
+ */
+export function resolveRowDiffStat(
+  row: MessagesTimelineRow,
+): { readonly additions: number; readonly deletions: number } | null {
+  if (row.kind !== "message") return null;
+  const summary = row.assistantTurnDiffSummary;
+  if (summary === undefined) return null;
+  return summary.files.reduce(
+    (total, file) => ({
+      additions: total.additions + file.additions,
+      deletions: total.deletions + file.deletions,
+    }),
+    { additions: 0, deletions: 0 },
+  );
+}
+
+/**
  * The collapsed one-liner for a trace row (MESSENGER-PIVOT §3). Pure so the
  * label normalization and the duration/diff arithmetic are pinned by tests
  * rather than read off a rendered card.
@@ -465,17 +542,7 @@ export function resolveTraceCardSummary(row: MessagesTimelineRow): TraceCardSumm
     case "turn-plan":
       return { label: "Plan", tone: "plan", durationMs: null, diffStat: null, hiddenCount: 0 };
     case "message": {
-      const summary = row.assistantTurnDiffSummary;
-      const diffStat =
-        summary === undefined
-          ? null
-          : summary.files.reduce(
-              (total, file) => ({
-                additions: total.additions + file.additions,
-                deletions: total.deletions + file.deletions,
-              }),
-              { additions: 0, deletions: 0 },
-            );
+      const diffStat = resolveRowDiffStat(row);
       return {
         label: row.message.role === "system" ? "System message" : "Message",
         tone: row.message.role === "system" ? "info" : "tool",

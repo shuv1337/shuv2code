@@ -14,6 +14,7 @@ import {
   type AdeProjectId,
   type BotId,
   type NeedsYouItemId,
+  type PublicationStackId,
 } from "@shuv2code/contracts";
 
 import { runMigrations } from "../persistence/Migrations.ts";
@@ -1120,6 +1121,62 @@ describe("AdeCaptainApi.getProjectPublicationStack", () => {
       const view = yield* api.getProjectPublicationStack(project.projectId);
       assert.equal(view?.stack.id, "stack-new");
       assert.deepEqual(view?.layers, []);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+});
+
+describe("AdeCaptainApi.getPublicationStack", () => {
+  it.effect("addresses a stack the project-keyed read would never return", () =>
+    Effect.gen(function* () {
+      const { api, sql, bootstrap } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Demo" });
+
+      yield* seedStack(sql, {
+        id: "stack-old",
+        projectId: project.projectId,
+        status: "merged",
+        createdAt: "2026-08-24T00:00:00.000Z",
+      });
+      yield* seedStack(sql, {
+        id: "stack-new",
+        projectId: project.projectId,
+        status: "building",
+        createdAt: "2026-08-24T02:00:00.000Z",
+      });
+      yield* sql`
+        INSERT INTO ade_publication_layers (
+          publication_layer_id, publication_stack_id, layer_order, change_ids_json,
+          bookmark_name, pr_number, head_sha, submitted_sha, merge_sha, pr_state,
+          status, created_at, updated_at
+        ) VALUES (
+          'layer-old', 'stack-old', 0, '["kmnopqrs"]',
+          'ade/old', 7, NULL, NULL, 'mergesha', 'merged', 'merged',
+          '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z'
+        )
+      `;
+
+      // The whole reason this read exists: a card citing the *older* stack —
+      // which is exactly what a delivery's `publicationLayer` artifact does
+      // once a project has published twice — cannot reach it by project id.
+      assert.equal(
+        (yield* api.getProjectPublicationStack(project.projectId))?.stack.id,
+        "stack-new",
+      );
+
+      const view = yield* api.getPublicationStack("stack-old" as PublicationStackId);
+      assert.equal(view?.stack.id, "stack-old");
+      assert.equal(view?.stack.status, "merged");
+      assert.equal(view?.layers[0]?.bookmarkName, "ade/old");
+      assert.equal(view?.layers[0]?.prNumber, 7);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("answers null for a stack that is not there, rather than failing", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      // A card outliving the stack it cites is ordinary; it falls back to the
+      // bot's own account of what happened.
+      assert.isNull(yield* api.getPublicationStack("stack-gone" as PublicationStackId));
     }).pipe(Effect.provide(makeLayer())),
   );
 });

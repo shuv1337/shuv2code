@@ -16,6 +16,7 @@ import {
   type AdeBotScreen,
   type AdeBotGroupId,
   type AdeProjectId,
+  type PublicationStackId,
   type AdeNeedsYouEntry,
   type AdeRoster,
   type BotId,
@@ -43,6 +44,7 @@ const authenticatedSession = (
 
 const BOT_ID = "bot-1" as BotId;
 const PROJECT_ID = "project-1" as AdeProjectId;
+const STACK_ID = "stack-1" as PublicationStackId;
 
 const emptyRoster: AdeRoster = { entries: [], projects: [], templates: [], groups: [] };
 
@@ -176,6 +178,7 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
     listProjectCandidates: () =>
       note("listProjectCandidates", { candidates: [], unreadableRows: 0 }),
     getProjectPublicationStack: () => note("getProjectPublicationStack", null),
+    getPublicationStack: () => note("getPublicationStack", null),
     getAssignmentGraph: () =>
       note("getAssignmentGraph", { nodes: [], bots: [], truncated: false, unreadableRows: 0 }),
     startBotChat: () =>
@@ -229,6 +232,10 @@ describe("authenticated ADE captain RPCs", () => {
         yield* readClient[WS_METHODS.adeGetProjectPublicationStack]({ projectId: PROJECT_ID }),
         null,
       );
+      assert.strictEqual(
+        yield* readClient[WS_METHODS.adeGetPublicationStack]({ stackId: STACK_ID }),
+        null,
+      );
       assert.deepStrictEqual(
         yield* readClient[WS_METHODS.adeGetAssignmentGraph]({ projectId: null }),
         { nodes: [], bots: [], truncated: false, unreadableRows: 0 },
@@ -280,6 +287,7 @@ describe("authenticated ADE captain RPCs", () => {
         "getProject",
         "listProjectCandidates",
         "getProjectPublicationStack",
+        "getPublicationStack",
         "getAssignmentGraph",
       ]);
     }),

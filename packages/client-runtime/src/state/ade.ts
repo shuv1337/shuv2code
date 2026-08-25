@@ -153,6 +153,22 @@ export function createAdeEnvironmentAtoms<R, E>(
     refreshIntervalMs: 30_000,
   });
 
+  /**
+   * One publication stack by id (MESSENGER-PIVOT §6 M5) — the messenger's
+   * `PrResultCard`, which starts from a delivery's `publicationLayer` artifact
+   * and so knows a stack id rather than a project id.
+   *
+   * Same cadence as the project-keyed read for the same reason: a stack pass is
+   * a round trip to GitHub, and a card in a conversation is read once and
+   * scrolled past, not watched.
+   */
+  const publicationStack = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:ade:publication-stack",
+    tag: WS_METHODS.adeGetPublicationStack,
+    staleTimeMs: 5_000,
+    refreshIntervalMs: 30_000,
+  });
+
   /** Assignment lineage for the work graph (slice 4). */
   const assignmentGraph = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:ade:assignment-graph",
@@ -218,6 +234,7 @@ export function createAdeEnvironmentAtoms<R, E>(
     project,
     projectCandidates,
     projectPublicationStack,
+    publicationStack,
     assignmentGraph,
     needsYou,
     needsYouItem,

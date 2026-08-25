@@ -155,8 +155,17 @@ const isUndeliveredVoiceSummary = (kind: NeedsYouKind, flat: FlatSubjects): bool
 /**
  * What the captain can press. Approval is the only kind anything *waits* on;
  * every other kind is resolved by the service that raised it once the condition
- * clears (§4.6, §4.8) — except the two stall shapes above, which nothing
- * clears. A resolved item offers nothing, however it got there.
+ * clears (§4.6, §4.8) — except the two stall shapes above and `form`, which
+ * nothing clears. A resolved item offers nothing, however it got there.
+ *
+ * **`form` is `acknowledge`** (MESSENGER-PIVOT §6 M5). A form item is a request
+ * for a value the captain types; no service can ever satisfy it, so left
+ * without an action it counts on the badge forever — the same trap the two
+ * stall shapes describe. `acknowledge` is the right control rather than
+ * `approve-deny` because there is no verdict to forward and no candidate to
+ * forward it to: the captain's answer retires the item and travels no further.
+ * That last part is deliberate and enforced in `submitNeedsYouDecision`, not
+ * incidental — see the note-withholding guard there.
  */
 export function needsYouActionFor(
   row: Pick<NeedsYouRow, "kind" | "status">,
@@ -164,6 +173,7 @@ export function needsYouActionFor(
 ): NeedsYouAction | null {
   if (row.status !== "open") return null;
   if (row.kind === "approval") return "approve-deny";
+  if (row.kind === "form") return "acknowledge";
   return isUnroutableRepair(row.kind, flat) || isUndeliveredVoiceSummary(row.kind, flat)
     ? "acknowledge"
     : null;

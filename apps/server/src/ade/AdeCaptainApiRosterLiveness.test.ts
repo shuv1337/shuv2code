@@ -537,28 +537,72 @@ describe("secure answers and the roster preview", () => {
     }).pipe(Effect.provide(makeLayer())),
   );
 
-  it.effect("keeps a submitted decision note out of the roster entirely", () =>
+  it.effect("answers a secure request, and the secret reaches no durable column", () =>
     Effect.gen(function* () {
       const { api, sql, firstmateId } = yield* setup;
       yield* openNeedsYou({ id: "ny-1", kind: "form", botId: firstmateId });
 
-      // `form` items are not approve/deny, so the decision is an acknowledge —
-      // the same path `SecureInputCard` submits on, carrying the same note.
-      yield* Effect.result(
+      // `form` is `acknowledge`, not approve/deny (M5) — the same RPC and the
+      // same item id `NeedsYouCard` submits, carrying the secret as the note.
+      const answered = yield* api.submitNeedsYouDecision({
+        needsYouItemId: "ny-1" as NeedsYouItemId,
+        decision: "acknowledge",
+        note: SECRET,
+      });
+      assert.equal(answered.item.status, "resolved");
+
+      const roster = yield* api.getRoster();
+      assert.notInclude(JSON.stringify(roster), SECRET);
+
+      // Not into the item, and not into the tables the note *would* reach on
+      // an approval path: `verdict_detail`, and the bot-facing instruction a
+      // denial bounces into. Whole-table scans on purpose — asserting a
+      // specific column would pass while the value sat one column over.
+      const scans = yield* Effect.forEach(
+        [
+          sql<{
+            blob: string;
+          }>`SELECT COALESCE(subject_refs_json, '') AS blob FROM ade_needs_you_items`,
+          sql<{
+            blob: string;
+          }>`SELECT COALESCE(verdict_detail, '') || ' ' || COALESCE(bounce_json, '') AS blob FROM ade_integration_candidates`,
+          sql<{ blob: string }>`SELECT COALESCE(instruction, '') AS blob FROM ade_assignments`,
+        ],
+        (query) => query,
+      );
+      for (const rows of scans) {
+        assert.notInclude(rows.map((row) => row.blob).join(" "), SECRET);
+      }
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("retires a secure request exactly once — the second answer is benign", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      yield* openNeedsYou({ id: "ny-1", kind: "form", botId: firstmateId });
+
+      yield* api.submitNeedsYouDecision({
+        needsYouItemId: "ny-1" as NeedsYouItemId,
+        decision: "acknowledge",
+        note: SECRET,
+      });
+
+      // The double-decision idempotency surface (MESSENGER-PIVOT §6 M5): the
+      // conversation card and the inbox card are one item, so the second
+      // submit — from either rendering — has to read as "already handled",
+      // which is what `isBenignNeedsYouConflict` narrows on the client.
+      const second = yield* Effect.flip(
         api.submitNeedsYouDecision({
           needsYouItemId: "ny-1" as NeedsYouItemId,
           decision: "acknowledge",
           note: SECRET,
         }),
       );
+      assert.equal(second.reason, "needs_you_already_resolved");
 
       const roster = yield* api.getRoster();
+      assert.equal(rowFor(roster, firstmateId)?.attention, null);
       assert.notInclude(JSON.stringify(roster), SECRET);
-      // And it was not quietly written into the item either.
-      const stored = yield* sql<{ blob: string }>`
-        SELECT COALESCE(subject_refs_json, '') AS blob FROM ade_needs_you_items
-      `;
-      assert.notInclude(stored.map((row) => row.blob).join(" "), SECRET);
     }).pipe(Effect.provide(makeLayer())),
   );
 

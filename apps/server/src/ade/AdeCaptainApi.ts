@@ -556,6 +556,9 @@ export interface AdeCaptainApiShape {
   readonly getProjectPublicationStack: (
     projectId: AdeProjectId,
   ) => Effect.Effect<AdePublicationStackView | null, AdeCaptainError>;
+  readonly getPublicationStack: (
+    stackId: PublicationStackId,
+  ) => Effect.Effect<AdePublicationStackView | null, AdeCaptainError>;
   readonly getAssignmentGraph: (
     input: AdeAssignmentGraphInput,
   ) => Effect.Effect<AdeAssignmentGraph, AdeCaptainError>;
@@ -1425,12 +1428,27 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
           return yield* requireNeedsYouEntry(input.needsYouItemId);
         }
 
+        // A `form` answer is the captain typing a value the fleet asked for,
+        // and the product already reads that kind as credential-bearing:
+        // `suppressesPreview` withholds a bot's roster preview entirely while a
+        // `form` item is open, for that kind alone. `note` is the only field on
+        // this input that could carry such a value onward, and onward is not
+        // harmless — `submitIntegrationApproval` writes the note to
+        // `ade_integration_candidates.verdict_detail`, and a denial embeds it
+        // verbatim into the bot-facing repair instruction.
+        //
+        // Today a `form` item is `acknowledge`, so control never reaches this
+        // line. That is exactly why the guard is written by *kind* rather than
+        // left to the action: it is the difference between a secret that cannot
+        // travel and a secret that happens not to, and the second one stops
+        // being true the day someone gives `form` a verdict.
+        const forwardableNote = entry.item.kind === "form" ? undefined : input.note;
         const forwarded = yield* approvals
           .submitIntegrationApproval({
             candidateId,
             // Narrowed above: an `approve-deny` item never carries "acknowledge".
             decision: input.decision === "deny" ? "deny" : "approve",
-            ...(input.note === undefined ? {} : { note: input.note }),
+            ...(forwardableNote === undefined ? {} : { note: forwardableNote }),
           })
           .pipe(Effect.result);
         if (forwarded._tag === "Failure") {
@@ -1623,6 +1641,41 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
           } satisfies AdePublicationStackView;
         }, captainize);
 
+      /**
+       * The same view as {@link getProjectPublicationStack}, reached from the
+       * other direction (MESSENGER-PIVOT §6 M5).
+       *
+       * A finished assignment reports its publication as a `publicationLayer`
+       * artifact carrying `{stackId, layerId}`. The messenger's `PrResultCard`
+       * therefore starts from a stack id, and the project-keyed read cannot
+       * serve it: that one returns whichever stack is *newest* for a project,
+       * which is the wrong stack as soon as a project has published twice.
+       *
+       * No project existence check, deliberately. The stack row names its own
+       * project and a missing stack already answers `null`, so requiring the
+       * project as well would turn "this card cites something retired" into an
+       * error the card has to special-case.
+       */
+      const getPublicationStack: AdeCaptainApiShape["getPublicationStack"] = Effect.fn(
+        "AdeCaptainApi.getPublicationStack",
+      )(function* (stackId: PublicationStackId) {
+        const stackRows = yield* sql<StackRow>`
+            SELECT * FROM ade_publication_stacks
+            WHERE publication_stack_id = ${stackId}
+          `;
+        const stackRow = selectStackRow(stackRows);
+        if (stackRow === null) return null;
+        const layerRows = yield* sql<LayerRow>`
+            SELECT * FROM ade_publication_layers
+            WHERE publication_stack_id = ${stackRow.publication_stack_id}
+            ORDER BY layer_order ASC
+          `;
+        return {
+          stack: rowToStack(stackRow),
+          layers: layerRows.map(rowToLayer),
+        } satisfies AdePublicationStackView;
+      }, captainize);
+
       const getAssignmentGraph: AdeCaptainApiShape["getAssignmentGraph"] = Effect.fn(
         "AdeCaptainApi.getAssignmentGraph",
       )(function* (input: AdeAssignmentGraphInput) {
@@ -1724,6 +1777,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         getProject,
         listProjectCandidates,
         getProjectPublicationStack,
+        getPublicationStack,
         getAssignmentGraph,
         getBot,
         createBotFromTemplate,
