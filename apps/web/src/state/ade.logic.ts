@@ -53,10 +53,22 @@ const CAPTAIN_ERROR_TEXT: Record<AdeCaptainErrorReason, string> = {
   memory_conflict: "Memory changed elsewhere — reload before saving.",
   memory_too_large: "That memory document is too large to save.",
   persona_invalid: "That persona could not be saved.",
-  // Names the remedy in product terms; the exact provider instance, binary
-  // path or `shuvcode service` invocation is technical remediation and rides in
-  // the detail half of `adeCaptainErrorParts`.
-  session_unavailable: "This bot isn't connected — check its provider settings.",
+  /*
+   * Cause-neutral on purpose.
+   *
+   * `session_unavailable` is a *bucket*: the server raises it for a missing
+   * project, a project with no repository path, a failed workspace create, a
+   * kernel that is down, and a provider instance with no usable models. An
+   * earlier cut of #217 headlined it "check its provider settings", which is
+   * confidently wrong for most of those causes and actively contradicts the
+   * no-project CTA it can render directly above.
+   *
+   * The headline therefore states only what is certainly true. The actual
+   * remedy is already named by the server's own message, which rides in the
+   * detail half of `adeCaptainErrorParts` and surfaces in the notice's
+   * disclosure.
+   */
+  session_unavailable: "This bot isn't connected.",
   project_invalid: "That project could not be created.",
   project_not_found: "That project no longer exists.",
   persistence_failed: "The change could not be saved.",

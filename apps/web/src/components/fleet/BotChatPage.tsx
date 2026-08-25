@@ -5,8 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 
 import { openCommandPalette } from "../../commandPaletteBus";
 import { cn } from "../../lib/utils";
+import { useAtomValue } from "@effect/atom-react";
+
 import {
   adeEnvironment,
+  primaryFleetHealthAtom,
   useAdeBotDetail,
   useAdeEnvironmentId,
   useAdeRoster,
@@ -28,6 +31,7 @@ import {
   BOT_CHAT_NO_PROJECT_NOTICE,
   BOT_CHAT_TOOLS_MISSING_NOTICE,
   botChatStartNotice,
+  canAutoConnect,
   getBotChatBody,
   getBotChatHeaderView,
   isBotChatComposerDisabled,
@@ -120,7 +124,19 @@ export function BotChatPage({
   const [syncElapsedMs, setSyncElapsedMs] = useState(0);
   const [startError, setStartError] = useState<BotChatConnectNotice | null>(null);
 
+  /**
+   * The same snapshot the sidebar's kernel pills draw, used to decide whether
+   * navigation alone may attempt a session (see `canAutoConnect`). Reading the
+   * primary-environment atom directly keeps one source of truth for "is the
+   * kernel up" rather than growing a second, quieter answer here.
+   */
+  const fleetHealth = useAtomValue(primaryFleetHealthAtom);
+  const kernelHealth =
+    fleetHealth?.targets.find((target) => target.target === "shuvcode")?.state ?? null;
+  const autoConnectAllowed = canAutoConnect(kernelHealth);
+
   const hasProjects = (roster.data?.projects.length ?? 0) > 0;
+  const showNoProjectCta = !hasProjects && roster.data !== null;
   const body = getBotChatBody({
     detail: detail.data,
     startedThreadId,
@@ -203,16 +219,34 @@ export function BotChatPage({
     syncOutcome,
     startError,
     chatReady,
+    autoConnectBlocked: !autoConnectAllowed && startedThreadId === null,
   });
+
+  /**
+   * Which bot this mount is currently showing, read back *after* every await.
+   *
+   * The route keys its subtree on `$botId`, so today a swap remounts this
+   * component and this can never differ. That is precisely why it is worth
+   * pinning: the guard costs nothing, and if the key is ever dropped as a
+   * render optimisation, an in-flight start for the previous bot would
+   * otherwise land in the new bot's state and point the conversation at the
+   * wrong thread. See the matching note on the route's `key`.
+   */
+  const currentBotId = useRef(botId);
+  currentBotId.current = botId;
 
   const handleStart = useCallback(async () => {
     if (environmentId === null) return;
     setStartError(null);
     const result = await startChat({ environmentId, input: { botId } });
+    if (currentBotId.current !== botId) return;
     if (result._tag === "Failure") {
       // A kernel that cannot answer is reported here and nowhere else: the
       // page stays navigable, because the app is never gated on kernels.
       setStartError(botChatStartNotice(squashAtomCommandFailure(result)));
+      // A failed start knows nothing about the tool catalog, so a strip a
+      // previous start put up would otherwise outlive the session it described.
+      setToolsMissing(false);
       return;
     }
     // Re-taken on every start, so an `unknown` probe (or a kernel upgraded
@@ -241,13 +275,14 @@ export function BotChatPage({
         botId,
         environmentReady: environmentId !== null,
         startedFor: autoStartedFor.current,
+        kernelHealth,
       })
     ) {
       return;
     }
     autoStartedFor.current = botId;
     void handleStart();
-  }, [botId, environmentId, handleStart]);
+  }, [botId, environmentId, handleStart, kernelHealth]);
 
   /**
    * Waiting must have an exit, and after #217 that exit is a Retry in the
@@ -261,8 +296,19 @@ export function BotChatPage({
     setSyncElapsedMs(0);
     setStartError(null);
     autoStartedFor.current = botId;
+    /*
+     * Re-read the bot and the roster, not just the session.
+     *
+     * The notice this button sits under is raised for a failed `ade.getBot` /
+     * `ade.getRoster` as well as for a failed start, and those two arms need
+     * different work. Restarting the session does nothing for a blipped detail
+     * read: the query holds its error until something asks it again, so Retry
+     * would sit there looking pressable and do nothing at all.
+     */
+    detail.refresh();
+    roster.refresh();
     void handleStart();
-  }, [botId, handleStart]);
+  }, [botId, detail.refresh, handleStart, roster.refresh]);
 
   return (
     <SidebarInset className="isolate flex h-dvh min-h-0 flex-col overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -333,14 +379,21 @@ export function BotChatPage({
        */}
       <div className="flex min-h-0 flex-1 flex-col">
         {connectState.kind === "failed" ? (
-          <BotChatConnectNoticeStrip notice={connectState.notice} onRetry={retryConnect} />
+          <BotChatConnectNoticeStrip
+            notice={connectState.notice}
+            onRetry={retryConnect}
+            // The no-project CTA below is the more specific remedy and it is a
+            // button; showing this notice's paragraph as well would put two
+            // competing next actions in the same corner.
+            suppressDetails={showNoProjectCta}
+          />
         ) : null}
         {/*
          * A workspace with no project has nowhere for the bot to work. This is
          * a real precondition with a real next action, not conversation
          * narration, so it survives as a strip rather than as a paragraph.
          */}
-        {!hasProjects && roster.data !== null ? (
+        {showNoProjectCta ? (
           <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
             <span>{BOT_CHAT_NO_PROJECT_NOTICE}</span>
             <Button

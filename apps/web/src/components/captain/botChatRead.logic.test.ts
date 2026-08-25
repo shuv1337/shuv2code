@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  BOT_CHAT_READ_DWELL_MS,
   botChatReadMarkKey,
+  hasDwelledOnBotChat,
   shouldMarkBotChatRead,
   type BotChatReadMark,
 } from "./botChatRead.logic";
@@ -119,5 +121,43 @@ describe("botChatReadMarkKey", () => {
   it("separates an empty thread from one whose tail is the empty string", () => {
     expect(botChatReadMarkKey({ botId: "bot_1", lastMessageAt: null })).toBe("bot_1:");
     expect(botChatReadMarkKey({ botId: "bot_1", lastMessageAt: "x" })).toBe("bot_1:x");
+  });
+});
+
+describe("hasDwelledOnBotChat", () => {
+  /**
+   * The gate that replaces the intent M8 removed.
+   *
+   * Before #217, reaching a readable conversation required pressing "Start
+   * chatting". Navigation alone gets there now, so without this a rail sweep
+   * clears every unread dot it passes over — irreversibly, because the
+   * server's mark is monotonic.
+   */
+  it("marks nothing when the captain sweeps past", () => {
+    // Arrow-keying down the rail: ~1s on a contact, well inside the gate.
+    expect(hasDwelledOnBotChat({ readableSinceMs: 0, nowMs: 1_000 })).toBe(false);
+  });
+
+  it("marks once the captain actually stays", () => {
+    expect(hasDwelledOnBotChat({ readableSinceMs: 0, nowMs: 2_000 })).toBe(true);
+  });
+
+  it("opens exactly at the threshold", () => {
+    expect(hasDwelledOnBotChat({ readableSinceMs: 0, nowMs: BOT_CHAT_READ_DWELL_MS - 1 })).toBe(
+      false,
+    );
+    expect(hasDwelledOnBotChat({ readableSinceMs: 0, nowMs: BOT_CHAT_READ_DWELL_MS })).toBe(true);
+  });
+
+  it("never marks while the conversation is not readable", () => {
+    // `null` is what the caller writes on unmount, on a bot swap, and whenever
+    // the captain scrolls off the tail — which is what keeps the dwell
+    // continuous rather than cumulative.
+    expect(hasDwelledOnBotChat({ readableSinceMs: null, nowMs: 10_000 })).toBe(false);
+  });
+
+  it("restarts rather than accumulates across a bounce", () => {
+    // Two 1s visits are not one 2s visit.
+    expect(hasDwelledOnBotChat({ readableSinceMs: 5_000, nowMs: 6_000 })).toBe(false);
   });
 });

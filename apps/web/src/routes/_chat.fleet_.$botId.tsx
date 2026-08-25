@@ -28,10 +28,21 @@ export const Route = createFileRoute("/_chat/fleet_/$botId")({
  */
 function BotConversationRouteView() {
   const { botId } = Route.useParams();
-  // Keyed on the bot so the escape hatch is genuinely per-conversation: this
-  // route component is reused across `$botId` changes, and without the key a
-  // detour into workspace view for one bot would silently follow the captain
-  // into the next conversation.
+  /*
+   * Keyed on the bot so the escape hatch is genuinely per-conversation: this
+   * route component is reused across `$botId` changes, and without the key a
+   * detour into workspace view for one bot would silently follow the captain
+   * into the next conversation.
+   *
+   * This key is now load-bearing for a second reason (#217). `BotChatPage`
+   * auto-connects on mount and tracks the bot it started for in a ref; the
+   * remount this key forces is what guarantees that ref starts empty for each
+   * conversation. Dropping the key as a render optimisation would put the
+   * page's swap path — and the post-await bot guard in `handleStart` — on the
+   * hot path for the first time. Both are written to survive it, but neither
+   * is exercised today, so change this key deliberately rather than
+   * incidentally.
+   */
   return <BotConversationView botId={botId as BotId} key={botId} />;
 }
 

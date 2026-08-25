@@ -25,13 +25,28 @@
  * thread has their unread cleared a little early; the alternative — clearing it
  * only on an explicit action — leaves a dot on a conversation they are
  * demonstrably looking at, which is the worse of the two lies.
+ *
+ * ## M8 added a dwell gate, and had to
+ *
+ * Everything above assumed reaching this state took an explicit act: the
+ * captain pressed "Start chatting". #217 removed that button — opening the
+ * conversation *is* the connect now — so `enabled` became reachable with no
+ * intent whatsoever, and arrow-keying down the contact rail would clear every
+ * unread dot it passed over. The server's mark is monotonic, so that is
+ * irreversible. `BOT_CHAT_READ_DWELL_MS` restores the missing intent by
+ * requiring continuous presence instead of a press; see `botChatRead.logic.ts`.
  */
 import type { BotId } from "@shuv2code/contracts";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { adeEnvironment, useAdeEnvironmentId } from "../../state/ade";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { botChatReadMarkKey, shouldMarkBotChatRead } from "./botChatRead.logic";
+import {
+  BOT_CHAT_READ_DWELL_MS,
+  botChatReadMarkKey,
+  hasDwelledOnBotChat,
+  shouldMarkBotChatRead,
+} from "./botChatRead.logic";
 
 /**
  * Fire at most this often per bot. The rail is already live, so a read receipt
@@ -70,6 +85,40 @@ export function useBotChatRead(input: {
   const environmentId = useAdeEnvironmentId();
   const markRead = useAtomCommand(adeEnvironment.markBotChatRead, { reportFailure: false });
   const lastFiredAt = useRef(0);
+
+  /**
+   * The dwell gate (#217). `enabled` says the conversation is *readable*;
+   * this says the captain has actually stayed on it.
+   *
+   * Held as state rather than a ref because the marking effect below has to
+   * re-run when it flips — a ref would set the timer and then have nothing to
+   * wake the effect that reads it. The timer is keyed by `botId` and torn down
+   * on every change of either input, so swapping contacts or scrolling off the
+   * tail restarts the dwell instead of accumulating it.
+   */
+  const [dwelled, setDwelled] = useState(false);
+  /**
+   * When this conversation last *became* readable, or `null` while it is not.
+   * The timer below is only what wakes the marking effect; this timestamp is
+   * what `hasDwelledOnBotChat` actually judges, so a timer that fires early
+   * (or late, on a throttled background tab) cannot open the gate on its own.
+   */
+  const readableSince = useRef<number | null>(null);
+  useEffect(() => {
+    if (!input.enabled) {
+      readableSince.current = null;
+      setDwelled(false);
+      return;
+    }
+    readableSince.current = Date.now();
+    setDwelled(false);
+    const timer = setTimeout(() => setDwelled(true), BOT_CHAT_READ_DWELL_MS);
+    return () => {
+      clearTimeout(timer);
+      readableSince.current = null;
+    };
+  }, [input.botId, input.enabled]);
+
   /**
    * What the last successful mark was *for*, so the effect can tell "the
    * conversation moved" from "the conversation settled because of the mark I
@@ -79,7 +128,7 @@ export function useBotChatRead(input: {
   const markedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!input.enabled || environmentId === null) {
+    if (!input.enabled || !dwelled || environmentId === null) {
       markedFor.current = null;
       return;
     }
@@ -90,6 +139,12 @@ export function useBotChatRead(input: {
       // message arrived does not clear the dot the moment it is restored to a
       // different workspace the captain never looked at.
       if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      // The dwell is re-judged here, not just at the timer, so a focus or
+      // visibility event arriving mid-dwell cannot mark a conversation the
+      // captain is still only passing over.
+      if (!hasDwelledOnBotChat({ readableSinceMs: readableSince.current, nowMs: Date.now() })) {
         return;
       }
       lastFiredAt.current = Date.now();
@@ -128,5 +183,13 @@ export function useBotChatRead(input: {
     // Both liveness fields are dependencies on purpose: a bot speaking while
     // the conversation is open is exactly when the mark has to move again, and
     // `unreadCount` is the only one of the two that always notices.
-  }, [environmentId, input.botId, input.enabled, input.unreadCount, input.lastMessageAt, markRead]);
+  }, [
+    dwelled,
+    environmentId,
+    input.botId,
+    input.enabled,
+    input.unreadCount,
+    input.lastMessageAt,
+    markRead,
+  ]);
 }

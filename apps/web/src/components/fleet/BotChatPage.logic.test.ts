@@ -2,8 +2,10 @@ import type { AdeBotChatSession, AdeBotDetail, BotId, ThreadId } from "@shuv2cod
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  BOT_CHAT_KERNEL_DOWN_NOTICE,
   BOT_CHAT_TOOLS_MISSING_NOTICE,
   botChatStartNotice,
+  canAutoConnect,
   CHAT_SYNC_TIMEOUT_MS,
   getBotChatBody,
   getBotChatHeaderView,
@@ -118,9 +120,10 @@ describe("getBotChatBody", () => {
 
 describe("shouldAutoStartChat", () => {
   const botId = "bot_1" as BotId;
+  const healthy = { environmentReady: true, kernelHealth: "healthy" } as const;
 
   it("starts once on mount", () => {
-    expect(shouldAutoStartChat({ botId, environmentReady: true, startedFor: null })).toBe(true);
+    expect(shouldAutoStartChat({ botId, ...healthy, startedFor: null })).toBe(true);
   });
 
   it("is safe under a StrictMode-style double-invoked mount effect", () => {
@@ -129,7 +132,7 @@ describe("shouldAutoStartChat", () => {
     let startedFor: BotId | null = null;
     let starts = 0;
     const runEffect = () => {
-      if (!shouldAutoStartChat({ botId, environmentReady: true, startedFor })) return;
+      if (!shouldAutoStartChat({ botId, ...healthy, startedFor })) return;
       startedFor = botId;
       starts += 1;
     };
@@ -139,13 +142,45 @@ describe("shouldAutoStartChat", () => {
   });
 
   it("never burns the mount's one attempt before the environment resolves", () => {
-    expect(shouldAutoStartChat({ botId, environmentReady: false, startedFor: null })).toBe(false);
+    expect(
+      shouldAutoStartChat({
+        botId,
+        environmentReady: false,
+        kernelHealth: "healthy",
+        startedFor: null,
+      }),
+    ).toBe(false);
   });
 
   it("reconnects when the shell swaps the conversation under the same mount", () => {
-    expect(
-      shouldAutoStartChat({ botId: "bot_2" as BotId, environmentReady: true, startedFor: botId }),
-    ).toBe(true);
+    expect(shouldAutoStartChat({ botId: "bot_2" as BotId, ...healthy, startedFor: botId })).toBe(
+      true,
+    );
+  });
+
+  it("does not let navigation alone touch the server when the kernel is down", () => {
+    // `startPrimaryChat` creates the durable thread *before* it attempts the
+    // session, so a rail sweep with the kernel down would materialise one
+    // permanent thread per bot passed over, every visit.
+    for (const kernelHealth of ["down", "unknown", "not-provisioned", null] as const) {
+      expect(
+        shouldAutoStartChat({ botId, environmentReady: true, kernelHealth, startedFor: null }),
+      ).toBe(false);
+    }
+  });
+});
+
+describe("canAutoConnect", () => {
+  it("auto-connects only on a positively healthy kernel", () => {
+    expect(canAutoConnect("healthy")).toBe(true);
+  });
+
+  it("treats an unknown or absent snapshot as do-not-connect", () => {
+    // Guessing wrong here costs one button press; guessing wrong the other way
+    // writes durable rows.
+    for (const state of ["down", "unknown", "not-provisioned", null] as const) {
+      expect(canAutoConnect(state)).toBe(false);
+    }
   });
 });
 
@@ -159,6 +194,7 @@ describe("resolveBotChatConnectState", () => {
       syncOutcome: waiting,
       startError: null,
       chatReady: false,
+      autoConnectBlocked: false,
     });
     expect(state.kind).toBe("connecting");
     expect(isBotChatComposerDisabled(state)).toBe(true);
@@ -170,6 +206,7 @@ describe("resolveBotChatConnectState", () => {
       syncOutcome: { kind: "ready" },
       startError: null,
       chatReady: true,
+      autoConnectBlocked: false,
     });
     expect(state.kind).toBe("ready");
     expect(isBotChatComposerDisabled(state)).toBe(false);
@@ -185,15 +222,64 @@ describe("resolveBotChatConnectState", () => {
         message: "No 'opencode2' provider instance is configured. Add one in Settings → Providers.",
       }),
       chatReady: false,
+      autoConnectBlocked: false,
     });
     expect(state.kind).toBe("failed");
     if (state.kind !== "failed") return;
-    // The primary sentence is short, product-voiced, and names the remedy.
-    expect(state.notice.message).toBe("This bot isn't connected — check its provider settings.");
+    /*
+     * Cause-neutral. `session_unavailable` is a bucket covering a missing
+     * project, an unbound repo, a failed workspace create, a down kernel and a
+     * model-less provider instance, so the headline may not assert any one of
+     * them — an earlier cut said "check its provider settings" and was
+     * confidently wrong for most causes.
+     */
+    expect(state.notice.message).toBe("This bot isn't connected.");
+    expect(state.notice.message).not.toContain("provider");
     expect(state.notice.message).not.toContain("opencode2");
-    // The technical half is still reachable — just not as primary copy.
+    // The server already names the real remedy; it rides in the disclosure.
     expect(state.notice.details).toContain("Settings → Providers");
     expect(isBotChatComposerDisabled(state)).toBe(true);
+  });
+
+  it("shows the kernel-down notice without having asked the server", () => {
+    const state = resolveBotChatConnectState({
+      body: connecting,
+      syncOutcome: waiting,
+      startError: null,
+      chatReady: false,
+      autoConnectBlocked: true,
+    });
+    expect(state.kind).toBe("failed");
+    if (state.kind !== "failed") return;
+    expect(state.notice).toBe(BOT_CHAT_KERNEL_DOWN_NOTICE);
+    // Retry is still offered, and the disclosure says so.
+    expect(state.notice.details).toContain("Retry");
+  });
+
+  it("never throws a live conversation away over a health snapshot", () => {
+    // A session that outlived the kernel going down, or a Retry that beat the
+    // pill, keeps its conversation.
+    const state = resolveBotChatConnectState({
+      body: { kind: "chat", threadId: "thr_1" as ThreadId },
+      syncOutcome: { kind: "ready" },
+      startError: null,
+      chatReady: true,
+      autoConnectBlocked: true,
+    });
+    expect(state.kind).toBe("ready");
+  });
+
+  it("lets a real start failure outrank the blocked-connect notice", () => {
+    const state = resolveBotChatConnectState({
+      body: connecting,
+      syncOutcome: waiting,
+      startError: { message: "That bot no longer exists.", details: null },
+      chatReady: false,
+      autoConnectBlocked: true,
+    });
+    expect(state.kind).toBe("failed");
+    if (state.kind !== "failed") return;
+    expect(state.notice.message).toBe("That bot no longer exists.");
   });
 
   it("reports a failed read of the bot ahead of any session state", () => {
@@ -202,6 +288,7 @@ describe("resolveBotChatConnectState", () => {
       syncOutcome: waiting,
       startError: null,
       chatReady: true,
+      autoConnectBlocked: false,
     });
     expect(state.kind).toBe("failed");
   });
@@ -216,6 +303,7 @@ describe("resolveBotChatConnectState", () => {
       },
       startError: null,
       chatReady: false,
+      autoConnectBlocked: false,
     });
     expect(state.kind).toBe("failed");
     if (state.kind !== "failed") return;
@@ -239,15 +327,30 @@ describe("captain-surface copy tone (#217)", () => {
   ];
 
   it("keeps narration out of every string this module can produce", () => {
+    // Every entry must be read *out of* the module. An earlier cut wrote the
+    // expected sentence inline and asserted it against itself, which passes
+    // however the module is reworded.
+    const missing = resolveChatSyncOutcome({
+      renderState: "missing",
+      threadShellExists: false,
+      elapsedMs: 0,
+    });
+    const timedOut = resolveChatSyncOutcome({
+      renderState: "loading",
+      threadShellExists: false,
+      elapsedMs: CHAT_SYNC_TIMEOUT_MS,
+    });
     const strings = [
       BOT_CHAT_TOOLS_MISSING_NOTICE.message,
       BOT_CHAT_TOOLS_MISSING_NOTICE.details ?? "",
+      BOT_CHAT_KERNEL_DOWN_NOTICE.message,
+      BOT_CHAT_KERNEL_DOWN_NOTICE.details ?? "",
       botChatStartNotice(new Error("boom")).message,
-      resolveChatSyncOutcome({ renderState: "missing", threadShellExists: false, elapsedMs: 0 })
-        .kind === "retry"
-        ? "This conversation is no longer on the server."
-        : "",
+      missing.kind === "retry" ? missing.message : "",
+      timedOut.kind === "retry" ? timedOut.message : "",
     ];
+    // Guards against the list silently becoming empty strings.
+    expect(strings.every((value) => value.length > 0)).toBe(true);
     for (const value of strings) {
       for (const banned of BANNED) {
         expect(value).not.toContain(banned);

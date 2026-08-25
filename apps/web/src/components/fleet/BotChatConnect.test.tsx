@@ -14,7 +14,7 @@ import { BotChatConnectNoticeStrip, BotChatPendingConversation } from "./BotChat
  */
 
 const NOTICE = {
-  message: "This bot isn't connected — check its provider settings.",
+  message: "This bot isn't connected.",
   details: "No 'opencode2' provider instance is configured. Add one in Settings → Providers.",
 };
 
@@ -33,8 +33,12 @@ describe("BotChatConnectNoticeStrip", () => {
     );
     // A native <details> with no `open` attribute: present in the DOM, closed
     // on arrival. The provider-instance id must never be primary copy.
+    //
+    // React serialises a boolean attribute as `open=""`, so the old
+    // `not.toContain("<details open")` could never have failed regardless of
+    // the prop — this matches what actually reaches the DOM.
     expect(markup).toContain("<details");
-    expect(markup).not.toContain("<details open");
+    expect(markup).not.toContain('open=""');
     expect(markup).toContain("Details</summary>");
     const beforeDisclosure = markup.slice(0, markup.indexOf("<details"));
     expect(beforeDisclosure).not.toContain("opencode2");
@@ -62,10 +66,31 @@ describe("BotChatConnectNoticeStrip", () => {
     expect(markup).toContain('role="status"');
   });
 
-  it("announces a failure as an alert", () => {
-    expect(renderToStaticMarkup(<BotChatConnectNoticeStrip notice={NOTICE} />)).toContain(
-      'role="alert"',
+  it("scopes the alert to the sentence, not the whole strip", () => {
+    const markup = renderToStaticMarkup(
+      <BotChatConnectNoticeStrip notice={NOTICE} onRetry={() => {}} />,
     );
+    // The container is a status region; only the sentence is assertive. A live
+    // region announces its entire subtree, and the Retry button and disclosure
+    // are interactive controls that have no business being read out as part of
+    // an alert message.
+    expect(markup).toContain('role="alert"');
+    const container = markup.slice(0, markup.indexOf(">") + 1);
+    expect(container).toContain('role="status"');
+    expect(container).not.toContain('role="alert"');
+  });
+
+  it("yields the disclosure to a more specific CTA", () => {
+    // The no-project strip below carries a button; two competing remedies in
+    // the same corner is worse than one.
+    const markup = renderToStaticMarkup(
+      <BotChatConnectNoticeStrip notice={NOTICE} onRetry={() => {}} suppressDetails />,
+    );
+    expect(markup).not.toContain("<details");
+    expect(markup).not.toContain("opencode2");
+    // The headline and the way out both survive the suppression.
+    expect(markup).toContain("This bot isn&#x27;t connected");
+    expect(markup).toContain("Retry");
   });
 });
 

@@ -73,7 +73,7 @@ describe("adeCaptainErrorMessage", () => {
         { _tag: "AdeCaptainError", reason: "session_unavailable", message: "Codex is down." },
         "fallback",
       ),
-    ).toBe("This bot isn't connected — check its provider settings. Codex is down.");
+    ).toBe("This bot isn't connected. Codex is down.");
   });
 
   it("splits rather than concatenates for surfaces with a disclosure", () => {
@@ -87,7 +87,7 @@ describe("adeCaptainErrorMessage", () => {
       },
       "fallback",
     );
-    expect(parts.headline).toBe("This bot isn't connected — check its provider settings.");
+    expect(parts.headline).toBe("This bot isn't connected.");
     expect(parts.headline).not.toContain("opencode2");
     expect(parts.details).toBe("No 'opencode2' provider instance is configured.");
   });
@@ -108,15 +108,22 @@ describe("adeCaptainErrorMessage", () => {
     expect(parts.details).toBe("ECONNREFUSED 127.0.0.1:4096");
   });
 
-  it("keeps the remedy out of implementation vocabulary", () => {
-    // #217: the sentence a captain reads at a glance names what to do, not
-    // which internal subsystem refused.
+  it("stays cause-neutral on the session_unavailable bucket", () => {
+    /*
+     * #217: `session_unavailable` covers a missing project, an unbound repo, a
+     * failed workspace create, a down kernel and a model-less provider
+     * instance. The headline may therefore name neither the subsystem that
+     * refused nor any one remedy — it would be wrong for most causes, and it
+     * can render directly above a no-project CTA that contradicts it.
+     */
     const headline = adeCaptainErrorMessage(
       { _tag: "AdeCaptainError", reason: "session_unavailable" },
       "fallback",
     );
-    expect(headline).not.toContain("kernel");
-    expect(headline).toContain("provider settings");
+    expect(headline).toBe("This bot isn't connected.");
+    for (const cause of ["kernel", "provider", "project", "repository", "model"]) {
+      expect(headline).not.toContain(cause);
+    }
   });
 
   it("uses the reason alone when the server said nothing more", () => {

@@ -30,12 +30,23 @@ export function BotChatConnectNoticeStrip({
   onRetry,
   retryLabel = "Retry",
   tone = "error",
+  suppressDetails = false,
 }: {
   readonly notice: BotChatConnectNotice;
   /** Absent when the notice is informational and there is nothing to re-try. */
   readonly onRetry?: () => void;
   readonly retryLabel?: string;
   readonly tone?: "error" | "muted";
+  /**
+   * Hide the disclosure even when the notice carries one.
+   *
+   * Set when a more specific, actionable strip is already on screen — the
+   * no-project CTA directly below this one. Two competing remedies stacked in
+   * the same corner is worse than one, because the captain has to work out
+   * which is the real next action. The CTA wins: it is a button, not a
+   * paragraph.
+   */
+  readonly suppressDetails?: boolean;
 }) {
   return (
     <div
@@ -45,15 +56,26 @@ export function BotChatConnectNoticeStrip({
           ? "bg-destructive/5 text-destructive"
           : "bg-muted/40 text-muted-foreground",
       )}
-      role={tone === "error" ? "alert" : "status"}
+      /*
+       * `role="status"` on the container, with the alert scoped to the sentence.
+       *
+       * A live region announces its whole subtree, and this one contains a
+       * Retry button and a disclosure — interactive controls have no business
+       * being read out as part of an alert message. Scoping the assertive role
+       * to the sentence keeps the failure announced while leaving the controls
+       * as ordinary focusable content.
+       */
+      role="status"
     >
-      <span className="font-medium">{notice.message}</span>
+      <span className="font-medium" role={tone === "error" ? "alert" : undefined}>
+        {notice.message}
+      </span>
       {onRetry === undefined ? null : (
         <Button className="h-6 px-2 text-xs" onClick={onRetry} size="sm" variant="outline">
           {retryLabel}
         </Button>
       )}
-      {notice.details === null ? null : (
+      {notice.details === null || suppressDetails ? null : (
         <details className="w-full">
           <summary className="cursor-pointer text-xs text-muted-foreground underline-offset-2 hover:underline">
             Details
