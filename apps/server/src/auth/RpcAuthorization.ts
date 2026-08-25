@@ -151,6 +151,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.adeUpsertBotGroup]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeDeleteBotGroup]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeGetBotScreen]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeGetBotRoutineContext]: AuthOrchestrationReadScope,
   [WS_METHODS.adeStartBotDesktop]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeStopBotDesktop]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeDeleteBot]: AuthOrchestrationOperateScope,

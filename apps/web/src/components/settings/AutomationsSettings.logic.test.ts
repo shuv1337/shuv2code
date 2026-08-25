@@ -23,6 +23,9 @@ function automationFixture(overrides: Readonly<Record<string, unknown>> = {}) {
   return decodeAutomation({
     id: "automation-1",
     projectId: "project-1",
+    // Automations created from Settings belong to the project, not to a bot
+    // (migration 060). Null is the ordinary case, not an absence.
+    botId: null,
     name: "Morning report",
     prompt: "Run the report",
     enabled: false,
@@ -48,6 +51,9 @@ function summaryFixture(overrides: Readonly<Record<string, unknown>> = {}) {
   return decodeAutomationSummary({
     id: "automation-1",
     projectId: "project-1",
+    // Automations created from Settings belong to the project, not to a bot
+    // (migration 060). Null is the ordinary case, not an absence.
+    botId: null,
     name: "Morning report",
     promptPreview: "Run the report",
     promptLength: 14,

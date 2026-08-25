@@ -4,15 +4,102 @@ import {
   AutomationName,
   AutomationPrompt,
   AutomationTimeZone,
+  type AutomationConcurrencyPolicy,
   type AutomationRun,
+  type ModelSelection,
   type ProjectAutomation,
   type ProjectAutomationSummary,
+  type ProviderInteractionMode,
+  type RuntimeMode,
   type AutomationValidateScheduleInput,
 } from "@shuv2code/contracts";
 
 type ParseResult<A> =
   | { readonly ok: true; readonly value: A }
   | { readonly ok: false; readonly error: string };
+
+/**
+ * The automation editor's raw field state — strings as typed, not yet
+ * validated into branded contract types.
+ *
+ * It lives here rather than beside the form because two surfaces now render
+ * that form: Settings → Automations, and the captain rail's Routines panel
+ * (`docs/ade/MESSENGER-PIVOT.md` §2, M6). A second copy of this shape is how
+ * the two would drift a field apart.
+ */
+export type AutomationFormValue = {
+  readonly name: string;
+  readonly prompt: string;
+  readonly enabled: boolean;
+  readonly cronExpression: string;
+  readonly timeZone: string;
+  readonly modelSelection: ModelSelection;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+  readonly concurrencyPolicy: AutomationConcurrencyPolicy;
+};
+
+/** 09:00, Monday–Friday — the placeholder the cron field also documents. */
+export const DEFAULT_AUTOMATION_CRON = "0 9 * * 1-5";
+
+export function browserTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+/**
+ * A blank automation, disabled.
+ *
+ * `enabled: false` is the load-bearing default: a routine created from a rail
+ * in two clicks must not start running on a schedule the captain has not read
+ * back to themselves.
+ */
+export function emptyAutomationFormValue(modelSelection: ModelSelection): AutomationFormValue {
+  return {
+    name: "",
+    prompt: "",
+    enabled: false,
+    cronExpression: DEFAULT_AUTOMATION_CRON,
+    timeZone: browserTimeZone(),
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    concurrencyPolicy: "skip",
+  };
+}
+
+/**
+ * Validate a whole form into the fields `automations.create` and
+ * `automations.update` share. Both surfaces submit through this, so a field
+ * that is checked in Settings cannot be unchecked on the rail.
+ */
+export function parseAutomationFormValue(value: AutomationFormValue): ParseResult<{
+  readonly name: AutomationName;
+  readonly prompt: AutomationPrompt;
+  readonly enabled: boolean;
+  readonly cronExpression: AutomationCronExpression;
+  readonly timeZone: AutomationTimeZone;
+  readonly modelSelection: ModelSelection;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+  readonly concurrencyPolicy: AutomationConcurrencyPolicy;
+}> {
+  const textFields = parseAutomationTextFields(value.name, value.prompt);
+  if (!textFields.ok) return textFields;
+  const scheduleFields = parseAutomationScheduleFields(value.cronExpression, value.timeZone);
+  if (!scheduleFields.ok) return scheduleFields;
+  return {
+    ok: true,
+    value: {
+      ...textFields.value,
+      enabled: value.enabled,
+      ...scheduleFields.value,
+      modelSelection: value.modelSelection,
+      runtimeMode: value.runtimeMode,
+      interactionMode: value.interactionMode,
+      concurrencyPolicy: value.concurrencyPolicy,
+    },
+  };
+}
 
 function summarizeText(value: string): { readonly preview: string; readonly length: number } {
   let preview = "";
@@ -34,6 +121,7 @@ export function toAutomationSummary(automation: ProjectAutomation): ProjectAutom
   return {
     id: automation.id,
     projectId: automation.projectId,
+    botId: automation.botId,
     name: automation.name,
     promptPreview: prompt.preview,
     promptLength: prompt.length,

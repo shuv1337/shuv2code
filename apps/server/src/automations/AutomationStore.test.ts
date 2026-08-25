@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   AutomationListCursor,
   AutomationListResult,
+  BotId,
   ProjectAutomation,
   ProjectId,
   ProviderInstanceId,
@@ -402,6 +403,135 @@ storeLayer("AutomationStore", (it) => {
       const fullAutomation = Option.getOrThrow(yield* store.get(created[0]!.id));
       assert.strictEqual(fullAutomation.modelSelection.model.length, 200_000);
       assert.strictEqual(fullAutomation.modelSelection.options?.[0]?.value, adversarialOption);
+    }),
+  );
+
+  it.effect("attributes routines to a bot without partitioning the project", () =>
+    Effect.gen(function* () {
+      const store = yield* AutomationStore;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("routine-project");
+      const botId = BotId.make("bot-1");
+      const otherBotId = BotId.make("bot-2");
+
+      yield* sql`DELETE FROM automation_runs`;
+      yield* sql`DELETE FROM project_automations`;
+      yield* sql`DELETE FROM projection_projects WHERE project_id = ${projectId}`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json,
+          scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          ${projectId}, 'Routine Project', '/tmp/routine-project', NULL,
+          '[]', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', NULL
+        )
+      `;
+
+      const common = {
+        projectId,
+        prompt: "Produce the report",
+        enabled: false,
+        cronExpression: "0 9 * * *",
+        timeZone: "Europe/London",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.6-sol",
+        },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        concurrencyPolicy: "skip" as const,
+      };
+
+      const mine = yield* store.create({ ...common, name: "Mine", botId });
+      const shared = yield* store.create({ ...common, name: "Shared" });
+      const theirs = yield* store.create({ ...common, name: "Theirs", botId: otherBotId });
+
+      assert.strictEqual(mine.botId, botId);
+      // Absent means the project's, which is what every automation created
+      // from Settings — and every row that predates migration 060 — is.
+      assert.strictEqual(shared.botId, null);
+
+      const unfiltered = yield* store.list({ projectId });
+      assert.deepStrictEqual(unfiltered.automations.map((automation) => automation.name).sort(), [
+        "Mine",
+        "Shared",
+        "Theirs",
+      ]);
+
+      // The rail's filter: this bot's routines *plus* the project's. Hiding
+      // the unattributed ones is how a captain creates the same routine twice.
+      const forBot = yield* store.list({ projectId, botId });
+      assert.deepStrictEqual(forBot.automations.map((automation) => automation.name).sort(), [
+        "Mine",
+        "Shared",
+      ]);
+      assert.strictEqual(
+        forBot.automations.find((automation) => automation.name === "Mine")?.botId,
+        botId,
+      );
+
+      // Partial patch: `undefined` leaves the attribution, `null` clears it.
+      const renamed = yield* store.update({
+        projectId,
+        automationId: mine.id,
+        name: "Mine, renamed",
+      });
+      assert.strictEqual(renamed.botId, botId);
+      const released = yield* store.update({ projectId, automationId: mine.id, botId: null });
+      assert.strictEqual(released.botId, null);
+      assert.strictEqual(theirs.botId, otherBotId);
+    }),
+  );
+
+  it.effect("refuses to resume a page under a different bot filter", () =>
+    Effect.gen(function* () {
+      const store = yield* AutomationStore;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("routine-cursor-project");
+      const botId = BotId.make("bot-1");
+
+      yield* sql`DELETE FROM automation_runs`;
+      yield* sql`DELETE FROM project_automations`;
+      yield* sql`DELETE FROM projection_projects WHERE project_id = ${projectId}`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json,
+          scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          ${projectId}, 'Cursor Project', '/tmp/routine-cursor-project', NULL,
+          '[]', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', NULL
+        )
+      `;
+
+      const common = {
+        projectId,
+        prompt: "Produce the report",
+        enabled: false,
+        cronExpression: "0 9 * * *",
+        timeZone: "Europe/London",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.6-sol",
+        },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        concurrencyPolicy: "skip" as const,
+      };
+      yield* store.create({ ...common, name: "One", botId });
+      yield* store.create({ ...common, name: "Two", botId });
+
+      const firstPage = yield* store.list({ projectId, botId, limit: 1 });
+      const cursor = firstPage.nextCursor;
+      assert.ok(cursor !== null);
+
+      // Keyset paging assumes the row set has not moved under it. Resuming a
+      // filtered page unfiltered silently skips rows rather than erroring, so
+      // the cursor pins the filter it was cut under.
+      const failure = yield* Effect.flip(store.list({ projectId, cursor: cursor! }));
+      assert.strictEqual(failure.reason, "invalid_cursor");
+
+      const secondPage = yield* store.list({ projectId, botId, cursor: cursor!, limit: 10 });
+      assert.strictEqual(secondPage.automations.length, 1);
     }),
   );
 });

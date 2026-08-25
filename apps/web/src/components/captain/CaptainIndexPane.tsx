@@ -51,6 +51,29 @@ export function CaptainIndexPane({ filter = "all" }: { readonly filter?: Contact
 }
 
 /**
+ * Whether the first-project CTA can be submitted (#212).
+ *
+ * Pure and exported so the *reason* a repository path is mandatory is asserted
+ * once rather than inferred from a disabled attribute: an ADE project with no
+ * repo binding can never start a chat, and nothing in the app can bind one
+ * afterwards. The same predicate gates the button and the submit handler, so a
+ * keyboard Enter cannot bypass what the button refuses.
+ */
+export function canSubmitFirstProject(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly name: string;
+  readonly repoPath: string;
+  readonly busy: boolean;
+}): boolean {
+  return (
+    !input.busy &&
+    input.environmentId !== null &&
+    input.name.trim().length > 0 &&
+    input.repoPath.trim().length > 0
+  );
+}
+
+/**
  * The empty-state CTA (#141). It creates an **ADE** project — the thing that
  * owns a crew and auto-creates a Second Mate — not a shuv2code workspace
  * project. Pointing this at the generic workspace palette left the fleet with
@@ -71,15 +94,16 @@ export function FirstProjectCta({
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    if (environmentId === null || name.trim().length === 0) return;
+    // The narrowing is spelled out here rather than inferred from the
+    // predicate: `canSubmitFirstProject` is the single source of the *rule*,
+    // and this is what makes the compiler agree the environment is present.
+    if (!canSubmitFirstProject({ environmentId, name, repoPath, busy })) return;
+    if (environmentId === null) return;
     setBusy(true);
     setError(null);
     const result = await createProject({
       environmentId,
-      input: {
-        name: name.trim(),
-        repoPath: repoPath.trim().length === 0 ? null : repoPath.trim(),
-      },
+      input: { name: name.trim(), repoPath: repoPath.trim() },
     });
     setBusy(false);
     if (result._tag === "Failure") {
@@ -113,12 +137,24 @@ export function FirstProjectCta({
         <Input
           aria-label="Repository path"
           onChange={(event) => setRepoPath(event.target.value)}
-          placeholder="Repository path (optional)"
+          placeholder="Repository path"
+          required
           value={repoPath}
         />
+        {/*
+          #212: the field used to say "(optional)", and it was not. A project
+          with no repository has nowhere for its bots to run, so the first
+          message to any of them fails — and there is no in-app way to bind a
+          repo afterwards, which makes the optionality a one-way trap rather
+          than a deferred decision. Requiring it here removes the trap at the
+          only moment the captain can act on it.
+        */}
+        <p className="text-xs text-muted-foreground">
+          Bots run inside this repository, so a project needs one before it can chat.
+        </p>
         <Button
           className="self-start"
-          disabled={busy || environmentId === null || name.trim().length === 0}
+          disabled={!canSubmitFirstProject({ environmentId, name, repoPath, busy })}
           onClick={() => void submit()}
           size="sm"
         >

@@ -25,6 +25,52 @@ export const CAPTAIN_RIGHT_RAIL_WIDTH_PX = 470;
 export const CAPTAIN_CENTER_MIN_WIDTH_PX = 520;
 
 /**
+ * Resize bounds for the right rail (§2: "470px, collapsible, resizable").
+ *
+ * The minimum is not cosmetic. Below it the screen thumbnail stops being a
+ * picture of anything and the routine rows lose their schedule line, which is
+ * a rail that occupies space without answering a question. The maximum leaves
+ * the centre column its `CAPTAIN_CENTER_MIN_WIDTH_PX` at the reference width,
+ * so dragging the handle can never squeeze the conversation out of the layout
+ * it was sized for.
+ */
+export const CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX = 320;
+export const CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX = 720;
+/** localStorage key for the persisted rail width. */
+export const CAPTAIN_RIGHT_RAIL_WIDTH_STORAGE_KEY = "shuv2code:captain-right-rail-width";
+
+/**
+ * The widest the rail may be drawn at this viewport, so the centre column keeps
+ * its minimum. Pure, and separated from the hook because the failure it
+ * prevents — a rail persisted at 720px reopening on a 1440px window and
+ * pushing the conversation under 520px — only shows up at a width nobody
+ * resized at.
+ */
+export function captainRightRailMaxWidth(input: {
+  readonly viewportWidth: number;
+  readonly leftRailWidth: number;
+}): number {
+  if (!Number.isFinite(input.viewportWidth)) return CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX;
+  const available = input.viewportWidth - input.leftRailWidth - CAPTAIN_CENTER_MIN_WIDTH_PX;
+  return Math.max(
+    CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX,
+    Math.min(CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX, available),
+  );
+}
+
+/** The grid width the left rail actually occupies in a given region set. */
+export function captainLeftRailWidth(regions: CaptainShellRegions): number {
+  switch (regions.leftRail) {
+    case "expanded":
+      return CAPTAIN_LEFT_RAIL_WIDTH_PX;
+    case "icon":
+      return CAPTAIN_LEFT_RAIL_ICON_WIDTH_PX;
+    case "hidden":
+      return 0;
+  }
+}
+
+/**
  * Captain-owned media queries. Each is a bare **lower** bound and the bands are
  * resolved widest-first, so the four together cover the real line with no gap
  * and no overlap.
@@ -167,7 +213,11 @@ export function resolveCaptainShellRegions(input: CaptainShellRegionsInput): Cap
  * minimum only where there is room for one; below the reference width a hard
  * 520px min would force a horizontal scrollbar instead of a narrower column.
  */
-export function captainGridTemplateColumns(regions: CaptainShellRegions): string {
+export function captainGridTemplateColumns(
+  regions: CaptainShellRegions,
+  /** The resized rail width; the 470px default when nobody has dragged it. */
+  rightRailWidthPx: number = CAPTAIN_RIGHT_RAIL_WIDTH_PX,
+): string {
   if (regions.mode === "single-column") {
     // Whichever column the route chose is full-bleed. A fixed 380px rail on a
     // 375px phone is a horizontal scrollbar, not a layout.
@@ -187,7 +237,7 @@ export function captainGridTemplateColumns(regions: CaptainShellRegions): string
     );
   }
   if (regions.rightRailInline) {
-    tracks.push(`${CAPTAIN_RIGHT_RAIL_WIDTH_PX}px`);
+    tracks.push(`${rightRailWidthPx}px`);
   }
   return tracks.length === 0 ? "minmax(0, 1fr)" : tracks.join(" ");
 }

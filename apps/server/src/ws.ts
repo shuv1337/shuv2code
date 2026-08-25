@@ -103,6 +103,7 @@ import {
   WsAdeUpsertBotGroupRpc,
   WsAdeDeleteBotGroupRpc,
   WsAdeGetBotScreenRpc,
+  WsAdeGetBotRoutineContextRpc,
   WsAdeStartBotDesktopRpc,
   WsAdeStopBotDesktopRpc,
   WsAdeDeleteBotRpc,
@@ -487,6 +488,12 @@ const makeAdeRpcHandlers = (
       observeRpcEffect(WS_METHODS.adeMarkBotChatRead, adeCaptainApi.markBotChatRead(input), ade),
     [WS_METHODS.adeGetBotScreen]: (input: { readonly botId: BotId }) =>
       observeRpcEffect(WS_METHODS.adeGetBotScreen, adeCaptainApi.getBotScreen(input.botId), ade),
+    [WS_METHODS.adeGetBotRoutineContext]: (input: { readonly botId: BotId }) =>
+      observeRpcEffect(
+        WS_METHODS.adeGetBotRoutineContext,
+        adeCaptainApi.getBotRoutineContext(input.botId),
+        ade,
+      ),
     [WS_METHODS.adeStartBotDesktop]: (input: { readonly botId: BotId }) =>
       observeRpcEffect(
         WS_METHODS.adeStartBotDesktop,
@@ -528,6 +535,7 @@ export const AdeWsRpcGroup = RpcGroup.make(
   WsAdeStartBotChatRpc,
   WsAdeMarkBotChatReadRpc,
   WsAdeGetBotScreenRpc,
+  WsAdeGetBotRoutineContextRpc,
   WsAdeStartBotDesktopRpc,
   WsAdeStopBotDesktopRpc,
   WsAdeDeleteBotRpc,

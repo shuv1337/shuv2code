@@ -8,6 +8,7 @@ import {
   AdeBotChatSession,
   AdeBotDetail,
   AdeBotIdInput,
+  AdeBotRoutineContext,
   AdeBotGroup,
   AdeBotScreen,
   AdeCaptainError,
@@ -446,6 +447,7 @@ export const WS_METHODS = {
   adeSubmitNeedsYouDecision: "ade.submitNeedsYouDecision",
   adeStartBotChat: "ade.startBotChat",
   adeGetBotScreen: "ade.getBotScreen",
+  adeGetBotRoutineContext: "ade.getBotRoutineContext",
   adeStartBotDesktop: "ade.startBotDesktop",
   adeStopBotDesktop: "ade.stopBotDesktop",
   adeDeleteBot: "ade.deleteBot",
@@ -1418,6 +1420,19 @@ export const WsAdeGetBotScreenRpc = Rpc.make(WS_METHODS.adeGetBotScreen, {
   error: AdeCaptainRpcError,
 });
 
+/**
+ * Resolves a bot to the workspace project its routines live on
+ * (`docs/ade/MESSENGER-PIVOT.md` §4, M6). A pure read that creates nothing:
+ * where chat *would* mint a missing workspace project, the rail reports
+ * `"no-workspace-project"` and waits, because opening a side panel is not a
+ * captain asking for a project.
+ */
+export const WsAdeGetBotRoutineContextRpc = Rpc.make(WS_METHODS.adeGetBotRoutineContext, {
+  payload: AdeBotIdInput,
+  success: AdeBotRoutineContext,
+  error: AdeCaptainRpcError,
+});
+
 /** Explicit captain Start from the Screen tab; the only spawn path in the UI. */
 export const WsAdeStartBotDesktopRpc = Rpc.make(WS_METHODS.adeStartBotDesktop, {
   payload: AdeBotIdInput,
@@ -1569,6 +1584,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeStartBotChatRpc,
   WsAdeGetBotScreenRpc,
+  WsAdeGetBotRoutineContextRpc,
   WsAdeStartBotDesktopRpc,
   WsAdeStopBotDesktopRpc,
   WsAdeDeleteBotRpc,

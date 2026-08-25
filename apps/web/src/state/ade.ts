@@ -2,6 +2,7 @@ import type {
   AdeAssignmentGraph,
   AdeBotDetail,
   AdeBotGroup,
+  AdeBotRoutineContext,
   AdeBotScreen,
   AdeNeedsYouCount,
   AdeNeedsYouEntry,
@@ -92,6 +93,23 @@ export function useAdeBotScreen(botId: BotId | null): EnvironmentQueryView<AdeBo
     environmentId === null || botId === null
       ? null
       : adeEnvironment.botScreen({ environmentId, input: { botId } }),
+  );
+}
+
+/**
+ * Which workspace project a bot's routines live on (messenger pivot §4, M6).
+ *
+ * A null `botId` reads nothing, so the rail costs one lookup per open
+ * conversation and none at the index.
+ */
+export function useAdeBotRoutineContext(
+  botId: BotId | null,
+): EnvironmentQueryView<AdeBotRoutineContext> {
+  const environmentId = useAdeEnvironmentId();
+  return useEnvironmentQuery(
+    environmentId === null || botId === null
+      ? null
+      : adeEnvironment.botRoutineContext({ environmentId, input: { botId } }),
   );
 }
 

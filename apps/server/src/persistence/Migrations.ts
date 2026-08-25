@@ -74,6 +74,7 @@ import Migration0056 from "./Migrations/056_AdeOneActiveVoiceBinding.ts";
 import Migration0057 from "./Migrations/057_AdeBotGroups.ts";
 import Migration0058 from "./Migrations/058_AdeChatReadMarks.ts";
 import Migration0059 from "./Migrations/059_AdeNeedsYouResolutionNote.ts";
+import Migration0060 from "./Migrations/060_AutomationBotAttribution.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -145,6 +146,7 @@ export const migrationEntries = [
   [57, "AdeBotGroups", Migration0057],
   [58, "AdeChatReadMarks", Migration0058],
   [59, "AdeNeedsYouResolutionNote", Migration0059],
+  [60, "AutomationBotAttribution", Migration0060],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

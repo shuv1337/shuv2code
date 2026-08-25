@@ -11,6 +11,7 @@ import {
   IsoDateTime,
   NonNegativeInt,
   PositiveInt,
+  ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -1011,6 +1012,44 @@ export class AdeCaptainError extends Schema.TaggedErrorClass<AdeCaptainError>()(
 
 export const AdeBotIdInput = Schema.Struct({ botId: BotId });
 export type AdeBotIdInput = typeof AdeBotIdInput.Type;
+
+/**
+ * Why a bot's rail can — or cannot — show routines
+ * (`docs/ade/MESSENGER-PIVOT.md` §4, M6).
+ *
+ * Routines are ordinary `project_automations` rows on a **workspace** project,
+ * while a bot belongs to an **ADE** project; the two are joined by the ADE
+ * project's repo binding. Three things can be missing along that path, and a
+ * single nullable `projectId` cannot tell them apart — so the rail would have
+ * to guess which sentence to show, and would inevitably tell a captain to bind
+ * a repo to a bot that has no project at all. The reason is therefore part of
+ * the answer.
+ */
+export const AdeBotRoutineContextReason = Schema.Literals([
+  /** Resolved: `projectId` is a real workspace project and routines can list. */
+  "ready",
+  /** The bot has no ADE project, and the fleet has no repo-bound project either. */
+  "no-project",
+  /** The ADE project exists but names no repository. */
+  "no-repo-binding",
+  /**
+   * The repo is named but no workspace project covers it yet. Chatting with the
+   * bot creates one, which is why this is a distinct, self-healing state rather
+   * than an error.
+   */
+  "no-workspace-project",
+]);
+export type AdeBotRoutineContextReason = typeof AdeBotRoutineContextReason.Type;
+
+export const AdeBotRoutineContext = Schema.Struct({
+  botId: BotId,
+  /** Non-null exactly when `reason` is `"ready"`. */
+  projectId: Schema.NullOr(ProjectId),
+  /** The ADE project's name, for the empty state that names what to fix. */
+  projectName: Schema.NullOr(TrimmedNonEmptyString),
+  reason: AdeBotRoutineContextReason,
+});
+export type AdeBotRoutineContext = typeof AdeBotRoutineContext.Type;
 
 export const AdeCreateBotFromTemplateInput = Schema.Struct({
   templateId: AdeBotTemplateId,

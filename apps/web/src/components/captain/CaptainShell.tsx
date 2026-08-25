@@ -6,9 +6,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { useResizableWidth } from "../../hooks/useResizableWidth";
 import { cn } from "../../lib/utils";
 import { useUiStateStore } from "../../uiStateStore";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
+import { RightPanelResizeHandle } from "../preview/RightPanelResizeHandle";
 import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
 import { ContactRail } from "./ContactRail";
@@ -16,10 +18,15 @@ import type { ContactRailFilter } from "./contactRail.logic";
 import {
   CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY,
   CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY,
+  CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX,
+  CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX,
   CAPTAIN_RIGHT_RAIL_WIDTH_PX,
+  CAPTAIN_RIGHT_RAIL_WIDTH_STORAGE_KEY,
   CAPTAIN_THREE_RAIL_MEDIA_QUERY,
   type CaptainLayoutMode,
   captainGridTemplateColumns,
+  captainLeftRailWidth,
+  captainRightRailMaxWidth,
   resolveCaptainLayoutModeFromMediaMatches,
   resolveCaptainShellRegions,
   shouldRenderConversationHeader,
@@ -83,6 +90,25 @@ export function CaptainShell({
   const hasRightRail = rightRail !== undefined && rightRail !== null;
   const rightRailInline = hasRightRail && regions.rightRailInline;
 
+  /*
+   * Rail width (§2: "470px, collapsible, resizable via `useResizableWidth`").
+   * The clamp is recomputed from the live viewport rather than fixed at the
+   * hook's `maxWidth`, so a width dragged wide on a large monitor cannot
+   * reopen on a smaller one and squeeze the conversation below its minimum.
+   */
+  const viewportWidth = useViewportWidth();
+  const { width: storedRightRailWidth, handlers: rightRailResizeHandlers } = useResizableWidth({
+    storageKey: CAPTAIN_RIGHT_RAIL_WIDTH_STORAGE_KEY,
+    defaultWidth: CAPTAIN_RIGHT_RAIL_WIDTH_PX,
+    minWidth: CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX,
+    maxWidth: CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX,
+    edge: "left",
+  });
+  const rightRailWidth = Math.min(
+    storedRightRailWidth,
+    captainRightRailMaxWidth({ viewportWidth, leftRailWidth: captainLeftRailWidth(regions) }),
+  );
+
   /**
    * The overlay's openness is *ephemeral*, not the persisted collapse flag.
    * Those are different questions: the flag says whether the captain wants the
@@ -142,7 +168,10 @@ export function CaptainShell({
       <div
         className="relative grid h-full min-h-0 w-full"
         style={{
-          gridTemplateColumns: captainGridTemplateColumns({ ...regions, rightRailInline }),
+          gridTemplateColumns: captainGridTemplateColumns(
+            { ...regions, rightRailInline },
+            rightRailWidth,
+          ),
         }}
       >
         {regions.leftRail === "hidden" ? null : (
@@ -194,8 +223,9 @@ export function CaptainShell({
         {rightRailInline ? (
           <aside
             aria-label="Bot panel"
-            className="flex h-full min-h-0 flex-col border-s border-border bg-sidebar"
+            className="relative flex h-full min-h-0 flex-col overflow-y-auto border-s border-border bg-sidebar"
           >
+            <RightPanelResizeHandle handlers={rightRailResizeHandlers} />
             {rightRail}
           </aside>
         ) : null}
@@ -211,14 +241,16 @@ export function CaptainShell({
             <aside
               aria-label="Bot panel"
               className={cn(
-                "absolute inset-y-0 end-0 z-20 flex min-h-0 flex-col border-s border-border bg-sidebar shadow-xl",
+                "absolute inset-y-0 end-0 z-20 flex min-h-0 flex-col overflow-y-auto border-s border-border bg-sidebar shadow-xl",
                 regions.rightRail === "sheet" ? "w-full" : undefined,
               )}
-              style={
-                regions.rightRail === "sheet"
-                  ? undefined
-                  : { width: `${CAPTAIN_RIGHT_RAIL_WIDTH_PX}px` }
-              }
+              /*
+               * The overlay honours the resized width but carries no handle:
+               * it floats over the conversation rather than sharing the grid
+               * with it, so there is no second column for a drag to trade
+               * against — and at `sheet` it is the whole viewport anyway.
+               */
+              style={regions.rightRail === "sheet" ? undefined : { width: `${rightRailWidth}px` }}
             >
               {rightRail}
             </aside>
@@ -294,6 +326,29 @@ export function ConversationHeader({
       ) : null}
     </header>
   );
+}
+
+/**
+ * The viewport width, for clamping the resized rail.
+ *
+ * Deliberately not a media query: the clamp is a continuous function of width,
+ * not a band, and the bands are already resolved above. `Infinity` when there
+ * is no window is the same "unmeasurable resolves to the reference layout"
+ * rule the band resolver uses — `captainRightRailMaxWidth` reads a non-finite
+ * width as "no constraint".
+ */
+function useViewportWidth(): number {
+  const [width, setWidth] = useState(() =>
+    typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerWidth,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onResize = () => setWidth(window.innerWidth);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return width;
 }
 
 /**

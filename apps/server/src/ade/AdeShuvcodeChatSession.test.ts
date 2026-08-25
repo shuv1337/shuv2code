@@ -651,7 +651,36 @@ describe("AdeShuvcodeChatSession.startPrimaryChat", () => {
         const { chat, botId } = yield* setup;
         const error = yield* Effect.flip(chat.startPrimaryChat(botId));
         assert.equal(error.reason, "session_unavailable");
-        assert.include(error.message, "Create one from the Fleet page");
+        assert.include(error.message, "Create one with a repository path");
+      }),
+    ),
+  );
+
+  it.effect("names the project, not a phantom missing one, when the repo is unbound (#212)", () =>
+    withChat(() =>
+      Effect.gen(function* () {
+        const { sql, chat, botId } = yield* setup;
+        // A project created before the CTA required a repository path. The old
+        // copy said "This bot has no project. Create one from the Fleet page",
+        // which was false — a project exists — and unactionable, because a
+        // second project would be just as unbound.
+        yield* sql`
+          INSERT INTO ade_projects (
+            project_id, name, second_mate_bot_id, repo_path, repo_remote,
+            integration_policy_default, check_commands_json,
+            shared_specialist_allow_list_json, limits_overrides_json,
+            created_at, updated_at
+          ) VALUES (
+            'p-unbound', 'Ledger', 'sm1', NULL, NULL, 'agent-review', '[]', '"all"', NULL,
+            '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z'
+          )
+        `;
+        yield* sql`UPDATE ade_bots SET project_id = 'p-unbound' WHERE bot_id = ${botId}`;
+
+        const error = yield* Effect.flip(chat.startPrimaryChat(botId));
+        assert.equal(error.reason, "session_unavailable");
+        assert.include(error.message, "'Ledger' has no repository path");
+        assert.notInclude(error.message, "This bot has no project");
       }),
     ),
   );

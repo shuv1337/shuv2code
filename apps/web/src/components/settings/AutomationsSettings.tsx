@@ -57,32 +57,19 @@ import {
   isAutomationModelTruncated,
   isAutomationPromptTruncated,
   mergeAutomationSummaryPages,
+  parseAutomationFormValue,
   parseAutomationScheduleFields,
-  parseAutomationTextFields,
   reconcileAutomationRun,
   removeAutomationSummary,
   upsertAutomationSummary,
+  DEFAULT_AUTOMATION_CRON,
+  emptyAutomationFormValue,
+  type AutomationFormValue,
 } from "./AutomationsSettings.logic";
 import { searchableSetting } from "./settingsSearch";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
-type AutomationFormValue = {
-  readonly name: string;
-  readonly prompt: string;
-  readonly enabled: boolean;
-  readonly cronExpression: string;
-  readonly timeZone: string;
-  readonly modelSelection: ModelSelection;
-  readonly runtimeMode: RuntimeMode;
-  readonly interactionMode: ProviderInteractionMode;
-  readonly concurrencyPolicy: AutomationConcurrencyPolicy;
-};
-
-const DEFAULT_CRON = "0 9 * * 1-5";
-
-function browserTimeZone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-}
+const DEFAULT_CRON = DEFAULT_AUTOMATION_CRON;
 
 function formatDateTime(value: string | null): string {
   if (value === null) return "—";
@@ -191,7 +178,58 @@ function RunStatusBadge({ status }: { readonly status: AutomationRun["status"] }
   return <Badge variant={variant}>{status}</Badge>;
 }
 
-function AutomationEditor({
+/**
+ * The provider/model choices the automation form needs, derived from the
+ * environment's configured providers and settings.
+ *
+ * Exported alongside `AutomationEditor` because the form cannot be mounted
+ * without them, and a second surface deriving them a second way is how the
+ * rail would end up offering a different model list than Settings does.
+ */
+export function useAutomationEditorModelContext(
+  project: EnvironmentProject,
+  selection: ModelSelection | null,
+): {
+  readonly fallbackModelSelection: ModelSelection;
+  readonly instanceEntries: ReturnType<typeof sortProviderInstanceEntries>;
+  readonly modelOptionsByInstance: ReturnType<typeof getCustomModelOptionsByInstance>;
+} {
+  const config = useAtomValue(serverEnvironment.configValueAtom(project.environmentId));
+  const settings = useEnvironmentSettings(project.environmentId);
+  const providers = useMemo(() => config?.providers ?? [], [config?.providers]);
+  const fallbackModelSelection: ModelSelection =
+    project.defaultModelSelection ?? resolveAppModelSelectionState(settings, providers);
+  const instanceEntries = useMemo(
+    () =>
+      sortProviderInstanceEntries(
+        applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings),
+      ),
+    [providers, settings],
+  );
+  const editorSelection = selection ?? fallbackModelSelection;
+  const modelOptionsByInstance = useMemo(
+    () =>
+      getCustomModelOptionsByInstance(
+        settings,
+        providers,
+        editorSelection.instanceId,
+        editorSelection.model,
+      ),
+    [editorSelection.instanceId, editorSelection.model, providers, settings],
+  );
+  return { fallbackModelSelection, instanceEntries, modelOptionsByInstance };
+}
+
+/**
+ * The automation form.
+ *
+ * Exported (rather than copied) because the captain rail's Routines panel
+ * creates routines through this exact form — same fields, same validation,
+ * same model picker (`docs/ade/MESSENGER-PIVOT.md` §3: "the automations
+ * atoms/form behind `routes/settings.automations.tsx`"). A routine and an
+ * automation are the same row; two forms would make them two features.
+ */
+export function AutomationEditor({
   initial,
   project,
   instanceEntries,
@@ -495,8 +533,6 @@ function AutomationEditor({
 }
 
 function AutomationProjectPanel({ project }: { readonly project: EnvironmentProject }) {
-  const config = useAtomValue(serverEnvironment.configValueAtom(project.environmentId));
-  const settings = useEnvironmentSettings(project.environmentId);
   const result = useAtomValue(
     automationEnvironment.list({
       environmentId: project.environmentId,
@@ -519,28 +555,11 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const providers = config?.providers ?? [];
-  const fallbackModelSelection: ModelSelection =
-    project.defaultModelSelection ?? resolveAppModelSelectionState(settings, providers);
-  const instanceEntries = useMemo(
-    () =>
-      sortProviderInstanceEntries(
-        applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings),
-      ),
-    [providers, settings],
-  );
-  const editorSelection =
-    editing && editing !== "new" ? editing.modelSelection : fallbackModelSelection;
-  const modelOptionsByInstance = useMemo(
-    () =>
-      getCustomModelOptionsByInstance(
-        settings,
-        providers,
-        editorSelection.instanceId,
-        editorSelection.model,
-      ),
-    [editorSelection.instanceId, editorSelection.model, providers, settings],
-  );
+  const { fallbackModelSelection, instanceEntries, modelOptionsByInstance } =
+    useAutomationEditorModelContext(
+      project,
+      editing && editing !== "new" ? editing.modelSelection : null,
+    );
   const data = Option.getOrNull(AsyncResult.value(result));
   const queryError = asyncError(result);
   const automations = useMemo(
@@ -631,17 +650,7 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
           interactionMode: editing.interactionMode,
           concurrencyPolicy: editing.concurrencyPolicy,
         }
-      : (newSeed ?? {
-          name: "",
-          prompt: "",
-          enabled: false,
-          cronExpression: DEFAULT_CRON,
-          timeZone: browserTimeZone(),
-          modelSelection: fallbackModelSelection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          concurrencyPolicy: "skip",
-        });
+      : (newSeed ?? emptyAutomationFormValue(fallbackModelSelection));
 
   return (
     <SettingsSection
@@ -679,28 +688,12 @@ function AutomationProjectPanel({ project }: { readonly project: EnvironmentProj
               setNewSeed(null);
             }}
             onSave={async (value) => {
-              const textFields = parseAutomationTextFields(value.name, value.prompt);
-              if (!textFields.ok) {
-                setActionError(textFields.error);
+              const parsed = parseAutomationFormValue(value);
+              if (!parsed.ok) {
+                setActionError(parsed.error);
                 return;
               }
-              const scheduleFields = parseAutomationScheduleFields(
-                value.cronExpression,
-                value.timeZone,
-              );
-              if (!scheduleFields.ok) {
-                setActionError(scheduleFields.error);
-                return;
-              }
-              const common = {
-                ...textFields.value,
-                enabled: value.enabled,
-                ...scheduleFields.value,
-                modelSelection: value.modelSelection,
-                runtimeMode: value.runtimeMode,
-                interactionMode: value.interactionMode,
-                concurrencyPolicy: value.concurrencyPolicy,
-              };
+              const common = parsed.value;
               await execute(
                 "save",
                 () =>

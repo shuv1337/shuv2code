@@ -142,6 +142,7 @@ describe("automation MCP authority", () => {
       const automation = {
         id: automationId,
         projectId: context.projectId,
+        botId: null,
         name: "Daily report",
         prompt: "Create the report.",
         enabled: false,
@@ -214,6 +215,7 @@ describe("automation MCP authority", () => {
       const automation = {
         id: automationId,
         projectId: context.projectId,
+        botId: null,
         name: "Paused report",
         prompt: "Create the report.",
         enabled: false,

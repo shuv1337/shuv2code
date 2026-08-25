@@ -141,6 +141,13 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
     deleteBotGroup: () =>
       note("deleteBotGroup", { groupId: "group-1", ungroupedBotIds: [BOT_ID] } as unknown as never),
     getBotScreen: () => note("getBotScreen", botScreen),
+    getBotRoutineContext: () =>
+      note("getBotRoutineContext", {
+        botId: BOT_ID,
+        projectId: null,
+        projectName: null,
+        reason: "no-project",
+      } as unknown as never),
     startBotDesktop: () =>
       note("startBotDesktop", {
         ...botScreen,
