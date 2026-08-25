@@ -448,6 +448,108 @@ scenario("raises one Needs You approval item while a candidate waits, and retire
   }),
 );
 
+/**
+ * The two crash windows around the item (D2). A trigger stands in for the
+ * process dying between the two writes: whatever the second statement is, if it
+ * cannot land then neither may the first — the split states are both
+ * unrecoverable.
+ */
+scenario("parks the candidate and raises its item atomically, or does neither", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "human-approval" });
+    const enqueued = yield* enqueue(fixture);
+    yield* fixture.sql`
+      CREATE TRIGGER simulated_crash_on_item_insert
+      BEFORE INSERT ON ade_needs_you_items
+      BEGIN SELECT RAISE(ABORT, 'simulated crash'); END
+    `;
+
+    const outcome = yield* Effect.result(fixture.service.processQueueHead(fixture.projectId));
+    assert.strictEqual(outcome._tag, "Failure");
+
+    // A candidate parked on `awaiting-approval` with no item is invisible
+    // forever: recovery only re-queues `running` rows, and the queue pass
+    // short-circuits on a candidate already sitting on its gate.
+    const candidate = yield* fixture.service.getCandidate(enqueued.candidate.id);
+    assert.notStrictEqual(candidate?.status, "awaiting-approval");
+    const items = yield* fixture.sql<{
+      readonly needs_you_item_id: string;
+    }>`SELECT needs_you_item_id FROM ade_needs_you_items WHERE kind = 'approval'`;
+    assert.strictEqual(items.length, 0);
+  }),
+);
+
+scenario("records the verdict and retires its item atomically, or does neither", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "human-approval" });
+    const enqueued = yield* enqueue(fixture);
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    yield* fixture.sql`
+      CREATE TRIGGER simulated_crash_on_item_resolve
+      BEFORE UPDATE OF status ON ade_needs_you_items
+      WHEN NEW.status = 'resolved'
+      BEGIN SELECT RAISE(ABORT, 'simulated crash'); END
+    `;
+
+    const outcome = yield* Effect.result(
+      fixture.service.submitApproval({ candidateId: enqueued.candidate.id, decision: "approve" }),
+    );
+    assert.strictEqual(outcome._tag, "Failure");
+
+    // The inverse split is what feeds D1: a candidate recorded as decided while
+    // its item stays open can never have that item retired, because
+    // `claimForVerdict` is the item's only retire path and the candidate has
+    // left the state that reaches it.
+    const candidate = yield* fixture.service.getCandidate(enqueued.candidate.id);
+    assert.strictEqual(candidate?.status, "awaiting-approval");
+    assert.strictEqual(candidate?.verdict, null);
+    const open = yield* fixture.sql<{
+      readonly needs_you_item_id: string;
+    }>`SELECT needs_you_item_id FROM ade_needs_you_items WHERE kind = 'approval' AND status = 'open'`;
+    assert.strictEqual(open.length, 1);
+  }),
+);
+
+/**
+ * D1(a): past the claim the verdict is durable and the item already retired, so
+ * a persistence failure is the sweeper's problem, not the captain's. Failing
+ * here would tell them their approval bounced and send the inbox reopening an
+ * item that can never be retired again.
+ */
+scenario("reports success when the verdict is durable but could not yet be applied", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "human-approval" });
+    const enqueued = yield* enqueue(fixture);
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    // Fails everything `applyVerdict` writes, and only that: the claim's own
+    // update sets `status = 'running'`, which this trigger lets through.
+    yield* fixture.sql`
+      CREATE TRIGGER simulated_busy_after_claim
+      BEFORE UPDATE OF status ON ade_integration_candidates
+      WHEN NEW.status IN ('integrated', 'bounced', 'queued')
+      BEGIN SELECT RAISE(ABORT, 'database is locked'); END
+    `;
+
+    const settled = yield* fixture.service.submitApproval({
+      candidateId: enqueued.candidate.id,
+      decision: "approve",
+    });
+
+    // The captain is told the approval landed, because it did.
+    assert.strictEqual(settled.verdict, "approved");
+    // The item is gone, and stays gone.
+    const open = yield* fixture.sql<{
+      readonly needs_you_item_id: string;
+    }>`SELECT needs_you_item_id FROM ade_needs_you_items WHERE kind = 'approval' AND status = 'open'`;
+    assert.strictEqual(open.length, 0);
+    // And the candidate sits `running` with a durable verdict, exactly where
+    // the sweeper picks it up (ADR §16.2).
+    const candidate = yield* fixture.service.getCandidate(enqueued.candidate.id);
+    assert.strictEqual(candidate?.status, "running");
+    assert.strictEqual(candidate?.verdict, "approved");
+  }),
+);
+
 scenario("retires the approval item on a denial too", () =>
   Effect.gen(function* () {
     const fixture = yield* setup({ integrationPolicyDefault: "human-approval" });

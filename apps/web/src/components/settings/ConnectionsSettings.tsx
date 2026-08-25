@@ -9,6 +9,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { type ReactNode, memo, useCallback, useId, useMemo, useState } from "react";
 import {
   AuthAccessReadScope,
+  AuthAdeApproveScope,
   AuthAccessWriteScope,
   AuthAdministrativeScopes,
   AuthOrchestrationOperateScope,
@@ -198,6 +199,11 @@ const PAIRING_SCOPE_OPTIONS: ReadonlyArray<{
     scope: AuthRelayWriteScope,
     title: "Manage relay",
     description: "Change managed tunnel connectivity.",
+  },
+  {
+    scope: AuthAdeApproveScope,
+    title: "Approve fleet work",
+    description: "Answer Needs You approvals — integrate a change, or bounce it.",
   },
 ];
 

@@ -84,6 +84,7 @@ const needsYouEntry: AdeNeedsYouEntry = {
   title: "A change is waiting for your approval",
   detail: "Approving integrates it.",
   actionable: true,
+  action: "approve-deny",
   botId: null,
   projectId: null,
   assignmentId: null,

@@ -45,9 +45,10 @@ const chatPortOk = Layer.succeed(AdeChatSessionPort, {
   startPrimaryChat: (botId: BotId) => Effect.succeed({ ...chatSession, botId }),
 });
 
-/** Records the verdicts the inbox forwards, so the seam stays observable. */
+/** A port that accepts every verdict — the seam is exercised in detail below. */
 const approvalPortOk = Layer.succeed(AdeApprovalPort, {
   submitIntegrationApproval: () => Effect.void,
+  readCandidateStatus: () => Effect.succeed("awaiting-approval" as string | null),
 });
 
 const makeLayer = (
@@ -477,18 +478,36 @@ const recordingApprovalPort = (calls: Array<ForwardedVerdict>) =>
       Effect.sync(() => {
         calls.push({ candidateId: input.candidateId, decision: input.decision });
       }),
-  } as AdeApprovalPort["Service"]);
+    readCandidateStatus: () => Effect.succeed("awaiting-approval"),
+  } as unknown as AdeApprovalPort["Service"]);
 
-/** The candidate moved on underneath us; the verdict does not land. */
-const refusingApprovalPort = Layer.succeed(AdeApprovalPort, {
-  submitIntegrationApproval: () =>
-    Effect.fail(
-      new AdeCaptainError({
-        reason: "needs_you_decision_rejected",
-        message: "the candidate is no longer awaiting approval",
-      }),
-    ),
-});
+const failingApprovalPort = (candidateStatus: string | null) =>
+  Layer.succeed(AdeApprovalPort, {
+    submitIntegrationApproval: () =>
+      Effect.fail(
+        new AdeCaptainError({
+          reason: "needs_you_decision_rejected",
+          message: "the submission failed",
+        }),
+      ),
+    readCandidateStatus: () => Effect.succeed(candidateStatus),
+  } as unknown as AdeApprovalPort["Service"]);
+
+/**
+ * Pre-claim failure: the integration service never recorded a verdict, so the
+ * candidate is still parked and the item has to come back.
+ */
+const refusingApprovalPort = failingApprovalPort("awaiting-approval");
+
+/**
+ * The D1 window: the submission reported failure, but the verdict was already
+ * durable — `claimForVerdict` records it and retires the item *before*
+ * `applyVerdict` runs, so a post-claim persistence failure surfaces as a failed
+ * call on a candidate that has already moved on. Reopening here would strand
+ * the item: `awaiting-approval` is the only state that retires it, and the
+ * candidate can never re-enter it.
+ */
+const verdictLandedThenFailedPort = failingApprovalPort("integrated");
 
 const APPROVAL_REFS = JSON.stringify([
   { _tag: "integrationCandidate", integrationCandidateId: "candidate-1" },
@@ -661,6 +680,70 @@ describe("AdeCaptainApi.submitNeedsYouDecision", () => {
     }).pipe(Effect.provide(makeLayer(chatPortOk, refusingApprovalPort))),
   );
 
+  it.effect("leaves the item retired when the verdict landed before the failure", () =>
+    Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "item-1",
+        kind: "approval",
+        subjectRefs: APPROVAL_REFS,
+      });
+
+      const error = yield* Effect.flip(
+        api.submitNeedsYouDecision({
+          needsYouItemId: "item-1" as NeedsYouItemId,
+          decision: "approve",
+        }),
+      );
+
+      // Reported as the benign conflict it is, not as a rejected decision.
+      assert.equal(error.reason, "needs_you_already_resolved");
+      // And crucially *not* reopened: the candidate has left `awaiting-approval`
+      // for good, so an item put back here could never be retired again.
+      const entry = yield* api.getNeedsYouItem("item-1" as NeedsYouItemId);
+      assert.equal(entry.item.status, "resolved");
+      assert.deepEqual(yield* api.getNeedsYouCount(), { open: 0 });
+    }).pipe(Effect.provide(makeLayer(chatPortOk, verdictLandedThenFailedPort))),
+  );
+
+  it.effect("never reopens an item something else retired in the meantime", () => {
+    // Runs inside the failed submission's recovery, between the claim and the
+    // reopen — the exact window the `status = 'resolved'` guard exists for.
+    const duringRecovery: { run: Effect.Effect<void> } = { run: Effect.void };
+    const racingPort = Layer.succeed(AdeApprovalPort, {
+      submitIntegrationApproval: () =>
+        Effect.fail(
+          new AdeCaptainError({ reason: "needs_you_decision_rejected", message: "failed" }),
+        ),
+      readCandidateStatus: () =>
+        Effect.as(Effect.orDie(duringRecovery.run), "awaiting-approval" as string | null),
+    } as unknown as AdeApprovalPort["Service"]);
+
+    return Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "item-1",
+        kind: "approval",
+        subjectRefs: APPROVAL_REFS,
+      });
+      duringRecovery.run = Effect.orDie(
+        sql`UPDATE ade_needs_you_items SET status = 'dismissed' WHERE needs_you_item_id = 'item-1'`,
+      ).pipe(Effect.asVoid);
+
+      yield* Effect.flip(
+        api.submitNeedsYouDecision({
+          needsYouItemId: "item-1" as NeedsYouItemId,
+          decision: "approve",
+        }),
+      );
+
+      // The reopen can only ever undo *our* claim. A row something else has
+      // since retired stays retired rather than springing back open.
+      const entry = yield* api.getNeedsYouItem("item-1" as NeedsYouItemId);
+      assert.equal(entry.item.status, "dismissed");
+    }).pipe(Effect.provide(makeLayer(chatPortOk, racingPort)));
+  });
+
   it.effect("reports a missing item rather than failing opaquely", () =>
     Effect.gen(function* () {
       const { api } = yield* setup;
@@ -671,6 +754,100 @@ describe("AdeCaptainApi.submitNeedsYouDecision", () => {
         }),
       );
       assert.equal(error.reason, "needs_you_not_found");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+});
+
+/**
+ * D3: the unroutable-repair item. Nothing waits on a verdict and nothing will
+ * ever clear it, so the captain retires it by hand — through the same gated
+ * RPC, with no port call underneath.
+ */
+describe("AdeCaptainApi.submitNeedsYouDecision (acknowledge)", () => {
+  const UNROUTABLE_REFS = JSON.stringify([
+    { _tag: "integrationCandidate", integrationCandidateId: "candidate-9" },
+  ]);
+
+  it.effect("acknowledges an unroutable repair without forwarding anything", () => {
+    const verdicts: Array<ForwardedVerdict> = [];
+    return Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "stuck-1",
+        kind: "stall",
+        subjectRefs: UNROUTABLE_REFS,
+      });
+
+      const listed = yield* api.listNeedsYou({ includeResolved: false });
+      assert.equal(listed.entries[0]?.action, "acknowledge");
+
+      const resolved = yield* api.submitNeedsYouDecision({
+        needsYouItemId: "stuck-1" as NeedsYouItemId,
+        decision: "acknowledge",
+      });
+
+      assert.equal(resolved.item.status, "resolved");
+      assert.equal(resolved.action, null);
+      // No verdict exists to forward; inventing one would name a candidate
+      // nothing is waiting on.
+      assert.deepEqual(verdicts, []);
+      assert.deepEqual(yield* api.getNeedsYouCount(), { open: 0 });
+    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+  });
+
+  it.effect("refuses a control the item does not offer, in either direction", () => {
+    const verdicts: Array<ForwardedVerdict> = [];
+    return Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "stuck-1",
+        kind: "stall",
+        subjectRefs: UNROUTABLE_REFS,
+      });
+      yield* insertNeedsYouItem(sql, {
+        id: "approval-1",
+        kind: "approval",
+        subjectRefs: APPROVAL_REFS,
+      });
+
+      const approvedAStall = yield* Effect.flip(
+        api.submitNeedsYouDecision({
+          needsYouItemId: "stuck-1" as NeedsYouItemId,
+          decision: "approve",
+        }),
+      );
+      const acknowledgedAnApproval = yield* Effect.flip(
+        api.submitNeedsYouDecision({
+          needsYouItemId: "approval-1" as NeedsYouItemId,
+          decision: "acknowledge",
+        }),
+      );
+
+      assert.equal(approvedAStall.reason, "needs_you_not_actionable");
+      assert.equal(acknowledgedAnApproval.reason, "needs_you_not_actionable");
+      // Neither refusal retired anything, and no verdict escaped.
+      assert.deepEqual(yield* api.getNeedsYouCount(), { open: 2 });
+      assert.deepEqual(verdicts, []);
+    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+  });
+
+  it.effect("acknowledging is exactly-once like every other resolution", () =>
+    Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "stuck-1",
+        kind: "stall",
+        subjectRefs: UNROUTABLE_REFS,
+      });
+      const acknowledge = () =>
+        api.submitNeedsYouDecision({
+          needsYouItemId: "stuck-1" as NeedsYouItemId,
+          decision: "acknowledge",
+        });
+
+      yield* acknowledge();
+      const second = yield* Effect.flip(acknowledge());
+      assert.equal(second.reason, "needs_you_already_resolved");
     }).pipe(Effect.provide(makeLayer())),
   );
 });

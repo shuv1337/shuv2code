@@ -6,7 +6,7 @@ import {
   compareNeedsYouEntries,
   emptyNeedsYouNaming,
   flattenSubjectRefs,
-  isActionableKind,
+  needsYouActionFor,
   projectNeedsYouRow,
   type NeedsYouRow,
 } from "./adeNeedsYou.ts";
@@ -70,6 +70,7 @@ describe("projectNeedsYouRow", () => {
     expect(entry.title).toContain("Demo");
     expect(entry.detail).toContain("Coder");
     expect(entry.actionable).toBe(true);
+    expect(entry.action).toBe("approve-deny");
     expect(entry.integrationCandidateId).toBe("candidate-1");
   });
 
@@ -79,17 +80,57 @@ describe("projectNeedsYouRow", () => {
       emptyNeedsYouNaming,
     );
     expect(entry.actionable).toBe(false);
+    expect(entry.action).toBeNull();
     expect(entry.item.resolvedAt).toBe("2026-08-24T01:00:00.000Z");
   });
 
   it("describes the kinds that resolve themselves without offering a decision", () => {
     for (const kind of ["kernel-down", "stall", "provision-failure", "form"] as const) {
       const entry = projectNeedsYouRow(row({ kind }), naming);
-      expect(isActionableKind(kind)).toBe(false);
       expect(entry.actionable).toBe(false);
+      expect(entry.action).toBeNull();
       expect(entry.title.length).toBeGreaterThan(0);
       expect(entry.detail.length).toBeGreaterThan(0);
     }
+  });
+
+  /**
+   * The unroutable-repair item (integration service, ADR §7.2/§13.3) is a
+   * `stall` naming only a candidate. Rendered as an ordinary stall it tells the
+   * captain to steer a bot that does not exist — and nothing ever clears it,
+   * because the engine's stall resolver keys on an assignment id it lacks.
+   */
+  it("renders a candidate-only stall as an unrepairable bounce, and lets it be acknowledged", () => {
+    const entry = projectNeedsYouRow(
+      row({
+        kind: "stall",
+        subject_refs_json: JSON.stringify([
+          { _tag: "integrationCandidate", integrationCandidateId: "candidate-9" },
+        ]),
+      }),
+      naming,
+    );
+
+    expect(entry.title).not.toContain("gone quiet");
+    expect(entry.detail).not.toContain("Steer");
+    expect(entry.detail).toContain("candidate-9");
+    expect(entry.detail).toMatch(/archived|gone/);
+    expect(entry.action).toBe("acknowledge");
+    expect(entry.actionable).toBe(true);
+    expect(entry.assignmentId).toBeNull();
+  });
+
+  it("still reads an assignment-shaped stall as a stall, so the engine keeps owning it", () => {
+    const flat = {
+      botId: "bot-1",
+      projectId: null,
+      assignmentId: "assignment-1",
+      integrationCandidateId: "candidate-9",
+      kernelEngine: null,
+    };
+    // A stall that names an assignment resolves itself when the assignment
+    // exits; offering the captain an Acknowledge would race that.
+    expect(needsYouActionFor({ kind: "stall", status: "open" }, flat)).toBeNull();
   });
 
   it("quotes the stalled assignment so the captain knows what is stuck", () => {

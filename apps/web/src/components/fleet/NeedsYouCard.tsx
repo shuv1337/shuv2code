@@ -94,12 +94,32 @@ export function NeedsYouCard({
       <p className="text-sm text-muted-foreground">{entry.detail}</p>
       {decisionView.canDecide || busy ? (
         <div className="flex items-center gap-2">
-          <Button disabled={busy} onClick={() => void decide("approve")} size="sm">
-            Approve
-          </Button>
-          <Button disabled={busy} onClick={() => void decide("deny")} size="sm" variant="outline">
-            Deny
-          </Button>
+          {decisionView.action === "acknowledge" ? (
+            // Nothing is waiting on a verdict here; the captain is confirming
+            // they have seen a thing no service will ever clear on its own.
+            <Button
+              disabled={busy}
+              onClick={() => void decide("acknowledge")}
+              size="sm"
+              variant="outline"
+            >
+              Acknowledge
+            </Button>
+          ) : (
+            <>
+              <Button disabled={busy} onClick={() => void decide("approve")} size="sm">
+                Approve
+              </Button>
+              <Button
+                disabled={busy}
+                onClick={() => void decide("deny")}
+                size="sm"
+                variant="outline"
+              >
+                Deny
+              </Button>
+            </>
+          )}
         </div>
       ) : decisionView.unavailableReason === null ? null : (
         <p className="text-xs text-muted-foreground">{decisionView.unavailableReason}</p>

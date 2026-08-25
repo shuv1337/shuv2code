@@ -803,8 +803,23 @@ export type AdeSetComputerUseInput = typeof AdeSetComputerUseInput.Type;
  * something waiting for that decision (spec §4.4). Every other kind is
  * resolved by the service that raised it, when the condition clears.
  */
-export const NeedsYouDecision = Schema.Literals(["approve", "deny"]);
+export const NeedsYouDecision = Schema.Literals(["approve", "deny", "acknowledge"]);
 export type NeedsYouDecision = typeof NeedsYouDecision.Type;
+
+/**
+ * What the captain can do with an item, when they can do anything.
+ *
+ * - `approve-deny`: a decision something is waiting on — the verdict travels to
+ *   the service that parked it (spec §4.4).
+ * - `acknowledge`: nothing is waiting on an answer, but nothing will clear the
+ *   item either. An unroutable repair is the case: the change bounced, its
+ *   author is gone, and no automatic path exists — so the captain retires it by
+ *   hand rather than watching the badge count something permanently.
+ *
+ * Null means the item resolves on its own (spec §4.6, §4.8) or already has.
+ */
+export const NeedsYouAction = Schema.Literals(["approve-deny", "acknowledge"]);
+export type NeedsYouAction = typeof NeedsYouAction.Type;
 
 /**
  * One rendering-ready Needs You row. The durable item is `item`; everything
@@ -822,8 +837,10 @@ export const AdeNeedsYouEntry = Schema.Struct({
   title: Schema.String,
   /** One sentence saying what happens next. */
   detail: Schema.String,
-  /** True only while the captain can still approve or deny it. */
+  /** True only while `action` is non-null — kept as the surfaces' quick test. */
   actionable: Schema.Boolean,
+  /** Which control the renderings offer; null when there is nothing to press. */
+  action: Schema.NullOr(NeedsYouAction),
   botId: Schema.NullOr(BotId),
   projectId: Schema.NullOr(AdeProjectId),
   assignmentId: Schema.NullOr(AssignmentId),

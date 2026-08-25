@@ -86,6 +86,9 @@ it.layer(NodeServices.layer)("EnvironmentAuth administrative operations", (it) =
         "access:read",
         "access:write",
         "relay:write",
+        // Captain approval authority rides the administrative credential and
+        // nothing else (spec §5).
+        "ade:approve",
       ]);
       expect(issued.client.deviceType).toBe("bot");
       expect(issued.client.label).toBe("deploy-bot");
@@ -99,6 +102,9 @@ it.layer(NodeServices.layer)("EnvironmentAuth administrative operations", (it) =
         "access:read",
         "access:write",
         "relay:write",
+        // Captain approval authority rides the administrative credential and
+        // nothing else (spec §5).
+        "ade:approve",
       ]);
       expect(verified.method).toBe("bearer-access-token");
       expect(listedBeforeRevoke).toHaveLength(1);

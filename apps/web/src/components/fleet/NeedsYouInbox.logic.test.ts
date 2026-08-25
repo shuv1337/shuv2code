@@ -15,6 +15,7 @@ const entry = (overrides: {
   readonly kind?: AdeNeedsYouEntry["item"]["kind"];
   readonly status?: AdeNeedsYouEntry["item"]["status"];
   readonly actionable?: boolean;
+  readonly action?: AdeNeedsYouEntry["action"];
   readonly botId?: string | null;
   readonly projectId?: string | null;
 }): AdeNeedsYouEntry =>
@@ -31,6 +32,9 @@ const entry = (overrides: {
     title: `Item ${overrides.id}`,
     detail: "detail",
     actionable: overrides.actionable ?? (overrides.status ?? "open") === "open",
+    action:
+      overrides.action ??
+      ((overrides.actionable ?? (overrides.status ?? "open") === "open") ? "approve-deny" : null),
     botId: overrides.botId ?? null,
     projectId: overrides.projectId ?? null,
     assignmentId: null,
@@ -77,7 +81,7 @@ describe("selectNeedsYouEntry", () => {
 
   it("opens on the first decision when nothing is selected, or the selection is gone", () => {
     const entries = [
-      entry({ id: "info", kind: "stall", actionable: false }),
+      entry({ id: "info", kind: "stall", actionable: false, action: null }),
       entry({ id: "decision" }),
     ];
     expect(selectNeedsYouEntry(entries, null)?.item.id).toBe("decision");
@@ -85,7 +89,7 @@ describe("selectNeedsYouEntry", () => {
   });
 
   it("falls back to the first row, then to nothing", () => {
-    const entries = [entry({ id: "info", kind: "stall", actionable: false })];
+    const entries = [entry({ id: "info", kind: "stall", actionable: false, action: null })];
     expect(selectNeedsYouEntry(entries, null)?.item.id).toBe("info");
     expect(selectNeedsYouEntry([], null)).toBeNull();
   });
@@ -114,7 +118,19 @@ describe("getNeedsYouDecisionView", () => {
   it("offers the decision on an actionable item held by an approving client", () => {
     expect(
       getNeedsYouDecisionView({ entry: entry({ id: "a" }), canApprove: true, busy: false }),
-    ).toEqual({ canDecide: true, unavailableReason: null });
+    ).toEqual({ canDecide: true, action: "approve-deny", unavailableReason: null });
+  });
+
+  it("offers a single Acknowledge on an item nothing is waiting on", () => {
+    // An unroutable repair has no verdict to give; the captain is clearing a
+    // notice, and Approve/Deny would invent a decision with no recipient.
+    expect(
+      getNeedsYouDecisionView({
+        entry: entry({ id: "a", kind: "stall", action: "acknowledge" }),
+        canApprove: true,
+        busy: false,
+      }),
+    ).toEqual({ canDecide: true, action: "acknowledge", unavailableReason: null });
   });
 
   it("explains an unscoped client rather than showing buttons that will fail", () => {
@@ -130,14 +146,14 @@ describe("getNeedsYouDecisionView", () => {
   it("says nothing to decide on kinds that clear themselves, and on resolved items", () => {
     expect(
       getNeedsYouDecisionView({
-        entry: entry({ id: "a", kind: "kernel-down", actionable: false }),
+        entry: entry({ id: "a", kind: "kernel-down", actionable: false, action: null }),
         canApprove: true,
         busy: false,
       }).unavailableReason,
     ).toContain("clears on its own");
     expect(
       getNeedsYouDecisionView({
-        entry: entry({ id: "a", status: "resolved", actionable: false }),
+        entry: entry({ id: "a", status: "resolved", actionable: false, action: null }),
         canApprove: true,
         busy: false,
       }).unavailableReason,
@@ -159,6 +175,14 @@ describe("describeDecisionOutcome", () => {
       describeDecisionOutcome({ reason: null, decision: "deny", failed: false, fallback: "x" })
         .message,
     ).toContain("Denied");
+    expect(
+      describeDecisionOutcome({
+        reason: null,
+        decision: "acknowledge",
+        failed: false,
+        fallback: "x",
+      }),
+    ).toEqual({ tone: "ok", message: "Cleared." });
   });
 
   it("treats a second resolution as an outcome, not a failure", () => {
