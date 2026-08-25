@@ -12,18 +12,28 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { FetchHttpClient } from "effect/unstable/http";
 
 import type {
   AdeProjectId,
   AssignmentId,
   BotId,
+  BotRoleTag,
   IntegrationCandidateId,
 } from "@shuv2code/contracts";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
+import { AdeApprovalPort } from "./AdeApprovalPort.ts";
 import { AdeAssignmentEngine, AdeAssignmentKernelPort } from "./AdeAssignmentEngine.ts";
 import { AdeBootstrap } from "./AdeBootstrap.ts";
+import { AdeCaptainApi } from "./AdeCaptainApi.ts";
+import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
+import { AdePersonaMemory } from "./AdePersonaMemory.ts";
+import { AdeScreenboxRuntime } from "./AdeScreenbox.ts";
+import { AdeScreenboxClient, AdeScreenboxConfig } from "./AdeScreenboxClient.ts";
+import { AdeSessionRollover } from "./AdeSessionRollover.ts";
 import {
   AdeIntegrationRepoError,
   AdeIntegrationRepoPort,
@@ -1129,6 +1139,105 @@ scenario("D6: the designated Reviewer is matched by role-tag word, not equality"
     assert.strictEqual(
       (yield* fixture.service.getCandidate(second.candidate.id))?.reviewerBotId,
       "bot-code-reviewer",
+    );
+  }),
+);
+
+/**
+ * The rename/routing coupling, pinned deliberately (messenger pivot §4, #197).
+ *
+ * `ade.updateBotIdentity` makes `roleTag` captain-editable, and the reviewer
+ * predicate above reads that same free-form string. So relabelling a bot
+ * **re-routes review work**, in both directions, with no warning anywhere in
+ * the write path. That is a real consequence of loose identity, and it is
+ * accepted rather than fixed: the alternative is a reserved word the captain
+ * may not type, which is exactly the strictness #197 exists to remove.
+ *
+ * This test exists so the coupling cannot be broken *silently*. If someone
+ * later hardens routing — a `reviewer` flag column, a project-level reviewer
+ * pointer — this test fails, and that is the moment to also drop the sheet's
+ * field hint and the note in `docs/ade/MESSENGER-PIVOT.md` §4.
+ */
+scenario("a captain rename re-routes review work in both directions", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup();
+    const captainContext = yield* Layer.build(
+      AdeCaptainApi.layer.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            AdeBootstrap.layer,
+            AdePersonaMemory.layer,
+            AdeSessionRollover.layer,
+            AdeAssignmentEngine.layer,
+            AdeScreenboxRuntime.layer.pipe(
+              Layer.provide(AdeScreenboxClient.layer),
+              Layer.provide(AdeScreenboxConfig.layer({ baseUrl: null, adminToken: "unused" })),
+              Layer.provide(FetchHttpClient.layer),
+            ),
+            Layer.succeed(AdeChatSessionPort, {
+              startPrimaryChat: () => Effect.die("chat is not exercised here"),
+            } as unknown as AdeChatSessionPort["Service"]),
+            Layer.succeed(AdeApprovalPort, {
+              submitIntegrationApproval: () => Effect.void,
+              readCandidateStatus: () => Effect.succeed(null),
+            }),
+            Layer.succeed(WorkspacePaths, {
+              normalizeWorkspaceRoot: (root: string) => Effect.succeed(root),
+            } as unknown as WorkspacePaths["Service"]),
+          ),
+        ),
+        Layer.provide(AdeAssignmentKernelPort.layerUnwired),
+      ),
+    );
+    const api = yield* Effect.service(AdeCaptainApi).pipe(Effect.provide(captainContext));
+
+    const reviewerBotId = "bot-designated-reviewer" as BotId;
+    yield* fixture.sql`
+      INSERT INTO ade_bots (bot_id, name, structural_role, role_tag, project_id, created_at)
+      VALUES (${reviewerBotId}, 'Reviewer', 'crew', 'Reviewer', ${fixture.projectId},
+              '2026-08-24T00:00:00.000Z')
+    `;
+
+    // Baseline: the designated Reviewer takes the work.
+    const first = yield* enqueue(fixture, { key: "before-rename" });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual(
+      (yield* fixture.service.getCandidate(first.candidate.id))?.reviewerBotId,
+      reviewerBotId,
+    );
+    yield* fixture.service.submitReview({
+      candidateId: first.candidate.id,
+      reviewerBotId,
+      decision: "approve",
+    });
+
+    // Direction 1 — relabelling the Reviewer "QA" drops it out of routing, and
+    // the Second Mate inherits the work. The RPC succeeds: this is a
+    // consequence, not an error.
+    yield* api.updateBotIdentity({ botId: reviewerBotId, roleTag: "QA" as BotRoleTag });
+    const second = yield* enqueue(fixture, { key: "after-rename", changeIds: ["qwlnnmts"] });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual(
+      (yield* fixture.service.getCandidate(second.candidate.id))?.reviewerBotId,
+      fixture.secondMateBotId,
+    );
+    yield* fixture.service.submitReview({
+      candidateId: second.candidate.id,
+      reviewerBotId: fixture.secondMateBotId,
+      decision: "approve",
+    });
+
+    // Direction 2 — putting the word back promotes the bot again. Nothing in
+    // the identity write path says so; only this test does.
+    yield* api.updateBotIdentity({
+      botId: reviewerBotId,
+      roleTag: "Code Reviewer" as BotRoleTag,
+    });
+    const third = yield* enqueue(fixture, { key: "after-restore", changeIds: ["wqlnnmts"] });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual(
+      (yield* fixture.service.getCandidate(third.candidate.id))?.reviewerBotId,
+      reviewerBotId,
     );
   }),
 );

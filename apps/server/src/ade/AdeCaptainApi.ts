@@ -23,6 +23,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -143,6 +144,29 @@ const captainize = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, AdeCapt
   Effect.mapError(effect, toAdeCaptainError);
 
 /**
+ * Turn 057's unique-index violation into the typed reason it means.
+ *
+ * A group-name collision is something the captain fixes by typing a different
+ * name; `persistence_failed` ("The change could not be saved.") tells them
+ * nothing and reads like a bug in the app. The pre-check in `upsertBotGroup`
+ * catches the ordinary case, but it is a read followed by a write, so the index
+ * is the only real guarantee — and this is how its verdict keeps its meaning
+ * on the way out.
+ */
+const asNameConflict =
+  (name: string) =>
+  (error: unknown): AdeCaptainError => {
+    const cause = (error as { readonly cause?: unknown } | null)?.cause;
+    const text = `${messageOf(error)} ${cause === undefined ? "" : messageOf(cause)}`;
+    return text.includes("UNIQUE constraint failed")
+      ? new AdeCaptainError({
+          reason: "bot_group_name_conflict",
+          message: `A contact group named '${name}' already exists.`,
+        })
+      : toAdeCaptainError(error);
+  };
+
+/**
  * Escapes SQL `LIKE` metacharacters so an interpolated value matches literally.
  *
  * Bot ids are generated, but they are not a closed alphabet this code controls,
@@ -178,15 +202,22 @@ interface BotRow {
  */
 const encodeDisplayMeta = Schema.encodeSync(Schema.fromJsonString(BotDisplayMetaSchema));
 
-/** Display meta is captain-authored decoration; a corrupt blob must not 500. */
+/**
+ * Display meta is captain-authored decoration; a corrupt blob must not 500.
+ *
+ * Decoded rather than cast, which is what keeps that promise true now that the
+ * schema is bounded (closed color palette, emoji ceiling, no control
+ * characters). A cast would let a blob that no longer satisfies the contract
+ * out of here and fail on the way *out* instead — turning one unpaintable
+ * color into a roster that will not load at all. Undecodable decoration is
+ * dropped: the bot renders with its deterministic id-derived hue, and the
+ * identity sheet asks the captain for a palette color the next time it opens.
+ */
+const decodeDisplayMeta = Schema.decodeUnknownOption(Schema.fromJsonString(BotDisplayMetaSchema));
+
 const parseDisplayMeta = (raw: string | null): BotDisplayMeta | null => {
   if (raw === null || raw.length === 0) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return typeof parsed === "object" && parsed !== null ? (parsed as BotDisplayMeta) : null;
-  } catch {
-    return null;
-  }
+  return Option.getOrNull(decodeDisplayMeta(raw));
 };
 
 export const rowToBot = (row: BotRow): Bot => ({
@@ -841,6 +872,18 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
             message: `ADE bot '${input.botId}' does not exist.`,
           });
         }
+        // ACCEPTED STALENESS: the bot's chat thread keeps the title it was
+        // created with (`ADE · <name>`, built in `AdeShuvcodeChatSession`),
+        // so a rename leaves the workspace thread list showing the old name.
+        // Retitling is a `thread.meta.update` orchestration command, which this
+        // service cannot reach: it holds no `OrchestrationEngineService`, and
+        // pulling one in would invert the layering this API sits below. The
+        // cheap fix is a `renamePrimaryChat(botId, name)` method on
+        // `AdeChatSessionPort` — already a dependency here, and its live
+        // implementation already holds both the engine and the projection
+        // snapshots that call would need. Left for whoever owns that port. The
+        // messenger rail — the surface this ticket ships — reads the bot row
+        // and is correct immediately.
         return rowToBot(next);
       }, captainize);
 
@@ -854,8 +897,12 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
       const upsertBotGroup: AdeCaptainApiShape["upsertBotGroup"] = Effect.fn(
         "AdeCaptainApi.upsertBotGroup",
       )(function* (input: AdeUpsertBotGroupInput) {
+        // `NOCASE` mirrors 057's unique index. The pre-check exists for the
+        // message, not for the guarantee — a retry or a second surface can
+        // still interleave between this SELECT and the write, which is what
+        // `asNameConflict` below is for.
         const clash = yield* sql<{ group_id: string }>`
-            SELECT group_id FROM ade_bot_groups WHERE name = ${input.name}
+            SELECT group_id FROM ade_bot_groups WHERE name = ${input.name} COLLATE NOCASE
           `;
         const clashing = clash[0];
         if (clashing !== undefined && clashing.group_id !== input.groupId) {
@@ -872,7 +919,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
               UPDATE ade_bot_groups SET name = ${input.name}, order_index = ${orderIndex}
               WHERE group_id = ${input.groupId}
               RETURNING group_id, name, order_index, created_at
-            `;
+            `.pipe(Effect.mapError(asNameConflict(input.name)));
           const next = updated[0];
           if (next === undefined) {
             return yield* new AdeCaptainError({
@@ -896,7 +943,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
             INSERT INTO ade_bot_groups (group_id, name, order_index, created_at)
             VALUES (${groupId}, ${input.name}, ${orderIndex}, ${createdAt})
             RETURNING group_id, name, order_index, created_at
-          `;
+          `.pipe(Effect.mapError(asNameConflict(input.name)));
         const next = inserted[0];
         if (next === undefined) {
           return yield* new AdeCaptainError({

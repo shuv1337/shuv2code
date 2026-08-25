@@ -101,11 +101,66 @@ export type BotName = typeof BotName.Type;
 export const BotRoleTag = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
 export type BotRoleTag = typeof BotRoleTag.Type;
 
-/** Display metadata beyond the name; every facet optional. */
+/**
+ * The palette a bot's avatar blob may use.
+ *
+ * A closed set of **theme token names**, not free-form CSS. Every surface that
+ * paints a bot — the rail, the conversation header, attribution lines —
+ * resolves the token through one shared resolver, so a bot keeps usable
+ * contrast in light and dark. A free string could not promise that: `"amber"`
+ * applied raw as a CSS color is not a color at all in most browsers, and
+ * `"blue"` would resolve to the untuned named color rather than the theme's.
+ */
+export const BotAvatarColorToken = Schema.Literals([
+  "blue",
+  "teal",
+  "emerald",
+  "lime",
+  "amber",
+  "orange",
+  "rose",
+  "fuchsia",
+  "violet",
+  "indigo",
+]);
+export type BotAvatarColorToken = typeof BotAvatarColorToken.Type;
+
+/** How much emoji a display blob may carry (UTF-16 code units). */
+export const BOT_EMOJI_MAX_LENGTH = 32;
+
+/** How much prose a display blob may carry. */
+export const BOT_DESCRIPTION_MAX_LENGTH = 280;
+
+/**
+ * Control characters are refused rather than trimmed.
+ *
+ * The emoji is rendered inline in a rail row, a header and an avatar blob;
+ * a smuggled newline, zero-width joiner run, or bidi override is a layout
+ * exploit against every one of them at once. This is the first captain-authored
+ * string that reaches an avatar, so it gets the bound at the schema rather than
+ * at whichever surface happens to render it.
+ */
+const NO_CONTROL_CHARACTERS = /^[^\p{Cc}\p{Cf}]+$/u;
+
+export const BotEmoji = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(BOT_EMOJI_MAX_LENGTH),
+  Schema.isPattern(NO_CONTROL_CHARACTERS),
+);
+export type BotEmoji = typeof BotEmoji.Type;
+
+/**
+ * Display metadata beyond the name; every facet optional.
+ *
+ * Bounded because this is a first-writer surface: the captain types straight
+ * into it and the result is stored, re-served, and painted on several screens.
+ * An unbounded string here is an unbounded string in every one of them.
+ */
 export const BotDisplayMeta = Schema.Struct({
-  emoji: Schema.optional(TrimmedNonEmptyString),
-  color: Schema.optional(TrimmedNonEmptyString),
-  description: Schema.optional(TrimmedNonEmptyString),
+  emoji: Schema.optional(BotEmoji),
+  color: Schema.optional(BotAvatarColorToken),
+  description: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_DESCRIPTION_MAX_LENGTH)),
+  ),
 });
 export type BotDisplayMeta = typeof BotDisplayMeta.Type;
 

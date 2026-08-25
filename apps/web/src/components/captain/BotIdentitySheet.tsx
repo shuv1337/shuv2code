@@ -1,5 +1,5 @@
 /**
- * The bot identity sheet (`docs/ade/MESSENGER-PIVOT.md` §3, ticket T2 / #197).
+ * The bot identity sheet (`docs/ade/MESSENGER-PIVOT.md` §3, ticket M2 / #197).
  *
  * One place to answer "who is this contact": the loose part of a bot's
  * identity — name, emoji, color, role tag, group — sitting above the
@@ -15,30 +15,32 @@
  *   key for either, so there is nothing to disable — the strictness is in the
  *   payload shape rather than in the styling.
  *
- * Exported standalone so the captain shell (T1) can mount it beside the
+ * Exported standalone so the captain shell (M1) can mount it beside the
  * conversation header; until that shell exists, `fleet/BotDetailPanel` opens
  * it from the bot's header.
  */
 import type { AdeBotDetail, AdeBotGroup } from "@shuv2code/contracts";
 import { AnchorIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { structuralRoleLabel } from "../../state/ade.logic";
-import { ColorSelector } from "../color-selector";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Sheet, SheetHeader, SheetPanel, SheetPopup, SheetTitle } from "../ui/sheet";
 import {
-  BOT_AVATAR_COLORS,
+  BOT_EMOJI_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_ROLE_TAG_MAX_LENGTH,
   buildBotIdentityPatch,
-  getBotIdentityDraft,
   getBotIdentityValidationMessage,
   getGroupAssignOptions,
+  openBotIdentitySheet,
+  reconcileBotIdentitySheet,
+  ROLE_TAG_ROUTING_HINT,
   type BotIdentityDraft,
 } from "./botIdentity.logic";
+import { BotColorSwatches } from "./BotColorSwatches";
 import { BotComputerUseToggle, BotMemoryEditor, BotPersonaEditor } from "./BotIdentityForms";
 import { GroupAssignMenu } from "./GroupAssignMenu";
 import { useBotIdentityUpdate } from "./useBotIdentity";
@@ -55,16 +57,33 @@ export function BotIdentitySheet({
   readonly onOpenChange: (open: boolean) => void;
 }) {
   const bot = detail.bot;
-  const [draft, setDraft] = useState<BotIdentityDraft>(() => getBotIdentityDraft(bot));
+  const [state, setState] = useState(() => openBotIdentitySheet(bot));
   const identity = useBotIdentityUpdate("The identity was not saved.");
+  const wasOpen = useRef(open);
 
-  // Re-seed whenever the sheet opens or the server's copy moves. The group can
-  // also change from inside this sheet (the assign menu writes immediately),
-  // so the draft has to follow the bot rather than own it.
+  /**
+   * Opening adopts the server's copy; staying open only adopts it while the
+   * draft is untouched.
+   *
+   * The bot prop changes on the 15-second roster poll and on every sibling
+   * control's re-read — flipping computer use inside this very sheet is enough
+   * — so an unconditional re-seed here silently ate whatever the captain was
+   * typing. `reconcileBotIdentitySheet` is where that decision lives and is
+   * tested.
+   */
   useEffect(() => {
-    if (open) setDraft(getBotIdentityDraft(bot));
+    if (open && !wasOpen.current) {
+      setState(openBotIdentitySheet(bot));
+    } else if (open) {
+      setState((previous) => reconcileBotIdentitySheet(previous, bot));
+    }
+    wasOpen.current = open;
   }, [bot, open]);
 
+  const draft = state.draft;
+  const setDraft = (update: (previous: BotIdentityDraft) => BotIdentityDraft) => {
+    setState((previous) => ({ ...previous, draft: update(previous.draft) }));
+  };
   const validation = getBotIdentityValidationMessage(draft);
   const patch = validation === null ? buildBotIdentityPatch(bot, draft) : null;
   const groupLabel =
@@ -114,7 +133,7 @@ export function BotIdentitySheet({
                 <Input
                   aria-label="Bot emoji"
                   className="text-center text-lg"
-                  maxLength={8}
+                  maxLength={BOT_EMOJI_MAX_LENGTH}
                   placeholder="🤖"
                   value={draft.emoji}
                   onChange={(event) => setDraft((prev) => ({ ...prev, emoji: event.target.value }))}
@@ -131,14 +150,15 @@ export function BotIdentitySheet({
                     setDraft((prev) => ({ ...prev, roleTag: event.target.value }))
                   }
                 />
+                {/* The tag is not only decoration — see ROLE_TAG_ROUTING_HINT. */}
+                <span className="text-xs text-muted-foreground">{ROLE_TAG_ROUTING_HINT}</span>
               </label>
             </div>
             <div className="flex flex-col gap-2 text-sm">
               <span className="font-medium">Color</span>
-              <ColorSelector
-                colors={[...BOT_AVATAR_COLORS]}
-                defaultValue={draft.color}
-                onColorSelect={(color) => setDraft((prev) => ({ ...prev, color }))}
+              <BotColorSwatches
+                value={draft.color}
+                onChange={(color) => setDraft((prev) => ({ ...prev, color }))}
               />
             </div>
             <div className="flex items-center justify-between gap-3 text-sm">
@@ -153,6 +173,12 @@ export function BotIdentitySheet({
                 }
               />
             </div>
+            {state.changedElsewhere ? (
+              <p className="text-xs text-muted-foreground" role="status">
+                This bot changed elsewhere while you were editing. Your changes are kept; saving
+                overwrites the other ones.
+              </p>
+            ) : null}
             {validation === null ? null : (
               <p className="text-sm text-destructive" role="alert">
                 {validation}

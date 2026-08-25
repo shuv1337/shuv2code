@@ -1,6 +1,6 @@
 /**
  * Captain-defined contact groups for the messenger rail
- * (`docs/ade/MESSENGER-PIVOT.md` §4, ticket T2 / #197).
+ * (`docs/ade/MESSENGER-PIVOT.md` §4, ticket M2 / #197).
  *
  * A group is pure captain-authored organization: it names a bucket in the
  * contact rail and nothing else. That is why the membership edge lives on
@@ -34,9 +34,13 @@ export default Effect.gen(function* () {
     )
   `;
 
+  // `NOCASE`, because "Backend" and "backend" are the same header to the
+  // person reading the rail. Case-sensitive uniqueness would let two groups
+  // sit under headers nobody can tell apart, which is the exact ambiguity this
+  // index exists to prevent.
   yield* sql`
     CREATE UNIQUE INDEX idx_ade_bot_groups_name
-    ON ade_bot_groups(name)
+    ON ade_bot_groups(name COLLATE NOCASE)
   `;
 
   // Rail order: captain-chosen index first, creation order as the stable tie

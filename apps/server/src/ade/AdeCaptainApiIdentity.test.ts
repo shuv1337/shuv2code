@@ -1,6 +1,6 @@
 /**
  * Loose bot identity: rename, decoration, role tag, contact groups
- * (`docs/ade/MESSENGER-PIVOT.md` §4, ticket T2 / #197).
+ * (`docs/ade/MESSENGER-PIVOT.md` §4, ticket M2 / #197).
  *
  * These live beside `AdeCaptainApi.test.ts` rather than inside it because the
  * claims are about a boundary rather than about a projection: what a captain
@@ -13,6 +13,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { FetchHttpClient } from "effect/unstable/http";
+
+import { AdeUpdateBotIdentityInput } from "@shuv2code/contracts";
 
 import type {
   AdeBotChatSession,
@@ -35,6 +37,12 @@ import { AdeScreenboxRuntime } from "./AdeScreenbox.ts";
 import { AdeScreenboxClient, AdeScreenboxConfig } from "./AdeScreenboxClient.ts";
 import { AdeSessionRollover } from "./AdeSessionRollover.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
+
+/**
+ * Decoding is what the wire does before a handler ever runs, so a bounds test
+ * that skipped it would be asserting against a payload no client could send.
+ */
+const decodeIdentityInput = Schema.decodeUnknownEffect(AdeUpdateBotIdentityInput);
 
 class StubWorkspacePathError extends Schema.TaggedErrorClass<StubWorkspacePathError>()(
   "StubWorkspacePathError",
@@ -253,6 +261,64 @@ describe("AdeCaptainApi bot groups", () => {
     }).pipe(Effect.provide(makeLayer())),
   );
 
+  /**
+   * "Backend" and "backend" are the same header to the person reading the
+   * rail, so they are the same group to the server.
+   */
+  it.effect("treats a differently-cased name as the same header", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      yield* api.upsertBotGroup({ name: "Backend" as AdeBotGroupName });
+
+      // Trimming happens at the wire (`AdeBotGroupName` is a trimmed schema),
+      // so what reaches the service differs from the stored name only in case.
+      const result = yield* Effect.result(
+        api.upsertBotGroup({ name: "bAcKeNd" as AdeBotGroupName }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure.reason, "bot_group_name_conflict");
+      }
+      // Renaming a group to its own name in another case is not a conflict
+      // with itself — it is just a re-case, and it must go through.
+      const groups = (yield* api.getRoster()).groups;
+      const only = groups[0];
+      assert.isDefined(only);
+      const recased = yield* api.upsertBotGroup({
+        groupId: only!.id,
+        name: "BACKEND" as AdeBotGroupName,
+      });
+      assert.equal(recased.name, "BACKEND");
+      assert.equal(recased.id, only!.id);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  /**
+   * The rename branch refuses a collision too, and refuses it as a *name*
+   * conflict. `persistence_failed` ("The change could not be saved.") would
+   * tell the captain nothing about the one thing they can act on.
+   */
+  it.effect("refuses a rename onto another group's header", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      yield* api.upsertBotGroup({ name: "Backend" as AdeBotGroupName });
+      const frontend = yield* api.upsertBotGroup({ name: "Frontend" as AdeBotGroupName });
+
+      const result = yield* Effect.result(
+        api.upsertBotGroup({ groupId: frontend.id, name: "backend" as AdeBotGroupName }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure.reason, "bot_group_name_conflict");
+      }
+      // Refused, not half-applied: the other group kept its header.
+      const groups = (yield* api.getRoster()).groups;
+      assert.deepEqual(groups.map((group) => group.name).toSorted(), ["Backend", "Frontend"]);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
   it.effect("deleting a group ungroups its members and deletes no bot", () =>
     Effect.gen(function* () {
       const { api, bootstrap, firstmateId } = yield* setup;
@@ -313,6 +379,87 @@ describe("AdeCaptainApi bot groups", () => {
 
       assert.equal(entry?.bot.groupId, group.id);
       assert.equal(entry?.bot.roleTag, "Fixer");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+});
+
+/**
+ * `BotDisplayMeta` is a first-writer surface: the captain types straight into
+ * it, and the result is stored, re-served, and painted on the rail, the
+ * conversation header and the avatar. The bounds belong on the server, not
+ * only on the sheet's `maxLength`.
+ */
+describe("AdeCaptainApi bot display metadata bounds", () => {
+  const rejects = (displayMeta: unknown) =>
+    Effect.gen(function* () {
+      const { api, bootstrap } = yield* setup;
+      const coder = yield* bootstrap.instantiateTemplate({ templateId: "coder", projectId: null });
+      const before = yield* api.getBot(coder.botId);
+
+      const result = yield* Effect.result(decodeIdentityInput({ botId: coder.botId, displayMeta }));
+
+      assert.equal(result._tag, "Failure");
+      // Nothing was written on the way to the refusal.
+      const after = yield* api.getBot(coder.botId);
+      assert.deepEqual(after.bot.displayMeta, before.bot.displayMeta);
+    }).pipe(Effect.provide(makeLayer()));
+
+  it.effect("refuses an emoji past 32 code units", () => rejects({ emoji: "🤖".repeat(20) }));
+
+  it.effect("refuses control characters in the emoji", () => rejects({ emoji: "a\u0000b" }));
+
+  it.effect("refuses a bidi override in the emoji", () => rejects({ emoji: "a\u202eb" }));
+
+  it.effect("refuses a color outside the palette", () => rejects({ color: "chartreuse" }));
+
+  it.effect("refuses a description past 280 characters", () =>
+    rejects({ description: "d".repeat(281) }),
+  );
+
+  /**
+   * The bounds tightened after the column existed, so a row could hold a blob
+   * the contract now refuses. That must degrade to "no decoration", not to a
+   * roster that will not load — the failure would otherwise land on the way
+   * *out*, where nothing can do anything about it.
+   */
+  it.effect("drops an unpaintable stored decoration instead of failing the read", () =>
+    Effect.gen(function* () {
+      const { api, bootstrap, sql } = yield* setup;
+      const coder = yield* bootstrap.instantiateTemplate({ templateId: "coder", projectId: null });
+      // A hex color and a bidi override: both were storable before the
+      // bounds landed, and neither is paintable now.
+      const legacy = `{"color":"#224466","emoji":"a\u202eb"}`;
+      yield* sql`
+        UPDATE ade_bots SET display_meta_json = ${legacy} WHERE bot_id = ${coder.botId}
+      `;
+
+      const detail = yield* api.getBot(coder.botId);
+      const roster = yield* api.getRoster();
+
+      assert.equal(detail.bot.displayMeta, null);
+      assert.equal(
+        roster.entries.find((entry) => entry.bot.id === coder.botId)?.bot.displayMeta,
+        null,
+      );
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("accepts a decoration inside every bound", () =>
+    Effect.gen(function* () {
+      const { api, bootstrap } = yield* setup;
+      const coder = yield* bootstrap.instantiateTemplate({ templateId: "coder", projectId: null });
+
+      const input = yield* decodeIdentityInput({
+        botId: coder.botId,
+        displayMeta: { emoji: "🛠️", color: "amber", description: "Ships fixes." },
+      });
+      const updated = yield* api.updateBotIdentity(input);
+
+      assert.deepEqual(updated.displayMeta, {
+        emoji: "🛠️",
+        color: "amber",
+        description: "Ships fixes.",
+      });
     }).pipe(Effect.provide(makeLayer())),
   );
 });

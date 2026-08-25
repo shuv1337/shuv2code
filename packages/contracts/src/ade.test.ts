@@ -45,7 +45,7 @@ it("round-trips a Bot and defaults computerUse and groupId", () => {
   const bot = roundTrip(Bot, {
     id: "bot-firstmate",
     name: "Firstmate",
-    displayMeta: { emoji: "🧭", color: "#224466", description: "Workspace coordinator" },
+    displayMeta: { emoji: "🧭", color: "indigo", description: "Workspace coordinator" },
     structuralRole: "firstmate",
     roleTag: "Coordinator",
     projectId: null,
@@ -86,6 +86,43 @@ it("round-trips a Bot and defaults computerUse and groupId", () => {
       archivedAt: null,
     }),
   );
+});
+
+/**
+ * Display meta is a first-writer surface — the captain types into it and every
+ * bot-painting surface renders the result — so the bounds live on the schema
+ * rather than on whichever input happens to be on screen.
+ */
+it("bounds captain-authored display metadata", () => {
+  const withMeta = (displayMeta: unknown) => () =>
+    decodeBot({
+      id: "bot-x",
+      name: "X",
+      displayMeta,
+      structuralRole: "crew",
+      roleTag: "X",
+      projectId: null,
+      activePersonaVersionId: null,
+      createdAt: "2026-08-24T00:00:00.000Z",
+      archivedAt: null,
+    });
+
+  // A raw CSS color cannot be themed and three of the ten token names are not
+  // CSS colors at all, so the palette is closed rather than free-form.
+  assert.throws(withMeta({ color: "#224466" }));
+  assert.throws(withMeta({ color: "chartreuse" }));
+  assert.doesNotThrow(withMeta({ color: "amber" }));
+
+  assert.throws(withMeta({ emoji: "🤖".repeat(20) }));
+  // Control and format characters are a layout exploit against the rail, the
+  // header, and the avatar at once.
+  assert.throws(withMeta({ emoji: "a\u0000b" }));
+  assert.throws(withMeta({ emoji: "a\nb" }));
+  assert.throws(withMeta({ emoji: "a\u202eb" }));
+  assert.doesNotThrow(withMeta({ emoji: "🛠️" }));
+
+  assert.throws(withMeta({ description: "d".repeat(281) }));
+  assert.doesNotThrow(withMeta({ description: "d".repeat(280) }));
 });
 
 it("round-trips a PersonaVersion", () => {

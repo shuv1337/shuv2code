@@ -1,10 +1,10 @@
 /**
- * Menu-first group assignment (`docs/ade/MESSENGER-PIVOT.md` §2, §3 — T2/#197).
+ * Menu-first group assignment (`docs/ade/MESSENGER-PIVOT.md` §2, §3 — M2/#197).
  *
  * Drag-and-drop is the affordance a captain reaches for once they know the
  * rail; this menu is the path that always works — keyboard, touch, screen
  * reader, and the very first time. It is a standalone component so the shell
- * (T1) can mount it from a contact row's context menu and the identity sheet
+ * (M1) can mount it from a contact row's context menu and the identity sheet
  * can mount the same control, without either owning the other.
  */
 import type { AdeBotGroup, AdeBotGroupId, Bot } from "@shuv2code/contracts";
