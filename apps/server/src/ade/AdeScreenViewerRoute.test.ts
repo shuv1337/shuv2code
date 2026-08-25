@@ -4,7 +4,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Socket from "effect/unstable/socket/Socket";
-import * as net from "node:net";
+import * as NodeNet from "node:net";
 
 import { AuthOrchestrationOperateScope, AuthOrchestrationReadScope } from "@shuv2code/contracts";
 import type { BotId } from "@shuv2code/contracts";
@@ -22,7 +22,9 @@ const OPERATE = [AuthOrchestrationOperateScope];
 
 /** A `viewerTargetFor` that records every bot it was asked about. */
 const stubScreenbox = (
-  answer: (botId: BotId) => Effect.Effect<{ host: string; port: number }, AdeScreenboxProvisionError>,
+  answer: (
+    botId: BotId,
+  ) => Effect.Effect<{ host: string; port: number }, AdeScreenboxProvisionError>,
 ) => {
   const asked: Array<string> = [];
   const screenbox: Pick<AdeScreenboxRuntimeShape, "viewerTargetFor"> = {
@@ -152,9 +154,12 @@ const fakeViewerSocket = Effect.gen(function* () {
   const socket = Socket.make({
     // `runRaw`'s handler may answer with an Effect or with nothing; normalize
     // both so the pump is one uniform loop.
-    runRaw: (handler) =>
+    runRaw: <A, E, R>(handler: (chunk: string | Uint8Array) => Effect.Effect<A, E, R> | void) =>
       Queue.take(inbound).pipe(
-        Effect.flatMap((chunk) => Effect.asVoid(Effect.succeed(handler(chunk)).pipe(Effect.flatten))),
+        Effect.flatMap((chunk): Effect.Effect<void, E, R> => {
+          const answer = handler(chunk);
+          return answer === undefined ? Effect.void : Effect.asVoid(answer);
+        }),
         Effect.forever,
       ),
     writer: Effect.succeed((chunk: Uint8Array | string | Socket.CloseEvent) =>
@@ -172,11 +177,11 @@ const fakeViewerSocket = Effect.gen(function* () {
 
 /** A TCP server standing in for a desktop's raw RFB listener. */
 const startFakeDesktop = (
-  onConnection: (connection: net.Socket) => void,
+  onConnection: (connection: NodeNet.Socket) => void,
 ): Effect.Effect<{ port: number }, never, Scope.Scope> =>
   Effect.acquireRelease(
-    Effect.callback<{ port: number; server: net.Server }>((resume) => {
-      const server = net.createServer(onConnection);
+    Effect.callback<{ port: number; server: NodeNet.Server }>((resume) => {
+      const server = NodeNet.createServer(onConnection);
       server.listen(0, "127.0.0.1", () => {
         const address = server.address();
         resume(
@@ -193,7 +198,7 @@ const startFakeDesktop = (
       }),
   ).pipe(Effect.map(({ port }) => ({ port })));
 
-const concat =(chunks: ReadonlyArray<Uint8Array>): Uint8Array => {
+const concat = (chunks: ReadonlyArray<Uint8Array>): Uint8Array => {
   const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
   const out = new Uint8Array(total);
   let offset = 0;
@@ -250,11 +255,7 @@ describe("relayViewerToDesktop", () => {
       // request fiber parked forever holding a viewer against the idle sweep.
       const finished = yield* Effect.scoped(
         relayViewerToDesktop(viewer.socket, { host: "127.0.0.1", port: desktop.port }),
-      ).pipe(
-        Effect.as("relay ended" as const),
-        Effect.timeoutOption("5 seconds"),
-        Effect.orDie,
-      );
+      ).pipe(Effect.as("relay ended" as const), Effect.timeoutOption("5 seconds"), Effect.orDie);
       assert.deepStrictEqual(finished, Option.some("relay ended"));
       assert.strictEqual(new TextDecoder().decode(concat(viewer.sent)), "bye");
     }),

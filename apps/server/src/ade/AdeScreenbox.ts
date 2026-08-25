@@ -1049,11 +1049,8 @@ export const makeAdeScreenboxRuntime = (
         viewers: viewers.get(botId) ?? 0,
       }));
 
-    const viewerRefusal = (
-      botId: BotId,
-      kind: AdeScreenboxProvisionFailureKind,
-      reason: string,
-    ) => new AdeScreenboxProvisionError({ botId, kind, reason });
+    const viewerRefusal = (botId: BotId, kind: AdeScreenboxProvisionFailureKind, reason: string) =>
+      new AdeScreenboxProvisionError({ botId, kind, reason });
 
     const viewerTargetFor: AdeScreenboxRuntimeShape["viewerTargetFor"] = (botId) =>
       Effect.gen(function* () {

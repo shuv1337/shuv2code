@@ -13,7 +13,10 @@
  * - **The upstream dashboard and the raw VNC ports are never reachable from a
  *   browser.** Ports bind to 127.0.0.1 on the Screenbox host and the target is
  *   resolved server-side from `botId`; a client cannot name a host, a port, or
- *   another bot's desktop.
+ *   another bot's desktop. This matters more than it looks: a real desktop
+ *   offers RFB security type 1 (**None**), so the desktop itself authenticates
+ *   nobody. This route's session check is the entire auth boundary, and the
+ *   loopback bind is the entire network boundary.
  * - **Viewing never spawns.** The route only ever *reads* the desktop's
  *   address. A bot with no desktop, or with a stopped one, gets a refusal —
  *   never an implicit provision. Starting is an explicit captain action.
@@ -32,7 +35,7 @@ import {
   HttpServerResponse,
   HttpServerRespondable,
 } from "effect/unstable/http";
-import * as net from "node:net";
+import * as NodeNet from "node:net";
 
 import { AuthOrchestrationOperateScope, type BotId } from "@shuv2code/contracts";
 
@@ -89,10 +92,10 @@ const VIEWER_QUEUE_CAPACITY = 64;
 /** Opens the loopback RFB connection, closed with the enclosing scope. */
 const connectToDesktop = (
   target: AdeScreenboxViewerTarget,
-): Effect.Effect<net.Socket, Socket.SocketError, Scope.Scope> =>
+): Effect.Effect<NodeNet.Socket, Socket.SocketError, Scope.Scope> =>
   Effect.acquireRelease(
-    Effect.callback<net.Socket, Socket.SocketError>((resume) => {
-      const connection = net.connect({ host: target.host, port: target.port });
+    Effect.callback<NodeNet.Socket, Socket.SocketError>((resume) => {
+      const connection = NodeNet.connect({ host: target.host, port: target.port });
       const onConnect = (): void => {
         connection.off("error", onError);
         resume(Effect.succeed(connection));

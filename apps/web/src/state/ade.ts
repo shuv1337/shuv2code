@@ -1,6 +1,7 @@
 import type {
   AdeAssignmentGraph,
   AdeBotDetail,
+  AdeBotScreen,
   AdeNeedsYouCount,
   AdeNeedsYouEntry,
   AdeNeedsYouList,
@@ -61,6 +62,21 @@ export function useAdeRoster(): EnvironmentQueryView<AdeRoster> {
   const environmentId = useAdeEnvironmentId();
   return useEnvironmentQuery(
     environmentId === null ? null : adeEnvironment.roster({ environmentId, input: {} }),
+  );
+}
+
+/**
+ * One bot's desktop state for the Screen tab (spec §4.6).
+ *
+ * A null `botId` reads nothing, which is what keeps the poll — and therefore
+ * the desktop status lookup — off entirely while the tab is not open.
+ */
+export function useAdeBotScreen(botId: BotId | null): EnvironmentQueryView<AdeBotScreen> {
+  const environmentId = useAdeEnvironmentId();
+  return useEnvironmentQuery(
+    environmentId === null || botId === null
+      ? null
+      : adeEnvironment.botScreen({ environmentId, input: { botId } }),
   );
 }
 

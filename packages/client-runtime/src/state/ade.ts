@@ -43,6 +43,21 @@ export function createAdeEnvironmentAtoms<R, E>(
   });
 
   /**
+   * One bot's desktop state for the Screen tab (spec §4.6).
+   *
+   * Polled faster than the rest of the bot detail because it is the surface a
+   * captain watches while pressing Start and waiting for a container to come
+   * up. The read never provisions, so a fast poll costs nothing but a status
+   * lookup.
+   */
+  const botScreen = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:ade:bot-screen",
+    tag: WS_METHODS.adeGetBotScreen,
+    staleTimeMs: 1_000,
+    refreshIntervalMs: 5_000,
+  });
+
+  /**
    * Sidebar "Needs You" badge. No stream backs it (spec §7.8 slice 8), so the
    * count is polled — slowly, because it is a badge and not a feed.
    */
@@ -158,6 +173,19 @@ export function createAdeEnvironmentAtoms<R, E>(
       );
     });
 
+  const refreshBotScreen = (
+    target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: { readonly botId: BotId };
+    },
+    registry: AtomRegistry.AtomRegistry,
+  ) =>
+    Effect.sync(() => {
+      registry.refresh(
+        botScreen({ environmentId: target.environmentId, input: { botId: target.input.botId } }),
+      );
+    });
+
   return {
     /**
      * Latest `FleetHealthSnapshot` pushed by the server's health checker.
@@ -171,6 +199,7 @@ export function createAdeEnvironmentAtoms<R, E>(
     }),
     roster,
     bot,
+    botScreen,
     needsYouCount,
     project,
     projectCandidates,
@@ -265,6 +294,45 @@ export function createAdeEnvironmentAtoms<R, E>(
       },
       onSettled: (target, registry) =>
         refreshBot(target, registry).pipe(Effect.andThen(refreshRoster(target, registry))),
+    }),
+    /**
+     * Explicit captain Start from the Screen tab. Single-flight per bot: a
+     * double click must not race two provisions against the desktop cap.
+     */
+    startBotDesktop: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:start-bot-desktop",
+      tag: WS_METHODS.adeStartBotDesktop,
+      scheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.botId}`,
+      },
+      onSettled: (target, registry) => refreshBotScreen(target, registry),
+    }),
+    /** Explicit captain Stop. Shares Start's key so the two cannot interleave. */
+    stopBotDesktop: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:stop-bot-desktop",
+      tag: WS_METHODS.adeStopBotDesktop,
+      scheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.botId}`,
+      },
+      onSettled: (target, registry) => refreshBotScreen(target, registry),
+    }),
+    /**
+     * Confirm-gated delete. The bot is gone afterwards, so the roster is what
+     * the captain returns to and it must not still list the deleted row.
+     */
+    deleteBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:delete-bot",
+      tag: WS_METHODS.adeDeleteBot,
+      scheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.botId}`,
+      },
+      onSettled: (target, registry) => refreshRoster(target, registry),
     }),
     /**
      * Lazily starts (or reuses) the bot's `primary-text` session. Single-flight
