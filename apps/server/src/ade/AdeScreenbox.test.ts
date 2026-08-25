@@ -659,7 +659,7 @@ describe("AdeScreenbox idle policy", () => {
       yield* seedProvisioning(sql, "bot-a", "running");
       yield* seedProvisioning(sql, "bot-b", "stopped");
       const { mock, runtime } = yield* buildHarness();
-      mock.desktops.set("bot-b", { state: "running" });
+      mock.desktops.set("bot-b", { state: "running", vncPort: 16181 });
 
       yield* runtime.reconcileWithUpstream;
       assert.strictEqual((yield* provisioningRow(sql, "bot-a"))?.status, "stopped");
@@ -863,6 +863,112 @@ describe("AdeScreenbox through the tool gate", () => {
       if (unknown._tag === "denied") {
         assert.strictEqual(unknown.denial._tag, "unknown-tool");
       }
+    }),
+  );
+});
+
+describe("AdeScreenbox viewer target", () => {
+  testCase(
+    "resolves the running desktop's loopback vnc port without ever provisioning",
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      yield* seedBot(sql, "bot-a", { computerUse: true });
+      const { mock, runtime } = yield* buildHarness();
+      yield* runtime.startDesktopFor("bot-a" as BotId);
+
+      const target = yield* runtime.viewerTargetFor("bot-a" as BotId);
+      assert.strictEqual(target.host, "127.0.0.1");
+      assert.strictEqual(target.port, mock.desktops.get("bot-a")!.vncPort);
+      // The port must be the RFB one, never the RDP sibling that upstream also
+      // publishes under the misleading name `novnc_port`.
+      assert.notStrictEqual(target.port, mock.desktops.get("bot-a")!.vncPort - 1);
+    }),
+  );
+
+  testCase(
+    "refuses a bot with no desktop instead of spawning one",
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      yield* seedBot(sql, "bot-a", { computerUse: true });
+      const { mock, runtime } = yield* buildHarness();
+
+      const outcome = yield* runtime.viewerTargetFor("bot-a" as BotId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.kind, "not-eligible");
+      }
+      // The refusal is the whole point: viewing must never create a desktop.
+      assert.strictEqual(mock.desktops.size, 0);
+    }),
+  );
+
+  testCase(
+    "refuses a stopped desktop rather than restarting it",
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      yield* seedBot(sql, "bot-a", { computerUse: true });
+      const { mock, runtime } = yield* buildHarness();
+      yield* runtime.startDesktopFor("bot-a" as BotId);
+      yield* runtime.stopDesktopFor("bot-a" as BotId);
+
+      const outcome = yield* runtime.viewerTargetFor("bot-a" as BotId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.kind, "not-eligible");
+      }
+      assert.strictEqual(mock.desktops.get("bot-a")!.state, "stopped");
+    }),
+  );
+
+  testCase(
+    "refuses when the record claims running but upstream no longer lists the desktop",
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      yield* seedBot(sql, "bot-a", { computerUse: true });
+      yield* seedProvisioning(sql, "bot-a", "running");
+      const { runtime } = yield* buildHarness();
+
+      // Upstream has no such desktop, so its recorded port belongs to nobody —
+      // or worse, to a different bot. Refuse rather than dial a stale port.
+      const outcome = yield* runtime.viewerTargetFor("bot-a" as BotId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.kind, "not-eligible");
+      }
+    }),
+  );
+
+  testCase(
+    "refuses when Screenbox is not configured",
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      yield* seedBot(sql, "bot-a", { computerUse: true });
+      yield* seedProvisioning(sql, "bot-a", "running");
+      const { runtime } = yield* buildHarness({ configured: false });
+
+      const outcome = yield* runtime.viewerTargetFor("bot-a" as BotId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.kind, "not-configured");
+      }
+    }),
+  );
+
+  testCase(
+    "resolves only the requested bot's desktop when several are running",
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      yield* seedBot(sql, "bot-a", { computerUse: true });
+      yield* seedBot(sql, "bot-b", { computerUse: true });
+      const { mock, runtime } = yield* buildHarness();
+      yield* runtime.startDesktopFor("bot-a" as BotId);
+      yield* runtime.startDesktopFor("bot-b" as BotId);
+
+      const a = yield* runtime.viewerTargetFor("bot-a" as BotId);
+      const b = yield* runtime.viewerTargetFor("bot-b" as BotId);
+      assert.notStrictEqual(a.port, b.port);
+      assert.strictEqual(a.port, mock.desktops.get("bot-a")!.vncPort);
+      assert.strictEqual(b.port, mock.desktops.get("bot-b")!.vncPort);
     }),
   );
 });

@@ -224,6 +224,12 @@ export class AdeScreenboxProvisionError extends Schema.TaggedErrorClass<AdeScree
 // Service shape
 // ---------------------------------------------------------------------------
 
+/** Where the WS→VNC proxy should dial for a bot's desktop. Loopback only. */
+export interface AdeScreenboxViewerTarget {
+  readonly host: string;
+  readonly port: number;
+}
+
 export interface AdeScreenboxDesktopStatus {
   readonly botId: BotId;
   readonly status: ScreenboxProvisioningStatus | "none";
@@ -255,6 +261,16 @@ export interface AdeScreenboxRuntimeShape {
   /** Bot delete (S15): destroy without snapshot + purge data + drop the record. */
   readonly destroyDesktopFor: (botId: BotId) => Effect.Effect<void, AdeScreenboxProvisionError>;
   readonly statusFor: (botId: BotId) => Effect.Effect<AdeScreenboxDesktopStatus>;
+  /**
+   * Loopback RFB endpoint for this bot's desktop, for the WS→VNC proxy (§4.6).
+   *
+   * Deliberately **read-only**: it never provisions and never starts. Viewing
+   * must not spawn a desktop, so a bot with no record — or with a stopped one —
+   * is a refusal here, not an implicit `startDesktopFor`.
+   */
+  readonly viewerTargetFor: (
+    botId: BotId,
+  ) => Effect.Effect<AdeScreenboxViewerTarget, AdeScreenboxProvisionError>;
 
   // -- idle policy -----------------------------------------------------------
   /** Viewer attached (S15 WS→VNC proxy); presence keeps the desktop alive. */
@@ -1025,6 +1041,70 @@ export const makeAdeScreenboxRuntime = (
         viewers: viewers.get(botId) ?? 0,
       }));
 
+    const viewerRefusal = (
+      botId: BotId,
+      kind: AdeScreenboxProvisionFailureKind,
+      reason: string,
+    ) => new AdeScreenboxProvisionError({ botId, kind, reason });
+
+    const viewerTargetFor: AdeScreenboxRuntimeShape["viewerTargetFor"] = (botId) =>
+      Effect.gen(function* () {
+        if (!client.isConfigured) {
+          return yield* viewerRefusal(
+            botId,
+            "not-configured",
+            "Screenbox is not configured on this host.",
+          );
+        }
+        const row = yield* readRow(botId);
+        if (row === null) {
+          return yield* viewerRefusal(
+            botId,
+            "not-eligible",
+            "This bot has no desktop yet. Start one from the Screen tab.",
+          );
+        }
+        if (row.status !== "running") {
+          return yield* viewerRefusal(
+            botId,
+            "not-eligible",
+            "This bot's desktop is not running. Start it from the Screen tab.",
+          );
+        }
+        const listed = yield* client.listDesktops.pipe(Effect.result);
+        if (listed._tag === "Failure") {
+          return yield* viewerRefusal(
+            botId,
+            "upstream",
+            `Screenbox could not be reached: ${boundScreenboxDetail(listed.failure.message)}`,
+          );
+        }
+        // Match on the desktop id rather than trusting list order, and require
+        // upstream to agree the desktop is running: a record that says
+        // "running" while upstream stopped it would otherwise dial a port that
+        // now belongs to some other desktop.
+        const desktopId = desktopIdFor(botId);
+        const desktop = listed.success.find((entry) => entry.desktopId === desktopId);
+        if (desktop === undefined || desktop.state !== "running") {
+          return yield* viewerRefusal(
+            botId,
+            "not-eligible",
+            "This bot's desktop is not running. Start it from the Screen tab.",
+          );
+        }
+        if (desktop.vncPort === null) {
+          return yield* viewerRefusal(
+            botId,
+            "upstream",
+            "Screenbox did not publish a VNC port for this desktop.",
+          );
+        }
+        // Loopback is not a default that a payload may override: upstream binds
+        // desktop ports to 127.0.0.1, and hard-coding the host here means a
+        // hostile or buggy `list` entry can never redirect the proxy off-box.
+        return { host: "127.0.0.1", port: desktop.vncPort };
+      });
+
     const probe: AdeScreenboxRuntimeShape["probe"] = Effect.gen(function* () {
       if (!client.isConfigured) {
         return {
@@ -1054,6 +1134,7 @@ export const makeAdeScreenboxRuntime = (
       stopDesktopFor,
       destroyDesktopFor,
       statusFor,
+      viewerTargetFor,
       viewerAttached,
       viewerDetached,
       sweepIdleDesktops,

@@ -138,6 +138,10 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.adeWriteBotMemory]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeEditBotPersona]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeSetBotComputerUse]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeGetBotScreen]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeStartBotDesktop]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeStopBotDesktop]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeDeleteBot]: AuthOrchestrationOperateScope,
   // Starting a chat mints a kernel session — a mutation, not a read.
   [WS_METHODS.adeStartBotChat]: AuthOrchestrationOperateScope,
   [WS_METHODS.vcsRefreshStatus]: AuthOrchestrationReadScope,

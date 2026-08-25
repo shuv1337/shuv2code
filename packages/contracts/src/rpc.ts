@@ -8,10 +8,12 @@ import {
   AdeBotChatSession,
   AdeBotDetail,
   AdeBotIdInput,
+  AdeBotScreen,
   AdeCaptainError,
   AdeCreateBotFromTemplateInput,
   AdeCreateProjectInput,
   AdeCreatedProject,
+  AdeDeletedBot,
   AdeEditPersonaInput,
   AdeListNeedsYouInput,
   AdeNeedsYouCount,
@@ -431,6 +433,10 @@ export const WS_METHODS = {
   adeGetNeedsYouItem: "ade.getNeedsYouItem",
   adeSubmitNeedsYouDecision: "ade.submitNeedsYouDecision",
   adeStartBotChat: "ade.startBotChat",
+  adeGetBotScreen: "ade.getBotScreen",
+  adeStartBotDesktop: "ade.startBotDesktop",
+  adeStopBotDesktop: "ade.stopBotDesktop",
+  adeDeleteBot: "ade.deleteBot",
 
   // Streaming subscriptions
   subscribeVcsStatus: "subscribeVcsStatus",
@@ -1329,6 +1335,40 @@ export const WsAdeSetBotComputerUseRpc = Rpc.make(WS_METHODS.adeSetBotComputerUs
 });
 
 /**
+ * Screen tab state (spec §4.6). A pure read: polling it must never provision
+ * or start a desktop, because viewing never spawns.
+ */
+export const WsAdeGetBotScreenRpc = Rpc.make(WS_METHODS.adeGetBotScreen, {
+  payload: AdeBotIdInput,
+  success: AdeBotScreen,
+  error: AdeCaptainRpcError,
+});
+
+/** Explicit captain Start from the Screen tab; the only spawn path in the UI. */
+export const WsAdeStartBotDesktopRpc = Rpc.make(WS_METHODS.adeStartBotDesktop, {
+  payload: AdeBotIdInput,
+  success: AdeBotScreen,
+  error: AdeCaptainRpcError,
+});
+
+/** Explicit captain Stop; the home volume survives, so Start resumes the data. */
+export const WsAdeStopBotDesktopRpc = Rpc.make(WS_METHODS.adeStopBotDesktop, {
+  payload: AdeBotIdInput,
+  success: AdeBotScreen,
+  error: AdeCaptainRpcError,
+});
+
+/**
+ * Confirm-gated bot delete (spec §4.6): destroy without snapshot, purge the
+ * desktop's data, drop the provisioning record, then delete the bot row.
+ */
+export const WsAdeDeleteBotRpc = Rpc.make(WS_METHODS.adeDeleteBot, {
+  payload: AdeBotIdInput,
+  success: AdeDeletedBot,
+  error: AdeCaptainRpcError,
+});
+
+/**
  * Create an ADE project and its Second Mate (spec §4.1). The empty-state CTA
  * lands here; without it the fleet has no projects, so crew can only ever be
  * fleet-wide and the auto-Second-Mate hook is unreachable.
@@ -1438,6 +1478,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsAdeGetNeedsYouItemRpc,
   WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeStartBotChatRpc,
+  WsAdeGetBotScreenRpc,
+  WsAdeStartBotDesktopRpc,
+  WsAdeStopBotDesktopRpc,
+  WsAdeDeleteBotRpc,
   WsAutomationsListRpc,
   WsAutomationsGetRpc,
   WsAutomationsCreateRpc,
