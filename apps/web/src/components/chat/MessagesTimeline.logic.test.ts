@@ -7,6 +7,7 @@ import {
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   shouldPreserveAssistantLineBreaks,
+  type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
 describe("shouldPreserveAssistantLineBreaks", () => {
@@ -1722,5 +1723,37 @@ describe("classifyBubbleRow", () => {
       createdAt,
     } as unknown as Parameters<typeof classifyBubbleRow>[0];
     expect(classifyBubbleRow(futureRow)).toBe("trace");
+  });
+
+  /**
+   * The cutover precondition (MESSENGER-PIVOT §5 step 3, discharged by M6):
+   * the bubble renderer stopped being opt-in, so "a case per row kind" has to
+   * be enforced rather than remembered.
+   *
+   * The runtime half asserts every kind classifies. The type-level half is
+   * what actually holds the line: adding an arm to `MessagesTimelineRow`
+   * without listing it here is a compile error in this file, so the next row
+   * kind cannot reach a captain as an unclassified blank bubble.
+   */
+  it("classifies every arm of the row union", () => {
+    const ALL_ROW_KINDS = [
+      "work",
+      "work-toggle",
+      "turn-fold",
+      "message",
+      "proposed-plan",
+      "turn-plan",
+      "working",
+    ] as const;
+    type UncoveredKind = Exclude<MessagesTimelineRow["kind"], (typeof ALL_ROW_KINDS)[number]>;
+    const _exhaustive: UncoveredKind extends never ? true : never = true;
+    expect(_exhaustive).toBe(true);
+
+    for (const kind of ALL_ROW_KINDS) {
+      const row = { kind, id: `${kind}-1`, createdAt, message: { role: "assistant" } };
+      expect(["bubble", "trace"]).toContain(
+        classifyBubbleRow(row as unknown as Parameters<typeof classifyBubbleRow>[0]),
+      );
+    }
   });
 });

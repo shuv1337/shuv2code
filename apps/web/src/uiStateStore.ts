@@ -59,29 +59,8 @@ export interface UiCaptainShellState {
   captainRightRailCollapsed: boolean;
 }
 
-/**
- * The M4 bubble-renderer toggle (MESSENGER-PIVOT §5 step 3).
- *
- * Deliberately **per-session**: it is absent from `PersistedUiState`, so it is
- * never hydrated or written. This toggle exists for exactly one release while
- * `classifyBubbleRow` and the `TraceCard` seam are tuned, and M6 deletes it.
- * Persisting a switch with a scheduled demolition date only guarantees a
- * migration to remove it later — and a captain who latched it on months ago and
- * forgot would report the eventual removal as a regression. Default off; the
- * conversation renders today's `BotChatPage` until the captain opts in, and
- * "Open in workspace view" turns it straight back off.
- */
-export interface UiCaptainConversationState {
-  captainBubbleViewEnabled: boolean;
-}
-
 export interface UiState
-  extends
-    UiProjectState,
-    UiThreadState,
-    UiEndpointState,
-    UiCaptainShellState,
-    UiCaptainConversationState {}
+  extends UiProjectState, UiThreadState, UiEndpointState, UiCaptainShellState {}
 
 const initialState: UiState = {
   projectExpandedById: {},
@@ -91,7 +70,6 @@ const initialState: UiState = {
   defaultAdvertisedEndpointKey: null,
   captainLeftRailCollapsed: false,
   captainRightRailCollapsed: false,
-  captainBubbleViewEnabled: false,
 };
 
 const LEGACY_PROJECT_CWD_PREFERENCE_PREFIX = "legacy-project-cwd:";
@@ -178,8 +156,6 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
         : null,
     captainLeftRailCollapsed: parsed.captainLeftRailCollapsed === true,
     captainRightRailCollapsed: parsed.captainRightRailCollapsed === true,
-    // Per-session by design: never read from storage, never written to it.
-    captainBubbleViewEnabled: initialState.captainBubbleViewEnabled,
   };
 }
 
@@ -363,13 +339,6 @@ export function setCaptainRailCollapsed(
   return { ...state, [key]: collapsed };
 }
 
-export function setCaptainBubbleViewEnabled(state: UiState, enabled: boolean): UiState {
-  if (state.captainBubbleViewEnabled === enabled) {
-    return state;
-  }
-  return { ...state, captainBubbleViewEnabled: enabled };
-}
-
 export function resolveProjectExpanded(
   projectExpandedById: Readonly<Record<string, boolean>>,
   preferenceKeys: readonly string[],
@@ -453,7 +422,6 @@ interface UiStateStore extends UiState {
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   setCaptainRailCollapsed: (rail: CaptainRail, collapsed: boolean) => void;
-  setCaptainBubbleViewEnabled: (enabled: boolean) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
   reorderProjects: (
     currentProjectOrder: readonly string[],
@@ -474,8 +442,6 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
   setCaptainRailCollapsed: (rail, collapsed) =>
     set((state) => setCaptainRailCollapsed(state, rail, collapsed)),
-  setCaptainBubbleViewEnabled: (enabled) =>
-    set((state) => setCaptainBubbleViewEnabled(state, enabled)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),
   reorderProjects: (currentProjectOrder, draggedProjectIds, targetProjectIds) =>
