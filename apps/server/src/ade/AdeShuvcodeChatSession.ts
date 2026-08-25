@@ -40,6 +40,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import type { OrchestrationShellSnapshot, ServerProvider } from "@shuv2code/contracts";
@@ -319,389 +320,436 @@ export class AdeShuvcodeChatSession extends Context.Service<
         };
       });
 
-      const startPrimaryChat: AdeChatSessionPortShape["startPrimaryChat"] = Effect.fn(
-        "AdeShuvcodeChatSession.startPrimaryChat",
-      )(function* (botId: BotId) {
-        const threadId = adeBotThreadId(botId);
-        const principal = { botId, purpose: "primary-text" } as const;
+      /**
+       * One start at a time per bot thread.
+       *
+       * Nothing else serializes this path — `ProviderService`'s lane only
+       * wraps `sendTurn` — so a captain pressing "Start chat" while
+       * `AdeAssignmentRunner` briefs the same bot would have both callers run
+       * the ensure-session section. The second `sessions.set` inside the
+       * adapter orphans the first event pump (never closed): two pumps then
+       * feed the dynamic-tool signal queue and the dispatch loop double-forks
+       * every call id. The winner starts; the loser waits and re-reads, which
+       * — with the `hasSession` gate below — makes it a probe-only pass that
+       * returns the same answer.
+       */
+      const startLocks = new Map<ThreadId, Semaphore.Semaphore>();
+      const startLockFor = (threadId: ThreadId): Semaphore.Semaphore => {
+        const existing = startLocks.get(threadId);
+        if (existing !== undefined) return existing;
+        const created = Semaphore.makeUnsafe(1);
+        startLocks.set(threadId, created);
+        return created;
+      };
 
-        // A fresh install has no `opencode2` instance at all, and the raw
-        // registry error ("Provider 'opencodeV2' is not implemented") names an
-        // internal id rather than the thing the captain has to do. §4.1 keeps
-        // the app navigable while degraded, but degraded must still be
-        // actionable.
-        const adapter = yield* Effect.mapError(
-          adapters.getByInstance(ADE_SHUVCODE_INSTANCE_ID),
-          () =>
-            unavailable(
-              "No 'opencode2' provider instance is configured. Add one in Settings → Providers " +
-                "(point Binary path at your shuvcode CLI), then start the chat again.",
-            ),
-        );
-        const seam = adapter.dynamicTools;
-        if (seam === undefined) {
-          return yield* unavailable(
-            "The shuvcode adapter in this build has no dynamic-tool seam; ADE cannot attach its tool gate.",
+      const startPrimaryChatUnlocked = Effect.fn("AdeShuvcodeChatSession.startPrimaryChat")(
+        function* (botId: BotId) {
+          const threadId = adeBotThreadId(botId);
+          const principal = { botId, purpose: "primary-text" } as const;
+
+          // A fresh install has no `opencode2` instance at all, and the raw
+          // registry error ("Provider 'opencodeV2' is not implemented") names an
+          // internal id rather than the thing the captain has to do. §4.1 keeps
+          // the app navigable while degraded, but degraded must still be
+          // actionable.
+          const adapter = yield* Effect.mapError(
+            adapters.getByInstance(ADE_SHUVCODE_INSTANCE_ID),
+            () =>
+              unavailable(
+                "No 'opencode2' provider instance is configured. Add one in Settings → Providers " +
+                  "(point Binary path at your shuvcode CLI), then start the chat again.",
+              ),
           );
-        }
+          const seam = adapter.dynamicTools;
+          if (seam === undefined) {
+            return yield* unavailable(
+              "The shuvcode adapter in this build has no dynamic-tool seam; ADE cannot attach its tool gate.",
+            );
+          }
 
-        const attachGate = (sessionId: KernelSessionId) =>
-          gate.attachShuvcodeThread(seam, { threadId, sessionId, principal });
+          const attachGate = (sessionId: KernelSessionId) =>
+            gate.attachShuvcodeThread(seam, { threadId, sessionId, principal });
 
-        /**
-         * Are the fleet tools actually registered on this session?
-         *
-         * The only honest answer is the provider-authoritative list. Treating
-         * a successful `configureThread` as proof is wrong twice over: it
-         * succeeds after purely local writes when no session is live (so every
-         * restart would claim tools it never pushed), and a call that
-         * succeeded but registered nothing still leaves the bot unable to
-         * delegate. An empty catalog is a negative result, not a pass.
-         *
-         * The answer is deliberately tri-state (#199). A failure that never
-         * reached the kernel — the adapter has no in-process session for this
-         * thread — is not evidence about the catalog at all, and reporting it
-         * as "missing" is what pinned a permanent "fleet tools unavailable"
-         * banner on every bot after a server restart. That case is `unknown`:
-         * say nothing and ask again on the next start.
-         */
-        const probeTools: Effect.Effect<AdeToolProbe> = Effect.gen(function* () {
-          const listed = yield* Effect.exit(seam.listTools(threadId));
-          if (listed._tag === "Failure") {
-            if (adapterSessionMissing(Cause.squash(listed.cause))) {
-              yield* Effect.logDebug(
-                "ADE tool probe could not reach the kernel: no in-process session for this thread",
-                { botId, threadId },
-              );
-              return "unknown";
+          /**
+           * Are the fleet tools actually registered on this session?
+           *
+           * The only honest answer is the provider-authoritative list. Treating
+           * a successful `configureThread` as proof is wrong twice over: it
+           * succeeds after purely local writes when no session is live (so every
+           * restart would claim tools it never pushed), and a call that
+           * succeeded but registered nothing still leaves the bot unable to
+           * delegate. An empty catalog is a negative result, not a pass.
+           *
+           * The answer is deliberately tri-state (#199). A failure that never
+           * reached the kernel — the adapter has no in-process session for this
+           * thread — is not evidence about the catalog at all, and reporting it
+           * as "missing" is what pinned a permanent "fleet tools unavailable"
+           * banner on every bot after a server restart. That case is `unknown`:
+           * say nothing and ask again on the next start.
+           */
+          const probeTools: Effect.Effect<AdeToolProbe> = Effect.gen(function* () {
+            const listed = yield* Effect.exit(seam.listTools(threadId));
+            if (listed._tag === "Failure") {
+              if (adapterSessionMissing(Cause.squash(listed.cause))) {
+                yield* Effect.logDebug(
+                  "ADE tool probe could not reach the kernel: no in-process session for this thread",
+                  { botId, threadId },
+                );
+                return "unknown";
+              }
+              return "missing";
             }
+            if (listed.value.length > 0) return "attached";
+            yield* Effect.logWarning(
+              "ADE fleet tools are not registered on this session; the kernel accepted the request but the catalog is empty",
+              { botId, threadId },
+            );
             return "missing";
-          }
-          if (listed.value.length > 0) return "attached";
-          yield* Effect.logWarning(
-            "ADE fleet tools are not registered on this session; the kernel accepted the request but the catalog is empty",
-            { botId, threadId },
-          );
-          return "missing";
-        });
+          });
 
-        /**
-         * A failed catalog write has two very different causes that both
-         * surface as 404, and conflating them makes a fleet either unopenable
-         * or unable to self-heal: the *route* can be missing (kernel build
-         * without the dynamic-tool extension — the session is fine, keep the
-         * binding) or the *session* can be gone (kernel restarted — the
-         * binding is stale and must be retired). Upstream tags the second one,
-         * which is the only reliable way to tell them apart.
-         */
-        const sessionGone = (cause: unknown) => isOpenCodeV2SessionNotFound(cause);
+          /**
+           * A failed catalog write has two very different causes that both
+           * surface as 404, and conflating them makes a fleet either unopenable
+           * or unable to self-heal: the *route* can be missing (kernel build
+           * without the dynamic-tool extension — the session is fine, keep the
+           * binding) or the *session* can be gone (kernel restarted — the
+           * binding is stale and must be retired). Upstream tags the second one,
+           * which is the only reliable way to tell them apart.
+           */
+          const sessionGone = (cause: unknown) => isOpenCodeV2SessionNotFound(cause);
 
-        /**
-         * Everything `sessions.startSession` needs: the workspace project, a
-         * shuvcode model, and the bot's durable thread. Creating the thread is
-         * a once-ever act, so this is safe to run on the resume path too.
-         */
-        const prepareThread = Effect.fn("AdeShuvcodeChatSession.prepareThread")(function* () {
-          const project = yield* resolveProject(botId);
-          const modelSelection = yield* resolveModelSelection(project.defaultModelSelection);
-          const botName = yield* orUnavailable("read bot", readBotName(botId));
+          /**
+           * Everything `sessions.startSession` needs: the workspace project, a
+           * shuvcode model, and the bot's durable thread. Creating the thread is
+           * a once-ever act, so this is safe to run on the resume path too.
+           */
+          const prepareThread = Effect.fn("AdeShuvcodeChatSession.prepareThread")(function* () {
+            const project = yield* resolveProject(botId);
+            const modelSelection = yield* resolveModelSelection(project.defaultModelSelection);
+            const botName = yield* orUnavailable("read bot", readBotName(botId));
 
-          // Create the thread only once; a bot's chat is a durable place.
-          const shell = yield* orUnavailable("read threads", snapshots.getShellSnapshot());
-          const threadExists = shell.threads.some((thread) => thread.id === threadId);
-          if (!threadExists) {
-            const createdAt = DateTime.formatIso(yield* DateTime.now);
-            // Deterministic: thread creation for a bot is a once-ever act, and
-            // orchestration dedupes by command receipt, so a racing retry is a
-            // no-op instead of a second thread.
-            const commandId = CommandId.make(`ade-bot-thread-create:${botId}`);
-            yield* orUnavailable(
-              "create thread",
-              engine.dispatch({
-                type: "thread.create",
-                commandId,
-                threadId,
-                projectId: ProjectId.make(project.id),
-                title: `ADE · ${botName}`,
-                modelSelection,
-                runtimeMode: "full-access",
-                interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-                branch: null,
-                worktreePath: project.workspaceRoot,
-                createdAt,
-              }),
-            );
-          }
-          return { project, modelSelection, botName };
-        });
-
-        /**
-         * Hand the adapter this thread. The adapter adopts a session it
-         * already holds and otherwise stands one up, which is the only way the
-         * process-local session context — the thing every provider-authoritative
-         * call, including the tool probe, is gated on — comes into existence.
-         */
-        const startAdapterSession = (prepared: {
-          readonly project: { readonly workspaceRoot: string };
-          readonly modelSelection: ModelSelection;
-          readonly botName: string;
-        }) =>
-          orUnavailable(
-            "start shuvcode session",
-            sessions.startSession(threadId, {
-              threadId,
-              providerInstanceId: ADE_SHUVCODE_INSTANCE_ID,
-              cwd: prepared.project.workspaceRoot,
-              title: `ADE · ${prepared.botName}`,
-              modelSelection: prepared.modelSelection,
-              runtimeMode: "full-access",
-              threadSource: "ade",
-            }),
-          );
-
-        /**
-         * Point a surviving binding — and the gate — at the kernel session the
-         * adapter actually holds. A binding left naming a session the kernel
-         * re-minted strands every S7 delivery and S8 lookup on an id that no
-         * longer exists, so the row follows the kernel.
-         */
-        const reconcileKernelSession = Effect.fn("AdeShuvcodeChatSession.reconcileKernelSession")(
-          function* (input: {
-            readonly bindingId: BotExecutionBindingId;
-            readonly kernelSessionId: KernelSessionId;
-            readonly fallbackSessionId: KernelSessionId;
-          }) {
-            const rebound = yield* Effect.exit(
-              rollover.rebindKernelSession({
-                bindingId: input.bindingId,
-                sessionId: input.kernelSessionId,
-              }),
-            );
-            if (rebound._tag === "Failure") {
-              yield* Effect.logWarning("ADE binding could not adopt the re-minted kernel session", {
-                botId,
-                bindingId: input.bindingId,
-              });
+            // Create the thread only once; a bot's chat is a durable place.
+            const shell = yield* orUnavailable("read threads", snapshots.getShellSnapshot());
+            const threadExists = shell.threads.some((thread) => thread.id === threadId);
+            if (!threadExists) {
+              const createdAt = DateTime.formatIso(yield* DateTime.now);
+              // Deterministic: thread creation for a bot is a once-ever act, and
+              // orchestration dedupes by command receipt, so a racing retry is a
+              // no-op instead of a second thread.
+              const commandId = CommandId.make(`ade-bot-thread-create:${botId}`);
+              yield* orUnavailable(
+                "create thread",
+                engine.dispatch({
+                  type: "thread.create",
+                  commandId,
+                  threadId,
+                  projectId: ProjectId.make(project.id),
+                  title: `ADE · ${botName}`,
+                  modelSelection,
+                  runtimeMode: "full-access",
+                  interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+                  branch: null,
+                  worktreePath: project.workspaceRoot,
+                  createdAt,
+                }),
+              );
             }
-            const sessionId = (
-              rebound._tag === "Success" ? rebound.value.sessionId : input.fallbackSessionId
-            ) as KernelSessionId;
+            return { project, modelSelection, botName };
+          });
+
+          /**
+           * Hand the adapter this thread. The adapter adopts a session it
+           * already holds and otherwise stands one up, which is the only way the
+           * process-local session context — the thing every provider-authoritative
+           * call, including the tool probe, is gated on — comes into existence.
+           */
+          const startAdapterSession = (prepared: {
+            readonly project: { readonly workspaceRoot: string };
+            readonly modelSelection: ModelSelection;
+            readonly botName: string;
+          }) =>
+            orUnavailable(
+              "start shuvcode session",
+              sessions.startSession(threadId, {
+                threadId,
+                providerInstanceId: ADE_SHUVCODE_INSTANCE_ID,
+                cwd: prepared.project.workspaceRoot,
+                title: `ADE · ${prepared.botName}`,
+                modelSelection: prepared.modelSelection,
+                runtimeMode: "full-access",
+                threadSource: "ade",
+              }),
+            );
+
+          /**
+           * Point a surviving binding — and the gate — at the kernel session the
+           * adapter actually holds. A binding left naming a session the kernel
+           * re-minted strands every S7 delivery and S8 lookup on an id that no
+           * longer exists, so the row follows the kernel.
+           */
+          const reconcileKernelSession = Effect.fn("AdeShuvcodeChatSession.reconcileKernelSession")(
+            function* (input: {
+              readonly bindingId: BotExecutionBindingId;
+              readonly kernelSessionId: KernelSessionId;
+              readonly fallbackSessionId: KernelSessionId;
+            }) {
+              const rebound = yield* Effect.exit(
+                rollover.rebindKernelSession({
+                  bindingId: input.bindingId,
+                  sessionId: input.kernelSessionId,
+                }),
+              );
+              if (rebound._tag === "Failure") {
+                yield* Effect.logWarning(
+                  "ADE binding could not adopt the re-minted kernel session",
+                  {
+                    botId,
+                    bindingId: input.bindingId,
+                  },
+                );
+              }
+              const sessionId = (
+                rebound._tag === "Success" ? rebound.value.sessionId : input.fallbackSessionId
+              ) as KernelSessionId;
+              yield* orUnavailable(
+                "rebind tool gate",
+                gate.rebindShuvcodeSession({ threadId, sessionId, principal }),
+              );
+              return sessionId;
+            },
+          );
+
+          const existing = yield* orUnavailable("read bindings", readActiveBinding(botId));
+          if (existing !== null) {
+            const bindingId = existing.binding_id as BotExecutionBindingId;
+            const sessionId = existing.kernel_session_id as KernelSessionId;
+
+            // Attribution first, and locally: the gate must know
+            // thread -> {bot, session} before anything can be dispatched, and
+            // that must not depend on the provider accepting a catalog write.
             yield* orUnavailable(
               "rebind tool gate",
               gate.rebindShuvcodeSession({ threadId, sessionId, principal }),
             );
-            return sessionId;
-          },
-        );
 
-        const existing = yield* orUnavailable("read bindings", readActiveBinding(botId));
-        if (existing !== null) {
-          const bindingId = existing.binding_id as BotExecutionBindingId;
-          const sessionId = existing.kernel_session_id as KernelSessionId;
+            const refreshed = yield* Effect.exit(attachGate(sessionId));
+            if (refreshed._tag === "Failure" && sessionGone(Cause.squash(refreshed.cause))) {
+              // The kernel no longer holds this session: the binding is stale.
+              // Retire it (never silently reused, ADR §16) and fall through to a
+              // fresh start, which is what makes a kernel restart self-heal.
+              yield* Effect.logWarning(
+                "ADE primary session is gone from the kernel; retiring the binding and starting a fresh one",
+                { botId, sessionId },
+              );
+              yield* Effect.ignore(rollover.closeBinding({ bindingId, status: "lost" }));
+            } else {
+              // The binding is durable; the adapter's session map is not. After a
+              // restart the gate is rebound and the catalog is stored locally,
+              // but no in-process session exists yet — so nothing has been pushed
+              // to the kernel and the tool probe cannot even ask. Standing the
+              // session up is what makes the resume path do what the fresh path
+              // does: the adapter adopts or creates the session, the locally
+              // stored catalog rides that creation, and only then is the probe
+              // answering a real question (#199).
+              //
+              // Gated on the adapter *not* already holding this thread, and that
+              // gate is load-bearing rather than an optimization. Against an
+              // external shuvcode server the adapter's adopt fast path is
+              // unreachable (`canRegisterMcpServers` is false), so an
+              // unconditional start would fall into its replace branch: scope
+              // closed, event pump torn down, and outstanding dynamic tool calls
+              // cancelled mid-flight — an interrupted call re-runs its handler on
+              // the next drain, double-executing side-effecting fleet tools.
+              // Opening a chat must never do that. When the adapter already holds
+              // the session the probe is answerable as-is, which is all #199
+              // needed.
+              const live = yield* adapter.hasSession(threadId);
+              const started = live
+                ? null
+                : yield* Effect.exit(Effect.flatMap(prepareThread(), startAdapterSession));
 
-          // Attribution first, and locally: the gate must know
-          // thread -> {bot, session} before anything can be dispatched, and
-          // that must not depend on the provider accepting a catalog write.
+              let liveSessionId = sessionId;
+              // A start that failed for any reason other than "this process
+              // never held the session" is itself the answer: the kernel is
+              // unreachable or the bot's project is gone, delegation is down, and
+              // the captain needs to see a reason rather than silence.
+              let startRefused = false;
+              if (started !== null && started._tag === "Failure") {
+                const cause = Cause.squash(started.cause);
+                startRefused = !adapterSessionMissing(cause);
+                yield* Effect.logWarning(
+                  "ADE could not stand up a shuvcode session for a surviving binding; the chat opens but delegation may be unavailable",
+                  { botId, sessionId, cause },
+                );
+              } else if (
+                started !== null &&
+                started.value.providerThreadId !== undefined &&
+                started.value.providerThreadId !== sessionId
+              ) {
+                // The adapter re-minted rather than adopted (the kernel had
+                // forgotten this session). The binding follows it.
+                liveSessionId = yield* reconcileKernelSession({
+                  bindingId,
+                  kernelSessionId: started.value.providerThreadId as KernelSessionId,
+                  fallbackSessionId: sessionId,
+                });
+              }
+
+              const probed = yield* probeTools;
+              const toolsProbe = probed === "unknown" && startRefused ? "missing" : probed;
+              if (toolsProbe === "missing") {
+                yield* Effect.logWarning(
+                  "ADE fleet tools are unavailable on an existing session; chat continues without delegation",
+                  { botId, sessionId: liveSessionId },
+                );
+              }
+              return {
+                botId,
+                threadId,
+                engine: "shuvcode",
+                bindingId,
+                sessionId: liveSessionId,
+                startedNow: false,
+                toolsProbe,
+                toolsAttached: toolsProbe !== "missing",
+              } satisfies AdeBotChatSession;
+            }
+          }
+
+          const prepared = yield* prepareThread();
+
+          // Provisional id: the catalog and ownership metadata must ride
+          // `session.create`, which happens below.
+          //
+          // Best effort, not fatal. This normally only stores the catalog
+          // locally, but when this process already holds a live session for the
+          // thread it becomes a live `PUT /session/:id/tools` — which a kernel
+          // build without the dynamic-tool routes rejects. Refusing to open the
+          // chat over that would mean a captain whose kernel lacks the extension
+          // can never talk to their fleet at all; the honest outcome is a
+          // working conversation with delegation reported as unavailable.
+          const preAttach = yield* Effect.exit(attachGate(threadId as unknown as KernelSessionId));
+          if (preAttach._tag === "Failure") {
+            yield* Effect.logWarning(
+              "ADE tool catalog could not be configured before session creation; continuing without fleet tools",
+              { botId },
+            );
+          }
+
+          const session = yield* startAdapterSession(prepared);
+          const kernelSessionId = session.providerThreadId;
+          if (kernelSessionId === undefined) {
+            return yield* unavailable(
+              "shuvcode started a session without reporting its native session id.",
+            );
+          }
+
+          // Record the real kernel session id so S7/S8 binding lookups (and
+          // every dispatched tool context) name the session ADE recorded. This
+          // is deliberately the *local* rebind: the catalog already rode
+          // `session.create`, so re-pushing it would be a redundant live
+          // `PUT /session/:id/tools` — which is fatal on a kernel build that
+          // does not carry the dynamic-tool routes.
           yield* orUnavailable(
             "rebind tool gate",
-            gate.rebindShuvcodeSession({ threadId, sessionId, principal }),
+            gate.rebindShuvcodeSession({
+              threadId,
+              sessionId: kernelSessionId as KernelSessionId,
+              principal,
+            }),
           );
 
-          const refreshed = yield* Effect.exit(attachGate(sessionId));
-          if (refreshed._tag === "Failure" && sessionGone(Cause.squash(refreshed.cause))) {
-            // The kernel no longer holds this session: the binding is stale.
-            // Retire it (never silently reused, ADR §16) and fall through to a
-            // fresh start, which is what makes a kernel restart self-heal.
-            yield* Effect.logWarning(
-              "ADE primary session is gone from the kernel; retiring the binding and starting a fresh one",
-              { botId, sessionId },
-            );
-            yield* Effect.ignore(rollover.closeBinding({ bindingId, status: "lost" }));
-          } else {
-            // The binding is durable; the adapter's session map is not. After a
-            // restart the gate is rebound and the catalog is stored locally,
-            // but no in-process session exists yet — so nothing has been pushed
-            // to the kernel and the tool probe cannot even ask. Starting the
-            // session here is what makes the resume path do what the fresh path
-            // does: the adapter adopts or stands up the session, the locally
-            // stored catalog rides that (re)creation, and only then is the
-            // probe answering a real question (#199).
-            //
-            // Best effort. A binding that outlived its project — or a kernel
-            // that will not come up — must still yield a readable chat rather
-            // than a hard refusal, exactly as it did before this call existed.
-            const started = yield* Effect.exit(
-              Effect.flatMap(prepareThread(), startAdapterSession),
-            );
-            let liveSessionId = sessionId;
-            if (started._tag === "Failure") {
-              yield* Effect.logWarning(
-                "ADE could not stand up a shuvcode session for a surviving binding; the chat opens but delegation may be unavailable",
-                { botId, sessionId, cause: Cause.squash(started.cause) },
-              );
-            } else if (
-              started.value.providerThreadId !== undefined &&
-              started.value.providerThreadId !== sessionId
-            ) {
-              // The adapter re-minted rather than adopted (the kernel had
-              // forgotten this session). The binding follows it.
-              liveSessionId = yield* reconcileKernelSession({
-                bindingId,
-                kernelSessionId: started.value.providerThreadId as KernelSessionId,
-                fallbackSessionId: sessionId,
-              });
-            }
+          // Did the catalog actually take? Tools ride `session.create`, but a
+          // kernel build without the dynamic-tool routes accepts the create and
+          // silently drops them — and a bot that cannot delegate while the UI
+          // implies it can is worse than one that says so.
+          const toolsProbe = yield* probeTools;
+          const toolsAttached = toolsProbe !== "missing";
 
-            const toolsProbe = yield* probeTools;
-            if (toolsProbe === "missing") {
-              yield* Effect.logWarning(
-                "ADE fleet tools are unavailable on an existing session; chat continues without delegation",
-                { botId, sessionId: liveSessionId },
-              );
+          const primary = yield* Effect.catch(
+            rollover.startPrimarySession({
+              botId,
+              engine: "shuvcode",
+              sessionId: kernelSessionId as KernelSessionId,
+            }),
+            (cause) =>
+              // A racing caller already opened the primary binding: adopt it
+              // rather than rolling anything over (ADR §12.3).
+              cause._tag === "AdePrimarySessionActiveError" ||
+              cause._tag === "AdeSessionBindingConflictError"
+                ? Effect.succeed(null)
+                : Effect.fail(unavailable(`open binding: ${cause.message}`)),
+          );
+
+          if (primary === null) {
+            const adopted = yield* orUnavailable("read bindings", readActiveBinding(botId));
+            if (adopted === null) {
+              return yield* unavailable("The bot's primary session could not be opened.");
             }
+            const adoptedBindingId = adopted.binding_id as BotExecutionBindingId;
+            // The adapter just re-minted a session for this thread, so the
+            // surviving binding may still name the old kernel id.
+            const adoptedSessionId = yield* reconcileKernelSession({
+              bindingId: adoptedBindingId,
+              kernelSessionId: kernelSessionId as KernelSessionId,
+              fallbackSessionId: adopted.kernel_session_id as KernelSessionId,
+            });
             return {
               botId,
               threadId,
               engine: "shuvcode",
-              bindingId,
-              sessionId: liveSessionId,
+              bindingId: adoptedBindingId,
+              sessionId: adoptedSessionId,
               startedNow: false,
               toolsProbe,
-              toolsAttached: toolsProbe !== "missing",
+              toolsAttached,
             } satisfies AdeBotChatSession;
           }
-        }
 
-        const prepared = yield* prepareThread();
-
-        // Provisional id: the catalog and ownership metadata must ride
-        // `session.create`, which happens below.
-        //
-        // Best effort, not fatal. This normally only stores the catalog
-        // locally, but when this process already holds a live session for the
-        // thread it becomes a live `PUT /session/:id/tools` — which a kernel
-        // build without the dynamic-tool routes rejects. Refusing to open the
-        // chat over that would mean a captain whose kernel lacks the extension
-        // can never talk to their fleet at all; the honest outcome is a
-        // working conversation with delegation reported as unavailable.
-        const preAttach = yield* Effect.exit(attachGate(threadId as unknown as KernelSessionId));
-        if (preAttach._tag === "Failure") {
-          yield* Effect.logWarning(
-            "ADE tool catalog could not be configured before session creation; continuing without fleet tools",
-            { botId },
-          );
-        }
-
-        const session = yield* startAdapterSession(prepared);
-        const kernelSessionId = session.providerThreadId;
-        if (kernelSessionId === undefined) {
-          return yield* unavailable(
-            "shuvcode started a session without reporting its native session id.",
-          );
-        }
-
-        // Record the real kernel session id so S7/S8 binding lookups (and
-        // every dispatched tool context) name the session ADE recorded. This
-        // is deliberately the *local* rebind: the catalog already rode
-        // `session.create`, so re-pushing it would be a redundant live
-        // `PUT /session/:id/tools` — which is fatal on a kernel build that
-        // does not carry the dynamic-tool routes.
-        yield* orUnavailable(
-          "rebind tool gate",
-          gate.rebindShuvcodeSession({
-            threadId,
-            sessionId: kernelSessionId as KernelSessionId,
-            principal,
-          }),
-        );
-
-        // Did the catalog actually take? Tools ride `session.create`, but a
-        // kernel build without the dynamic-tool routes accepts the create and
-        // silently drops them — and a bot that cannot delegate while the UI
-        // implies it can is worse than one that says so.
-        const toolsProbe = yield* probeTools;
-        const toolsAttached = toolsProbe !== "missing";
-
-        const primary = yield* Effect.catch(
-          rollover.startPrimarySession({
-            botId,
-            engine: "shuvcode",
-            sessionId: kernelSessionId as KernelSessionId,
-          }),
-          (cause) =>
-            // A racing caller already opened the primary binding: adopt it
-            // rather than rolling anything over (ADR §12.3).
-            cause._tag === "AdePrimarySessionActiveError" ||
-            cause._tag === "AdeSessionBindingConflictError"
-              ? Effect.succeed(null)
-              : Effect.fail(unavailable(`open binding: ${cause.message}`)),
-        );
-
-        if (primary === null) {
-          const adopted = yield* orUnavailable("read bindings", readActiveBinding(botId));
-          if (adopted === null) {
-            return yield* unavailable("The bot's primary session could not be opened.");
+          // Persona + memory + active assignments + outgoing summary.
+          //
+          // `resume: false` is the load-bearing flag: admitting an item normally
+          // *wakes* an idle session and starts a turn, which here would mean the
+          // bot delivers an unprompted monologue about its own persona before
+          // the captain has typed anything. The projection is context the model
+          // should simply have on its next run, not a prompt — so it is admitted
+          // without waking. (Result delivery and steering want the opposite and
+          // keep the waking default.)
+          //
+          // Best-effort: a session without its projection is degraded, not
+          // broken, and the captain must still be able to talk to the bot.
+          const synthetic = adapter.syntheticInput;
+          if (synthetic !== undefined) {
+            yield* synthetic
+              .inject({
+                threadId,
+                text: renderSessionProjection(primary.projection),
+                description: "ADE session context",
+                delivery: "follow-up",
+                resume: false,
+              })
+              .pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("ADE session projection injection failed", { cause }),
+                ),
+              );
           }
-          const adoptedBindingId = adopted.binding_id as BotExecutionBindingId;
-          // The adapter just re-minted a session for this thread, so the
-          // surviving binding may still name the old kernel id.
-          const adoptedSessionId = yield* reconcileKernelSession({
-            bindingId: adoptedBindingId,
-            kernelSessionId: kernelSessionId as KernelSessionId,
-            fallbackSessionId: adopted.kernel_session_id as KernelSessionId,
-          });
+
           return {
             botId,
             threadId,
             engine: "shuvcode",
-            bindingId: adoptedBindingId,
-            sessionId: adoptedSessionId,
-            startedNow: false,
+            bindingId: primary.binding.id,
+            sessionId: primary.binding.sessionId,
+            startedNow: true,
             toolsProbe,
             toolsAttached,
           } satisfies AdeBotChatSession;
-        }
+        },
+      );
 
-        // Persona + memory + active assignments + outgoing summary.
-        //
-        // `resume: false` is the load-bearing flag: admitting an item normally
-        // *wakes* an idle session and starts a turn, which here would mean the
-        // bot delivers an unprompted monologue about its own persona before
-        // the captain has typed anything. The projection is context the model
-        // should simply have on its next run, not a prompt — so it is admitted
-        // without waking. (Result delivery and steering want the opposite and
-        // keep the waking default.)
-        //
-        // Best-effort: a session without its projection is degraded, not
-        // broken, and the captain must still be able to talk to the bot.
-        const synthetic = adapter.syntheticInput;
-        if (synthetic !== undefined) {
-          yield* synthetic
-            .inject({
-              threadId,
-              text: renderSessionProjection(primary.projection),
-              description: "ADE session context",
-              delivery: "follow-up",
-              resume: false,
-            })
-            .pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("ADE session projection injection failed", { cause }),
-              ),
-            );
-        }
-
-        return {
-          botId,
-          threadId,
-          engine: "shuvcode",
-          bindingId: primary.binding.id,
-          sessionId: primary.binding.sessionId,
-          startedNow: true,
-          toolsProbe,
-          toolsAttached,
-        } satisfies AdeBotChatSession;
-      });
+      const startPrimaryChat: AdeChatSessionPortShape["startPrimaryChat"] = (botId: BotId) =>
+        startLockFor(adeBotThreadId(botId)).withPermits(1)(startPrimaryChatUnlocked(botId));
 
       return AdeChatSessionPort.of({ startPrimaryChat });
     }),
