@@ -1,3 +1,8 @@
+// @effect-diagnostics preferSchemaOverJson:off - The secret-absence assertions
+// are deliberately schema-blind: their whole claim is that a string appears
+// nowhere in the *encoded* payload, which a decoder would hide rather than
+// prove. The `subject_refs_json` fixture is raw for the same reason — it has to
+// be able to write a blob the schema would reject.
 /**
  * Roster liveness against a real database
  * (`docs/ade/MESSENGER-PIVOT.md` §4/§6, ticket M3 / #196).
@@ -83,48 +88,59 @@ const setup = Effect.gen(function* () {
   return { sql, bootstrap, api: yield* AdeCaptainApi, firstmateId: seeded.firstmateBotId };
 });
 
-/** Append one settled message to a bot's primary thread. */
-const say = (
-  sql: SqlClient.SqlClient["Service"],
-  input: {
-    readonly botId: BotId;
-    readonly id: string;
-    readonly role: "user" | "assistant";
-    readonly text: string;
-    readonly at: string;
-    readonly streaming?: boolean;
-  },
-) => sql`
-  INSERT INTO projection_thread_messages
-    (message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at)
-  VALUES (
-    ${input.id},
-    ${`${ADE_BOT_THREAD_ID_PREFIX}${input.botId}`},
-    NULL,
-    ${input.role},
-    ${input.text},
-    ${input.streaming === true ? 1 : 0},
-    ${input.at},
-    ${input.at}
-  )
-`;
+/**
+ * Append one settled message to a bot's primary thread.
+ *
+ * Written straight into `projection_thread_messages` rather than through the
+ * chat session, because that is the honest fixture: an ADE bot chat *is* an
+ * ordinary thread, so the projection is what the roster reads no matter which
+ * kernel put the row there.
+ */
+const say = Effect.fn("say")(function* (input: {
+  readonly botId: BotId;
+  readonly id: string;
+  readonly role: "user" | "assistant";
+  readonly text: string;
+  readonly at: string;
+  readonly streaming?: boolean;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO projection_thread_messages
+      (message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at)
+    VALUES (
+      ${input.id},
+      ${`${ADE_BOT_THREAD_ID_PREFIX}${input.botId}`},
+      NULL,
+      ${input.role},
+      ${input.text},
+      ${input.streaming === true ? 1 : 0},
+      ${input.at},
+      ${input.at}
+    )
+  `;
+});
 
-const openNeedsYou = (
-  sql: SqlClient.SqlClient["Service"],
-  input: { readonly id: string; readonly kind: string; readonly botId: BotId },
-) => sql`
-  INSERT INTO ade_needs_you_items
-    (needs_you_item_id, kind, subject_refs_json, status, created_at, updated_at, resolved_at)
-  VALUES (
-    ${input.id},
-    ${input.kind},
-    ${JSON.stringify([{ _tag: "bot", botId: input.botId }])},
-    'open',
-    '2026-08-24T12:00:00.000Z',
-    '2026-08-24T12:00:00.000Z',
-    NULL
-  )
-`;
+const openNeedsYou = Effect.fn("openNeedsYou")(function* (input: {
+  readonly id: string;
+  readonly kind: string;
+  readonly botId: BotId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO ade_needs_you_items
+      (needs_you_item_id, kind, subject_refs_json, status, created_at, updated_at, resolved_at)
+    VALUES (
+      ${input.id},
+      ${input.kind},
+      ${JSON.stringify([{ _tag: "bot", botId: input.botId }])},
+      'open',
+      '2026-08-24T12:00:00.000Z',
+      '2026-08-24T12:00:00.000Z',
+      NULL
+    )
+  `;
+});
 
 const rowFor = (roster: AdeRoster, botId: BotId) =>
   roster.entries.find((entry) => entry.bot.id === botId);
@@ -132,15 +148,15 @@ const rowFor = (roster: AdeRoster, botId: BotId) =>
 describe("AdeCaptainApi.getRoster liveness", () => {
   it.effect("reads the tail of a bot's own thread and attributes it", () =>
     Effect.gen(function* () {
-      const { api, sql, firstmateId } = yield* setup;
-      yield* say(sql, {
+      const { api, firstmateId } = yield* setup;
+      yield* say({
         botId: firstmateId,
         id: "m1",
         role: "user",
         text: "status?",
         at: "2026-08-24T10:00:00.000Z",
       });
-      yield* say(sql, {
+      yield* say({
         botId: firstmateId,
         id: "m2",
         role: "assistant",
@@ -157,9 +173,9 @@ describe("AdeCaptainApi.getRoster liveness", () => {
 
   it.effect("never reads another bot's thread into this bot's row", () =>
     Effect.gen(function* () {
-      const { api, sql, bootstrap, firstmateId } = yield* setup;
+      const { api, bootstrap, firstmateId } = yield* setup;
       const coder = yield* bootstrap.instantiateTemplate({ templateId: "coder", projectId: null });
-      yield* say(sql, {
+      yield* say({
         botId: coder.botId,
         id: "m1",
         role: "assistant",
@@ -175,15 +191,15 @@ describe("AdeCaptainApi.getRoster liveness", () => {
 
   it.effect("keeps a half-streamed token out of the rail", () =>
     Effect.gen(function* () {
-      const { api, sql, firstmateId } = yield* setup;
-      yield* say(sql, {
+      const { api, firstmateId } = yield* setup;
+      yield* say({
         botId: firstmateId,
         id: "m1",
         role: "assistant",
         text: "settled",
         at: "2026-08-24T10:00:00.000Z",
       });
-      yield* say(sql, {
+      yield* say({
         botId: firstmateId,
         id: "m2",
         role: "assistant",
@@ -200,9 +216,9 @@ describe("AdeCaptainApi.getRoster liveness", () => {
 
   it.effect("gives the amber line to the open approval and names the bot", () =>
     Effect.gen(function* () {
-      const { api, sql, firstmateId } = yield* setup;
-      yield* openNeedsYou(sql, { id: "ny-1", kind: "stall", botId: firstmateId });
-      yield* openNeedsYou(sql, { id: "ny-2", kind: "approval", botId: firstmateId });
+      const { api, firstmateId } = yield* setup;
+      yield* openNeedsYou({ id: "ny-1", kind: "stall", botId: firstmateId });
+      yield* openNeedsYou({ id: "ny-2", kind: "approval", botId: firstmateId });
 
       const row = rowFor(yield* api.getRoster(), firstmateId);
       assert.equal(row?.attention?.kind, "approval");
@@ -213,7 +229,7 @@ describe("AdeCaptainApi.getRoster liveness", () => {
   it.effect("says nothing about a resolved item", () =>
     Effect.gen(function* () {
       const { api, sql, firstmateId } = yield* setup;
-      yield* openNeedsYou(sql, { id: "ny-1", kind: "approval", botId: firstmateId });
+      yield* openNeedsYou({ id: "ny-1", kind: "approval", botId: firstmateId });
       yield* sql`UPDATE ade_needs_you_items SET status = 'resolved' WHERE needs_you_item_id = 'ny-1'`;
 
       assert.equal(rowFor(yield* api.getRoster(), firstmateId)?.attention, null);
@@ -225,15 +241,15 @@ describe("AdeCaptainApi.markBotChatRead", () => {
   /** The design's named test: unread arithmetic across a read mark. */
   it.effect("counts only the bot's messages, and only the ones after the mark", () =>
     Effect.gen(function* () {
-      const { api, sql, firstmateId } = yield* setup;
-      yield* say(sql, {
+      const { api, firstmateId } = yield* setup;
+      yield* say({
         botId: firstmateId,
         id: "m1",
         role: "assistant",
         text: "first",
         at: "2026-08-24T10:00:00.000Z",
       });
-      yield* say(sql, {
+      yield* say({
         botId: firstmateId,
         id: "m2",
         role: "assistant",
@@ -254,7 +270,7 @@ describe("AdeCaptainApi.markBotChatRead", () => {
       assert.equal(rowFor(yield* api.getRoster(), firstmateId)?.unreadCount, 0);
 
       // The captain's own reply is never unread to the captain.
-      yield* say(sql, {
+      yield* say({
         botId: firstmateId,
         id: "m3",
         role: "user",
@@ -264,7 +280,7 @@ describe("AdeCaptainApi.markBotChatRead", () => {
       assert.equal(rowFor(yield* api.getRoster(), firstmateId)?.unreadCount, 0);
 
       // The bot's next message is.
-      yield* say(sql, {
+      yield* say({
         botId: firstmateId,
         id: "m4",
         role: "assistant",
@@ -305,9 +321,9 @@ describe("AdeCaptainApi.markBotChatRead", () => {
 
   it.effect("stops counting at the badge's cap instead of scanning forever", () =>
     Effect.gen(function* () {
-      const { api, sql, firstmateId } = yield* setup;
+      const { api, firstmateId } = yield* setup;
       for (let index = 0; index < ADE_UNREAD_DISPLAY_CAP + 20; index += 1) {
-        yield* say(sql, {
+        yield* say({
           botId: firstmateId,
           id: `m${index}`,
           role: "assistant",
@@ -342,22 +358,22 @@ describe("secure answers and the roster preview", () => {
 
   it.effect("withholds the preview while a secure request is open", () =>
     Effect.gen(function* () {
-      const { api, sql, firstmateId } = yield* setup;
-      yield* say(sql, {
+      const { api, firstmateId } = yield* setup;
+      yield* say({
         botId: firstmateId,
         id: "m1",
         role: "assistant",
         text: "What is the deploy key?",
         at: "2026-08-24T10:00:00.000Z",
       });
-      yield* say(sql, {
+      yield* say({
         botId: firstmateId,
         id: "m2",
         role: "user",
         text: SECRET,
         at: "2026-08-24T10:01:00.000Z",
       });
-      yield* openNeedsYou(sql, { id: "ny-1", kind: "form", botId: firstmateId });
+      yield* openNeedsYou({ id: "ny-1", kind: "form", botId: firstmateId });
 
       const roster = yield* api.getRoster();
       const row = rowFor(roster, firstmateId);
@@ -370,7 +386,7 @@ describe("secure answers and the roster preview", () => {
   it.effect("keeps a submitted decision note out of the roster entirely", () =>
     Effect.gen(function* () {
       const { api, sql, firstmateId } = yield* setup;
-      yield* openNeedsYou(sql, { id: "ny-1", kind: "form", botId: firstmateId });
+      yield* openNeedsYou({ id: "ny-1", kind: "form", botId: firstmateId });
 
       // `form` items are not approve/deny, so the decision is an acknowledge —
       // the same path `SecureInputCard` submits on, carrying the same note.
@@ -394,15 +410,15 @@ describe("secure answers and the roster preview", () => {
 
   it.effect("still previews a bot with an approval waiting — suppression is form-only", () =>
     Effect.gen(function* () {
-      const { api, sql, firstmateId } = yield* setup;
-      yield* say(sql, {
+      const { api, firstmateId } = yield* setup;
+      yield* say({
         botId: firstmateId,
         id: "m1",
         role: "assistant",
         text: "Checks passed.",
         at: "2026-08-24T10:00:00.000Z",
       });
-      yield* openNeedsYou(sql, { id: "ny-1", kind: "approval", botId: firstmateId });
+      yield* openNeedsYou({ id: "ny-1", kind: "approval", botId: firstmateId });
 
       const row = rowFor(yield* api.getRoster(), firstmateId);
       assert.equal(row?.lastMessage?.preview, "Checks passed.");
