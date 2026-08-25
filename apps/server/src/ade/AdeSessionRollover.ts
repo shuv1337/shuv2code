@@ -152,6 +152,23 @@ export class AdeBindingNotFoundError extends Schema.TaggedErrorClass<AdeBindingN
   }
 }
 
+/**
+ * A guarded `closeBinding` lost its compare-and-set: the binding exists, but
+ * not in the status the caller observed. Someone else closed it first.
+ */
+export class AdeBindingStatusConflictError extends Schema.TaggedErrorClass<AdeBindingStatusConflictError>()(
+  "AdeBindingStatusConflictError",
+  {
+    bindingId: Schema.String,
+    expectedStatus: Schema.String,
+    actualStatus: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `ADE execution binding '${this.bindingId}' is '${this.actualStatus}', not the expected '${this.expectedStatus}'.`;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Projection (ADR §12.3 — the four rollover components)
 // ---------------------------------------------------------------------------
@@ -268,6 +285,15 @@ export interface CloseBindingInput {
   readonly status: Exclude<BotExecutionBindingStatus, "active">;
   /** Optional bounded summary of the closed session. */
   readonly summary?: string;
+  /**
+   * Compare-and-set guard. Without it a close is a blind UPDATE, which is
+   * fine for the callers that already know they own the binding, but not for
+   * retire-then-open races (voice redial, §4.7): two concurrent closes would
+   * both "succeed" and both proceed to open a replacement. Supplying the
+   * status the caller observed turns the loser into a typed
+   * `AdeBindingStatusConflictError` it can react to.
+   */
+  readonly expectedStatus?: BotExecutionBindingStatus;
 }
 
 export interface AdePrimarySession {
@@ -337,7 +363,10 @@ export interface AdeSessionRolloverShape {
     input: CloseBindingInput,
   ) => Effect.Effect<
     void,
-    AdeBindingNotFoundError | AdeRolloverSummaryLimitExceededError | PersistenceSqlError
+    | AdeBindingNotFoundError
+    | AdeBindingStatusConflictError
+    | AdeRolloverSummaryLimitExceededError
+    | PersistenceSqlError
   >;
   readonly listBindings: (
     botId: BotId,
@@ -765,17 +794,44 @@ export class AdeSessionRollover extends Context.Service<
           });
         }
         const at = yield* nowIso;
-        const updated = yield* sql<{ binding_id: string }>`
-          UPDATE ade_bot_execution_bindings
-          SET status = ${input.status},
-              rollover_summary = COALESCE(${summary}, rollover_summary),
-              updated_at = ${at}
-          WHERE binding_id = ${input.bindingId}
-          RETURNING binding_id
-        `.pipe(Effect.mapError(toPersistenceSqlError("AdeSessionRollover.closeBinding")));
-        if (updated.length === 0) {
+        const mapSql = toPersistenceSqlError("AdeSessionRollover.closeBinding");
+        const expectedStatus = input.expectedStatus;
+        // Two statements rather than a spliced fragment: the guarded form is
+        // the one that must be obviously a compare-and-set on inspection.
+        const updated = yield* (
+          expectedStatus === undefined
+            ? sql<{ binding_id: string }>`
+              UPDATE ade_bot_execution_bindings
+              SET status = ${input.status},
+                  rollover_summary = COALESCE(${summary}, rollover_summary),
+                  updated_at = ${at}
+              WHERE binding_id = ${input.bindingId}
+              RETURNING binding_id
+            `
+            : sql<{ binding_id: string }>`
+              UPDATE ade_bot_execution_bindings
+              SET status = ${input.status},
+                  rollover_summary = COALESCE(${summary}, rollover_summary),
+                  updated_at = ${at}
+              WHERE binding_id = ${input.bindingId} AND status = ${expectedStatus}
+              RETURNING binding_id
+            `
+        ).pipe(Effect.mapError(mapSql));
+        if (updated.length === 1) return;
+        // Zero rows is two different facts, and the caller needs them apart:
+        // no such binding, or a compare-and-set the caller lost.
+        const existing = yield* sql<{ status: BotExecutionBindingStatus }>`
+          SELECT status FROM ade_bot_execution_bindings WHERE binding_id = ${input.bindingId}
+        `.pipe(Effect.mapError(mapSql));
+        const actual = existing[0]?.status;
+        if (actual === undefined) {
           return yield* new AdeBindingNotFoundError({ bindingId: input.bindingId });
         }
+        return yield* new AdeBindingStatusConflictError({
+          bindingId: input.bindingId,
+          expectedStatus: expectedStatus ?? actual,
+          actualStatus: actual,
+        });
       });
 
       const rebindKernelSession: AdeSessionRolloverShape["rebindKernelSession"] = Effect.fn(

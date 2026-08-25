@@ -1,5 +1,6 @@
 import {
   CommandId,
+  KernelSessionId,
   ThreadId,
   VoiceCallId,
   VoiceControllerHistoryMessageId,
@@ -23,6 +24,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { AdeVoiceChannel } from "../../ade/AdeVoiceChannel.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -297,6 +299,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
   const provider = yield* Effect.serviceOption(ProviderService);
   const runtime = yield* VoiceRuntimeGateway;
   const transport = yield* VoiceTransportCoordinator;
+  const adeVoice = yield* AdeVoiceChannel;
   const targets = yield* VoiceTargetMonitor;
   const actionRunner = yield* VoiceControllerActionRunner;
   const speechArbiter = yield* VoiceSpeechArbiter;
@@ -915,6 +918,33 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         false,
       );
     }
+    // ADE §4.7: opening voice on a bot binds this controller thread to that
+    // bot's `purpose: "voice"` binding, which is what makes the tool catalog,
+    // the authority and the seeded context all resolve to one bot. Absent
+    // `adeBotId` this is an ordinary controller session and nothing below
+    // changes. A refusal here must not fail the call — the captain still gets
+    // a working voice session, just without ADE context.
+    const adeCall =
+      input.adeBotId === undefined
+        ? null
+        : yield* adeVoice
+            .openCall({
+              botId: input.adeBotId,
+              engine: "codex",
+              sessionId: KernelSessionId.make(binding.controllerThreadId),
+              controllerThreadId: binding.controllerThreadId,
+              captainChannel: input.captainChannel ?? false,
+            })
+            .pipe(
+              Effect.tapError((error) =>
+                Effect.logWarning("ADE voice call could not be opened; starting without context", {
+                  botId: input.adeBotId,
+                  controllerThreadId: binding.controllerThreadId,
+                  error,
+                }),
+              ),
+              Effect.orElseSucceed(() => null),
+            );
     const started = yield* transport
       .startTransport({
         start: input,
@@ -923,6 +953,7 @@ export const makeVoiceControllerService = Effect.fn("VoiceControllerService.make
         environmentId,
         workspaceRoot: project.value.workspaceRoot,
         onActivated: (session) => targets.seedWatchedTargets(session),
+        ...(adeCall === null ? {} : { adeInitialItems: adeCall.initialItems }),
       })
       .pipe(Effect.timeoutOption(CONTROLLER_OPERATION_TIMEOUT));
     if (Option.isNone(started)) {

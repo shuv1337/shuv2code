@@ -57,8 +57,15 @@ export interface VoiceControllerServiceShape {
   readonly prepareThreadCall: (
     input: VoicePrepareThreadCallInput,
   ) => Effect.Effect<VoicePrepareThreadCallResult, VoiceControllerError>;
+  /**
+   * `captainChannel` is server-side only and deliberately not part of
+   * `VoiceSessionStartInput`: it is not something a client may assert. The WS
+   * boundary sets it from the authenticated connection's `ade:approve` scope,
+   * and it only ever *adds* the two approval tools to an ADE call. `voice.start`
+   * itself keeps its own required scope unchanged.
+   */
   readonly start: (
-    input: VoiceSessionStartInput,
+    input: VoiceSessionStartInput & { readonly captainChannel?: boolean },
   ) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;
   readonly ingestRealtimeEvent: (
     input: VoiceRealtimeIngressInput,

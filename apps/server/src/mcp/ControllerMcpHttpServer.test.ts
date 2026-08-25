@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 
+import { AdeVoiceToolPlane } from "../ade/AdeVoiceToolPlane.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadControlExecutionCoordinator } from "../orchestration/Services/ThreadControlExecutionCoordinator.ts";
@@ -216,6 +217,9 @@ it.effect("serves only the five controller tools and enforces profile and turn m
       const routes = ControllerMcpHttpServer.layer.pipe(
         Layer.provide(ControllerServices),
         Layer.provide(Layer.succeed(McpSessionRegistry.McpSessionRegistry, registry)),
+        // No ADE calls exist here: this is the classic controller path, and it
+        // must stay byte-identical with the §4.7 swap in the tree.
+        Layer.provide(AdeVoiceToolPlane.layerAbsent),
       );
       yield* HttpRouter.serve(routes, {
         disableListenLog: true,
@@ -420,6 +424,111 @@ it.effect("serves only the five controller tools and enforces profile and turn m
           },
         },
       });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("swaps the thread toolkit for the ADE catalog on an ADE voice call", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const dispatched: Array<{ readonly tool: string; readonly input: unknown }> = [];
+      // Stands in for the live channel: this controller thread *is* an ADE
+      // call, so the plane answers with a catalog instead of null.
+      const adePlane = Layer.succeed(AdeVoiceToolPlane, {
+        catalogFor: (threadId) =>
+          Effect.succeed(
+            threadId === controllerThreadId
+              ? [
+                  {
+                    name: "fleet_read",
+                    description: "Read the fleet.",
+                    parameters: { type: "object", properties: {}, additionalProperties: false },
+                  },
+                  {
+                    name: "steer_primary",
+                    description: "Steer a primary session.",
+                    parameters: { type: "object", properties: {}, additionalProperties: false },
+                  },
+                ]
+              : null,
+          ),
+        dispatch: (input) =>
+          Effect.sync(() => {
+            dispatched.push({ tool: input.tool, input: input.input });
+            return input.tool === "fleet_read"
+              ? { ok: true, content: '{"bots":[]}' }
+              : { ok: false, message: "[ade:unknown-tool] nope" };
+          }),
+      });
+
+      const registry = yield* McpSessionRegistry.__testing
+        .make()
+        .pipe(Effect.provide(Layer.merge(NodeServices.layer, fakeEnvironment)));
+      const routes = ControllerMcpHttpServer.layer.pipe(
+        Layer.provide(ControllerServices),
+        Layer.provide(Layer.succeed(McpSessionRegistry.McpSessionRegistry, registry)),
+        Layer.provide(adePlane),
+      );
+      yield* HttpRouter.serve(routes, { disableListenLog: true, disableLogger: true }).pipe(
+        Layer.build,
+      );
+      const controller = yield* registry.issue({
+        threadId: controllerThreadId,
+        providerInstanceId,
+        profile: {
+          kind: "voice-controller",
+          controllerThreadId,
+          runtimeInstanceId: VoiceRuntimeInstanceId.make("runtime-ade-test"),
+          authorizedRuntimeCeiling: "full-access",
+          liveControllerRuntimeMode: "full-access",
+          controlEpoch: 1,
+          controlEnabled: true,
+        },
+      });
+      expect(
+        yield* registry.bindControllerProviderIdentity(controller.config.credentialId, {
+          codexProviderThreadId,
+        }),
+      ).toBe(true);
+
+      // The five thread tools are gone; the ADE catalog is what the model sees.
+      const listed = yield* postJsonRpc(controller.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: "ade-list",
+        method: "tools/list",
+        params: {},
+      });
+      expect(listed.status).toBe(200);
+      const listedBody = listed.body as {
+        readonly result: { readonly tools: ReadonlyArray<{ readonly name: string }> };
+      };
+      expect(listedBody.result.tools.map(({ name }) => name).sort()).toEqual([
+        "fleet_read",
+        "steer_primary",
+      ]);
+
+      // An ADE invocation runs on the voice channel, not the thread toolkit.
+      const called = yield* postJsonRpc(controller.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: "ade-call",
+        method: "tools/call",
+        params: { name: "fleet_read", arguments: { projectId: "p-1" } },
+      });
+      expect(called.status).toBe(200);
+      expect(called.body).toMatchObject({ result: { isError: false } });
+      expect(dispatched).toEqual([{ tool: "fleet_read", input: { projectId: "p-1" } }]);
+
+      // And the thread toolkit is genuinely unreachable here — the refusal
+      // comes back from the ADE plane, not from a thread handler.
+      const legacy = yield* postJsonRpc(controller.config.authorizationHeader, {
+        jsonrpc: "2.0",
+        id: "ade-legacy",
+        method: "tools/call",
+        params: { name: "thread_send", arguments: {} },
+      });
+      expect(legacy.status).toBe(200);
+      expect(legacy.body).toMatchObject({ result: { isError: true } });
+      expect(dispatched.at(-1)?.tool).toBe("thread_send");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

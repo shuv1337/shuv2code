@@ -86,6 +86,15 @@ export interface VoiceTransportCoordinatorShape {
     readonly environmentId: EnvironmentId;
     readonly workspaceRoot: string;
     readonly onActivated: (session: ActiveVoiceSession) => Effect.Effect<void>;
+    /**
+     * ADE §4.7 digest-in: the persona projection + bounded recent-messages
+     * window this call opens with. Undefined for every ordinary controller
+     * session, which keeps that path exactly as it was.
+     */
+    readonly adeInitialItems?: ReadonlyArray<{
+      readonly role: "user" | "developer" | "assistant";
+      readonly text: string;
+    }>;
   }) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;
   readonly startThreadCallTransport: (input: {
     readonly start: VoiceSessionStartInput & {

@@ -36,14 +36,16 @@
  *   approval does not happen and the caller is told why. A mishear therefore
  *   dies at one of the two steps rather than resolving a Needs You item.
  *
- *   This **rides** the existing VoiceAction fence rather than replacing it:
- *   prepare and commit are two separate VoiceActions, so the durable
- *   one-mutation-per-action claim in
- *   `VoiceThreadControlExecutionCoordinator` already makes each of them
- *   at-most-once and replay-safe. What the fence cannot express is *ordering
- *   across* two actions — that a commit was preceded by a restatement the
- *   captain actually heard. The token is exactly that link, and nothing else:
- *   prepare mutates nothing, commit is the single mutation.
+ *   Be precise about what fences what, because it is easy to over-claim here.
+ *   ADE tool invocations do **not** run through
+ *   `VoiceThreadControlExecutionCoordinator` — they are dispatched straight to
+ *   this channel by the controller MCP surface, so no `voiceActionId` and no
+ *   one-mutation-per-action claim is in play. The safety of a verbal approval
+ *   therefore rests on two things that *are* in play: the token, which binds a
+ *   commit to a specific {call, item, decision} that was actually restated and
+ *   is spent on first use; and the captain API's conditional claim, which is
+ *   what makes the underlying verdict exactly-once no matter how many callers
+ *   race for it. Prepare mutates nothing; commit is the single mutation.
  * - **Digest in** (§12.4): `initialItems` are the persona projection + memory
  *   + active assignments (rendered by the shared
  *   {@link renderSessionProjection}, so bot-authored content stays fenced)
@@ -63,29 +65,30 @@ import * as NodeCrypto from "node:crypto";
 
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  AdeCaptainError,
   NeedsYouItemId,
-  NeedsYouSubjectRef,
   SESSION_ROLLOVER_SUMMARY_MAX_LENGTH,
+  type AdeNeedsYouEntry,
   type BotExecutionBinding,
   type BotExecutionBindingId,
   type BotId,
   type KernelEngine,
   type KernelSessionId,
-  type NeedsYouKind,
-  type NeedsYouItemStatus,
   type PersonaVersionId,
+  type ThreadId,
 } from "@shuv2code/contracts";
 
-import { type PersistenceSqlError, toPersistenceSqlError } from "../persistence/Errors.ts";
+import { type PersistenceSqlError } from "../persistence/Errors.ts";
+import { forkParked } from "../serverActivation.ts";
 import { boundedCallInitialItems } from "../voice/Layers/VoiceTransportCoordinator.ts";
 import { AdeBotNotFoundError } from "./AdeBootstrap.ts";
 import {
@@ -99,6 +102,7 @@ import {
   UNTRUSTED_CONTENT_OPEN,
   renderSessionProjection,
   type AdeBindingNotFoundError,
+  type AdeBindingStatusConflictError,
   type AdeRolloverSummaryLimitExceededError,
   type AdeSessionBindingConflictError,
   type AdeSessionProjection,
@@ -163,12 +167,20 @@ export class AdeVoiceApprovalNotPermittedError extends Schema.TaggedErrorClass<A
  * `unknown-token`, not a distinct reason: it is consumed on the first commit
  * attempt, so from the second attempt's perspective it genuinely does not
  * exist. There is deliberately no reason that means "close enough".
+ *
+ * `wrong-decision` is the one that matters most in practice: the token is
+ * bound to the verdict that was *restated*, so a model that reads "approve
+ * this?" aloud and then commits a denial — or vice versa — is refused rather
+ * than trusted. The field carrying what the captain actually said is the one
+ * field a mishear is most likely to corrupt, so it is checked, not defaulted.
  */
 export const AdeVoiceApprovalRejectionReason = Schema.Literals([
   "unknown-token",
   "expired-token",
   "wrong-item",
   "wrong-call",
+  "wrong-decision",
+  "missing-decision",
 ]);
 export type AdeVoiceApprovalRejectionReason = typeof AdeVoiceApprovalRejectionReason.Type;
 
@@ -218,93 +230,96 @@ export class AdeVoiceSummaryLimitExceededError extends Schema.TaggedErrorClass<A
 // Needs You seam (the captain approval subject)
 // ---------------------------------------------------------------------------
 
-export interface AdeVoiceApprovalSubject {
-  readonly needsYouItemId: NeedsYouItemId;
-  readonly kind: NeedsYouKind;
-  readonly subjectRefs: ReadonlyArray<NeedsYouSubjectRef>;
-  readonly status: NeedsYouItemStatus;
-}
-
 export type AdeVoiceApprovalDecision = "approve" | "deny";
 
+/**
+ * The Needs You half of a verbal approval.
+ *
+ * Deliberately expressed in the captain API's vocabulary rather than in SQL.
+ * An `approval` item is a *pointer* (see `AdeApprovalPort`): resolving the row
+ * is only half the act, and the other half — claim, forward the verdict to the
+ * service parked on it, unclaim if the forward failed — is an invariant that
+ * lives in `AdeCaptainApi.submitNeedsYouDecision`. A voice channel writing
+ * `status` itself would retire the item while the change it points at sat on
+ * `awaiting-approval` forever, and `awaiting-approval` is the only state that
+ * can ever retire it — the verdict would be permanently burned. So voice owns
+ * no status writes at all. It decides *whether it may ask*; the captain API
+ * decides what actually happens.
+ */
 export interface AdeVoiceApprovalPortShape {
-  /** The item under discussion, or null when it does not exist. */
+  /** The projected item, including the `action` the captain surfaces offer. */
   readonly read: (
     needsYouItemId: NeedsYouItemId,
-  ) => Effect.Effect<AdeVoiceApprovalSubject | null, PersistenceSqlError>;
-  /**
-   * Settle the item. Returns false when the item was not `open` at write time
-   * — a race with the inbox surface loses here rather than double-resolving.
-   */
-  readonly resolve: (input: {
+  ) => Effect.Effect<AdeNeedsYouEntry, AdeCaptainError>;
+  /** Apply the verdict through the same claim + forward path the inbox uses. */
+  readonly submitDecision: (input: {
     readonly needsYouItemId: NeedsYouItemId;
     readonly decision: AdeVoiceApprovalDecision;
-  }) => Effect.Effect<boolean, PersistenceSqlError>;
+    readonly note?: string;
+  }) => Effect.Effect<AdeNeedsYouEntry, AdeCaptainError>;
 }
 
-/**
- * The Needs You half of a verbal approval. Deliberately narrow: the captain
- * inbox surface (S13) owns rendering, filtering and the `ade:approve` scope
- * check on the WS boundary; voice only needs to read one item and settle it.
- */
 export class AdeVoiceApprovalPort extends Context.Service<
   AdeVoiceApprovalPort,
   AdeVoiceApprovalPortShape
 >()("shuv2code/ade/AdeVoiceChannel/AdeVoiceApprovalPort") {
-  static readonly layerSql: Layer.Layer<AdeVoiceApprovalPort, never, SqlClient.SqlClient> =
-    Layer.effect(
-      AdeVoiceApprovalPort,
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        const SubjectRefsJson = Schema.fromJsonString(Schema.Array(NeedsYouSubjectRef));
-        const decodeRefs = Schema.decodeUnknownEffect(SubjectRefsJson);
+  /**
+   * Default when the captain API is not wired: reads and decisions both fail
+   * loudly. An unwired build must refuse a verbal approval outright, never
+   * perform half of one.
+   */
+  static readonly layerUnavailable: Layer.Layer<AdeVoiceApprovalPort> = Layer.succeed(
+    AdeVoiceApprovalPort,
+    {
+      read: (needsYouItemId: NeedsYouItemId) =>
+        Effect.fail(
+          new AdeCaptainError({
+            reason: "needs_you_not_found",
+            message: `No captain surface is wired to read Needs You item '${needsYouItemId}' in this build.`,
+          }),
+        ),
+      submitDecision: () =>
+        Effect.fail(
+          new AdeCaptainError({
+            reason: "needs_you_decision_rejected",
+            message: "No captain surface is wired to receive this approval in this build.",
+          }),
+        ),
+    },
+  );
+}
 
-        const read: AdeVoiceApprovalPortShape["read"] = Effect.fn("AdeVoiceApprovalPort.read")(
-          function* (needsYouItemId) {
-            const rows = yield* sql<{
-              needs_you_item_id: string;
-              kind: NeedsYouKind;
-              subject_refs_json: string;
-              status: NeedsYouItemStatus;
-            }>`
-            SELECT needs_you_item_id, kind, subject_refs_json, status
-            FROM ade_needs_you_items
-            WHERE needs_you_item_id = ${needsYouItemId}
-          `.pipe(Effect.mapError(toPersistenceSqlError("AdeVoiceApprovalPort.read")));
-            const row = rows[0];
-            if (row === undefined) return null;
-            // A malformed refs blob must not take the call down: the item is
-            // still approvable, it just has no subjects to restate.
-            const refs = yield* decodeRefs(row.subject_refs_json).pipe(
-              Effect.orElseSucceed(() => [] as ReadonlyArray<NeedsYouSubjectRef>),
-            );
-            return {
-              needsYouItemId: row.needs_you_item_id as NeedsYouItemId,
-              kind: row.kind,
-              subjectRefs: refs,
-              status: row.status,
-            } satisfies AdeVoiceApprovalSubject;
-          },
-        );
+// ---------------------------------------------------------------------------
+// Undelivered-summary escalation seam
+// ---------------------------------------------------------------------------
 
-        const resolve: AdeVoiceApprovalPortShape["resolve"] = Effect.fn(
-          "AdeVoiceApprovalPort.resolve",
-        )(function* (input) {
-          const at = yield* Effect.map(DateTime.now, DateTime.formatIso);
-          const nextStatus: NeedsYouItemStatus =
-            input.decision === "approve" ? "resolved" : "dismissed";
-          const updated = yield* sql<{ needs_you_item_id: string }>`
-            UPDATE ade_needs_you_items
-            SET status = ${nextStatus}, updated_at = ${at}, resolved_at = ${at}
-            WHERE needs_you_item_id = ${input.needsYouItemId} AND status = 'open'
-            RETURNING needs_you_item_id
-          `.pipe(Effect.mapError(toPersistenceSqlError("AdeVoiceApprovalPort.resolve")));
-          return updated.length === 1;
-        });
+export interface AdeVoiceSummaryEscalationPortShape {
+  /**
+   * A call summary the kernel would not take, after the retry budget ran out.
+   * Files a Needs You `stall` item pointing at the binding row that holds the
+   * text, deduplicated so a fleet-wide outage does not produce one item per
+   * sweep. The summary itself is never inlined into the item: it lives on the
+   * binding, and the item is the pointer.
+   */
+  readonly fileUndeliveredSummary: (input: {
+    readonly botId: BotId;
+    readonly bindingId: BotExecutionBindingId;
+    readonly detail: string;
+  }) => Effect.Effect<void, PersistenceSqlError>;
+}
 
-        return { read, resolve };
-      }),
-    );
+export class AdeVoiceSummaryEscalationPort extends Context.Service<
+  AdeVoiceSummaryEscalationPort,
+  AdeVoiceSummaryEscalationPortShape
+>()("shuv2code/ade/AdeVoiceChannel/AdeVoiceSummaryEscalationPort") {
+  /** Logs instead of filing, for builds and tests without the ADE tables. */
+  static readonly layerLogOnly: Layer.Layer<AdeVoiceSummaryEscalationPort> = Layer.succeed(
+    AdeVoiceSummaryEscalationPort,
+    {
+      fileUndeliveredSummary: (input) =>
+        Effect.logWarning("ADE voice call summary could not be delivered", input),
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -340,13 +355,25 @@ export class AdeVoicePrimaryTranscript extends Context.Service<
 // Captain-channel approval tool definitions (§4.7 — NOT in the tool gate)
 // ---------------------------------------------------------------------------
 
-export const PrepareApprovalInput = Schema.Struct({ needsYouId: NeedsYouItemId });
+export const AdeVoiceDecision = Schema.Literals(["approve", "deny"]);
+
+/**
+ * `decision` is **required in both phases**. Phase 1 states the verdict the
+ * captain is about to be read back; phase 2 must repeat it. Defaulting it
+ * would mean the single field carrying what the captain said is the one field
+ * the fence does not check — and the safe default does not exist, because
+ * "approve" and "deny" are each the dangerous one in some situation.
+ */
+export const PrepareApprovalInput = Schema.Struct({
+  needsYouId: NeedsYouItemId,
+  decision: AdeVoiceDecision,
+});
 export type PrepareApprovalInput = typeof PrepareApprovalInput.Type;
 
 export const CommitApprovalInput = Schema.Struct({
   needsYouId: NeedsYouItemId,
   token: Schema.String.check(Schema.isMinLength(1)),
-  decision: Schema.optionalKey(Schema.Literals(["approve", "deny"])),
+  decision: AdeVoiceDecision,
 });
 export type CommitApprovalInput = typeof CommitApprovalInput.Type;
 
@@ -363,18 +390,21 @@ export const ADE_VOICE_CAPTAIN_APPROVAL_TOOLS: ReadonlyArray<AdeToolDefinition> 
   {
     name: ADE_VOICE_PREPARE_APPROVAL_TOOL,
     description:
-      "Phase 1 of a verbal approval. Returns the exact restatement to read aloud and a short-lived confirmation token. Nothing is approved by this call.",
+      "Phase 1 of a verbal approval. State the verdict you believe the captain wants; returns the exact restatement to read aloud and a short-lived confirmation token. Nothing is approved or denied by this call.",
     parameters: {
       type: "object",
-      properties: { needsYouId: { type: "string", minLength: 1 } },
-      required: ["needsYouId"],
+      properties: {
+        needsYouId: { type: "string", minLength: 1 },
+        decision: { type: "string", enum: ["approve", "deny"] },
+      },
+      required: ["needsYouId", "decision"],
       additionalProperties: false,
     },
   },
   {
     name: ADE_VOICE_COMMIT_APPROVAL_TOOL,
     description:
-      "Phase 2 of a verbal approval. Call only after reading the restatement aloud and hearing an explicit answer. Requires the token from prepare_approval; without a live token nothing is approved.",
+      "Phase 2 of a verbal approval. Call only after reading the restatement aloud and hearing an explicit answer. Requires the token from prepare_approval and the same decision it was prepared with; if the captain answered differently, call prepare_approval again instead.",
     parameters: {
       type: "object",
       properties: {
@@ -382,7 +412,7 @@ export const ADE_VOICE_CAPTAIN_APPROVAL_TOOLS: ReadonlyArray<AdeToolDefinition> 
         token: { type: "string", minLength: 1 },
         decision: { type: "string", enum: ["approve", "deny"] },
       },
-      required: ["needsYouId", "token"],
+      required: ["needsYouId", "token", "decision"],
       additionalProperties: false,
     },
   },
@@ -413,6 +443,13 @@ export interface AdeVoiceCall {
   readonly engine: KernelEngine;
   readonly sessionId: KernelSessionId;
   /**
+   * The voice controller thread this call runs on. This is the join the
+   * controller MCP surface needs: an invocation arrives carrying the
+   * credential's `profile.controllerThreadId`, and that is the only identity
+   * on the wire that can name which bot's authority the call carries.
+   */
+  readonly controllerThreadId: ThreadId;
+  /**
    * True only for the captain's own channel. Gates the approval tools; the
    * `ade:approve` scope check belongs on the WS boundary that sets this.
    */
@@ -426,6 +463,8 @@ export interface AdeVoiceCall {
 
 export interface AdeVoiceApprovalPreparation {
   readonly needsYouItemId: NeedsYouItemId;
+  /** The verdict this token is bound to; commit must repeat it exactly. */
+  readonly decision: AdeVoiceApprovalDecision;
   /** Exactly what the model must read aloud before committing. */
   readonly restatement: string;
   readonly token: string;
@@ -435,14 +474,20 @@ export interface AdeVoiceApprovalPreparation {
 export interface AdeVoiceApprovalCommit {
   readonly needsYouItemId: NeedsYouItemId;
   readonly decision: AdeVoiceApprovalDecision;
-  /** False when the item was no longer open (the inbox surface won the race). */
-  readonly settled: boolean;
+  /** The item as the captain API left it — the authority on what happened. */
+  readonly entry: AdeNeedsYouEntry;
 }
 
 export type AdeVoiceSummaryDelivery =
+  /** Handed to the kernel as queued synthetic input. */
   | { readonly _tag: "queued"; readonly deliveryKey: string }
+  /** The bot has no active primary session to queue into. */
   | { readonly _tag: "no-primary-session" }
-  | { readonly _tag: "kernel-refused"; readonly detail: string };
+  /**
+   * The kernel refused. The text is durable on the voice binding row and the
+   * sweeper will retry; this is not a loss.
+   */
+  | { readonly _tag: "retrying"; readonly deliveryKey: string; readonly detail: string };
 
 export interface AdeVoiceCallEnded {
   readonly bindingId: BotExecutionBindingId;
@@ -456,6 +501,8 @@ export interface OpenAdeVoiceCallInput {
   readonly engine: KernelEngine;
   /** The kernel-native session id the realtime pair was created against. */
   readonly sessionId: KernelSessionId;
+  /** The controller thread the realtime pair runs on (the MCP join key). */
+  readonly controllerThreadId: ThreadId;
   /** Default false; set only where `ade:approve` has already been checked. */
   readonly captainChannel?: boolean;
 }
@@ -487,6 +534,7 @@ export interface AdeVoiceChannelShape {
     AdeVoiceCall,
     | AdeBotNotFoundError
     | AdeBindingNotFoundError
+    | AdeBindingStatusConflictError
     | AdeRolloverSummaryLimitExceededError
     | AdeSessionBindingConflictError
     | PersistenceSqlError
@@ -503,12 +551,22 @@ export interface AdeVoiceChannelShape {
     AdeVoiceCall,
     | AdeBotNotFoundError
     | AdeBindingNotFoundError
+    | AdeBindingStatusConflictError
     | AdeRolloverSummaryLimitExceededError
     | AdeSessionBindingConflictError
     | PersistenceSqlError
   >;
   /** The live call for a bot, or null. */
   readonly activeCall: (botId: BotId) => Effect.Effect<AdeVoiceCall | null>;
+  /**
+   * The live call running on a controller thread, or null when that thread is
+   * not an ADE call. This is the lookup the controller MCP surface performs on
+   * every invocation; null is the ordinary answer for every non-ADE voice
+   * thread, and it must keep the classic thread toolkit intact.
+   */
+  readonly callByControllerThread: (
+    controllerThreadId: ThreadId,
+  ) => Effect.Effect<AdeVoiceCall | null>;
   /**
    * One tool invocation from a voice call. Base-catalog names go through the
    * shared {@link AdeToolGate} under this call's bot authority; the two
@@ -519,29 +577,38 @@ export interface AdeVoiceChannelShape {
   readonly dispatchTool: (
     input: AdeVoiceToolCallInput,
   ) => Effect.Effect<AdeToolOutcome, AdeVoiceCallNotFoundError>;
-  /** Phase 1 of a verbal approval. Approves nothing. */
+  /**
+   * Phase 1 of a verbal approval. Decides nothing — it reads the item, refuses
+   * anything that is not an approve/deny decision, and mints a token bound to
+   * {item, call, decision}.
+   */
   readonly prepareApproval: (input: {
     readonly bindingId: BotExecutionBindingId;
     readonly needsYouItemId: NeedsYouItemId;
+    readonly decision: AdeVoiceApprovalDecision;
   }) => Effect.Effect<
     AdeVoiceApprovalPreparation,
     | AdeVoiceCallNotFoundError
     | AdeVoiceApprovalNotPermittedError
     | AdeVoiceApprovalSubjectUnavailableError
-    | PersistenceSqlError
+    | AdeCaptainError
   >;
-  /** Phase 2. Fails closed unless a live, matching, unspent token is supplied. */
+  /**
+   * Phase 2. Fails closed unless a live, unspent token bound to this exact
+   * {call, item, decision} is supplied; then hands the verdict to the captain
+   * API, which owns claim + forward.
+   */
   readonly commitApproval: (input: {
     readonly bindingId: BotExecutionBindingId;
     readonly needsYouItemId: NeedsYouItemId;
     readonly token: string;
-    readonly decision?: AdeVoiceApprovalDecision;
+    readonly decision: AdeVoiceApprovalDecision;
   }) => Effect.Effect<
     AdeVoiceApprovalCommit,
     | AdeVoiceCallNotFoundError
     | AdeVoiceApprovalNotPermittedError
     | AdeVoiceApprovalTokenRejectedError
-    | PersistenceSqlError
+    | AdeCaptainError
   >;
   /**
    * End the call: queue the bounded summary into the bot's primary session
@@ -554,42 +621,46 @@ export interface AdeVoiceChannelShape {
     | AdeVoiceCallNotFoundError
     | AdeVoiceSummaryLimitExceededError
     | AdeBindingNotFoundError
+    | AdeBindingStatusConflictError
     | AdeRolloverSummaryLimitExceededError
     | PersistenceSqlError
   >;
+  /**
+   * One pass of the undelivered-summary sweep: retry every summary the kernel
+   * refused, and file a Needs You item for any that has exhausted its
+   * attempts. Exposed so the sweeper layer and tests drive the same code.
+   */
+  readonly sweepPendingSummaries: () => Effect.Effect<AdeVoiceSweepResult>;
+}
+
+export interface AdeVoiceSweepResult {
+  readonly delivered: number;
+  readonly retrying: number;
+  readonly escalated: number;
 }
 
 // ---------------------------------------------------------------------------
 // Restatement rendering
 // ---------------------------------------------------------------------------
 
-const describeSubjectRef = (ref: NeedsYouSubjectRef): string => {
-  switch (ref._tag) {
-    case "bot":
-      return `bot ${ref.botId}`;
-    case "assignment":
-      return `assignment ${ref.assignmentId}`;
-    case "project":
-      return `project ${ref.projectId}`;
-    case "integrationCandidate":
-      return `integration candidate ${ref.integrationCandidateId}`;
-    case "kernel":
-      return `${ref.engine} kernel`;
-  }
-};
-
 /**
- * The exact words phase 1 hands the model. Built from the durable item only —
- * never from anything the model said — so the restatement the captain hears
- * describes what will actually be settled, not what was misheard.
+ * The exact words phase 1 hands the model.
+ *
+ * Built from the captain API's own projection — the same `title` and `detail`
+ * the inbox shows — and from the proposed verdict, never from anything the
+ * model said. What the captain hears aloud is therefore the same sentence the
+ * captain would have read on screen, plus the verdict about to be applied.
  */
-export const renderAdeVoiceApprovalRestatement = (subject: AdeVoiceApprovalSubject): string => {
-  const subjects =
-    subject.subjectRefs.length === 0
-      ? "no linked subject"
-      : subject.subjectRefs.map(describeSubjectRef).join(", ");
-  return `Confirm ${subject.kind} for ${subjects} (item ${subject.needsYouItemId}). Say yes to approve or no to deny.`;
-};
+export const renderAdeVoiceApprovalRestatement = (
+  entry: AdeNeedsYouEntry,
+  decision: AdeVoiceApprovalDecision,
+): string =>
+  [
+    `${entry.title}.`,
+    entry.detail,
+    `I am about to ${decision} this (item ${entry.item.id}).`,
+    "Say yes to go ahead, or no to stop.",
+  ].join(" ");
 
 /**
  * The developer item carrying the call's ADE context. Bot-authored content is
@@ -623,9 +694,30 @@ const renderVoiceSummaryDelivery = (summary: string): string =>
 interface PreparedApproval {
   readonly bindingId: BotExecutionBindingId;
   readonly needsYouItemId: NeedsYouItemId;
+  readonly decision: AdeVoiceApprovalDecision;
   readonly token: string;
   readonly expiresAtMillis: number;
 }
+
+/**
+ * A summary the kernel would not take yet. The *text* is already durable on
+ * the closed voice binding's `rollover_summary` before the first attempt, so
+ * this record only carries what a retry needs; losing it to a restart loses
+ * attempts, never the captain's words.
+ */
+interface PendingSummary {
+  readonly bindingId: BotExecutionBindingId;
+  readonly botId: BotId;
+  readonly deliveryKey: string;
+  readonly text: string;
+  readonly attempts: number;
+}
+
+/** How many times the sweeper retries a refused summary before escalating. */
+export const ADE_VOICE_SUMMARY_MAX_DELIVERY_ATTEMPTS = 5;
+
+/** Gap between sweeps of the undelivered-summary queue. */
+export const ADE_VOICE_SUMMARY_SWEEP_INTERVAL_DEFAULT = Duration.seconds(30);
 
 export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceChannelShape>()(
   "shuv2code/ade/AdeVoiceChannel",
@@ -639,6 +731,7 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
     | AdePersonaMemory
     | AdeVoiceApprovalPort
     | AdeVoicePrimaryTranscript
+    | AdeVoiceSummaryEscalationPort
   > = Layer.effect(
     AdeVoiceChannel,
     Effect.gen(function* () {
@@ -648,11 +741,14 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
       const memory = yield* AdePersonaMemory;
       const approvals = yield* AdeVoiceApprovalPort;
       const transcript = yield* AdeVoicePrimaryTranscript;
+      const escalation = yield* AdeVoiceSummaryEscalationPort;
 
       /** Live calls, keyed by their binding id. Ephemeral by design. */
       const callsRef = yield* Ref.make(new Map<BotExecutionBindingId, AdeVoiceCall>());
       /** Outstanding phase-1 preparations, keyed by token. */
       const preparedRef = yield* Ref.make(new Map<string, PreparedApproval>());
+      /** Summaries the kernel refused, awaiting the sweeper. */
+      const pendingRef = yield* Ref.make(new Map<BotExecutionBindingId, PendingSummary>());
 
       const requireCall = (
         bindingId: BotExecutionBindingId,
@@ -673,10 +769,35 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
           ),
         );
 
+      const forgetCallState = (bindingIds: ReadonlyArray<BotExecutionBindingId>) =>
+        Effect.gen(function* () {
+          if (bindingIds.length === 0) return;
+          const dropped = new Set(bindingIds);
+          yield* Ref.update(callsRef, (calls) => {
+            const next = new Map(calls);
+            for (const id of dropped) next.delete(id);
+            return next;
+          });
+          // Preparations belong to a call: a retired call must not leave a live
+          // approval token behind for the next one to spend.
+          yield* Ref.update(preparedRef, (prepared) => {
+            const next = new Map(prepared);
+            for (const [token, entry] of prepared) {
+              if (dropped.has(entry.bindingId)) next.delete(token);
+            }
+            return next;
+          });
+        });
+
       /**
-       * Retire every `active` voice binding this bot still has. A dropped call
-       * leaves its row behind; redialing must not stack a second live one on
-       * top of it, so the old row closes `lost` before the new one opens.
+       * Retire every `active` voice binding this bot still has, so redial does
+       * not stack a second live one on top of a dropped call's row.
+       *
+       * Each close is a compare-and-set on `active`. Losing it means another
+       * redial retired that binding first, which is exactly the interleaving
+       * the caller must not paper over: the loser gives up rather than racing
+       * on to open a second binding. The 056 partial unique index is the
+       * backstop underneath if both somehow reach the insert.
        */
       const retireStaleVoiceBindings = Effect.fn("AdeVoiceChannel.retireStaleVoiceBindings")(
         function* (botId: BotId) {
@@ -687,36 +808,56 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
           );
           yield* Effect.forEach(
             stale,
-            (binding) => rollover.closeBinding({ bindingId: binding.id, status: "lost" }),
+            (binding) =>
+              rollover.closeBinding({
+                bindingId: binding.id,
+                status: "lost",
+                expectedStatus: "active",
+              }),
             { discard: true },
           );
-          yield* Ref.update(callsRef, (calls) => {
-            const next = new Map(calls);
-            for (const binding of stale) next.delete(binding.id);
-            return next;
-          });
-          // Preparations belong to a call; a retired call cannot leave a live
-          // approval token behind for the next one to spend.
-          yield* Ref.update(preparedRef, (prepared) => {
-            const next = new Map(prepared);
-            for (const [token, entry] of prepared) {
-              if (stale.some((binding) => binding.id === entry.bindingId)) next.delete(token);
-            }
-            return next;
-          });
+          yield* forgetCallState(stale.map((binding) => binding.id));
         },
       );
 
+      /**
+       * The winner of a redial race, adopted by the loser. Returns the call the
+       * other opener registered, so both callers end up pointed at the one live
+       * binding instead of one of them failing the captain's redial outright.
+       */
+      const adoptLiveVoiceCall = Effect.fn("AdeVoiceChannel.adoptLiveVoiceCall")(function* (
+        botId: BotId,
+      ) {
+        const calls = yield* Ref.get(callsRef);
+        return Array.from(calls.values()).find((call) => call.botId === botId) ?? null;
+      });
+
       const openCall: AdeVoiceChannelShape["openCall"] = Effect.fn("AdeVoiceChannel.openCall")(
         function* (input: OpenAdeVoiceCallInput) {
-          yield* retireStaleVoiceBindings(input.botId);
+          const retired = yield* Effect.result(retireStaleVoiceBindings(input.botId));
+          if (Result.isFailure(retired)) {
+            // Lost the retire race (or the row vanished). Whoever won is
+            // opening the replacement; adopt it rather than open a second.
+            const adopted = yield* adoptLiveVoiceCall(input.botId);
+            if (adopted !== null) return adopted;
+            return yield* retired.failure;
+          }
           const projection = yield* rollover.projectSessionContext(input.botId);
-          const binding = yield* rollover.openBinding({
-            botId: input.botId,
-            engine: input.engine,
-            sessionId: input.sessionId,
-            purpose: ADE_VOICE_BINDING_PURPOSE,
-          });
+          const opened = yield* Effect.result(
+            rollover.openBinding({
+              botId: input.botId,
+              engine: input.engine,
+              sessionId: input.sessionId,
+              purpose: ADE_VOICE_BINDING_PURPOSE,
+            }),
+          );
+          if (Result.isFailure(opened)) {
+            // The 056 index refused a second live voice binding. Same rule.
+            const adopted = yield* adoptLiveVoiceCall(input.botId);
+            if (adopted !== null) return adopted;
+            return yield* opened.failure;
+          }
+          const binding = opened.success;
           const captainChannel = input.captainChannel ?? false;
           const baseCatalog = yield* gate.catalogFor({
             botId: input.botId,
@@ -728,6 +869,7 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
             botId: input.botId,
             engine: input.engine,
             sessionId: input.sessionId,
+            controllerThreadId: input.controllerThreadId,
             captainChannel,
             personaVersionId: projection.personaVersionId,
             initialItems: [
@@ -749,39 +891,75 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
           (calls) => Array.from(calls.values()).find((call) => call.botId === botId) ?? null,
         );
 
+      const callByControllerThread: AdeVoiceChannelShape["callByControllerThread"] = (threadId) =>
+        Effect.map(
+          Ref.get(callsRef),
+          (calls) =>
+            Array.from(calls.values()).find((call) => call.controllerThreadId === threadId) ?? null,
+        );
+
       // -- two-phase approvals ------------------------------------------------
 
       const prepareApproval: AdeVoiceChannelShape["prepareApproval"] = Effect.fn(
         "AdeVoiceChannel.prepareApproval",
       )(function* (input) {
         yield* requireCaptainCall(input.bindingId);
-        const subject = yield* approvals.read(input.needsYouItemId);
-        if (subject === null) {
+        const entry = yield* approvals.read(input.needsYouItemId);
+
+        // `needsYouActionFor` — through the captain projection — is the single
+        // authority on what an item takes. Voice does not get its own opinion:
+        // a kernel-down, stall or provision-failure item is resolved by the
+        // service that raised it once the condition clears, and "approving" one
+        // by voice would retire it permanently for no reason.
+        if (entry.action !== "approve-deny") {
+          const detail =
+            entry.item.status !== "open"
+              ? `the item is already ${entry.item.status}`
+              : entry.action === "acknowledge"
+                ? // Acknowledging asserts the captain personally reviewed the
+                  // candidate outside the call. A voice restatement cannot make
+                  // that true, so V1 sends it to the inbox rather than offering
+                  // a spoken shortcut for it.
+                  "that item is acknowledge-only; acknowledge it from the Needs You inbox"
+                : `a '${entry.item.kind}' item carries no captain decision; it resolves when the condition clears`;
           return yield* new AdeVoiceApprovalSubjectUnavailableError({
             needsYouItemId: input.needsYouItemId,
-            detail: "no such Needs You item",
+            detail,
           });
         }
-        if (subject.status !== "open") {
+        // An approval whose subject did not survive the projection names no
+        // candidate to decide; the captain API would refuse the forward, so
+        // refuse before speaking a restatement about nothing.
+        if (entry.integrationCandidateId === null) {
           return yield* new AdeVoiceApprovalSubjectUnavailableError({
             needsYouItemId: input.needsYouItemId,
-            detail: `the item is already ${subject.status}`,
+            detail: "that approval names no integration candidate to decide",
           });
         }
+
         const token = yield* Effect.sync(() => NodeCrypto.randomUUID());
         const expiresAtMillis =
           (yield* Clock.currentTimeMillis) + ADE_VOICE_APPROVAL_TOKEN_TTL_MILLIS;
-        yield* Ref.update(preparedRef, (prepared) =>
-          new Map(prepared).set(token, {
+        yield* Ref.update(preparedRef, (prepared) => {
+          const next = new Map(prepared);
+          // Re-preparing the same item supersedes any earlier token for it:
+          // the captain is being read a new restatement, and the sentence they
+          // already heard must stop being committable the moment it is stale.
+          for (const [existing, held] of prepared) {
+            if (held.needsYouItemId === input.needsYouItemId) next.delete(existing);
+          }
+          return next.set(token, {
             bindingId: input.bindingId,
             needsYouItemId: input.needsYouItemId,
+            decision: input.decision,
             token,
             expiresAtMillis,
-          }),
-        );
+          });
+        });
         return {
           needsYouItemId: input.needsYouItemId,
-          restatement: renderAdeVoiceApprovalRestatement(subject),
+          decision: input.decision,
+          restatement: renderAdeVoiceApprovalRestatement(entry, input.decision),
           token,
           expiresAtMillis,
         } satisfies AdeVoiceApprovalPreparation;
@@ -810,16 +988,18 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
         if (prepared === undefined) return yield* reject("unknown-token");
         if (prepared.bindingId !== input.bindingId) return yield* reject("wrong-call");
         if (prepared.needsYouItemId !== input.needsYouItemId) return yield* reject("wrong-item");
+        if (prepared.decision !== input.decision) return yield* reject("wrong-decision");
         if ((yield* Clock.currentTimeMillis) >= prepared.expiresAtMillis) {
           return yield* reject("expired-token");
         }
 
-        const decision: AdeVoiceApprovalDecision = input.decision ?? "approve";
-        const settled = yield* approvals.resolve({
+        // The verdict goes through the captain API's claim + forward path, the
+        // same one the inbox uses. Voice never writes `status` itself.
+        const entry = yield* approvals.submitDecision({
           needsYouItemId: input.needsYouItemId,
-          decision,
+          decision: input.decision,
         });
-        return { needsYouItemId: input.needsYouItemId, decision, settled };
+        return { needsYouItemId: input.needsYouItemId, decision: input.decision, entry };
       });
 
       // -- tool dispatch ------------------------------------------------------
@@ -851,32 +1031,34 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
           const outcome = yield* prepareApproval({
             bindingId: call.bindingId,
             needsYouItemId: decoded.success.needsYouId,
+            decision: decoded.success.decision,
           }).pipe(Effect.result);
           return Result.isFailure(outcome)
             ? { _tag: "failed", message: `[ade:approval-refused] ${outcome.failure.message}` }
             : {
                 _tag: "completed",
-                content: `[ade:approval-prepared] Read this aloud verbatim, then call ${ADE_VOICE_COMMIT_APPROVAL_TOOL} with the token only after an explicit answer: "${outcome.success.restatement}" token=${outcome.success.token}`,
+                content: `[ade:approval-prepared] Read this aloud verbatim, then call ${ADE_VOICE_COMMIT_APPROVAL_TOOL} with decision='${outcome.success.decision}' and this token, only after an explicit answer: "${outcome.success.restatement}" token=${outcome.success.token}`,
               };
         }
         const decoded = yield* decodeCommit(request.input).pipe(Effect.result);
         if (Result.isFailure(decoded)) {
+          // A commit that omits or garbles `decision` never reaches the fence:
+          // the schema requires it, and an invalid-input denial approves
+          // nothing. Fail closed at the earliest possible point.
           return invalidInput(request.tool, decoded.failure.message);
         }
         const outcome = yield* commitApproval({
           bindingId: call.bindingId,
           needsYouItemId: decoded.success.needsYouId,
           token: decoded.success.token,
-          ...(decoded.success.decision === undefined ? {} : { decision: decoded.success.decision }),
+          decision: decoded.success.decision,
         }).pipe(Effect.result);
         if (Result.isFailure(outcome)) {
           return { _tag: "failed", message: `[ade:approval-refused] ${outcome.failure.message}` };
         }
         return {
           _tag: "completed",
-          content: outcome.success.settled
-            ? `[ade:approval-committed] ${outcome.success.needsYouItemId} ${outcome.success.decision === "approve" ? "approved" : "denied"}.`
-            : `[ade:approval-stale] ${outcome.success.needsYouItemId} was already settled elsewhere; nothing changed.`,
+          content: `[ade:approval-committed] ${outcome.success.needsYouItemId} ${outcome.success.decision === "approve" ? "approved" : "denied"}; the item is now ${outcome.success.entry.item.status}.`,
         };
       });
 
@@ -912,6 +1094,89 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
         );
       });
 
+      /**
+       * One delivery attempt of an already-persisted summary. Always
+       * `deliverResults` — queued behind whatever the primary session is doing
+       * (§4.7). `steerPrimary` is never reachable from this module.
+       */
+      const attemptSummaryDelivery = Effect.fn("AdeVoiceChannel.attemptSummaryDelivery")(function* (
+        pending: PendingSummary,
+        redelivery: boolean,
+      ) {
+        const primary = yield* Effect.orElseSucceed(
+          activePrimaryBinding(pending.botId),
+          () => null,
+        );
+        if (primary === null) return { _tag: "no-primary-session" } as const;
+        const sent = yield* kernel
+          .deliverResults({
+            deliveryKey: pending.deliveryKey,
+            redelivery,
+            targetBotId: pending.botId,
+            engine: primary.engine,
+            sessionId: primary.sessionId,
+            items: [],
+            parentAssignmentId: null,
+            text: pending.text,
+            origin: "voice-call-summary",
+          })
+          .pipe(Effect.result);
+        return Result.isFailure(sent)
+          ? ({
+              _tag: "refused",
+              detail: (sent.failure as AdeAssignmentKernelPortError).detail,
+            } as const)
+          : ({ _tag: "queued" } as const);
+      });
+
+      const sweepPendingSummaries: AdeVoiceChannelShape["sweepPendingSummaries"] = Effect.fn(
+        "AdeVoiceChannel.sweepPendingSummaries",
+      )(function* () {
+        const pending = Array.from((yield* Ref.get(pendingRef)).values());
+        let delivered = 0;
+        let retrying = 0;
+        let escalated = 0;
+        for (const entry of pending) {
+          const attempt = yield* attemptSummaryDelivery(entry, true);
+          if (attempt._tag === "queued") {
+            delivered += 1;
+            yield* Ref.update(pendingRef, (map) => {
+              const next = new Map(map);
+              next.delete(entry.bindingId);
+              return next;
+            });
+            continue;
+          }
+          const attempts = entry.attempts + 1;
+          if (attempts < ADE_VOICE_SUMMARY_MAX_DELIVERY_ATTEMPTS) {
+            retrying += 1;
+            yield* Ref.update(pendingRef, (map) =>
+              new Map(map).set(entry.bindingId, { ...entry, attempts }),
+            );
+            continue;
+          }
+          // Out of attempts. The words are still on the binding row; what the
+          // captain now needs is to be told they are sitting there.
+          escalated += 1;
+          yield* Effect.ignore(
+            escalation.fileUndeliveredSummary({
+              botId: entry.botId,
+              bindingId: entry.bindingId,
+              detail:
+                attempt._tag === "refused"
+                  ? attempt.detail
+                  : "the bot has no active primary session to deliver into",
+            }),
+          );
+          yield* Ref.update(pendingRef, (map) => {
+            const next = new Map(map);
+            next.delete(entry.bindingId);
+            return next;
+          });
+        }
+        return { delivered, retrying, escalated } satisfies AdeVoiceSweepResult;
+      });
+
       const endCall: AdeVoiceChannelShape["endCall"] = Effect.fn("AdeVoiceChannel.endCall")(
         function* (input: EndAdeVoiceCallInput) {
           const call = yield* requireCall(input.bindingId);
@@ -924,31 +1189,41 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
             });
           }
 
-          const primary = yield* activePrimaryBinding(call.botId);
+          // Persist FIRST, deliver second. The kernel refusing is the normal
+          // case during an outage, and the old order — close the binding,
+          // attempt once, drop the call state — burned the captain's summary
+          // permanently on exactly the path most likely to be taken. The row
+          // now holds the words before anything can fail.
+          yield* rollover.closeBinding({
+            bindingId: call.bindingId,
+            status: "historical",
+            expectedStatus: "active",
+            ...(summary.length === 0 ? {} : { summary }),
+          });
+
+          const deliveryKey = `ade-voice-summary:${call.bindingId}`;
           let delivery: AdeVoiceSummaryDelivery = { _tag: "no-primary-session" };
-          if (primary !== null && summary.length > 0) {
-            const deliveryKey = `ade-voice-summary:${call.bindingId}`;
-            // QUEUED, never steer (§4.7): a call summary must land behind
-            // whatever the primary session is doing, not inside its turn.
-            const sent = yield* kernel
-              .deliverResults({
-                deliveryKey,
-                redelivery: false,
-                targetBotId: call.botId,
-                engine: primary.engine,
-                sessionId: primary.sessionId,
-                items: [],
-                parentAssignmentId: null,
-                text: renderVoiceSummaryDelivery(summary),
-                origin: "voice-call-summary",
-              })
-              .pipe(Effect.result);
-            delivery = Result.isFailure(sent)
-              ? {
-                  _tag: "kernel-refused",
-                  detail: (sent.failure as AdeAssignmentKernelPortError).detail,
-                }
-              : { _tag: "queued", deliveryKey };
+          if (summary.length > 0) {
+            const pending: PendingSummary = {
+              bindingId: call.bindingId,
+              botId: call.botId,
+              deliveryKey,
+              text: renderVoiceSummaryDelivery(summary),
+              attempts: 1,
+            };
+            const attempt = yield* attemptSummaryDelivery(pending, false);
+            if (attempt._tag === "queued") {
+              delivery = { _tag: "queued", deliveryKey };
+            } else {
+              const detail =
+                attempt._tag === "refused"
+                  ? attempt.detail
+                  : "the bot has no active primary session to deliver into";
+              // Queue it for the sweeper rather than reporting a loss: the
+              // text is durable and a kernel that is down usually comes back.
+              yield* Ref.update(pendingRef, (map) => new Map(map).set(pending.bindingId, pending));
+              delivery = { _tag: "retrying", deliveryKey, detail };
+            }
           }
 
           let memoryUpdated = false;
@@ -968,23 +1243,7 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
             }
           }
 
-          yield* rollover.closeBinding({
-            bindingId: call.bindingId,
-            status: "historical",
-            ...(summary.length === 0 ? {} : { summary }),
-          });
-          yield* Ref.update(callsRef, (calls) => {
-            const next = new Map(calls);
-            next.delete(call.bindingId);
-            return next;
-          });
-          yield* Ref.update(preparedRef, (prepared) => {
-            const next = new Map(prepared);
-            for (const [token, entry] of prepared) {
-              if (entry.bindingId === call.bindingId) next.delete(token);
-            }
-            return next;
-          });
+          yield* forgetCallState([call.bindingId]);
 
           return {
             bindingId: call.bindingId,
@@ -999,11 +1258,45 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
         openCall,
         redial: openCall,
         activeCall,
+        callByControllerThread,
         dispatchTool,
         prepareApproval,
         commitApproval,
         endCall,
+        sweepPendingSummaries,
       });
     }),
   );
+
+  /**
+   * Background retry of refused summaries, parked until server activation like
+   * the assignment sweeper and the S17 health ticker.
+   *
+   * Scope, stated plainly: attempts live in this process. A restart mid-retry
+   * loses the *schedule*, not the summary — the text is on the closed voice
+   * binding's `rollover_summary` from before the first attempt, and the
+   * escalation item points there. Durable cross-restart retry would need its
+   * own claim table and belongs with the assignment engine's delivery sweeper,
+   * not here.
+   */
+  static readonly sweeperLive = (
+    interval: Duration.Duration = ADE_VOICE_SUMMARY_SWEEP_INTERVAL_DEFAULT,
+  ): Layer.Layer<never, never, AdeVoiceChannel> =>
+    Layer.effectDiscard(
+      Effect.gen(function* () {
+        const channel = yield* AdeVoiceChannel;
+        yield* forkParked(
+          Effect.repeat(
+            Effect.catchDefect(channel.sweepPendingSummaries(), (defect) =>
+              Effect.as(Effect.logWarning("ADE voice summary sweep defected", { defect }), {
+                delivered: 0,
+                retrying: 0,
+                escalated: 0,
+              }),
+            ),
+            Schedule.spaced(interval),
+          ),
+        );
+      }),
+    );
 }

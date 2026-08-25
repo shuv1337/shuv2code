@@ -137,9 +137,25 @@ const isUnroutableRepair = (kind: NeedsYouKind, flat: FlatSubjects): boolean =>
   kind === "stall" && flat.integrationCandidateId !== null && flat.assignmentId === null;
 
 /**
+ * An **undelivered voice-call summary** (§4.7, S16): the end-of-call summary
+ * is durable on the bot's closed voice binding, but the kernel refused it for
+ * long enough that the retry budget ran out. It files a `stall` naming only
+ * the bot.
+ *
+ * Like the unroutable repair, nothing will ever clear it — there is no
+ * assignment for the stall resolver to key on — so it is the captain's to
+ * retire once they have read the summary.
+ */
+const isUndeliveredVoiceSummary = (kind: NeedsYouKind, flat: FlatSubjects): boolean =>
+  kind === "stall" &&
+  flat.botId !== null &&
+  flat.assignmentId === null &&
+  flat.integrationCandidateId === null;
+
+/**
  * What the captain can press. Approval is the only kind anything *waits* on;
  * every other kind is resolved by the service that raised it once the condition
- * clears (§4.6, §4.8) — except the unroutable repair above, which nothing
+ * clears (§4.6, §4.8) — except the two stall shapes above, which nothing
  * clears. A resolved item offers nothing, however it got there.
  */
 export function needsYouActionFor(
@@ -148,7 +164,9 @@ export function needsYouActionFor(
 ): NeedsYouAction | null {
   if (row.status !== "open") return null;
   if (row.kind === "approval") return "approve-deny";
-  return isUnroutableRepair(row.kind, flat) ? "acknowledge" : null;
+  return isUnroutableRepair(row.kind, flat) || isUndeliveredVoiceSummary(row.kind, flat)
+    ? "acknowledge"
+    : null;
 }
 
 function describe(
@@ -188,6 +206,15 @@ function describe(
         return {
           title: "A bounced change cannot be repaired automatically",
           detail: `${project} bounced, and its author bot is archived or gone, so no repair could be assigned. Review integration candidate ${flat.integrationCandidateId ?? "(unknown)"} yourself, then acknowledge this to clear it.`,
+        };
+      }
+      if (isUndeliveredVoiceSummary(row.kind, flat)) {
+        // Same rule as above: say the actual thing. There is no assignment to
+        // cancel and no bot to steer — the summary is already written down.
+        const who = botName ?? "A bot";
+        return {
+          title: `${who}'s voice call summary could not be delivered`,
+          detail: `The summary is saved on that call's session record, but the kernel would not accept it into ${botName ?? "the bot"}'s primary session. Read it there, then acknowledge this to clear it.`,
         };
       }
       const instruction =
