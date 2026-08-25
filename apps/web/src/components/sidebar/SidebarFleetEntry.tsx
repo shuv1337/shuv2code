@@ -19,6 +19,12 @@ import { getFleetEntryView } from "./SidebarFleetEntry.logic";
  * The count is polled by its query atom — there is no stream for it — and the
  * badge disappears entirely when nothing is waiting.
  *
+ * `/fleet` is the captain messenger shell now (MESSENGER-PIVOT §5 step 1), so
+ * this row opens the rail-and-conversation surface rather than the roster page
+ * it replaced. The badge still points at the standalone needs-you route; M3
+ * retires that route in favour of the rail's `?filter=attention`, and this is
+ * the single call site that has to move when it does.
+ *
  * The badge is the inbox's entry point (spec §7 slice 5: badge, then list,
  * then detail), so it is its own control rather than decoration on the Fleet
  * row — a captain who sees a count wants what is behind it, not the roster. It

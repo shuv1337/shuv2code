@@ -24,7 +24,6 @@ import {
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarFleetEntry } from "./SidebarFleetEntry";
-import { SidebarKernelHealthPills } from "./SidebarKernelHealthPills";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
 
@@ -154,8 +153,12 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
 
   return (
     <SidebarFooter className="p-[var(--sidebar-content-inset)]">
+      {/*
+       * The kernel health pills used to sit here; they now live in the captain
+       * shell's contact-rail footer (MESSENGER-PIVOT §2), where their audience
+       * is. The Fleet row stays: it is how the captain gets to the shell.
+       */}
       <SidebarFleetEntry />
-      <SidebarKernelHealthPills />
       <SidebarProviderUpdatePill />
       <SidebarUpdateArchitectureWarning />
       <SidebarMenu className="flex-row items-center">
