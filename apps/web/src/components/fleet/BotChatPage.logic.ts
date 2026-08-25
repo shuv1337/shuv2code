@@ -13,7 +13,13 @@
  *     shown as a compact inline notice over the conversation shell, never as a
  *     landing page, and the page stays navigable.
  */
-import type { AdeBotChatSession, AdeBotDetail, BotId, ThreadId } from "@shuv2code/contracts";
+import type {
+  AdeBotChatSession,
+  AdeBotDetail,
+  BotId,
+  HealthState,
+  ThreadId,
+} from "@shuv2code/contracts";
 
 import {
   adeCaptainErrorParts,
@@ -153,10 +159,53 @@ export function shouldAutoStartChat(input: {
   readonly botId: BotId;
   readonly environmentReady: boolean;
   readonly startedFor: BotId | null;
+  /**
+   * The shuvcode kernel's health, from the same snapshot the sidebar pill
+   * draws. See `canAutoConnect` for why this gates a *mount-time* start.
+   */
+  readonly kernelHealth: HealthState | null;
 }): boolean {
   if (!input.environmentReady) return false;
+  if (!canAutoConnect(input.kernelHealth)) return false;
   return input.startedFor !== input.botId;
 }
+
+/**
+ * May *navigation alone* attempt a session?
+ *
+ * The direct connect is only free when connecting can succeed. It is not:
+ * `startPrimaryChat`'s fresh path dispatches `thread.create` **before** the
+ * session attempt, and thread creation is a once-ever, durable act. With the
+ * kernel down, arrow-keying a twenty-bot rail therefore materialises twenty
+ * permanent threads and twenty failing session attempts *per visit* — the
+ * captain's "connect right to chat" turned into a write amplifier for exactly
+ * the state where it can produce nothing.
+ *
+ * So the auto-connect is gated on the kernel actually being up. Everything the
+ * captain asked for holds in the world where connecting works; in the world
+ * where it cannot, the conversation opens straight into the honest failure
+ * notice with no server call at all.
+ *
+ * `unknown` and `null` (no snapshot yet, or the connection is not up) are
+ * treated as "do not auto-connect". Guessing wrong in that direction costs one
+ * button press; guessing wrong in the other direction writes rows. Retry is
+ * deliberately *not* gated on this — an explicit press is intent, and the
+ * captain is allowed to disagree with the pill.
+ */
+export function canAutoConnect(kernelHealth: HealthState | null): boolean {
+  return kernelHealth === "healthy";
+}
+
+/**
+ * The notice shown when the conversation refuses to auto-connect because the
+ * kernel is down. Names the state, not this component's policy about it.
+ */
+export const BOT_CHAT_KERNEL_DOWN_NOTICE: BotChatConnectNotice = {
+  message: "This bot isn't connected.",
+  details:
+    "The shuvcode kernel is not running. Start it with `shuvcode service start`, or press Retry " +
+    "to try anyway.",
+};
 
 /**
  * The compact inline notice shown *over the conversation shell* when connecting
@@ -192,6 +241,11 @@ export function resolveBotChatConnectState(input: {
   readonly startError: BotChatConnectNotice | null;
   /** The thread is in the client store and safe to mount (#197). */
   readonly chatReady: boolean;
+  /**
+   * The kernel is not healthy, so no start was attempted on mount. Distinct
+   * from `startError`: nothing failed, because nothing was asked.
+   */
+  readonly autoConnectBlocked: boolean;
 }): BotChatConnectState {
   // A failed read of the bot itself outranks everything: there is no session to
   // wait for.
@@ -203,6 +257,15 @@ export function resolveBotChatConnectState(input: {
   }
   if (input.startError !== null) {
     return { kind: "failed", notice: input.startError };
+  }
+  /*
+   * Below a real start attempt, above the waiting states: a captain who has
+   * already got a live thread (a session that survived the kernel going down,
+   * or a Retry that beat the pill) keeps their conversation rather than being
+   * thrown into a failure screen by a health snapshot.
+   */
+  if (input.autoConnectBlocked && !input.chatReady) {
+    return { kind: "failed", notice: BOT_CHAT_KERNEL_DOWN_NOTICE };
   }
   if (input.syncOutcome.kind === "retry") {
     return {

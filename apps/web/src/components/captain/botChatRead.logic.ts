@@ -51,3 +51,49 @@ export function shouldMarkBotChatRead(input: {
   }
   return input.markedFor !== botChatReadMarkKey(input);
 }
+
+/**
+ * How long a conversation must sit open before its unread dot may be cleared.
+ *
+ * ## Why this exists (#217 / M8)
+ *
+ * M3 and M4 built read-marking on a premise that M8 quietly removed. Reaching
+ * `chatReady` used to require the captain to press "Start chatting" — an
+ * explicit act of intent — so "this conversation is open and at the bottom"
+ * was a safe proxy for "the captain is reading it". M8 made opening the
+ * conversation *itself* the connect, which is the right product call and also
+ * means `chatReady` is now reached with **zero intent**: arrow-keying down the
+ * contact rail mounts, connects and marks-read every bot it passes over.
+ *
+ * That is a destructive default. The mark is monotonic on the server, so a
+ * sweep past twenty bots irreversibly wipes twenty unread dots the captain
+ * never looked at — the one direction M3 explicitly called out as the
+ * dangerous one.
+ *
+ * A dwell gate restores the missing intent without reintroducing a button:
+ * staying on a conversation *is* the signal, and 1.5s is long enough to
+ * exclude keyboard sweeps while being far below the time it takes to read even
+ * one message. It is deliberately a *floor on continuous presence*, not a
+ * debounce — leaving and returning restarts it, because a conversation the
+ * captain bounced off has not been read.
+ */
+export const BOT_CHAT_READ_DWELL_MS = 1_500;
+
+/**
+ * Has this conversation been continuously readable for long enough to count as
+ * read?
+ *
+ * `readableSinceMs` is the timestamp at which the conversation *last became*
+ * ready-and-at-end, or `null` whenever it is not currently both. The caller
+ * resets it to `null` on unmount, on a bot swap, and whenever the captain
+ * scrolls away from the tail, which is what makes the dwell continuous rather
+ * than cumulative.
+ */
+export function hasDwelledOnBotChat(input: {
+  readonly readableSinceMs: number | null;
+  readonly nowMs: number;
+  readonly dwellMs?: number;
+}): boolean {
+  if (input.readableSinceMs === null) return false;
+  return input.nowMs - input.readableSinceMs >= (input.dwellMs ?? BOT_CHAT_READ_DWELL_MS);
+}
