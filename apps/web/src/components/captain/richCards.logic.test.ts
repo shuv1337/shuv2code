@@ -14,6 +14,7 @@ import {
   resolveDeliveryStatus,
   resolveInstructionCardView,
   resolvePrResultArtifacts,
+  resolvePrResultLayerUrl,
   resolveSecureInputFieldLabel,
 } from "./richCards.logic";
 
@@ -334,6 +335,77 @@ describe("card selection from rows", () => {
     // The neighbours keep the run's geometry — the card does not split the run.
     expect(items[0]).toMatchObject({ kind: "bubble", groupPosition: "first" });
     expect(items[2]).toMatchObject({ kind: "bubble", groupPosition: "last" });
+    // The avatar hangs off the run's last element, which here is the bubble.
+    expect(items.map((item) => "showAvatar" in item && item.showAvatar)).toEqual([
+      false,
+      false,
+      true,
+    ]);
+  });
+
+  it("gives a run that ends in a task list its avatar and its closing corner", () => {
+    // The regression this pins: skipping the card when computing run geometry
+    // left *no* element marked last, so the whole run rendered avatarless and
+    // the final bubble kept an inner corner pointing at nothing.
+    const rows = rowsFrom([
+      messageEntry({ id: "m-1", role: "assistant", at: at(1), text: "On it." }),
+      messageEntry({ id: "m-2", role: "assistant", at: at(2), text: "Here we go." }),
+      messageEntry({
+        id: "m-3",
+        role: "assistant",
+        at: at(3),
+        text: "Plan:\n\n- [x] Read `foo.ts`\n- [ ] Write the test\n",
+      }),
+    ]);
+    const items = buildBubbleTimelineItems({ rows }).filter((item) => item.kind !== "day-divider");
+    expect(items.map((item) => item.kind)).toEqual(["bubble", "bubble", "instruction"]);
+    expect(items[0]).toMatchObject({ kind: "bubble", groupPosition: "first", showAvatar: false });
+    // The last *bubble* closes the bubble geometry…
+    expect(items[1]).toMatchObject({ kind: "bubble", groupPosition: "last", showAvatar: false });
+    // …and the card, as the run's last element, wears the avatar.
+    expect(items[2]).toMatchObject({ kind: "instruction", showAvatar: true });
+  });
+
+  it("gives a run that starts with a task list its opening corner", () => {
+    const rows = rowsFrom([
+      messageEntry({
+        id: "m-1",
+        role: "assistant",
+        at: at(1),
+        text: "Plan:\n\n- [x] Read `foo.ts`\n- [ ] Write the test\n",
+      }),
+      messageEntry({ id: "m-2", role: "assistant", at: at(2), text: "Starting now." }),
+      messageEntry({ id: "m-3", role: "assistant", at: at(3), text: "Done with the first." }),
+    ]);
+    const items = buildBubbleTimelineItems({ rows }).filter((item) => item.kind !== "day-divider");
+    expect(items.map((item) => item.kind)).toEqual(["instruction", "bubble", "bubble"]);
+    expect(items[0]).toMatchObject({ kind: "instruction", showAvatar: false });
+    expect(items[1]).toMatchObject({ kind: "bubble", groupPosition: "first", showAvatar: false });
+    expect(items[2]).toMatchObject({ kind: "bubble", groupPosition: "last", showAvatar: true });
+  });
+
+  it("gives a run that is only a task list the avatar", () => {
+    const rows = rowsFrom([
+      messageEntry({
+        id: "m-1",
+        role: "assistant",
+        at: at(1),
+        text: "Plan:\n\n- [x] Read `foo.ts`\n- [ ] Write the test\n",
+      }),
+    ]);
+    const items = buildBubbleTimelineItems({ rows }).filter((item) => item.kind !== "day-divider");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "instruction", showAvatar: true });
+  });
+
+  it("never puts an avatar on a captain's run, card or not", () => {
+    const rows = rowsFrom([
+      messageEntry({ id: "m-1", role: "user", at: at(1), text: "Do these:\n\n- [ ] a\n- [ ] b\n" }),
+      messageEntry({ id: "m-2", role: "user", at: at(2), text: "Thanks." }),
+    ]);
+    const items = buildBubbleTimelineItems({ rows }).filter((item) => item.kind !== "day-divider");
+    expect(items.map((item) => item.kind)).toEqual(["bubble", "bubble"]);
+    expect(items.every((item) => "showAvatar" in item && item.showAvatar === false)).toBe(true);
   });
 
   it("never promotes a captain's own checklist", () => {
@@ -396,6 +468,117 @@ describe("resolveInstructionCardView", () => {
     // Sample text the bot is *showing*, not a plan it is *keeping*.
     expect(
       resolveInstructionCardView("Write this in the issue:\n\n```md\n- [ ] one\n- [ ] two\n```\n"),
+    ).toBeNull();
+  });
+
+  it("refuses a checklist inside a four-space indented code block", () => {
+    // Markdown's other code-block spelling, and the one a model reaches for
+    // when quoting a snippet with no language tag.
+    expect(
+      resolveInstructionCardView("Write this in the issue:\n\n    - [ ] one\n    - [ ] two\n"),
+    ).toBeNull();
+    expect(resolveInstructionCardView("\t- [ ] one\n\t- [ ] two\n")).toBeNull();
+  });
+
+  it("still reads a real list that follows an indented snippet", () => {
+    // The indent rule ends at the margin; it must not swallow what comes after.
+    const view = resolveInstructionCardView(
+      "Sample:\n\n    - [ ] not mine\n\nPlan:\n\n- [ ] one\n- [ ] two\n",
+    );
+    expect(view?.items.map((item) => item.markdown)).toEqual(["one", "two"]);
+    expect(view?.title).toBe("Plan:");
+  });
+
+  it("keeps nested items, which are indentation and not a code block", () => {
+    // Four spaces *inside* a list is CommonMark continuation. The indent rule
+    // only runs before the list starts, which is what keeps this working.
+    const view = resolveInstructionCardView("- [ ] Top\n    - [ ] Nested\n- [ ] Last\n");
+    expect(view?.items.map((item) => item.depth)).toEqual([0, 2, 0]);
+  });
+
+  it("steals only a short, header-shaped line for the title", () => {
+    // A colon that ends a sentence is introducing a clause, not naming a list;
+    // hoisting it out of the body decapitates the paragraph.
+    const midSentence =
+      "I read the tests. They fail on the parser, so here is the plan I will follow:";
+    const view = resolveInstructionCardView(`${midSentence}\n\n- [ ] one\n- [ ] two\n`);
+    expect(view?.title).toBeNull();
+    expect(view?.leadMarkdown).toBe(midSentence);
+
+    const clause = "I looked; here is what I will do:";
+    const clauseView = resolveInstructionCardView(`${clause}\n\n- [ ] one\n- [ ] two\n`);
+    expect(clauseView?.title).toBeNull();
+    expect(clauseView?.leadMarkdown).toBe(clause);
+
+    // A heading is always a header, and a short bare label still qualifies.
+    expect(resolveInstructionCardView("### Plan\n\n- [ ] one\n- [ ] two\n")?.title).toBe("Plan");
+    expect(resolveInstructionCardView("Here is the plan:\n\n- [ ] one\n- [ ] two\n")?.title).toBe(
+      "Here is the plan:",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("resolvePrResultLayerUrl", () => {
+  const layer = (layerId: string) =>
+    ({ kind: "publicationLayer", stackId: "stack-1", layerId }) as never;
+  const url = (href: string) => ({ kind: "url", href }) as never;
+  const artifactsOf = (input: {
+    readonly layers: ReadonlyArray<unknown>;
+    readonly urls: ReadonlyArray<unknown>;
+  }) => ({ ...input, jjChanges: [], files: [] }) as never;
+
+  it("links a layer row only when the URL is provably its own", () => {
+    expect(
+      resolvePrResultLayerUrl({
+        artifacts: artifactsOf({ layers: [layer("l-1")], urls: [url("https://x/pull/41")] }),
+        renderedLayerCount: 1,
+      }),
+    ).toBe("https://x/pull/41");
+  });
+
+  it("leaves every row unlinked when two layers share one URL", () => {
+    // The defect this pins: a badge naming PR #43 that opened PR #41. A `url`
+    // artifact is a flat line with nothing tying it to a layer, so with more
+    // than one layer in play no row can claim it.
+    expect(
+      resolvePrResultLayerUrl({
+        artifacts: artifactsOf({
+          layers: [layer("l-1"), layer("l-2")],
+          urls: [url("https://x/pull/41")],
+        }),
+        renderedLayerCount: 2,
+      }),
+    ).toBeNull();
+    // …and still unlinked when the stack read filtered the pair down to one:
+    // the delivery claimed two, so the URL is still unattributed.
+    expect(
+      resolvePrResultLayerUrl({
+        artifacts: artifactsOf({
+          layers: [layer("l-1"), layer("l-2")],
+          urls: [url("https://x/pull/41")],
+        }),
+        renderedLayerCount: 1,
+      }),
+    ).toBeNull();
+  });
+
+  it("leaves a row unlinked with no URL, or with more than one", () => {
+    expect(
+      resolvePrResultLayerUrl({
+        artifacts: artifactsOf({ layers: [layer("l-1")], urls: [] }),
+        renderedLayerCount: 1,
+      }),
+    ).toBeNull();
+    expect(
+      resolvePrResultLayerUrl({
+        artifacts: artifactsOf({
+          layers: [layer("l-1")],
+          urls: [url("https://x/pull/41"), url("https://x/pull/43")],
+        }),
+        renderedLayerCount: 1,
+      }),
     ).toBeNull();
   });
 

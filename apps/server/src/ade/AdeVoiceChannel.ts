@@ -917,10 +917,13 @@ export class AdeVoiceChannel extends Context.Service<AdeVoiceChannel, AdeVoiceCh
               ? `the item is already ${entry.item.status}`
               : entry.action === "acknowledge"
                 ? // Acknowledging asserts the captain personally reviewed the
-                  // candidate outside the call. A voice restatement cannot make
-                  // that true, so V1 sends it to the inbox rather than offering
-                  // a spoken shortcut for it.
-                  "that item is acknowledge-only; acknowledge it from the Needs You inbox"
+                  // candidate outside the call — and, for a `form` item, that
+                  // they typed a value into a masked field. A voice restatement
+                  // cannot make either true, so V1 sends it to the surface that
+                  // can rather than offering a spoken shortcut for it. That
+                  // surface is the messenger's attention view; the standalone
+                  // Needs You inbox this line used to name was retired in M3.
+                  "that item is acknowledge-only; answer it from the fleet's attention view"
                 : `a '${entry.item.kind}' item carries no captain decision; it resolves when the condition clears`;
           return yield* new AdeVoiceApprovalSubjectUnavailableError({
             needsYouItemId: input.needsYouItemId,

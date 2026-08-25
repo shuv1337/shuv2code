@@ -89,6 +89,32 @@ export function hasPublicationArtifacts(delivery: ParsedAssignmentDelivery): boo
 }
 
 /**
+ * The URL a *layer row* is allowed to link to, or `null`.
+ *
+ * A delivery's `url` artifacts are unattributed: the wire format is a flat
+ * `- url https://…` line with nothing tying it to a particular layer. Handing
+ * every row the same href produced a badge that *named* one PR and *opened*
+ * another — the worst available outcome, because the badge reads as a label
+ * for the destination.
+ *
+ * So a row links only when the URL is provably its own, which is exactly the
+ * degenerate case: this delivery claimed one layer, one layer rendered, and one
+ * URL was reported. Anything else and the rows render unlinked; the card-level
+ * header still carries the primary link, where "some URL this delivery
+ * reported" is an honest description of what it opens.
+ */
+export function resolvePrResultLayerUrl(input: {
+  readonly artifacts: PrResultArtifacts;
+  /** Layers actually drawn, after the stack read filtered to claimed ids. */
+  readonly renderedLayerCount: number;
+}): string | null {
+  if (input.artifacts.layers.length !== 1) return null;
+  if (input.renderedLayerCount !== 1) return null;
+  if (input.artifacts.urls.length !== 1) return null;
+  return input.artifacts.urls[0]?.href ?? null;
+}
+
+/**
  * The aggregate status a delivery reports, in worst-first precedence.
  *
  * A batch that mixes outcomes is not "completed": the captain reading one pill
@@ -133,6 +159,8 @@ export interface InstructionCardView {
 const TASK_LINE = /^(\s*)(?:[-*+]|\d{1,9}[.)])\s+\[([ xX])\]\s?(.*)$/;
 const FENCE_LINE = /^\s*(?:```|~~~)/;
 const HEADING_LINE = /^\s{0,3}#{1,6}\s+\S/;
+/** CommonMark's *other* code block: four spaces (or a tab) after a blank line. */
+const INDENTED_CODE_LINE = /^(?: {4}|\t)/;
 
 /**
  * The smallest number of items that reads as a checklist. One checkbox in a
@@ -141,18 +169,46 @@ const HEADING_LINE = /^\s{0,3}#{1,6}\s+\S/;
  */
 const MIN_CHECKLIST_ITEMS = 2;
 
+/**
+ * Long enough for "Here is the plan for the parser rewrite:", short enough that
+ * a paragraph cannot pass as a header.
+ */
+const MAX_TITLE_LENGTH = 60;
+
+/**
+ * Whether a line is the list's *header* — a short label naming what follows.
+ *
+ * Stealing a line out of the body and promoting it into the card's heading is
+ * destructive: the line stops reading as prose and starts reading as a title,
+ * and it is removed from the lead markdown either way. So the test is narrow.
+ * A heading always qualifies. A colon-terminated line qualifies only when it is
+ * short and carries no sentence punctuation before the colon — otherwise the
+ * colon is introducing a clause inside a sentence ("I read the tests, they
+ * fail, so here is what I will do:") rather than labelling a list, and hoisting
+ * it decapitates the paragraph. When in doubt the line stays where the bot put
+ * it and the card falls back to "Task list".
+ */
 function isTitleLine(line: string): boolean {
   const trimmed = line.trim();
-  if (trimmed.length === 0) return false;
-  return HEADING_LINE.test(line) || trimmed.endsWith(":");
+  if (trimmed.length === 0 || trimmed.length > MAX_TITLE_LENGTH) return false;
+  if (HEADING_LINE.test(line)) return true;
+  if (!trimmed.endsWith(":")) return false;
+  return !/[.!?;]/.test(trimmed.slice(0, -1));
 }
 
 /**
  * Reads a bot-authored task list out of a message, or returns `null`.
  *
- * Fence-aware: a checklist inside a fenced code block is sample text the bot is
- * *showing*, not a plan it is *keeping*, and repainting it as a live card would
- * claim the bot had committed to it.
+ * Code-block-aware, in both of markdown's spellings: a checklist inside a
+ * fenced block *or* inside a four-space indented block is sample text the bot
+ * is *showing*, not a plan it is *keeping*, and repainting it as a live card
+ * would claim the bot had committed to it. The indented spelling is the one
+ * models reach for when quoting a snippet without a language tag, so leaving it
+ * out left the fence rule half-enforced.
+ *
+ * The indent rule applies only *before* the list starts, which is what keeps it
+ * from eating nested items: inside a list, four spaces is CommonMark
+ * continuation, not a code block.
  *
  * Continuation lines (indented, non-task) fold into the item above them, so an
  * item with a second wrapped line keeps its whole body instead of losing the
@@ -165,17 +221,34 @@ export function resolveInstructionCardView(text: string): InstructionCardView | 
   let end = -1;
   const items: Array<{ checked: boolean; depth: number; parts: Array<string> }> = [];
   let pendingBlank = 0;
+  let indentedCode = false;
+  // A document's first line has a blank "line above" as far as block starts are
+  // concerned, so an opening snippet is still recognized as a code block.
+  let previousBlank = true;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string;
     if (FENCE_LINE.test(line)) {
       fenced = !fenced;
       if (start !== -1) break;
+      previousBlank = false;
       continue;
     }
     if (fenced) {
       if (start !== -1) break;
       continue;
+    }
+
+    if (start === -1) {
+      const blank = line.trim().length === 0;
+      if (indentedCode) {
+        // The block runs until a non-blank line comes back out to the margin.
+        if (!blank && !INDENTED_CODE_LINE.test(line)) indentedCode = false;
+      } else if (previousBlank && !blank && INDENTED_CODE_LINE.test(line)) {
+        indentedCode = true;
+      }
+      previousBlank = blank;
+      if (indentedCode) continue;
     }
 
     const task = TASK_LINE.exec(line);

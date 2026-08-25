@@ -573,6 +573,34 @@ describe("secure answers and the roster preview", () => {
       for (const rows of scans) {
         assert.notInclude(rows.map((row) => row.blob).join(" "), SECRET);
       }
+
+      // Withholding the value left "answered" and "dismissed" as the same
+      // resolved row, so the *fact* is recorded even though the value is not.
+      // A flag, deliberately — a length would be a real signal about a secret.
+      const audit = yield* sql<{
+        readonly resolution_note_present: number;
+      }>`SELECT resolution_note_present FROM ade_needs_you_items WHERE needs_you_item_id = 'ny-1'`;
+      assert.equal(audit[0]?.resolution_note_present, 1);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("records a dismissed secure request as answerless", () =>
+    Effect.gen(function* () {
+      const { api, sql, firstmateId } = yield* setup;
+      yield* openNeedsYou({ id: "ny-1", kind: "form", botId: firstmateId });
+
+      // The captain waved the card away rather than supplying what was asked
+      // for. Same RPC, same resulting status — and the audit column is the only
+      // thing that can ever tell the two apart afterwards.
+      yield* api.submitNeedsYouDecision({
+        needsYouItemId: "ny-1" as NeedsYouItemId,
+        decision: "acknowledge",
+      });
+
+      const audit = yield* sql<{
+        readonly resolution_note_present: number;
+      }>`SELECT resolution_note_present FROM ade_needs_you_items WHERE needs_you_item_id = 'ny-1'`;
+      assert.equal(audit[0]?.resolution_note_present, 0);
     }).pipe(Effect.provide(makeLayer())),
   );
 

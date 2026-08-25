@@ -20,7 +20,11 @@ import { CaptainExternalLink } from "./CaptainExternalLink";
  *
  * ## Scope
  * Copy and open are here because both have somewhere real to go: the clipboard,
- * and `CaptainExternalLink`'s open/copy-link/open-in-preview menu. A reaction
+ * and `CaptainExternalLink`'s open/copy-link/open-in-preview menu. "Somewhere
+ * real" is enforced for the open control rather than assumed: the href comes
+ * from artifact text a bot wrote, and `javascript:` or a bare branch name in
+ * that slot would render an Open button that either does nothing or does
+ * something. Only `http(s)` reaches the browser. A reaction
  * affordance is deliberately **not** here — ADE has no durable store for a
  * reaction on a card (no table, no contract field, no RPC), and a control that
  * animates and forgets is worse than no control. `extra` is the seam for one:
@@ -44,7 +48,7 @@ export function ArtifactHoverActions({
   readonly className?: string;
 }) {
   const hasCopy = copyText !== undefined && copyText.length > 0;
-  const hasOpen = openHref !== undefined && openHref.length > 0;
+  const hasOpen = openHref !== undefined && isExternalHttpUrl(openHref);
   if (!hasCopy && !hasOpen && extra === undefined) return null;
 
   return (
@@ -87,3 +91,20 @@ export function ArtifactHoverActions({
  * never appears.
  */
 export const ARTIFACT_HOVER_GROUP_CLASS = "group/artifact";
+
+/**
+ * Whether a string is a URL this strip will open.
+ *
+ * Parsed rather than prefix-matched, so `https:evil` and whitespace-padded
+ * input are refused with the rest. Everything else — a relative path, a branch
+ * name that reached the `openHref` slot, any non-web scheme — hides the
+ * control instead of offering a destination the browser cannot honour.
+ */
+function isExternalHttpUrl(href: string): boolean {
+  try {
+    const protocol = new URL(href).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}

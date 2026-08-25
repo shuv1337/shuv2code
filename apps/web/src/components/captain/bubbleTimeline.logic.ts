@@ -81,6 +81,12 @@ export type BubbleTimelineItem =
       readonly id: string;
       readonly row: MessageRow;
       readonly view: InstructionCardView;
+      /**
+       * The card sits *inside* a bubble run, so it obeys the run's avatar rule
+       * rather than opting out of it: the avatar hangs off the run's last
+       * element, and that element is sometimes this card.
+       */
+      readonly showAvatar: boolean;
     }
   | {
       readonly kind: "attribution";
@@ -291,28 +297,51 @@ export function buildBubbleTimelineItems(input: {
       cursor += 1;
     }
     emitDayDivider(messageRow.createdAt);
+
+    // A bot's task list becomes a card rather than a bubble, and does so
+    // *inside* the run: a plan is usually one message in the middle of a
+    // paragraph of them, and breaking the run to hoist it would reorder the
+    // conversation.
+    //
+    // "Inside the run" is a geometry claim, so it has to be paid for twice:
+    //
+    // 1. **Corners** belong to the *bubbles*, and a card is not a bubble — it
+    //    draws its own rounded article. So `first`/`last` are computed over the
+    //    bubble subsequence, skipping cards. Reading them off the run index
+    //    left a run that ends in a card with no `last` bubble at all: the final
+    //    bubble kept a tightened inner corner pointing at nothing, and the
+    //    mirror case did the same to a run that *starts* with one.
+    // 2. **The avatar** belongs to the *run*, because it marks where the run
+    //    ends beside the newest line. So it hangs off the last element,
+    //    whichever kind that element is. Skipping cards here is what made a run
+    //    ending in a task list render entirely avatarless.
+    const instructionViews = runRows.map((runRow) => instructionViewFor(runRow, author));
+    const bubbleCount = instructionViews.filter((view) => view === null).length;
+    const lastRunIndex = runRows.length - 1;
+    let bubbleIndex = 0;
     runRows.forEach((runRow, runIndex) => {
-      // A bot's task list becomes a card rather than a bubble, and does so
-      // *inside* the run: a plan is usually one message in the middle of a
-      // paragraph of them, and breaking the run to hoist it would reorder the
-      // conversation. The neighbours keep their run geometry; only this item's
-      // rendering changes.
-      const instruction = instructionViewFor(runRow, author);
-      if (instruction !== null) {
-        items.push({ kind: "instruction", id: runRow.id, row: runRow, view: instruction });
+      const showAvatar = author === "bot" && runIndex === lastRunIndex;
+      const instruction = instructionViews[runIndex];
+      if (instruction != null) {
+        items.push({
+          kind: "instruction",
+          id: runRow.id,
+          row: runRow,
+          view: instruction,
+          showAvatar,
+        });
         return;
       }
-      const isFirst = runIndex === 0;
-      const isLast = runIndex === runRows.length - 1;
+      const isFirst = bubbleIndex === 0;
+      const isLast = bubbleIndex === bubbleCount - 1;
+      bubbleIndex += 1;
       items.push({
         kind: "bubble",
         id: runRow.id,
         row: runRow,
         author,
         groupPosition: groupPositionFor(isFirst, isLast),
-        // The avatar hangs off the *last* bubble so it sits beside the newest
-        // line of a run rather than floating at the top of a tall block.
-        showAvatar: author === "bot" && isLast,
+        showAvatar,
       });
     });
     index = cursor;
