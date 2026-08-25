@@ -290,12 +290,16 @@ layer("055_AdeCoreTables", (it) => {
       const stackDefaults = yield* sql<{
         readonly base_bookmark: string;
         readonly lease_holder: string | null;
+        readonly cleaned_up_at: string | null;
       }>`
-        SELECT base_bookmark, lease_holder FROM ade_publication_stacks
+        SELECT base_bookmark, lease_holder, cleaned_up_at FROM ade_publication_stacks
         WHERE publication_stack_id = 'stack-inv-3'
       `;
       assert.strictEqual(stackDefaults[0]?.base_bookmark, "main");
       assert.strictEqual(stackDefaults[0]?.lease_holder, null);
+      // A stack owns its branch names until cleanup has actually removed them,
+      // so a fresh stack starts un-cleaned.
+      assert.strictEqual(stackDefaults[0]?.cleaned_up_at, null);
 
       // A bot requester must carry its bot id; a captain requester must not.
       const inconsistentRequester = yield* sql`

@@ -52,6 +52,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -75,6 +76,7 @@ import {
   AdePublicationRepoError,
   AdePublicationRepoPort,
   type PublicationPrState,
+  type PublishedPullRequest,
   refValidationDetail,
 } from "./AdePublicationRepoPort.ts";
 
@@ -127,6 +129,21 @@ export class AdePublicationStackStateError extends Schema.TaggedErrorClass<AdePu
 // sweep picks the stack up. Publication talks to GitHub, so two overlapping
 // passes would create duplicate PRs — the lease, not an exception, is what
 // prevents that.
+
+/**
+ * The pass detected that it had written into the workspace it operates on
+ * (spec §4.5 invariant 4) — or could not prove that it had not. This is the one
+ * invariant whose violation silently corrupts someone else's work, so it is a
+ * hard failure rather than a warning.
+ */
+export class AdePublicationInvariantError extends Schema.TaggedErrorClass<AdePublicationInvariantError>()(
+  "AdePublicationInvariantError",
+  { stackId: Schema.String, detail: Schema.String },
+) {
+  override get message(): string {
+    return `ADE publication stack ${this.stackId} violated the no-writes invariant: ${this.detail}`;
+  }
+}
 
 export class AdePublicationLayerInvalidError extends Schema.TaggedErrorClass<AdePublicationLayerInvalidError>()(
   "AdePublicationLayerInvalidError",
@@ -297,6 +314,7 @@ interface StackRow {
   readonly base_bookmark: string;
   readonly lease_holder: string | null;
   readonly lease_expires_at: string | null;
+  readonly cleaned_up_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -485,6 +503,63 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
     });
 
     // -----------------------------------------------------------------------
+    // Lease
+    // -----------------------------------------------------------------------
+    //
+    // *Every* mutation of a stack runs under its lease, not just the pass. The
+    // sharp race is an adoption landing between the pass deciding "everything
+    // has landed" and it writing `reconciled`: the new layer would be stranded
+    // on a settled stack that nothing will ever publish. Making the lease cover
+    // the whole mutating surface removes that window by construction rather
+    // than by re-checking for it.
+
+    const claimStack = Effect.fn("AdePublicationService.claimStack")(function* (
+      stackId: string,
+      holder: string,
+    ) {
+      const at = yield* nowIso;
+      const expiresAt = yield* leaseExpiryIso;
+      const rows = yield* sql<StackRow>`
+        UPDATE ade_publication_stacks
+        SET lease_holder = ${holder}, lease_expires_at = ${expiresAt}, updated_at = ${at}
+        WHERE publication_stack_id = ${stackId}
+          AND (lease_holder IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ${at})
+        RETURNING *
+      `.pipe(Effect.mapError(mapSql("claimStack")));
+      return rows[0] ?? null;
+    });
+
+    const releaseStack = Effect.fn("AdePublicationService.releaseStack")(function* (
+      stackId: string,
+      holder: string,
+    ) {
+      const at = yield* nowIso;
+      yield* sql`
+        UPDATE ade_publication_stacks
+        SET lease_holder = NULL, lease_expires_at = NULL, updated_at = ${at}
+        WHERE publication_stack_id = ${stackId} AND lease_holder = ${holder}
+      `.pipe(Effect.mapError(mapSql("releaseStack")));
+    });
+
+    /**
+     * Run `body` holding the stack's lease, or return `onBusy()` when another
+     * worker has it. The lease is always released, including on interruption.
+     */
+    const withStackLease = <A, E, R>(
+      stackId: string,
+      body: (claimed: StackRow) => Effect.Effect<A, E, R>,
+      onBusy: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E | PersistenceSqlError, R> =>
+      Effect.gen(function* () {
+        const holder = yield* uuid;
+        const claimed = yield* claimStack(stackId, holder);
+        if (claimed === null) return yield* onBusy;
+        return yield* body(claimed).pipe(
+          Effect.ensuring(releaseStack(stackId, holder).pipe(Effect.orDie)),
+        );
+      });
+
+    // -----------------------------------------------------------------------
     // Stack lifecycle
     // -----------------------------------------------------------------------
 
@@ -567,11 +642,30 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
       return yield* viewOf(next);
     });
 
+    /** A status change is a mutation, so it waits for the pass to finish. */
+    const leasedTransition = (
+      stackId: PublicationStackId,
+      from: ReadonlyArray<PublicationStackStatus>,
+      to: PublicationStackStatus,
+    ) =>
+      withStackLease(
+        stackId,
+        () => transitionStack({ stackId, from, to }),
+        Effect.gen(function* () {
+          const row = yield* requireStackRow(stackId);
+          return yield* new AdePublicationStackStateError({
+            stackId,
+            expected: `${from.join(" | ")} (not held by another worker)`,
+            actual: `${row.status}, leased`,
+          });
+        }),
+      );
+
     const freezeStack: AdePublicationServiceShape["freezeStack"] = (stackId) =>
-      transitionStack({ stackId, from: ["building"], to: "review-frozen" });
+      leasedTransition(stackId, ["building"], "review-frozen");
 
     const requestMerge: AdePublicationServiceShape["requestMerge"] = (stackId) =>
-      transitionStack({ stackId, from: ["building", "review-frozen"], to: "merging" });
+      leasedTransition(stackId, ["building", "review-frozen"], "merging");
 
     // -----------------------------------------------------------------------
     // Layers
@@ -585,9 +679,13 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
     const defaultBookmarkFor = (stackId: string, order: number) =>
       `ade/pub/${stackId.replaceAll("-", "").slice(0, 12)}/${String(order).padStart(4, "0")}`;
 
-    const appendLayer: AdePublicationServiceShape["appendLayer"] = Effect.fn(
-      "AdePublicationService.appendLayer",
-    )(function* (input: AppendLayerInput) {
+    /**
+     * Append without taking the lease — for callers that already hold it.
+     * `appendLayer` is the public, leased entry point.
+     */
+    const appendLayerUnlocked = Effect.fn("AdePublicationService.appendLayerUnlocked")(function* (
+      input: AppendLayerInput,
+    ) {
       const stackRow = yield* requireStackRow(input.stackId);
       if (input.changeIds.length === 0) {
         return yield* new AdePublicationLayerInvalidError({
@@ -628,6 +726,28 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
         });
       }
 
+      // Branch names are the key adoption looks work up by, so reusing one that
+      // an earlier, not-yet-cleaned-up stack still owns is how a fresh layer
+      // ends up adopting its ancestor's *merged* PR — and then never publishing
+      // at all. A stack owns its names until cleanup has actually removed them.
+      const reused = yield* sql<{ readonly publication_stack_id: string }>`
+        SELECT l.publication_stack_id FROM ade_publication_layers l
+        JOIN ade_publication_stacks s
+          ON s.publication_stack_id = l.publication_stack_id
+        WHERE s.project_id = ${stackRow.project_id}
+          AND s.cleaned_up_at IS NULL
+          AND l.bookmark_name = ${bookmarkName}
+          AND l.publication_stack_id != ${input.stackId}
+        LIMIT 1
+      `.pipe(Effect.mapError(mapSql("appendLayer.reuse")));
+      const owner = reused[0];
+      if (owner !== undefined) {
+        return yield* new AdePublicationLayerInvalidError({
+          stackId: input.stackId,
+          detail: `branch '${bookmarkName}' is still owned by stack ${owner.publication_stack_id}; clean that stack up before reusing the name`,
+        });
+      }
+
       const layerId = yield* uuid;
       const at = yield* nowIso;
       const changesJson = yield* Effect.orDie(encodeStringArray([...input.changeIds]));
@@ -647,16 +767,18 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
       const row = inserted[0];
       if (row !== undefined) return yield* rowToLayer(row);
 
-      // A unique index refused us — another worker appended concurrently.
+      // A unique index refused us — another worker appended concurrently. When
+      // this append is an adoption, the *candidate id* is the identity that
+      // matters: matching on the branch name alone would hand back whatever row
+      // happens to hold that name, which after a name collision is a different
+      // candidate's layer entirely.
       const raced = yield* readLayerRows(input.stackId).pipe(
         Effect.mapError(mapSql("appendLayer.raced")),
       );
-      const racedRow = raced.find(
-        (layer) =>
-          (input.integrationCandidateId !== undefined &&
-            layer.integration_candidate_id === input.integrationCandidateId) ||
-          layer.bookmark_name === bookmarkName,
-      );
+      const racedRow =
+        input.integrationCandidateId !== undefined
+          ? raced.find((layer) => layer.integration_candidate_id === input.integrationCandidateId)
+          : raced.find((layer) => layer.bookmark_name === bookmarkName);
       if (racedRow === undefined) {
         return yield* new AdePublicationLayerInvalidError({
           stackId: input.stackId,
@@ -666,6 +788,19 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
       return yield* rowToLayer(racedRow);
     });
 
+    const appendLayer: AdePublicationServiceShape["appendLayer"] = (input) =>
+      withStackLease(
+        input.stackId,
+        () => appendLayerUnlocked(input),
+        Effect.gen(function* () {
+          yield* requireStackRow(input.stackId);
+          return yield* new AdePublicationLayerInvalidError({
+            stackId: input.stackId,
+            detail: "the stack is being processed by another worker; retry once the pass finishes",
+          });
+        }),
+      );
+
     const adoptIntegratedCandidates: AdePublicationServiceShape["adoptIntegratedCandidates"] =
       Effect.fn("AdePublicationService.adoptIntegratedCandidates")(function* (
         projectId: AdeProjectId,
@@ -673,18 +808,36 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
         const activeRows = yield* readActiveStackRow(projectId).pipe(
           Effect.mapError(mapSql("adoptIntegratedCandidates.stack")),
         );
-        const stackRow = activeRows[0];
+        const activeRow = activeRows[0];
         // No active stack is a legitimate state: the captain has not opened one
         // yet, and integrated work simply accumulates as unpublished tail.
-        if (stackRow === undefined) return { appended: [] };
-        // A frozen stack still accepts appends *to the top* (ADR §8.3); a stack
-        // that is already merging does not, because its contents are in flight.
-        if (stackRow.status === "merging") return { appended: [] };
+        if (activeRow === undefined) return { appended: [] };
 
-        const candidates = yield* sql<{
-          readonly integration_candidate_id: string;
-          readonly change_ids_json: string;
-        }>`
+        // Adoption mutates the stack, so it waits for any pass in flight. This
+        // is the fix for the race where a layer lands between the pass deciding
+        // "everything has landed" and it writing `reconciled` — the new layer
+        // would sit on a settled stack forever.
+        return yield* withStackLease(
+          activeRow.publication_stack_id,
+          (stackRow) => adoptUnderLease(stackRow),
+          Effect.succeed({ appended: [] as ReadonlyArray<PublicationLayerId> }),
+        );
+      });
+
+    const adoptUnderLease = Effect.fn("AdePublicationService.adoptUnderLease")(function* (
+      stackRow: StackRow,
+    ) {
+      const projectId = stackRow.project_id as AdeProjectId;
+      // A frozen stack still accepts appends *to the top* (ADR §8.3); a stack
+      // that is already merging does not, because its contents are in flight.
+      if (stackRow.status !== "building" && stackRow.status !== "review-frozen") {
+        return { appended: [] as ReadonlyArray<PublicationLayerId> };
+      }
+
+      const candidates = yield* sql<{
+        readonly integration_candidate_id: string;
+        readonly change_ids_json: string;
+      }>`
           SELECT c.integration_candidate_id, c.change_ids_json
           FROM ade_integration_candidates c
           WHERE c.project_id = ${projectId}
@@ -697,121 +850,108 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
           ORDER BY c.updated_at ASC, c.rowid ASC
         `.pipe(Effect.mapError(mapSql("adoptIntegratedCandidates.candidates")));
 
-        const appended: Array<PublicationLayerId> = [];
-        for (const candidate of candidates) {
-          const changeIds = yield* Effect.orDie(decodeStringArray(candidate.change_ids_json));
-          const layer = yield* appendLayer({
-            stackId: stackRow.publication_stack_id as PublicationStackId,
-            changeIds,
-            integrationCandidateId:
-              candidate.integration_candidate_id as unknown as IntegrationCandidateId,
-          }).pipe(
-            Effect.catchTags({
-              AdePublicationStackNotFoundError: () => Effect.succeed(null),
-              AdePublicationLayerInvalidError: (error) =>
-                Effect.as(
-                  Effect.logWarning("ADE publication skipped an unrepresentable candidate", {
-                    candidateId: candidate.integration_candidate_id,
-                    detail: error.detail,
-                  }),
-                  null,
-                ),
-            }),
-          );
-          if (layer !== null) appended.push(layer.id);
-        }
-        if (appended.length > 0) {
-          yield* Effect.log("ADE publication adopted integrated candidates", {
-            stackId: stackRow.publication_stack_id,
-            appended,
+      const appended: Array<PublicationLayerId> = [];
+      for (const candidate of candidates) {
+        const changeIds = yield* Effect.orDie(decodeStringArray(candidate.change_ids_json));
+        const layer = yield* appendLayerUnlocked({
+          stackId: stackRow.publication_stack_id as PublicationStackId,
+          changeIds,
+          integrationCandidateId:
+            candidate.integration_candidate_id as unknown as IntegrationCandidateId,
+        }).pipe(
+          Effect.catchTags({
+            AdePublicationStackNotFoundError: () => Effect.succeed(null),
+            AdePublicationLayerInvalidError: (error) =>
+              Effect.as(
+                Effect.logWarning("ADE publication skipped an unrepresentable candidate", {
+                  candidateId: candidate.integration_candidate_id,
+                  detail: error.detail,
+                }),
+                null,
+              ),
+          }),
+        );
+        if (layer !== null) appended.push(layer.id);
+      }
+      if (appended.length > 0) {
+        yield* Effect.log("ADE publication adopted integrated candidates", {
+          stackId: stackRow.publication_stack_id,
+          appended,
+        });
+      }
+      return { appended };
+    });
+
+    const reorderLayersUnlocked = Effect.fn("AdePublicationService.reorderLayersUnlocked")(
+      function* (input: {
+        readonly stackId: PublicationStackId;
+        readonly layerIdsInOrder: ReadonlyArray<PublicationLayerId>;
+      }) {
+        const stackRow = yield* requireStackRow(input.stackId);
+        if (stackRow.status !== "building") {
+          return yield* new AdePublicationStackStateError({
+            stackId: input.stackId,
+            expected: "building",
+            actual: stackRow.status,
           });
         }
-        return { appended };
-      });
+        const current = yield* readLayerRows(input.stackId).pipe(
+          Effect.mapError(mapSql("reorderLayers.read")),
+        );
+        const currentIds = current.map((layer) => layer.publication_layer_id);
+        const requested = [...input.layerIdsInOrder];
+        if (
+          requested.length !== currentIds.length ||
+          new Set(requested).size !== requested.length ||
+          !requested.every((id) => currentIds.includes(id))
+        ) {
+          return yield* new AdePublicationLayerInvalidError({
+            stackId: input.stackId,
+            detail: "a reorder must list every layer of the stack exactly once",
+          });
+        }
 
-    const reorderLayers: AdePublicationServiceShape["reorderLayers"] = Effect.fn(
-      "AdePublicationService.reorderLayers",
-    )(function* (input) {
-      const stackRow = yield* requireStackRow(input.stackId);
-      if (stackRow.status !== "building") {
-        return yield* new AdePublicationStackStateError({
-          stackId: input.stackId,
-          expected: "building",
-          actual: stackRow.status,
-        });
-      }
-      const current = yield* readLayerRows(input.stackId).pipe(
-        Effect.mapError(mapSql("reorderLayers.read")),
-      );
-      const currentIds = current.map((layer) => layer.publication_layer_id);
-      const requested = [...input.layerIdsInOrder];
-      if (
-        requested.length !== currentIds.length ||
-        new Set(requested).size !== requested.length ||
-        !requested.every((id) => currentIds.includes(id))
-      ) {
-        return yield* new AdePublicationLayerInvalidError({
-          stackId: input.stackId,
-          detail: "a reorder must list every layer of the stack exactly once",
-        });
-      }
-
-      const at = yield* nowIso;
-      yield* sql
-        .withTransaction(
-          Effect.gen(function* () {
-            // Park every row above any real order first. Without the offset the
-            // unique `(stack, layer_order)` index rejects the very first swap.
-            yield* sql`
+        const at = yield* nowIso;
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              // Park every row above any real order first. Without the offset the
+              // unique `(stack, layer_order)` index rejects the very first swap.
+              yield* sql`
               UPDATE ade_publication_layers
               SET layer_order = layer_order + ${REORDER_OFFSET}
               WHERE publication_stack_id = ${input.stackId}
             `;
-            for (const [index, layerId] of requested.entries()) {
-              yield* sql`
+              for (const [index, layerId] of requested.entries()) {
+                yield* sql`
                 UPDATE ade_publication_layers
                 SET layer_order = ${index}, updated_at = ${at}
                 WHERE publication_layer_id = ${layerId}
                   AND publication_stack_id = ${input.stackId}
               `;
-            }
-          }),
-        )
-        .pipe(Effect.mapError(mapSql("reorderLayers.apply")));
-      return yield* viewOf(stackRow);
-    });
+              }
+            }),
+          )
+          .pipe(Effect.mapError(mapSql("reorderLayers.apply")));
+        return yield* viewOf(stackRow);
+      },
+    );
 
-    // -----------------------------------------------------------------------
-    // Lease
-    // -----------------------------------------------------------------------
-
-    const claimStack = Effect.fn("AdePublicationService.claimStack")(function* (
-      stackId: string,
-      holder: string,
-    ) {
-      const at = yield* nowIso;
-      const expiresAt = yield* leaseExpiryIso;
-      const rows = yield* sql<StackRow>`
-        UPDATE ade_publication_stacks
-        SET lease_holder = ${holder}, lease_expires_at = ${expiresAt}, updated_at = ${at}
-        WHERE publication_stack_id = ${stackId}
-          AND (lease_holder IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ${at})
-        RETURNING *
-      `.pipe(Effect.mapError(mapSql("claimStack")));
-      return rows[0] ?? null;
-    });
-
-    const releaseStack = Effect.fn("AdePublicationService.releaseStack")(function* (
-      stackId: string,
-      holder: string,
-    ) {
-      const at = yield* nowIso;
-      yield* sql`
-        UPDATE ade_publication_stacks
-        SET lease_holder = NULL, lease_expires_at = NULL, updated_at = ${at}
-        WHERE publication_stack_id = ${stackId} AND lease_holder = ${holder}
-      `.pipe(Effect.mapError(mapSql("releaseStack")));
-    });
+    const reorderLayers: AdePublicationServiceShape["reorderLayers"] = (input) =>
+      withStackLease(
+        input.stackId,
+        () => reorderLayersUnlocked(input),
+        Effect.gen(function* () {
+          const row = yield* requireStackRow(input.stackId);
+          // Reordering while a pass is mid-publish would push branches in an
+          // order the record no longer describes.
+          return yield* new AdePublicationStackStateError({
+            stackId: input.stackId,
+            expected: "building (not held by another worker)",
+            actual: `${row.status}, leased`,
+          });
+        }),
+      );
 
     // -----------------------------------------------------------------------
     // Layer persistence used by the pass
@@ -859,6 +999,8 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
       readonly stackUrl?: string | null;
       readonly nativeStackNumber?: number | null;
       readonly nativeStackNodeId?: string | null;
+      readonly mode?: PublicationStackMode;
+      readonly cleanedUpAt?: string;
     }) {
       const at = yield* nowIso;
       yield* sql
@@ -870,6 +1012,8 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
             yield* sql`
               UPDATE ade_publication_stacks SET
                 status = ${input.status ?? row.status},
+                mode = ${input.mode ?? row.mode},
+                cleaned_up_at = ${input.cleanedUpAt ?? row.cleaned_up_at},
                 stack_url = ${input.stackUrl === undefined ? row.stack_url : input.stackUrl},
                 native_stack_number = ${
                   input.nativeStackNumber === undefined
@@ -913,15 +1057,48 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
 
       for (const layer of input.layers) {
         const forBranch = pullRequests.filter((pr) => pr.headRefName === layer.bookmark_name);
-        // Prefer a merged PR (it carries the SHA reconciliation keys on), then
-        // an open one, then the newest closed one. A closed PR is real state —
-        // it is what a cascade closure looks like — so it is recorded, not
-        // ignored.
+        // A *terminal* PR only belongs to this layer if it closed over the SHA
+        // this layer actually published. Branch names get reused across stack
+        // generations, so adopting any merged PR that happens to sit on the name
+        // makes a fresh layer inherit an ancestor's merge: `landedShas` then
+        // confirms that ancient merge, the layer never publishes, and cleanup
+        // deletes the branch with the work still unshipped. `submitted_sha` is
+        // recorded by `publishRefs` for exactly this comparison.
+        const submitted = layer.submitted_sha;
+        const isOurs = (pr: PublishedPullRequest) =>
+          submitted !== null && pr.headSha !== null && pr.headSha === submitted;
+
         const adopted =
-          forBranch.find((pr) => pr.state === "merged") ??
-          forBranch.find((pr) => pr.state === "open") ??
-          [...forBranch].sort((a, b) => b.number - a.number)[0];
-        if (adopted === undefined) continue;
+          // Ours, and merged — the only merge SHA reconciliation may key on.
+          forBranch.find((entry) => entry.state === "merged" && isOurs(entry)) ??
+          // A live PR on our branch: our next push updates it, so its head need
+          // not match yet. This is the reopen/replacement case.
+          forBranch.find((entry) => entry.state === "open") ??
+          // Ours, cascade-closed — real state worth recording so the repair
+          // path can see it.
+          forBranch.find((entry) => entry.state === "closed" && isOurs(entry));
+
+        if (adopted === undefined) {
+          // Nothing on this branch is ours. If the record still points at a PR
+          // from a previous generation, drop it so the layer publishes fresh
+          // rather than sitting on someone else's merged work. A layer already
+          // proven merged is left alone: a flaky read must not un-land it.
+          if (layer.pr_number !== null && layer.status !== "merged") {
+            yield* Effect.logWarning("ADE publication released a stale pull-request binding", {
+              layerId: layer.publication_layer_id,
+              bookmarkName: layer.bookmark_name,
+              previousPrNumber: layer.pr_number,
+              submittedSha: submitted,
+            });
+            yield* updateLayer({
+              layerId: layer.publication_layer_id,
+              prNumber: null,
+              prState: null,
+              status: "pending",
+            });
+          }
+          continue;
+        }
 
         // Adopt-by-head-branch (invariant 2): the layer's PR is whatever GitHub
         // shows for its head branch right now. A replacement PR minted after a
@@ -1061,17 +1238,28 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
       );
       const allLanded = unmerged.length === 0;
 
-      // 4. Everything has landed: reconcile, then stop. Reconciliation folds the
-      //    merged content back into JJ and carries the unpublished tail along.
-      if (allLanded) {
-        if (stackRow.status === "reconciled") return { _tag: "idle", stackId } as const;
-        const bottom = layers[0];
-        const changeIds =
-          bottom === undefined
-            ? []
-            : yield* Effect.orDie(decodeStringArray(bottom.change_ids_json));
-        const bottomChangeId = changeIds[0];
-        if (bottomChangeId !== undefined) {
+      // 4. Reconcile whenever *anything* has landed — not only when everything
+      //    has. A partially merged stack (bottom squash-merged, top still open)
+      //    otherwise keeps re-pushing a tail rooted in pre-squash commits, so
+      //    the surviving PR shows the landed diff again forever. The rebase is
+      //    the same `--skip-emptied` operation in both cases: it proves the
+      //    landed layers empty, abandons them, and carries the tail onto the
+      //    base. It runs *before* refs are published so the push carries the
+      //    rebased commits.
+      if (landed.size > 0) {
+        // Start from the bottom-most layer that still resolves: on a later pass
+        // the original bottom has already been abandoned by `--skip-emptied`,
+        // and the surviving tail becomes the new starting point.
+        const bottomCandidates: Array<string> = [];
+        for (const layer of [layers[0], unmerged[0]]) {
+          if (layer === undefined) continue;
+          const changeIds = yield* Effect.orDie(decodeStringArray(layer.change_ids_json));
+          const bottom = changeIds[0];
+          if (bottom !== undefined && !bottomCandidates.includes(bottom)) {
+            bottomCandidates.push(bottom);
+          }
+        }
+        for (const bottomChangeId of bottomCandidates) {
           const refreshed = yield* repo.refreshStack({
             repoPath: project.repoPath,
             bottomChangeId,
@@ -1080,11 +1268,18 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
           });
           if (refreshed.conflictDetail !== null) {
             // Never force a reconciliation past a conflict: that is how a
-            // resolved-elsewhere merge silently reverts. Park it for a human.
-            yield* setStackFields({ stackId, status: "merged" });
+            // resolved-elsewhere merge silently reverts. Park it for a human,
+            // and do not publish a conflicted tail.
+            if (allLanded) yield* setStackFields({ stackId, status: "merged" });
             return { _tag: "blocked", stackId, detail: refreshed.conflictDetail } as const;
           }
+          if (refreshed.resolved) break;
         }
+      }
+
+      // 5. Everything has landed: the reconciliation above was the last act.
+      if (allLanded) {
+        if (stackRow.status === "reconciled") return { _tag: "idle", stackId } as const;
         yield* setStackFields({ stackId, status: "reconciled" });
         yield* Effect.log("ADE publication reconciled a merged stack", {
           stackId,
@@ -1093,22 +1288,85 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
         return { _tag: "advanced", stackId, status: "reconciled" } as const;
       }
 
-      // 5. Refs: place bookmarks from durable change ids and push them.
+      // 6. Refs: place bookmarks from durable change ids and push them. After a
+      //    partial-merge refresh these are the *rebased* commits, so the
+      //    surviving PRs show only their own diff.
       yield* publishRefs({ project, layers: unmerged });
 
       const bases = basesFor(stackRow, unmerged);
-      const status = stackRow.status as PublicationStackStatus;
+      // Reaching here with a settled status means the stack has layers that
+      // never shipped — the lease is supposed to make that impossible, but if
+      // it happens the stack is *live* again and must publish rather than
+      // report itself idle and strand the work.
+      const status: PublicationStackStatus =
+        stackRow.status === "reconciled" || stackRow.status === "merged"
+          ? "building"
+          : (stackRow.status as PublicationStackStatus);
+
+      /**
+       * Publish the chained-PR way: create what is missing, and retarget what
+       * exists onto its computed base. GitHub does not auto-retarget dependents.
+       */
+      const publishChained = Effect.fn("AdePublicationService.publishChained")(function* () {
+        for (const layer of unmerged) {
+          const base = bases.get(layer.publication_layer_id) ?? stackRow.base_bookmark;
+          if (layer.pr_number === null || layer.pr_state === "closed") {
+            // No live PR for this branch. `gh pr create` is not idempotent, so
+            // the *next* pass adopts whatever this created by head branch
+            // rather than trusting a number we might crash before writing.
+            yield* repo.createPullRequest({
+              repoPath: project.repoPath,
+              baseBranch: base,
+              bookmarkName: layer.bookmark_name,
+              title: `Publication layer ${layer.layer_order + 1} (${layer.bookmark_name})`,
+              body: `Layer ${layer.layer_order + 1} of ADE publication stack ${stackId}.`,
+            });
+            continue;
+          }
+          if (layer.pr_state === "open") {
+            yield* repo.retargetPullRequest({
+              repoPath: project.repoPath,
+              prNumber: layer.pr_number,
+              baseBranch: base,
+            });
+          }
+        }
+      });
+
+      /**
+       * Link the stack natively, or discover that this host has no stacked-PR
+       * surface at all and durably downgrade to the chained fallback.
+       *
+       * The downgrade is one-way and happens *in this pass*: without it a host
+       * lacking `gh stack` deferred every sweep forever, with no signal and no
+       * route to the fallback the spec requires (ADR §8.1).
+       */
+      const linkOrDowngrade = Effect.fn("AdePublicationService.linkOrDowngrade")(function* () {
+        const linked = yield* repo.linkStack({
+          repoPath: project.repoPath,
+          baseBranch: stackRow.base_bookmark,
+          bookmarkNames: unmerged.map((layer) => layer.bookmark_name),
+        });
+        if (linked._tag === "linked") return true;
+        yield* setStackFields({ stackId, mode: "chained" });
+        yield* Effect.logWarning(
+          "ADE publication downgraded to chained PRs: this host has no stacked-PR surface",
+          { stackId, detail: linked.detail },
+        );
+        return false;
+      });
 
       if (status === "building" || status === "review-frozen") {
         if (stackRow.mode === "native-stack") {
           // `gh stack link` creates whatever PRs are missing, correctly chained,
           // and is idempotent for PRs already in the stack. Running it every
           // pass is therefore the repair path as well as the create path.
-          yield* repo.linkStack({
-            repoPath: project.repoPath,
-            baseBranch: stackRow.base_bookmark,
-            bookmarkNames: unmerged.map((layer) => layer.bookmark_name),
-          });
+          const native = yield* linkOrDowngrade();
+          if (!native) {
+            // Same pass, chained route — the stack still gets published today.
+            yield* publishChained();
+            return { _tag: "advanced", stackId, status } as const;
+          }
           const stacks = yield* repo.readNativeStacks({ repoPath: project.repoPath });
           const prNumbers = new Set(
             layers
@@ -1129,29 +1387,7 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
             });
           }
         } else {
-          for (const layer of unmerged) {
-            const base = bases.get(layer.publication_layer_id) ?? stackRow.base_bookmark;
-            if (layer.pr_number === null || layer.pr_state === "closed") {
-              // No live PR for this branch. `gh pr create` is not idempotent, so
-              // the *next* pass adopts whatever this created by head branch
-              // rather than trusting a number we might crash before writing.
-              yield* repo.createPullRequest({
-                repoPath: project.repoPath,
-                baseBranch: base,
-                bookmarkName: layer.bookmark_name,
-                title: `Publication layer ${layer.layer_order + 1} (${layer.bookmark_name})`,
-                body: `Layer ${layer.layer_order + 1} of ADE publication stack ${stackId}.`,
-              });
-              continue;
-            }
-            if (layer.pr_state === "open") {
-              yield* repo.retargetPullRequest({
-                repoPath: project.repoPath,
-                prNumber: layer.pr_number,
-                baseBranch: base,
-              });
-            }
-          }
+          yield* publishChained();
         }
         return { _tag: "advanced", stackId, status } as const;
       }
@@ -1160,13 +1396,10 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
         if (stackRow.mode === "native-stack") {
           const stackNumber = stackRow.native_stack_number;
           if (stackNumber === null) {
-            // The stack was never linked; fall back to linking on this pass and
+            // The stack was never linked; link (or downgrade) on this pass and
             // merge on the next one rather than half-merging now.
-            yield* repo.linkStack({
-              repoPath: project.repoPath,
-              baseBranch: stackRow.base_bookmark,
-              bookmarkNames: unmerged.map((layer) => layer.bookmark_name),
-            });
+            const native = yield* linkOrDowngrade();
+            if (!native) yield* publishChained();
             return { _tag: "advanced", stackId, status } as const;
           }
           // `gh stack link` creates drafts and `gh stack merge` refuses drafts.
@@ -1207,7 +1440,21 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
       "AdePublicationService.processStack",
     )(function* (stackId: PublicationStackId) {
       const stackRow = yield* requireStackRow(stackId);
-      if (stackRow.status === "reconciled") return { _tag: "idle", stackId } as const;
+      if (stackRow.status === "reconciled") {
+        // Belt and braces behind the lease: if anything ever did land a layer on
+        // a reconciled stack, treat the stack as live again rather than
+        // silently never publishing that work.
+        const outstanding = yield* sql<{ readonly n: number }>`
+          SELECT COUNT(*) AS n FROM ade_publication_layers
+          WHERE publication_stack_id = ${stackRow.publication_stack_id}
+            AND status != 'merged'
+        `.pipe(Effect.mapError(mapSql("processStack.outstanding")));
+        if ((outstanding[0]?.n ?? 0) === 0) return { _tag: "idle", stackId } as const;
+        yield* Effect.logWarning("ADE publication found unpublished layers on a reconciled stack", {
+          stackId,
+          outstanding: outstanding[0]?.n ?? 0,
+        });
+      }
 
       // An unpublishable project is a configuration problem, not a pass
       // failure: report it and leave the stack exactly where it is.
@@ -1227,41 +1474,83 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
       const claimed = yield* claimStack(stackRow.publication_stack_id, holder);
       if (claimed === null) return { _tag: "busy", stackId } as const;
 
-      // Invariant 4 evidence. The port already forbids jj from snapshotting the
-      // working copy; fingerprinting `@` around the pass is what turns a
-      // regression from silent corruption into a logged error.
+      // Invariant 4 is enforced, not observed. The port already forbids jj from
+      // snapshotting the working copy; this is the check that makes a
+      // regression *fail the pass* instead of scrolling past in a log.
+      //
+      // A pass that cannot read the working copy before it starts has no
+      // baseline to compare against, so it must not run at all: proceeding
+      // would mean the one invariant with real corruption potential is
+      // unenforced for that pass.
       const before = yield* repo
         .workingCopyFingerprint({ repoPath: publishable.repoPath })
         .pipe(Effect.catchTag("AdePublicationRepoError", () => Effect.succeed(null)));
+      if (before === null) {
+        yield* releaseStack(stackRow.publication_stack_id, holder);
+        const detail =
+          "the operated working copy could not be read, so the no-writes invariant cannot be enforced";
+        yield* Effect.logWarning("ADE publication pass refused", { stackId, detail });
+        return { _tag: "deferred", stackId, detail } as const;
+      }
 
-      return yield* runPass({ stackRow: claimed, project: publishable }).pipe(
-        Effect.catchTag("AdePublicationRepoError", (error) =>
-          Effect.gen(function* () {
-            // Mechanical failure. The stack keeps its state and the next sweep
-            // re-runs the whole pass from remote truth (ADR §16.3).
-            yield* Effect.logWarning("ADE publication pass deferred", {
+      const verified = yield* Ref.make(false);
+      /**
+       * Returns a violation detail, or `null` when the working copy is intact.
+       * Runs at most once — the normal path consumes it so the outcome can be
+       * changed; the `ensuring` path catches the abnormal exits (defect,
+       * interruption) where there is no outcome left to change.
+       */
+      const verifyWorkingCopy = Effect.gen(function* () {
+        if (yield* Ref.get(verified)) return null;
+        yield* Ref.set(verified, true);
+        const after = yield* repo
+          .workingCopyFingerprint({ repoPath: publishable.repoPath })
+          .pipe(Effect.catchTag("AdePublicationRepoError", () => Effect.succeed(null)));
+        if (after === null) {
+          return "the operated working copy could not be re-read after the pass";
+        }
+        if (after.commitId !== before.commitId) {
+          return `the operated working copy moved from ${before.commitId} to ${after.commitId}`;
+        }
+        return null;
+      });
+
+      return yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const outcome = yield* runPass({ stackRow: claimed, project: publishable }).pipe(
+            Effect.catchTag("AdePublicationRepoError", (error) =>
+              Effect.gen(function* () {
+                // Mechanical failure. The stack keeps its state and the next
+                // sweep re-runs the whole pass from remote truth (ADR §16.3).
+                yield* Effect.logWarning("ADE publication pass deferred", {
+                  stackId,
+                  detail: error.message,
+                });
+                return { _tag: "deferred", stackId, detail: error.message } as const;
+              }),
+            ),
+          );
+          const violation = yield* verifyWorkingCopy;
+          if (violation === null) return outcome;
+          const error = new AdePublicationInvariantError({ stackId, detail: violation });
+          yield* Effect.logError("ADE publication violated the no-writes invariant", {
+            stackId,
+            detail: violation,
+          });
+          // Never `advanced`: a pass that touched the workspace did something
+          // nobody sanctioned, and reporting progress would hide it.
+          return { _tag: "deferred", stackId, detail: error.message } as const;
+        }),
+        Effect.gen(function* () {
+          const violation = yield* verifyWorkingCopy;
+          if (violation !== null) {
+            yield* Effect.logError("ADE publication violated the no-writes invariant", {
               stackId,
-              detail: error.message,
+              detail: violation,
             });
-            return { _tag: "deferred", stackId, detail: error.message } as const;
-          }),
-        ),
-        Effect.tap(() =>
-          Effect.gen(function* () {
-            if (before === null) return;
-            const after = yield* repo
-              .workingCopyFingerprint({ repoPath: publishable.repoPath })
-              .pipe(Effect.catchTag("AdePublicationRepoError", () => Effect.succeed(null)));
-            if (after !== null && after.commitId !== before.commitId) {
-              yield* Effect.logError("ADE publication moved the operated working copy", {
-                stackId,
-                before: before.commitId,
-                after: after.commitId,
-              });
-            }
-          }),
-        ),
-        Effect.ensuring(releaseStack(stackRow.publication_stack_id, holder).pipe(Effect.orDie)),
+          }
+          yield* releaseStack(stackRow.publication_stack_id, holder);
+        }).pipe(Effect.orDie),
       );
     });
 
@@ -1327,23 +1616,33 @@ export const make = (options: AdePublicationServiceOptions = {}) =>
         Effect.mapError(mapSql("cleanupStack.layers")),
       );
       const bookmarkNames = layers.map((layer) => layer.bookmark_name);
-      yield* repo
+      // Cleanup is all-or-nothing per pass, and its report must be *true*:
+      // claiming branches were deleted when the push failed leaks publication
+      // refs and — worse — releases their names for reuse by the next stack,
+      // which is how a fresh layer ends up adopting an ancestor's merged PR.
+      const deleted = yield* repo
         .deleteBookmarks({
           repoPath: project.repoPath,
           remote: project.repoRemote,
           bookmarkNames,
         })
         .pipe(
+          Effect.as(true),
           Effect.catchTag("AdePublicationRepoError", (error) =>
             Effect.as(
               Effect.logWarning("ADE publication cleanup deferred", {
                 stackId,
                 detail: error.message,
               }),
-              undefined,
+              false,
             ),
           ),
         );
+      if (!deleted) return { deletedBookmarks: [] };
+
+      const at = yield* nowIso;
+      // Only now does the stack stop owning its branch names.
+      yield* setStackFields({ stackId, cleanedUpAt: at });
       yield* Effect.log("ADE publication cleaned up a reconciled stack", {
         stackId,
         bookmarkNames,

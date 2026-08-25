@@ -45,6 +45,16 @@ interface StubState {
   nativeStackNumber: number | null;
   fetchFails: boolean;
   refreshConflict: string | null;
+  /** False when the host has no `gh stack` surface at all (D3 downgrade). */
+  stackSurfaceAvailable: boolean;
+  /** Change ids `--skip-emptied` has already abandoned. */
+  abandonedChangeIds: ReadonlyArray<string>;
+  refreshedFrom: Array<string>;
+  /** The working copy moves under the pass (D4 violation). */
+  workingCopyMovesOnFingerprint: boolean;
+  /** The working copy cannot be read at all (D4 no-baseline refusal). */
+  fingerprintFails: boolean;
+  deleteFails: boolean;
   pushedBookmarks: Array<ReadonlyArray<string>>;
   linkedBookmarks: Array<ReadonlyArray<string>>;
   deletedBookmarks: Array<ReadonlyArray<string>>;
@@ -62,6 +72,12 @@ const initialStubState = (): StubState => ({
   nativeStackNumber: null,
   fetchFails: false,
   refreshConflict: null,
+  stackSurfaceAvailable: true,
+  abandonedChangeIds: [],
+  refreshedFrom: [],
+  workingCopyMovesOnFingerprint: false,
+  fingerprintFails: false,
+  deleteFails: false,
   pushedBookmarks: [],
   linkedBookmarks: [],
   deletedBookmarks: [],
@@ -127,6 +143,13 @@ const makeStubPort = Effect.gen(function* () {
     deleteBookmarks: (input) =>
       Effect.gen(function* () {
         yield* record("deleteBookmarks");
+        const current = yield* Ref.get(state);
+        if (current.deleteFails) {
+          return yield* new AdePublicationRepoError({
+            operation: "deleteBookmarks",
+            detail: "stubbed remote deletion failure",
+          });
+        }
         yield* Ref.update(state, (value) => ({
           ...value,
           deletedBookmarks: [...value.deletedBookmarks, input.bookmarkNames],
@@ -139,6 +162,10 @@ const makeStubPort = Effect.gen(function* () {
           ...value,
           linkedBookmarks: [...value.linkedBookmarks, input.bookmarkNames],
         }));
+        const current = yield* Ref.get(state);
+        return current.stackSurfaceAvailable
+          ? ({ _tag: "linked" } as const)
+          : ({ _tag: "unsupported", detail: 'unknown command "stack" for "gh"' } as const);
       }),
     readNativeStacks: () =>
       Effect.gen(function* () {
@@ -196,11 +223,21 @@ const makeStubPort = Effect.gen(function* () {
         const current = yield* Ref.get(state);
         return input.shas.filter((sha) => current.landedShas.includes(sha));
       }),
-    refreshStack: () =>
+    refreshStack: (input) =>
       Effect.gen(function* () {
-        yield* record("refreshStack");
+        yield* record(`refreshStack:${input.bottomChangeId}`);
         const current = yield* Ref.get(state);
+        yield* Ref.update(state, (value) => ({
+          ...value,
+          refreshedFrom: [...value.refreshedFrom, input.bottomChangeId],
+        }));
+        // An abandoned change no longer resolves; the caller must fall through
+        // to the bottom of the surviving tail rather than treat it as done.
+        if (current.abandonedChangeIds.includes(input.bottomChangeId)) {
+          return { resolved: false, rebased: false, conflictDetail: null };
+        }
         return {
+          resolved: true,
           rebased: current.refreshConflict === null,
           conflictDetail: current.refreshConflict,
         };
@@ -209,6 +246,19 @@ const makeStubPort = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* record("workingCopyFingerprint");
         const current = yield* Ref.get(state);
+        if (current.fingerprintFails) {
+          return yield* new AdePublicationRepoError({
+            operation: "workingCopyFingerprint",
+            detail: "stubbed working-copy read failure",
+          });
+        }
+        // Move `@` under the pass: the post-check must catch it.
+        if (current.workingCopyMovesOnFingerprint) {
+          yield* Ref.update(state, (value) => ({
+            ...value,
+            workingCopyCommitId: `${value.workingCopyCommitId}-moved`,
+          }));
+        }
         return { commitId: current.workingCopyCommitId, changeId: "wcchange" };
       }),
   };
@@ -271,6 +321,13 @@ const pr = (
   mergeSha: null,
   ...overrides,
 });
+
+/**
+ * The SHA the stub port places for a change id. Adoption now compares a
+ * terminal PR's head against the SHA the layer actually published, so fixtures
+ * have to name the same value the publish step would have recorded.
+ */
+const shaFor = (changeId: string) => `sha-${changeId}`;
 
 /** Seed an integrated candidate so `adoptIntegratedCandidates` has something. */
 const seedIntegratedCandidate = (
@@ -580,6 +637,8 @@ scenario("a stack reconciles once its recorded merge SHAs are on the base", () =
             headRefName: layer.bookmarkName,
             number: 2,
             state: "merged",
+            // The merged PR closed over the SHA this layer actually published.
+            headSha: shaFor("zkmqwpxr"),
             mergeSha: "abc1234",
           }),
         ],
@@ -600,8 +659,7 @@ scenario("a stack reconciles once its recorded merge SHAs are on the base", () =
     yield* Ref.update(fixture.state, (value) => ({ ...value, landedShas: ["abc1234"] }));
     const outcome = yield* fixture.service.processStack(stack.id);
     assert.deepEqual(outcome, { _tag: "advanced", stackId: stack.id, status: "reconciled" });
-    const calls = (yield* Ref.get(fixture.state)).calls;
-    assert.include(calls, "refreshStack");
+    assert.deepEqual((yield* Ref.get(fixture.state)).refreshedFrom, ["zkmqwpxr"]);
   }),
 );
 
@@ -613,13 +671,23 @@ scenario("a conflicted reconciliation blocks instead of forcing", () =>
       stackId: stack.id,
       changeIds: ["zkmqwpxr"],
     });
+    // Publish first: a merged PR is only adopted when it closed over the SHA
+    // this layer actually submitted, so the layer has to have submitted one.
+    yield* fixture.service.processStack(stack.id);
+
     yield* Ref.update(fixture.state, (value) => ({
       ...value,
       landedShas: ["abc1234"],
       refreshConflict: "there are unresolved conflicts",
       pullRequests: {
         [layer.bookmarkName]: [
-          pr({ headRefName: layer.bookmarkName, number: 2, state: "merged", mergeSha: "abc1234" }),
+          pr({
+            headRefName: layer.bookmarkName,
+            number: 2,
+            state: "merged",
+            headSha: shaFor("zkmqwpxr"),
+            mergeSha: "abc1234",
+          }),
         ],
       },
     }));
@@ -675,6 +743,7 @@ scenario("chained mode chains each layer onto the previous unmerged one", () =>
             headRefName: bottom.bookmarkName,
             number: 1,
             state: "merged",
+            headSha: shaFor("zkmqwpxr"),
             mergeSha: "merge-bottom",
           }),
         ],
@@ -706,12 +775,19 @@ scenario("cleanup runs only after reconciliation, and only then deletes branches
     assert.strictEqual(refused._tag, "AdePublicationStackStateError");
     assert.deepEqual((yield* Ref.get(fixture.state)).deletedBookmarks, []);
 
+    yield* fixture.service.processStack(stack.id);
     yield* Ref.update(fixture.state, (value) => ({
       ...value,
       landedShas: ["abc1234"],
       pullRequests: {
         [layer.bookmarkName]: [
-          pr({ headRefName: layer.bookmarkName, number: 2, state: "merged", mergeSha: "abc1234" }),
+          pr({
+            headRefName: layer.bookmarkName,
+            number: 2,
+            state: "merged",
+            headSha: shaFor("zkmqwpxr"),
+            mergeSha: "abc1234",
+          }),
         ],
       },
     }));
@@ -838,5 +914,440 @@ scenario("layer ids are stable across passes so S12 can key its rendering", () =
       view?.layers.map((entry) => entry.id),
       [layer.id as PublicationLayerId],
     );
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// D1 — a partially merged stack must be reconciled before it is re-published
+// ---------------------------------------------------------------------------
+
+scenario("a partially merged stack rebases its surviving tail before publishing", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    const bottom = yield* fixture.service.appendLayer({
+      stackId: stack.id,
+      changeIds: ["zkmqwpxr"],
+    });
+    const top = yield* fixture.service.appendLayer({ stackId: stack.id, changeIds: ["ymvlrtsp"] });
+    yield* Ref.update(fixture.state, (value) => ({ ...value, nativeStackNumber: 7 }));
+    yield* fixture.service.processStack(stack.id);
+
+    // The bottom layer is squash-merged; the top PR stays open. Without a
+    // refresh the tail is still rooted in the pre-squash commit, so the top PR
+    // replays the landed diff forever.
+    yield* Ref.update(fixture.state, (value) => ({
+      ...value,
+      calls: [],
+      refreshedFrom: [],
+      pushedBookmarks: [],
+      landedShas: ["merge-bottom"],
+      pullRequests: {
+        [bottom.bookmarkName]: [
+          pr({
+            headRefName: bottom.bookmarkName,
+            number: 1,
+            state: "merged",
+            headSha: shaFor("zkmqwpxr"),
+            mergeSha: "merge-bottom",
+          }),
+        ],
+        [top.bookmarkName]: [pr({ headRefName: top.bookmarkName, number: 2 })],
+      },
+    }));
+
+    const outcome = yield* fixture.service.processStack(stack.id);
+    assert.strictEqual(outcome._tag, "advanced");
+    const state = yield* Ref.get(fixture.state);
+
+    // The refresh ran even though the stack is only *partly* merged...
+    assert.deepEqual(state.refreshedFrom, ["zkmqwpxr"]);
+    // ...and it ran before the surviving tail was pushed, so the push carries
+    // the rebased commits rather than the stale ones.
+    const refreshAt = state.calls.findIndex((call) => call.startsWith("refreshStack"));
+    const pushAt = state.calls.indexOf("pushBookmarks");
+    assert.isAtLeast(refreshAt, 0, "a partially merged stack must still reconcile");
+    assert.isBelow(refreshAt, pushAt, "the tail was published before it was rebased");
+
+    // Only the surviving layer is republished; the landed one is left alone.
+    assert.deepEqual(state.pushedBookmarks, [[top.bookmarkName]]);
+    const view = yield* fixture.service.getStack(stack.id);
+    assert.strictEqual(view?.stack.status, "building");
+    assert.strictEqual(view?.layers[0]?.status, "merged");
+    assert.notStrictEqual(view?.layers[1]?.status, "merged");
+  }),
+);
+
+scenario("the refresh falls through to the tail once the bottom has been abandoned", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({
+      projectId: fixture.projectId,
+      mode: "chained",
+    });
+    const bottom = yield* fixture.service.appendLayer({
+      stackId: stack.id,
+      changeIds: ["zkmqwpxr"],
+    });
+    const top = yield* fixture.service.appendLayer({ stackId: stack.id, changeIds: ["ymvlrtsp"] });
+    yield* fixture.service.processStack(stack.id);
+
+    // A later pass: `--skip-emptied` already abandoned the bottom change, so it
+    // no longer resolves. The refresh must retry from the surviving tail rather
+    // than conclude there is nothing to reconcile.
+    yield* Ref.update(fixture.state, (value) => ({
+      ...value,
+      refreshedFrom: [],
+      abandonedChangeIds: ["zkmqwpxr"],
+      landedShas: ["merge-bottom"],
+      pullRequests: {
+        [bottom.bookmarkName]: [
+          pr({
+            headRefName: bottom.bookmarkName,
+            number: 1,
+            state: "merged",
+            headSha: shaFor("zkmqwpxr"),
+            mergeSha: "merge-bottom",
+          }),
+        ],
+        [top.bookmarkName]: [pr({ headRefName: top.bookmarkName, number: 2 })],
+      },
+    }));
+    yield* fixture.service.processStack(stack.id);
+    assert.deepEqual((yield* Ref.get(fixture.state)).refreshedFrom, ["zkmqwpxr", "ymvlrtsp"]);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// D2 — stale adoption must not swallow unpublished work
+// ---------------------------------------------------------------------------
+
+scenario("a merged PR from a previous branch generation is not adopted", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    const layer = yield* fixture.service.appendLayer({
+      stackId: stack.id,
+      changeIds: ["zkmqwpxr"],
+    });
+
+    // GitHub already shows a merged PR on this branch name — but it merged some
+    // *earlier* generation's SHA, not anything this layer published. Adopting
+    // it would mark the layer landed, and the real work would never ship.
+    yield* Ref.update(fixture.state, (value) => ({
+      ...value,
+      landedShas: ["ancient-merge"],
+      pullRequests: {
+        [layer.bookmarkName]: [
+          pr({
+            headRefName: layer.bookmarkName,
+            number: 1,
+            state: "merged",
+            headSha: "sha-from-a-previous-generation",
+            mergeSha: "ancient-merge",
+          }),
+        ],
+      },
+    }));
+
+    yield* fixture.service.processStack(stack.id);
+    const view = yield* fixture.service.getStack(stack.id);
+    assert.isNull(
+      view?.layers[0]?.mergeSha ?? null,
+      "an ancestor's merge must not be recorded as this layer's",
+    );
+    assert.notStrictEqual(view?.layers[0]?.status, "merged");
+    assert.strictEqual(view?.stack.status, "building");
+    // The content was published rather than silently dropped.
+    assert.deepEqual((yield* Ref.get(fixture.state)).pushedBookmarks, [[layer.bookmarkName]]);
+    assert.strictEqual(view?.layers[0]?.submittedSha, shaFor("zkmqwpxr"));
+  }),
+);
+
+scenario("a genuine reopen-after-replacement still adopts", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    const layer = yield* fixture.service.appendLayer({
+      stackId: stack.id,
+      changeIds: ["zkmqwpxr"],
+    });
+    yield* fixture.service.processStack(stack.id);
+
+    // Our own PR cascade-closed at the SHA we published, and a replacement was
+    // minted for the same branch. Both are ours; the live one wins.
+    yield* Ref.update(fixture.state, (value) => ({
+      ...value,
+      pullRequests: {
+        [layer.bookmarkName]: [
+          pr({
+            headRefName: layer.bookmarkName,
+            number: 2,
+            state: "closed",
+            headSha: shaFor("zkmqwpxr"),
+          }),
+          pr({ headRefName: layer.bookmarkName, number: 4, state: "open" }),
+        ],
+      },
+    }));
+    yield* fixture.service.processStack(stack.id);
+    const view = yield* fixture.service.getStack(stack.id);
+    assert.strictEqual(view?.layers[0]?.prNumber, 4);
+    assert.strictEqual(view?.layers[0]?.prState, "open");
+  }),
+);
+
+scenario("a stale binding is released so the layer publishes fresh", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({
+      projectId: fixture.projectId,
+      mode: "chained",
+    });
+    const layer = yield* fixture.service.appendLayer({
+      stackId: stack.id,
+      changeIds: ["zkmqwpxr"],
+    });
+    yield* Ref.update(fixture.state, (value) => ({
+      ...value,
+      pullRequests: { [layer.bookmarkName]: [pr({ headRefName: layer.bookmarkName, number: 2 })] },
+    }));
+    yield* fixture.service.processStack(stack.id);
+    assert.strictEqual((yield* fixture.service.getStack(stack.id))?.layers[0]?.prNumber, 2);
+
+    // The PR vanishes from GitHub entirely (branch reused elsewhere, PR
+    // transferred). The record must let go rather than keep pointing at it.
+    yield* Ref.update(fixture.state, (value) => ({
+      ...value,
+      createdPrs: [],
+      pullRequests: {},
+    }));
+    yield* fixture.service.processStack(stack.id);
+    const view = yield* fixture.service.getStack(stack.id);
+    assert.isNull(view?.layers[0]?.prNumber ?? null);
+    assert.deepEqual((yield* Ref.get(fixture.state)).createdPrs, [
+      { bookmarkName: layer.bookmarkName, baseBranch: "main" },
+    ]);
+  }),
+);
+
+scenario("a branch name still owned by an uncleaned stack cannot be reused", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const first = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    const layer = yield* fixture.service.appendLayer({
+      stackId: first.stack.id,
+      changeIds: ["zkmqwpxr"],
+    });
+
+    // Settle the first stack so the project can open a second one.
+    yield* fixture.sql`
+      UPDATE ade_publication_stacks SET status = 'reconciled'
+      WHERE publication_stack_id = ${first.stack.id}
+    `;
+    const second = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    assert.notStrictEqual(second.stack.id, first.stack.id);
+
+    // The first stack's branches still exist on the forge, so its names are
+    // still taken. Reusing one is what lets a fresh layer adopt an ancestor's
+    // merged PR — refuse it at the source.
+    const refused = yield* fixture.service
+      .appendLayer({
+        stackId: second.stack.id,
+        changeIds: ["ymvlrtsp"],
+        bookmarkName: layer.bookmarkName,
+      })
+      .pipe(Effect.flip);
+    assert.strictEqual(refused._tag, "AdePublicationLayerInvalidError");
+
+    // After cleanup has actually removed them, the name is free again.
+    yield* fixture.service.cleanupStack(first.stack.id);
+    const reused = yield* fixture.service.appendLayer({
+      stackId: second.stack.id,
+      changeIds: ["ymvlrtsp"],
+      bookmarkName: layer.bookmarkName,
+    });
+    assert.strictEqual(reused.bookmarkName, layer.bookmarkName);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// D3 — the chained fallback has to be reachable
+// ---------------------------------------------------------------------------
+
+scenario("a host without the stacked-PR surface downgrades and publishes chained", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    assert.strictEqual(stack.mode, "native-stack");
+    const bottom = yield* fixture.service.appendLayer({
+      stackId: stack.id,
+      changeIds: ["zkmqwpxr"],
+    });
+    const top = yield* fixture.service.appendLayer({ stackId: stack.id, changeIds: ["ymvlrtsp"] });
+
+    yield* Ref.update(fixture.state, (value) => ({ ...value, stackSurfaceAvailable: false }));
+
+    // The very first pass must downgrade *and* publish. Deferring instead would
+    // loop every 60s forever with no signal and no route to the fallback.
+    const outcome = yield* fixture.service.processStack(stack.id);
+    assert.strictEqual(outcome._tag, "advanced");
+
+    const view = yield* fixture.service.getStack(stack.id);
+    assert.strictEqual(view?.stack.mode, "chained");
+    assert.deepEqual((yield* Ref.get(fixture.state)).createdPrs, [
+      { bookmarkName: bottom.bookmarkName, baseBranch: "main" },
+      { bookmarkName: top.bookmarkName, baseBranch: bottom.bookmarkName },
+    ]);
+
+    // The downgrade is durable and one-way: later passes go straight to chained.
+    yield* Ref.update(fixture.state, (value) => ({ ...value, calls: [] }));
+    yield* fixture.service.processStack(stack.id);
+    assert.notInclude((yield* Ref.get(fixture.state)).calls, "linkStack");
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// D4 — the zero-writes invariant is enforced, not merely observed
+// ---------------------------------------------------------------------------
+
+scenario("a pass that moves the operated working copy fails instead of advancing", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    yield* fixture.service.appendLayer({ stackId: stack.id, changeIds: ["zkmqwpxr"] });
+
+    // Something in the pass moved `@`. That is the one failure mode that
+    // silently corrupts work nobody asked us to touch.
+    yield* Ref.update(fixture.state, (value) => ({
+      ...value,
+      workingCopyMovesOnFingerprint: true,
+    }));
+
+    const outcome = yield* fixture.service.processStack(stack.id);
+    assert.strictEqual(outcome._tag, "deferred");
+    if (outcome._tag === "deferred") {
+      assert.include(outcome.detail, "no-writes invariant");
+    }
+  }),
+);
+
+scenario("a pass refuses to start when the working copy cannot be read", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    yield* fixture.service.appendLayer({ stackId: stack.id, changeIds: ["zkmqwpxr"] });
+
+    // With no baseline there is nothing to compare against, so the invariant
+    // would be unenforced for this pass. Refuse rather than run unguarded.
+    yield* Ref.update(fixture.state, (value) => ({ ...value, fingerprintFails: true }));
+
+    const outcome = yield* fixture.service.processStack(stack.id);
+    assert.strictEqual(outcome._tag, "deferred");
+    assert.deepEqual((yield* Ref.get(fixture.state)).calls, ["workingCopyFingerprint"]);
+    assert.deepEqual((yield* Ref.get(fixture.state)).pushedBookmarks, []);
+
+    // The lease was released, so a healthy host still makes progress.
+    yield* Ref.update(fixture.state, (value) => ({ ...value, fingerprintFails: false }));
+    assert.strictEqual((yield* fixture.service.processStack(stack.id))._tag, "advanced");
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Lease coverage over the whole mutating surface
+// ---------------------------------------------------------------------------
+
+scenario("adoption, reorder, and status changes all wait for the pass", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    yield* fixture.service.appendLayer({ stackId: stack.id, changeIds: ["zkmqwpxr"] });
+    yield* seedIntegratedCandidate(fixture, "cand-a", ["ymvlrtsp"]);
+
+    yield* fixture.sql`
+      UPDATE ade_publication_stacks
+      SET lease_holder = 'other-worker', lease_expires_at = '2999-01-01T00:00:00.000Z'
+      WHERE publication_stack_id = ${stack.id}
+    `;
+
+    // The sharp race: an adoption landing between the pass deciding
+    // "everything landed" and it writing `reconciled` would strand the layer.
+    assert.deepEqual(
+      (yield* fixture.service.adoptIntegratedCandidates(fixture.projectId)).appended,
+      [],
+    );
+    assert.strictEqual(
+      (yield* fixture.service.freezeStack(stack.id).pipe(Effect.flip))._tag,
+      "AdePublicationStackStateError",
+    );
+    assert.strictEqual(
+      (yield* fixture.service.requestMerge(stack.id).pipe(Effect.flip))._tag,
+      "AdePublicationStackStateError",
+    );
+    assert.strictEqual(
+      (yield* fixture.service
+        .appendLayer({ stackId: stack.id, changeIds: ["ymvlrtsp"] })
+        .pipe(Effect.flip))._tag,
+      "AdePublicationLayerInvalidError",
+    );
+    const view = yield* fixture.service.getStack(stack.id);
+    assert.strictEqual(view?.layers.length, 1);
+  }),
+);
+
+scenario("a reconciled stack carrying unpublished layers is not idle", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    yield* fixture.service.appendLayer({ stackId: stack.id, changeIds: ["zkmqwpxr"] });
+    yield* fixture.sql`
+      UPDATE ade_publication_stacks SET status = 'reconciled'
+      WHERE publication_stack_id = ${stack.id}
+    `;
+
+    // Belt and braces behind the lease: work stranded on a settled stack must
+    // still get published rather than sitting there forever.
+    const outcome = yield* fixture.service.processStack(stack.id);
+    assert.strictEqual(outcome._tag, "advanced");
+    assert.deepEqual((yield* Ref.get(fixture.state)).pushedBookmarks.length, 1);
+  }),
+);
+
+scenario("cleanup reports nothing deleted when the deletion failed", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    const { stack } = yield* fixture.service.openStack({ projectId: fixture.projectId });
+    const layer = yield* fixture.service.appendLayer({
+      stackId: stack.id,
+      changeIds: ["zkmqwpxr"],
+    });
+    yield* fixture.service.processStack(stack.id);
+    yield* Ref.update(fixture.state, (value) => ({
+      ...value,
+      landedShas: ["abc1234"],
+      deleteFails: true,
+      pullRequests: {
+        [layer.bookmarkName]: [
+          pr({
+            headRefName: layer.bookmarkName,
+            number: 2,
+            state: "merged",
+            headSha: shaFor("zkmqwpxr"),
+            mergeSha: "abc1234",
+          }),
+        ],
+      },
+    }));
+    yield* fixture.service.processStack(stack.id);
+
+    // A failed delete must not be reported as success: the names would be
+    // released for reuse while the branches are still on the forge.
+    const cleaned = yield* fixture.service.cleanupStack(stack.id);
+    assert.deepEqual(cleaned.deletedBookmarks, []);
+    const stillOwned = yield* fixture.sql<{ readonly cleaned_up_at: string | null }>`
+      SELECT cleaned_up_at FROM ade_publication_stacks
+      WHERE publication_stack_id = ${stack.id}
+    `;
+    assert.isNull(stillOwned[0]?.cleaned_up_at ?? null);
   }),
 );
