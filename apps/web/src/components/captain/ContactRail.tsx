@@ -20,12 +20,14 @@ import { NewBotPopover } from "./NewBotPopover";
 import type { CaptainShellRegions } from "./captainShell.logic";
 import { canToggleCaptainLeftRail, captainLeftRailToggleLabel } from "./captainShell.logic";
 import {
+  applyContactRailFilter,
   contactRailEmptyCopy,
   filterContactRows,
   getContactGroupSections,
   getContactRowViews,
   rosterNeedsFirstProject,
   shouldShowFirstProjectCtaInRail,
+  type ContactRailFilter,
 } from "./contactRail.logic";
 
 /**
@@ -50,10 +52,19 @@ export function ContactRail({
   activeBotId,
   regions,
   onToggleCollapsed,
+  filter = "all",
+  onFilterChange,
 }: {
   readonly activeBotId: BotId | null;
   readonly regions: CaptainShellRegions;
   readonly onToggleCollapsed: () => void;
+  /**
+   * The `?filter=` view (§5.4). This is what retires `/fleet/needs-you`: the
+   * inbox was a separate page listing the same bots the rail already lists, so
+   * it becomes a view *of* the rail rather than a destination away from it.
+   */
+  readonly filter?: ContactRailFilter;
+  readonly onFilterChange?: (next: ContactRailFilter) => void;
 }) {
   const environmentId = useAdeEnvironmentId();
   const roster = useAdeRoster();
@@ -65,12 +76,24 @@ export function ContactRail({
   // hide contacts the captain can no longer see they filtered.
   const effectiveQuery = collapsed ? "" : query;
   const sections = useMemo(
-    () => getContactGroupSections(filterContactRows(rows, effectiveQuery), roster.data?.groups),
-    [rows, effectiveQuery, roster.data?.groups],
+    () =>
+      getContactGroupSections(
+        applyContactRailFilter(filterContactRows(rows, effectiveQuery), filter),
+        roster.data?.groups,
+      ),
+    [rows, effectiveQuery, filter, roster.data?.groups],
+  );
+  const attentionCount = useMemo(
+    () => rows.filter((row) => row.attentionLine !== null).length,
+    [rows],
   );
 
   const loading = roster.data === null && roster.isPending;
-  const emptyCopy = contactRailEmptyCopy({ totalRows: rows.length, query: effectiveQuery });
+  const emptyCopy = contactRailEmptyCopy({
+    totalRows: rows.length,
+    query: effectiveQuery,
+    filter,
+  });
   // Below 900px the conversation region does not exist at the index route, so
   // `CaptainIndexPane` — and with it the only "create your first project" CTA —
   // never renders. The rail carries it instead. A captain with no project
@@ -132,19 +155,41 @@ export function ContactRail({
       </header>
 
       {collapsed ? null : (
-        <div className="relative shrink-0 pb-2">
-          <SearchIcon
-            aria-hidden
-            className="pointer-events-none absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-sidebar-muted-foreground"
-          />
-          <Input
-            aria-label="Search contacts"
-            className="ps-8"
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search bots"
-            type="search"
-            value={query}
-          />
+        <div className="flex shrink-0 flex-col gap-1.5 pb-2">
+          <div className="relative">
+            <SearchIcon
+              aria-hidden
+              className="pointer-events-none absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-sidebar-muted-foreground"
+            />
+            <Input
+              aria-label="Search contacts"
+              className="ps-8"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search bots"
+              type="search"
+              value={query}
+            />
+          </div>
+          {/*
+            Shown only when the view is reachable or already active: a captain
+            with a quiet fleet gets their contacts, not a permanent tab
+            advertising an inbox that is empty. Staying visible while `filter`
+            is "attention" is what keeps the way *back* from a deep link.
+          */}
+          {onFilterChange !== undefined && (attentionCount > 0 || filter === "attention") ? (
+            <div className="flex items-center gap-1" role="group" aria-label="Filter contacts">
+              <RailFilterChip
+                active={filter === "all"}
+                label="All"
+                onSelect={() => onFilterChange("all")}
+              />
+              <RailFilterChip
+                active={filter === "attention"}
+                label={attentionCount > 0 ? `Attention (${attentionCount})` : "Attention"}
+                onSelect={() => onFilterChange("attention")}
+              />
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -202,6 +247,35 @@ export function ContactRail({
  * narrows the window must not lose sight of a degraded kernel, and
  * `/fleet/projects/$adeProjectId` must not lose its only entry point.
  */
+/**
+ * One rail view toggle. A button rather than a link even though the state
+ * lives in the URL: the route owns the navigation, and giving the chip its own
+ * `to` would put the same decision in two places and make the pressed state a
+ * second source of truth about which view is showing.
+ */
+function RailFilterChip({
+  active,
+  label,
+  onSelect,
+}: {
+  readonly active: boolean;
+  readonly label: string;
+  readonly onSelect: () => void;
+}) {
+  return (
+    <Button
+      aria-pressed={active}
+      className={cn("h-6 rounded-full px-2.5 text-xs", active && "bg-sidebar-row-hover")}
+      onClick={onSelect}
+      size="sm"
+      type="button"
+      variant="ghost"
+    >
+      {label}
+    </Button>
+  );
+}
+
 function RailFooter({
   collapsed,
   projects,

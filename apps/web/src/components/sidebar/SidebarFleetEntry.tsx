@@ -21,9 +21,10 @@ import { getFleetEntryView } from "./SidebarFleetEntry.logic";
  *
  * `/fleet` is the captain messenger shell now (MESSENGER-PIVOT §5 step 1), so
  * this row opens the rail-and-conversation surface rather than the roster page
- * it replaced. The badge still points at the standalone needs-you route; M3
- * retires that route in favour of the rail's `?filter=attention`, and this is
- * the single call site that has to move when it does.
+ * it replaced. As of M3 the badge points at the rail's Attention view rather
+ * than the standalone needs-you route: the count and the list it summarises are
+ * now the same surface, so pressing the badge narrows the rail instead of
+ * navigating away from it.
  *
  * The badge is the inbox's entry point (spec §7 slice 5: badge, then list,
  * then detail), so it is its own control rather than decoration on the Fleet
@@ -49,7 +50,7 @@ export function SidebarFleetEntry() {
     if (isMobile) {
       setOpenMobile(false);
     }
-    void navigate({ to: "/fleet/needs-you" });
+    void navigate({ to: "/fleet", search: { filter: "attention" } });
   }, [isMobile, navigate, setOpenMobile]);
 
   return (

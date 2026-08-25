@@ -12,6 +12,7 @@ import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar"
 import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
 import { ContactRail } from "./ContactRail";
+import type { ContactRailFilter } from "./contactRail.logic";
 import {
   CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY,
   CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY,
@@ -50,12 +51,22 @@ export function CaptainShell({
   children,
   conversationHeaderActions,
   rightRail,
+  railFilter,
+  onRailFilterChange,
 }: {
   /** Null at the `/fleet` index, set at `/fleet/$botId`. */
   readonly activeBotId: BotId | null;
   readonly children: ReactNode;
   readonly conversationHeaderActions?: ReactNode;
   readonly rightRail?: ReactNode;
+  /**
+   * The rail's `?filter=` view, owned by the route that has the search params
+   * (M3). Passing both halves down rather than reading the URL in the rail
+   * keeps the rail a pure view of the roster, and keeps `/fleet/$botId` — which
+   * has no filter of its own — from having to invent one.
+   */
+  readonly railFilter?: ContactRailFilter;
+  readonly onRailFilterChange?: (next: ContactRailFilter) => void;
 }) {
   const mode = useCaptainLayoutMode();
   const leftRailCollapsed = useUiStateStore((state) => state.captainLeftRailCollapsed);
@@ -139,6 +150,8 @@ export function CaptainShell({
             activeBotId={activeBotId}
             onToggleCollapsed={toggleLeftRail}
             regions={regions}
+            {...(railFilter === undefined ? {} : { filter: railFilter })}
+            {...(onRailFilterChange === undefined ? {} : { onFilterChange: onRailFilterChange })}
           />
         )}
 

@@ -31,6 +31,7 @@ import {
   shouldWarnToolsMissing,
 } from "./BotChatPage.logic";
 import { NeedsYouInline } from "./NeedsYouInline";
+import { useBotChatRead } from "../captain/useBotChatRead";
 
 /**
  * Firstmate/bot chat (spec §7 slice 1). The conversation itself is the
@@ -132,6 +133,17 @@ export function BotChatPage({
           elapsedMs: syncElapsedMs,
         });
   const chatReady = threadRef !== null && syncOutcome.kind === "ready";
+
+  // Clearing this contact's unread dot (M3). Gated on `chatReady` rather than
+  // on the route: a captain staring at a spinner has not read anything, and
+  // marking on navigation alone would clear a count for a conversation that
+  // never rendered.
+  useBotChatRead({
+    botId,
+    enabled: chatReady,
+    lastMessageAt:
+      roster.data?.entries.find((entry) => entry.bot.id === botId)?.lastMessage?.at ?? null,
+  });
 
   const retrySync = () => {
     // Waiting must have an exit. Drop back to the welcome state so the captain

@@ -11,6 +11,15 @@
  * trailing "Ungrouped" section stays implicit — it is the absence of a group,
  * not a row the server stores — which is what keeps deleting a group a pure
  * ungrouping rather than something that could reach a bot.
+ *
+ * M3 (#196) adds liveness: what each contact last said, how much of it the
+ * captain has not read, and what is waiting on a decision. Note what is *not*
+ * here — preview precedence and the wording of the amber line are settled on
+ * the server (`ade/adeRosterLiveness.ts`), so a mobile rail and this one cannot
+ * disagree about which message a row is quoting. What is left here is the last
+ * term of that precedence (no message to quote → describe the bot), the
+ * captain's "You: " prefix, and the `?filter=attention` view that retires the
+ * standalone needs-you inbox.
  */
 import type {
   AdeBotGroup,
@@ -23,6 +32,7 @@ import type {
 } from "@shuv2code/contracts";
 
 import { structuralRoleLabel } from "../../state/ade.logic";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { resolveBotAvatarColor } from "./botIdentity.logic";
 
 /** The implicit trailing bucket every ungrouped bot falls into (§2). */
@@ -59,8 +69,33 @@ export interface ContactRowView {
   readonly isOnline: boolean;
   /** What the presence dot announces, since the dot itself is decoration. */
   readonly presenceLabel: string;
-  /** The dim one-line under the name until M3 lands real message previews. */
+  /**
+   * The dim one-line under the name: the tail of the conversation when there
+   * is one, the bot's home and open assignments when there is not.
+   */
   readonly secondaryLine: string;
+  /**
+   * Whether `secondaryLine` is quoting the conversation. The row renders a
+   * quoted line differently from a description of the bot — the first is what
+   * happened, the second is what the bot *is* — and only a quote gets the
+   * "You: " prefix.
+   */
+  readonly secondaryKind: "preview" | "description";
+  /**
+   * The amber line, when something is waiting on the captain. Present *as well
+   * as* `secondaryLine` rather than instead of it, so the row can decide: the
+   * rail swaps the preview for this (§2), but a mobile row or a tooltip may
+   * want both without re-deriving either.
+   */
+  readonly attentionLine: string | null;
+  /** Right-aligned relative time for the tail message; null when there is none. */
+  readonly timeLabel: string | null;
+  /** Machine-readable instant behind `timeLabel`, for `<time dateTime>`. */
+  readonly timeIso: string | null;
+  /** Bot messages the captain has not seen. Zero renders no dot. */
+  readonly unreadCount: number;
+  /** What the unread dot announces, since a dot alone announces nothing. */
+  readonly unreadLabel: string | null;
   readonly avatar: BotAvatarView;
   /** Captain-defined group membership; null is the implicit Ungrouped bucket. */
   readonly groupId: AdeBotGroupId | null;
@@ -155,9 +190,66 @@ export function openAssignmentLabel(openAssignmentCount: number): string | null 
     : `${openAssignmentCount} open assignments`;
 }
 
+/**
+ * The unread badge's ceiling, mirroring the server's own cap. The server never
+ * reports more than 99, so this is a rendering rule rather than a second
+ * truncation: it decides how "99" is *printed* when it is really "at least 99".
+ */
+export const UNREAD_DISPLAY_CAP = 99;
+
+export function unreadBadgeLabel(count: number): string {
+  return count >= UNREAD_DISPLAY_CAP ? `${UNREAD_DISPLAY_CAP}+` : String(count);
+}
+
+/**
+ * What the unread dot says out loud. The dot itself is decoration — a captain
+ * using a screen reader gets a count and a subject, not a coloured circle.
+ */
+export function unreadAnnouncement(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1 ? "1 unread message" : `${unreadBadgeLabel(count)} unread messages`;
+}
+
+/**
+ * The row's dim line, and what kind of thing it is.
+ *
+ * Preview precedence (§4) is settled on the server — it decides *which*
+ * message, and withholds one entirely for a bot mid-secure-request. What is
+ * left here is the last term of that precedence: with no message to quote, the
+ * row falls back to describing the bot rather than printing an empty line. A
+ * blank second line under a name reads as a rendering bug, not as silence.
+ *
+ * The captain's own last message is prefixed rather than attributed in full.
+ * "You: shipped it" is how every messenger says this, and the alternative —
+ * printing the captain's own name — spends the row's scarcest resource
+ * (horizontal space at 380px) on the one participant who is never in doubt.
+ */
+export function resolveSecondaryLine(input: {
+  readonly lastMessage: AdeRosterEntry["lastMessage"];
+  readonly fallback: string;
+}): { readonly line: string; readonly kind: "preview" | "description" } {
+  // Nullish rather than `=== null`: the contract defaults this on decode, but
+  // the rail also renders payloads that never went through a decoder (tests,
+  // and any future in-memory roster), and an absent field must read the same
+  // as an explicitly empty one rather than throwing on `.preview`.
+  const message = input.lastMessage ?? null;
+  if (message === null || message.preview.length === 0) {
+    return { line: input.fallback, kind: "description" };
+  }
+  return {
+    line: message.author === "captain" ? `You: ${message.preview}` : message.preview,
+    kind: "preview",
+  };
+}
+
 export function getContactRowView(entry: AdeRosterEntry): ContactRowView {
   const projectLabel = entry.projectName ?? "Fleet-wide";
   const assignments = openAssignmentLabel(entry.openAssignmentCount);
+  const description = assignments === null ? projectLabel : `${projectLabel} · ${assignments}`;
+  const secondary = resolveSecondaryLine({
+    lastMessage: entry.lastMessage,
+    fallback: description,
+  });
   return {
     botId: entry.bot.id,
     name: entry.bot.name,
@@ -169,7 +261,13 @@ export function getContactRowView(entry: AdeRosterEntry): ContactRowView {
     chatLabel: entry.hasActivePrimarySession ? "Resume chat" : "Chat",
     isOnline: entry.hasActivePrimarySession,
     presenceLabel: entry.hasActivePrimarySession ? "Session active" : "No session",
-    secondaryLine: assignments === null ? projectLabel : `${projectLabel} · ${assignments}`,
+    secondaryLine: secondary.line,
+    secondaryKind: secondary.kind,
+    attentionLine: entry.attention?.line ?? null,
+    timeLabel: entry.lastMessage == null ? null : formatRelativeTimeLabel(entry.lastMessage.at),
+    timeIso: entry.lastMessage?.at ?? null,
+    unreadCount: entry.unreadCount ?? 0,
+    unreadLabel: unreadAnnouncement(entry.unreadCount ?? 0),
     avatar: getBotAvatarView({
       botId: entry.bot.id,
       name: entry.bot.name,
@@ -184,10 +282,16 @@ export function getContactRowViews(roster: AdeRoster | null): ReadonlyArray<Cont
 }
 
 /**
- * Rail search. Matches the bot's name and its role tag, case- and
- * accent-insensitively, so "coder" finds Coder whatever the captain renamed it
- * to. An all-whitespace query is not a filter — it returns the roster intact
- * rather than nothing.
+ * Rail search. Matches the bot's name, its role tag, and — since M3 — the last
+ * message the row is quoting (§2), case- and accent-insensitively, so "coder"
+ * finds Coder whatever the captain renamed it to and "deploy" finds whichever
+ * bot just mentioned one. An all-whitespace query is not a filter — it returns
+ * the roster intact rather than nothing.
+ *
+ * Only a *preview* line is searchable. The description fallback restates the
+ * project name and assignment count, which are not things a captain searches a
+ * contact list for, and matching them would make "shuv2code" return the whole
+ * fleet.
  */
 export function filterContactRows(
   rows: ReadonlyArray<ContactRowView>,
@@ -200,8 +304,38 @@ export function filterContactRows(
   return rows.filter(
     (row) =>
       normalizeSearchText(row.name).includes(needle) ||
-      normalizeSearchText(row.roleTag).includes(needle),
+      normalizeSearchText(row.roleTag).includes(needle) ||
+      (row.secondaryKind === "preview" && normalizeSearchText(row.secondaryLine).includes(needle)),
   );
+}
+
+/** The rail's two views (§5 step 4): everything, or only what needs the captain. */
+export const CONTACT_RAIL_FILTERS = ["all", "attention"] as const;
+export type ContactRailFilter = (typeof CONTACT_RAIL_FILTERS)[number];
+
+/**
+ * Narrow an unvalidated `?filter=` to one the rail understands.
+ *
+ * Anything else is `all`, not an error: the needs-you route redirects into this
+ * parameter, and a deep link that arrives with a typo should show the captain
+ * their fleet rather than an empty page about a query string.
+ */
+export function parseContactRailFilter(raw: unknown): ContactRailFilter {
+  return raw === "attention" ? "attention" : "all";
+}
+
+/**
+ * The Attention view. A row qualifies on its server-decided attention line, not
+ * on its unread count: unread is "you have not looked", attention is "something
+ * is waiting on a decision", and folding the two would bury one approval under
+ * nine chatty bots — which is the exact failure the needs-you inbox existed to
+ * prevent, and which this filter is inheriting the job of preventing.
+ */
+export function applyContactRailFilter(
+  rows: ReadonlyArray<ContactRowView>,
+  filter: ContactRailFilter,
+): ReadonlyArray<ContactRowView> {
+  return filter === "attention" ? rows.filter((row) => row.attentionLine !== null) : rows;
 }
 
 function normalizeSearchText(value: string): string {
@@ -289,7 +423,16 @@ export function templateOptionLabel(template: AdeBotTemplateSummary): string {
 export function contactRailEmptyCopy(input: {
   readonly totalRows: number;
   readonly query: string;
+  readonly filter?: ContactRailFilter;
 }): { readonly title: string; readonly description: string } {
+  // An empty Attention view is the good outcome, and the one the retired
+  // needs-you inbox used to report. It must never read as "no bots".
+  if (input.filter === "attention" && normalizeSearchText(input.query).length === 0) {
+    return {
+      title: "Nothing needs you",
+      description: "No bot is waiting on a decision right now.",
+    };
+  }
   if (input.totalRows > 0) {
     return {
       title: "No matches",
