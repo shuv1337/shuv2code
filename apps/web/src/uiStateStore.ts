@@ -27,6 +27,8 @@ export interface PersistedUiState {
   defaultAdvertisedEndpointKey?: string | null;
   threadChangedFilesExpansionVersion?: typeof THREAD_CHANGED_FILES_EXPANSION_VERSION;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
+  captainLeftRailCollapsed?: boolean;
+  captainRightRailCollapsed?: boolean;
 }
 
 export interface UiProjectState {
@@ -43,7 +45,22 @@ export interface UiEndpointState {
   defaultAdvertisedEndpointKey: string | null;
 }
 
-export interface UiState extends UiProjectState, UiThreadState, UiEndpointState {}
+/** Which captain-shell rail a collapse toggle addresses. */
+export type CaptainRail = "left" | "right";
+
+/**
+ * Captain shell rail collapse, persisted so the messenger reopens with the
+ * geometry the captain left it in. The *resolved* geometry is a function of
+ * this preference and the viewport (see `captainShell.logic.ts`); this store
+ * only remembers the preference.
+ */
+export interface UiCaptainShellState {
+  captainLeftRailCollapsed: boolean;
+  captainRightRailCollapsed: boolean;
+}
+
+export interface UiState
+  extends UiProjectState, UiThreadState, UiEndpointState, UiCaptainShellState {}
 
 const initialState: UiState = {
   projectExpandedById: {},
@@ -51,6 +68,8 @@ const initialState: UiState = {
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
   defaultAdvertisedEndpointKey: null,
+  captainLeftRailCollapsed: false,
+  captainRightRailCollapsed: false,
 };
 
 const LEGACY_PROJECT_CWD_PREFERENCE_PREFIX = "legacy-project-cwd:";
@@ -135,6 +154,8 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
       parsed.defaultAdvertisedEndpointKey.length > 0
         ? parsed.defaultAdvertisedEndpointKey
         : null,
+    captainLeftRailCollapsed: parsed.captainLeftRailCollapsed === true,
+    captainRightRailCollapsed: parsed.captainRightRailCollapsed === true,
   };
 }
 
@@ -207,6 +228,8 @@ export function persistState(state: UiState): void {
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpansionVersion: THREAD_CHANGED_FILES_EXPANSION_VERSION,
         threadChangedFilesExpandedById: state.threadChangedFilesExpandedById,
+        captainLeftRailCollapsed: state.captainLeftRailCollapsed,
+        captainRightRailCollapsed: state.captainRightRailCollapsed,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -304,6 +327,18 @@ export function setDefaultAdvertisedEndpointKey(state: UiState, key: string | nu
   };
 }
 
+export function setCaptainRailCollapsed(
+  state: UiState,
+  rail: CaptainRail,
+  collapsed: boolean,
+): UiState {
+  const key = rail === "left" ? "captainLeftRailCollapsed" : "captainRightRailCollapsed";
+  if (state[key] === collapsed) {
+    return state;
+  }
+  return { ...state, [key]: collapsed };
+}
+
 export function resolveProjectExpanded(
   projectExpandedById: Readonly<Record<string, boolean>>,
   preferenceKeys: readonly string[],
@@ -386,6 +421,7 @@ interface UiStateStore extends UiState {
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
+  setCaptainRailCollapsed: (rail: CaptainRail, collapsed: boolean) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
   reorderProjects: (
     currentProjectOrder: readonly string[],
@@ -404,6 +440,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
+  setCaptainRailCollapsed: (rail, collapsed) =>
+    set((state) => setCaptainRailCollapsed(state, rail, collapsed)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),
   reorderProjects: (currentProjectOrder, draggedProjectIds, targetProjectIds) =>

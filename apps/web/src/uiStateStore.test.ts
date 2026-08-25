@@ -11,6 +11,7 @@ import {
   persistState,
   reorderProjects,
   resolveProjectExpanded,
+  setCaptainRailCollapsed,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
@@ -24,6 +25,8 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     defaultAdvertisedEndpointKey: null,
+    captainLeftRailCollapsed: false,
+    captainRightRailCollapsed: false,
     ...overrides,
   };
 }
@@ -144,6 +147,22 @@ describe("uiStateStore pure functions", () => {
       defaultAdvertisedEndpointKey: null,
     });
   });
+
+  it("remembers each captain rail's collapse independently and idempotently", () => {
+    const base = makeUiState();
+    const leftCollapsed = setCaptainRailCollapsed(base, "left", true);
+
+    expect(leftCollapsed.captainLeftRailCollapsed).toBe(true);
+    expect(leftCollapsed.captainRightRailCollapsed).toBe(false);
+    // A no-op toggle must not churn the store — it feeds a debounced write.
+    expect(setCaptainRailCollapsed(leftCollapsed, "left", true)).toBe(leftCollapsed);
+
+    const bothCollapsed = setCaptainRailCollapsed(leftCollapsed, "right", true);
+    expect(bothCollapsed.captainRightRailCollapsed).toBe(true);
+    expect(setCaptainRailCollapsed(bothCollapsed, "left", false).captainRightRailCollapsed).toBe(
+      true,
+    );
+  });
 });
 
 describe("parsePersistedState", () => {
@@ -183,6 +202,8 @@ describe("parsePersistedState", () => {
           "turn-2": true,
         },
       },
+      captainLeftRailCollapsed: false,
+      captainRightRailCollapsed: false,
     });
   });
 
@@ -303,6 +324,8 @@ describe("uiStateStore persistence", () => {
           "turn-2": true,
         },
       },
+      captainLeftRailCollapsed: false,
+      captainRightRailCollapsed: false,
     });
     expect(parsePersistedState(persisted)).toEqual({
       ...state,
