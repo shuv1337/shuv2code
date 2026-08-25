@@ -72,6 +72,26 @@ describe("routinesEmptyState", () => {
     expect(state?.detail).not.toContain("this bot's project");
   });
 
+  it("names the project in every reason that has one to name", () => {
+    // Pinned per reason rather than by a shared substring rewrite: the naming
+    // used to be a `String.replace` of one sentence into another, which fails
+    // *silently* the moment either sentence is reworded.
+    const noWorkspace = routinesEmptyState(
+      context({ reason: "no-workspace-project", projectName: "Ledger" as never }),
+    );
+    expect(noWorkspace?.detail).toContain('"Ledger"');
+    expect(noWorkspace?.detail).not.toContain("its workspace,");
+  });
+
+  it("falls back to a sayable sentence when the project has no name", () => {
+    for (const reason of ["no-repo-binding", "no-workspace-project"] as const) {
+      const state = routinesEmptyState(context({ reason, projectName: null }));
+      expect(state?.detail).not.toContain('""');
+      expect(state?.detail).not.toContain("null");
+      expect(state?.detail.length ?? 0).toBeGreaterThan(20);
+    }
+  });
+
   it("does not name a project in the state that means there is no project", () => {
     // `projectName` can be non-null here only as a leftover; naming it would
     // claim a project the captain cannot open.
@@ -84,12 +104,24 @@ describe("routinesEmptyState", () => {
 
 describe("canCreateRoutine", () => {
   it("requires a resolved workspace project", () => {
-    expect(canCreateRoutine(null)).toBe(false);
-    expect(canCreateRoutine(context({ reason: "no-repo-binding" }))).toBe(false);
+    expect(canCreateRoutine(null, true)).toBe(false);
+    expect(canCreateRoutine(context({ reason: "no-repo-binding" }), true)).toBe(false);
     // Defensive: `ready` without an id would be a server bug, and offering
     // Create against it would fail at submit instead of at render.
-    expect(canCreateRoutine(context({ reason: "ready", projectId: null }))).toBe(false);
-    expect(canCreateRoutine(context({ reason: "ready", projectId: "p" as never }))).toBe(true);
+    expect(canCreateRoutine(context({ reason: "ready", projectId: null }), true)).toBe(false);
+    expect(canCreateRoutine(context({ reason: "ready", projectId: "p" as never }), true)).toBe(
+      true,
+    );
+  });
+
+  it("also requires the shell's project, which the form needs and the RPC does not answer", () => {
+    // D4: the button asked the RPC, the form asked the orchestration shell.
+    // When they disagreed the button enabled and rendered nothing at all — a
+    // pressed control with no visible consequence, which reads as a broken app
+    // rather than as a wait.
+    expect(canCreateRoutine(context({ reason: "ready", projectId: "p" as never }), false)).toBe(
+      false,
+    );
   });
 });
 

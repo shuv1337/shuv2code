@@ -24,43 +24,79 @@ export interface RoutinesEmptyState {
  * the server's reason rather than inferred from a null id.
  *
  * Each sentence names the remedy that actually exists. That is the whole point
- * of `AdeBotRoutineContextReason` carrying three states instead of one: the
- * fix for "no repository" is not the fix for "no project", and telling a
- * captain to bind a repo to a project that does not exist is the failure #212
- * records on the chat surface.
+ * of `AdeBotRoutineContextReason` carrying three states instead of one: the fix
+ * for "no repository" is not the fix for "no project", and telling a captain to
+ * bind a repo to a project that does not exist is the failure #212 records on
+ * the chat surface.
+ *
+ * Each reason writes both of its sentences in full — named project and
+ * unnamed — rather than patching one string into the other. An earlier cut
+ * substituted `"this bot's project"` by `String.replace`, which is a formatter
+ * that fails silently: reword the base sentence and the project's name simply
+ * stops appearing, with no test failing and nothing to notice in review.
  */
-const EMPTY_STATE: Record<Exclude<AdeBotRoutineContextReason, "ready">, RoutinesEmptyState> = {
-  "no-project": {
-    headline: "No project yet",
-    detail: "Routines run inside a project. Create one, then this bot can hold routines.",
-  },
-  "no-repo-binding": {
-    headline: "No repository bound",
-    detail: "Add a repository path to this bot's project so its routines have somewhere to run.",
-  },
-  "no-workspace-project": {
-    headline: "Workspace not opened yet",
-    detail:
-      "Send this bot a message once. That opens its workspace, and routines can be added after.",
-  },
-};
+function emptyStateFor(
+  reason: Exclude<AdeBotRoutineContextReason, "ready">,
+  projectName: string | null,
+): RoutinesEmptyState {
+  switch (reason) {
+    case "no-project":
+      return {
+        headline: "No project yet",
+        detail: "Routines run inside a project. Create one, then this bot can hold routines.",
+      };
+    case "no-repo-binding":
+      return {
+        headline: "No repository bound",
+        detail:
+          projectName === null
+            ? "Add a repository path to this bot's project so its routines have somewhere to run."
+            : `Add a repository path to "${projectName}" so its routines have somewhere to run.`,
+      };
+    case "no-workspace-project":
+      return {
+        headline: "Workspace not opened yet",
+        detail:
+          projectName === null
+            ? "Send this bot a message once. That opens its workspace, and routines can be added after."
+            : `Send this bot a message once. That opens "${projectName}", and routines can be added after.`,
+      };
+  }
+}
 
 export function routinesEmptyState(context: AdeBotRoutineContext): RoutinesEmptyState | null {
   if (context.reason === "ready") return null;
-  const base = EMPTY_STATE[context.reason];
-  if (context.projectName === null || context.reason === "no-project") return base;
-  // Naming the project turns "add a repository path" from an instruction into
-  // an address. It is omitted for `no-project` precisely because there is no
-  // project to name.
-  return {
-    headline: base.headline,
-    detail: base.detail.replace("this bot's project", `"${context.projectName}"`),
-  };
+  // `no-project` never names a project, even when a stale name is present:
+  // there is no project for the captain to open.
+  const projectName = context.reason === "no-project" ? null : context.projectName;
+  return emptyStateFor(context.reason, projectName);
 }
 
-/** Whether the panel may create anything at all. */
-export function canCreateRoutine(context: AdeBotRoutineContext | null): boolean {
-  return context !== null && context.reason === "ready" && context.projectId !== null;
+/**
+ * While the rail is waiting on the orchestration shell rather than on the
+ * captain. Distinct from an empty state: nothing is wrong and there is nothing
+ * to fix, so it must not offer a remedy.
+ */
+export const ROUTINES_PENDING_PROJECT: RoutinesEmptyState = {
+  headline: "Opening the project",
+  detail: "Loading this bot's project. Routines appear once it is available.",
+};
+
+/**
+ * Whether the panel may create anything at all.
+ *
+ * `hasProject` is not redundant with the server's `reason`. The RPC answers
+ * "which workspace project owns this bot's routines"; the *form* needs the
+ * resolved `EnvironmentProject` from the orchestration shell, which arrives
+ * separately and can lag. Gating the button on one and the form on the other is
+ * what let a captain press Create Routine and get nothing at all — no form, no
+ * explanation (D4). One predicate now answers for both.
+ */
+export function canCreateRoutine(
+  context: AdeBotRoutineContext | null,
+  hasProject: boolean,
+): boolean {
+  return context !== null && context.reason === "ready" && context.projectId !== null && hasProject;
 }
 
 export interface RoutineRowView {

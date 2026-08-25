@@ -23,6 +23,22 @@ export interface UseResizableWidthOptions {
    *   - "right" → panel grows rightward (left-anchored panels)
    */
   readonly edge: "left" | "right";
+  /**
+   * An additional, *live* bound the caller imposes on top of `minWidth`/
+   * `maxWidth` — typically one derived from the current viewport.
+   *
+   * This exists because a caller that clamped the returned `width` itself would
+   * silently desynchronise the hook: the panel would render at the clamped
+   * width while the hook kept dragging from the stored one, so the first part
+   * of every drag would move the pointer without moving the panel (a dead
+   * zone), and the panel would jump the moment the cursor crossed back into
+   * range. Folding the caller's clamp in here keeps one number — the rendered
+   * width — as the drag origin, the persisted value, and what the user sees.
+   *
+   * Must be referentially stable across renders that do not change the bound
+   * (wrap it in `useCallback`), or the drag callbacks are rebuilt mid-gesture.
+   */
+  readonly clampWidth?: (value: number) => number;
 }
 
 export interface ResizableWidthHandlers {
@@ -30,6 +46,29 @@ export interface ResizableWidthHandlers {
   readonly onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
+}
+
+/**
+ * The single width function the hook uses everywhere: to render, to seed a
+ * drag, and to persist.
+ *
+ * Exported because "everywhere" is the property worth testing. If the caller's
+ * live bound is applied to the hook's *output* instead of folded in here, the
+ * panel renders one number while drags start from another — a dead zone at the
+ * start of every gesture, then a jump when the cursor crosses back into range.
+ */
+export function clampResizableWidth(input: {
+  readonly value: number;
+  readonly defaultWidth: number;
+  readonly minWidth: number;
+  readonly maxWidth: number;
+  readonly clampWidth?: ((value: number) => number) | undefined;
+}): number {
+  if (!Number.isFinite(input.value)) {
+    return input.clampWidth?.(input.defaultWidth) ?? input.defaultWidth;
+  }
+  const bounded = Math.max(input.minWidth, Math.min(input.maxWidth, input.value));
+  return input.clampWidth === undefined ? bounded : input.clampWidth(bounded);
 }
 
 /**
@@ -45,14 +84,12 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
   readonly width: number;
   readonly handlers: ResizableWidthHandlers;
 } {
-  const { storageKey, defaultWidth, minWidth, maxWidth, edge } = options;
+  const { storageKey, defaultWidth, minWidth, maxWidth, edge, clampWidth } = options;
 
   const clamp = useCallback(
-    (value: number): number => {
-      if (!Number.isFinite(value)) return defaultWidth;
-      return Math.max(minWidth, Math.min(maxWidth, value));
-    },
-    [defaultWidth, maxWidth, minWidth],
+    (value: number): number =>
+      clampResizableWidth({ value, defaultWidth, minWidth, maxWidth, clampWidth }),
+    [clampWidth, defaultWidth, maxWidth, minWidth],
   );
 
   // No cross-tab subscription: panel width is per-window state.

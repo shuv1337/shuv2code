@@ -24,6 +24,7 @@ import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
 import {
+  ROUTINES_PENDING_PROJECT,
   canCreateRoutine,
   getRoutineRowViews,
   routinesEmptyState,
@@ -53,6 +54,18 @@ export function RoutinesPanel({
   const context = useAdeBotRoutineContext(botId);
   const [creating, setCreating] = useState(false);
 
+  const projectId = context.data?.projectId ?? null;
+  const projectRef: ScopedProjectRef | null =
+    environmentId === null || projectId === null ? null : { environmentId, projectId };
+  /*
+   * Resolved here, above the branch, so the header's Create button and the
+   * form below it are gated on the *same* facts. Previously the button asked
+   * the RPC and the form asked the orchestration shell, and when those two
+   * disagreed the button enabled and rendered nothing (D4). `useProject`
+   * accepts a null ref, so this stays a plain unconditional hook.
+   */
+  const project = useProject(projectRef);
+
   if (context.data === null) {
     return (
       <section aria-label="Routines" className="flex flex-col gap-2 p-3">
@@ -62,14 +75,18 @@ export function RoutinesPanel({
   }
 
   const empty = routinesEmptyState(context.data);
-  const projectId = context.data.projectId;
+  const canCreate = canCreateRoutine(context.data, project !== null);
+  // Resolved by the server but not yet by the shell: not an empty state, since
+  // there is nothing for the captain to fix.
+  const pending = empty === null && project === null ? ROUTINES_PENDING_PROJECT : null;
+  const notice = empty ?? pending;
 
   return (
     <section aria-label="Routines" className="flex min-h-0 flex-col gap-2 p-3">
       <div className="flex items-center gap-2">
         <CalendarClockIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
         <h2 className="truncate text-sm font-semibold">Routines</h2>
-        {canCreateRoutine(context.data) && !creating ? (
+        {canCreate && !creating ? (
           <Button className="ms-auto" onClick={() => setCreating(true)} size="sm" variant="outline">
             <PlusIcon aria-hidden />
             Create Routine
@@ -83,12 +100,23 @@ export function RoutinesPanel({
         </p>
       )}
 
-      {empty !== null || projectId === null || environmentId === null ? (
-        <div className="flex flex-col gap-1 rounded-lg border border-dashed border-border bg-muted/30 p-3">
-          <p className="text-sm font-medium">{empty?.headline ?? "Routines unavailable"}</p>
+      {notice !== null || projectRef === null || project === null ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border bg-muted/30 p-3">
+          <p className="text-sm font-medium">{notice?.headline ?? "Routines unavailable"}</p>
           <p className="text-xs text-muted-foreground">
-            {empty?.detail ?? "This bot's project could not be resolved."}
+            {notice?.detail ?? "This bot's project could not be resolved."}
           </p>
+          {/*
+           * If the project vanished after Create was pressed — the shell
+           * re-snapshotting under a captain mid-form — say so and offer the way
+           * out. Rendering nothing here is the exact shape of D4: a pressed
+           * button with no visible consequence.
+           */}
+          {creating ? (
+            <Button onClick={() => setCreating(false)} size="sm" variant="ghost">
+              Cancel
+            </Button>
+          ) : null}
         </div>
       ) : (
         <RoutinesList
@@ -96,7 +124,8 @@ export function RoutinesPanel({
           botName={botName}
           creating={creating}
           onCreatingChange={setCreating}
-          projectRef={{ environmentId, projectId }}
+          project={project}
+          projectRef={projectRef}
         />
       )}
     </section>
@@ -110,26 +139,27 @@ function asyncError(result: AsyncResult.AsyncResult<unknown, unknown>): string |
 }
 
 /**
- * Split from `RoutinesPanel` because the automations query and the editor's
- * model context both need a resolved project, and React hooks cannot be
- * conditional. Keeping them behind a component boundary means the panel reads
- * no automations at all for a bot that has no project — the empty state costs
- * one RPC, not three.
+ * Split from `RoutinesPanel` because the automations query needs a resolved
+ * project ref and React hooks cannot be conditional. Keeping it behind a
+ * component boundary means the panel reads no automations at all for a bot that
+ * has no project — the empty state costs one RPC, not three.
  */
 function RoutinesList({
   botId,
   botName,
+  project,
   projectRef,
   creating,
   onCreatingChange,
 }: {
   readonly botId: BotId;
   readonly botName: string;
+  /** Already resolved by the panel, which gates the Create button on it. */
+  readonly project: EnvironmentProject;
   readonly projectRef: ScopedProjectRef;
   readonly creating: boolean;
   readonly onCreatingChange: (next: boolean) => void;
 }) {
-  const project = useProject(projectRef);
   const result = useAtomValue(
     automationEnvironment.list({
       environmentId: projectRef.environmentId,
@@ -194,7 +224,7 @@ function RoutinesList({
         ))}
       </ul>
 
-      {creating && project !== null ? (
+      {creating ? (
         <RoutineCreateForm
           botId={botId}
           botName={botName}

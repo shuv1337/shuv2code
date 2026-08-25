@@ -40,11 +40,25 @@ export const CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX = 720;
 export const CAPTAIN_RIGHT_RAIL_WIDTH_STORAGE_KEY = "shuv2code:captain-right-rail-width";
 
 /**
- * The widest the rail may be drawn at this viewport, so the centre column keeps
- * its minimum. Pure, and separated from the hook because the failure it
- * prevents — a rail persisted at 720px reopening on a 1440px window and
- * pushing the conversation under 520px — only shows up at a width nobody
+ * How much viewport the overlay leaves uncovered, so the conversation behind it
+ * is still visibly there and the scrim is still hittable.
+ */
+export const CAPTAIN_RIGHT_RAIL_OVERLAY_MARGIN_PX = 48;
+
+/**
+ * The widest the **inline** rail may be drawn at this viewport, so the centre
+ * column keeps its minimum. Pure, and separated from the hook because the
+ * failure it prevents — a rail persisted at 720px reopening on a 1440px window
+ * and pushing the conversation under 520px — only shows up at a width nobody
  * resized at.
+ *
+ * Inline-only is load-bearing. This subtracts `CAPTAIN_CENTER_MIN_WIDTH_PX`
+ * because an inline rail *shares* the grid with the conversation and has to
+ * leave room for it. An overlay does not share anything: it floats over the
+ * conversation, so charging it the same reservation is arithmetic about a
+ * layout it is not in — at 1280px it collapsed a 470px panel to the 320px
+ * minimum for no reason a captain could see. Overlays use
+ * `captainOverlayRailWidth` instead.
  */
 export function captainRightRailMaxWidth(input: {
   readonly viewportWidth: number;
@@ -55,6 +69,23 @@ export function captainRightRailMaxWidth(input: {
   return Math.max(
     CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX,
     Math.min(CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX, available),
+  );
+}
+
+/**
+ * The width of the rail when it is floating over the conversation rather than
+ * docked beside it (§2: 1180–1439 opens a 470px overlay).
+ *
+ * The design width, capped only by the viewport it has to fit inside. There is
+ * no resize handle in overlay mode — nothing to trade width against — so the
+ * dragged width deliberately does not apply here; the overlay is the same panel
+ * at the size the design specifies, every time it opens.
+ */
+export function captainOverlayRailWidth(viewportWidth: number): number {
+  if (!Number.isFinite(viewportWidth)) return CAPTAIN_RIGHT_RAIL_WIDTH_PX;
+  return Math.max(
+    CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX,
+    Math.min(CAPTAIN_RIGHT_RAIL_WIDTH_PX, viewportWidth - CAPTAIN_RIGHT_RAIL_OVERLAY_MARGIN_PX),
   );
 }
 

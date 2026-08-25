@@ -26,6 +26,7 @@ import {
   type CaptainLayoutMode,
   captainGridTemplateColumns,
   captainLeftRailWidth,
+  captainOverlayRailWidth,
   captainRightRailMaxWidth,
   resolveCaptainLayoutModeFromMediaMatches,
   resolveCaptainShellRegions,
@@ -92,22 +93,31 @@ export function CaptainShell({
 
   /*
    * Rail width (§2: "470px, collapsible, resizable via `useResizableWidth`").
-   * The clamp is recomputed from the live viewport rather than fixed at the
-   * hook's `maxWidth`, so a width dragged wide on a large monitor cannot
-   * reopen on a smaller one and squeeze the conversation below its minimum.
+   *
+   * The viewport clamp is handed to the hook rather than applied to its output.
+   * Clamping the returned width here would leave the hook dragging from the
+   * *stored* number while the panel rendered the clamped one — a dead zone at
+   * the start of every drag on a narrower screen, then a jump. Inside the hook
+   * there is one number: what is rendered, what a drag starts from, and what
+   * gets persisted.
    */
   const viewportWidth = useViewportWidth();
-  const { width: storedRightRailWidth, handlers: rightRailResizeHandlers } = useResizableWidth({
+  const leftRailWidth = captainLeftRailWidth(regions);
+  const clampRightRailWidth = useCallback(
+    (value: number) => Math.min(value, captainRightRailMaxWidth({ viewportWidth, leftRailWidth })),
+    [leftRailWidth, viewportWidth],
+  );
+  const { width: inlineRightRailWidth, handlers: rightRailResizeHandlers } = useResizableWidth({
     storageKey: CAPTAIN_RIGHT_RAIL_WIDTH_STORAGE_KEY,
     defaultWidth: CAPTAIN_RIGHT_RAIL_WIDTH_PX,
     minWidth: CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX,
     maxWidth: CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX,
     edge: "left",
+    clampWidth: clampRightRailWidth,
   });
-  const rightRailWidth = Math.min(
-    storedRightRailWidth,
-    captainRightRailMaxWidth({ viewportWidth, leftRailWidth: captainLeftRailWidth(regions) }),
-  );
+  // The overlay floats over the conversation instead of sharing the grid with
+  // it, so it does not pay the centre column's reservation (D1).
+  const overlayRightRailWidth = captainOverlayRailWidth(viewportWidth);
 
   /**
    * The overlay's openness is *ephemeral*, not the persisted collapse flag.
@@ -170,7 +180,7 @@ export function CaptainShell({
         style={{
           gridTemplateColumns: captainGridTemplateColumns(
             { ...regions, rightRailInline },
-            rightRailWidth,
+            inlineRightRailWidth,
           ),
         }}
       >
@@ -223,10 +233,18 @@ export function CaptainShell({
         {rightRailInline ? (
           <aside
             aria-label="Bot panel"
-            className="relative flex h-full min-h-0 flex-col overflow-y-auto border-s border-border bg-sidebar"
+            /*
+             * The aside itself does not scroll — the inner div does. The resize
+             * handle is `absolute inset-y-0` against this element, so if the
+             * scroll lived here the handle would scroll with the content and a
+             * captain reading down the routine list would find nothing to grab
+             * (D3). Positioning against the non-scrolling box keeps the full
+             * height grabbable at any scroll position.
+             */
+            className="relative flex h-full min-h-0 flex-col overflow-hidden border-s border-border bg-sidebar"
           >
             <RightPanelResizeHandle handlers={rightRailResizeHandlers} />
-            {rightRail}
+            <div className="min-h-0 flex-1 overflow-y-auto">{rightRail}</div>
           </aside>
         ) : null}
 
@@ -241,18 +259,22 @@ export function CaptainShell({
             <aside
               aria-label="Bot panel"
               className={cn(
-                "absolute inset-y-0 end-0 z-20 flex min-h-0 flex-col overflow-y-auto border-s border-border bg-sidebar shadow-xl",
+                "absolute inset-y-0 end-0 z-20 flex min-h-0 flex-col overflow-hidden border-s border-border bg-sidebar shadow-xl",
                 regions.rightRail === "sheet" ? "w-full" : undefined,
               )}
               /*
-               * The overlay honours the resized width but carries no handle:
-               * it floats over the conversation rather than sharing the grid
-               * with it, so there is no second column for a drag to trade
-               * against — and at `sheet` it is the whole viewport anyway.
+               * No handle here: the overlay floats over the conversation rather
+               * than sharing the grid with it, so there is no second column for
+               * a drag to trade against — and at `sheet` it is the whole
+               * viewport anyway. It renders at the design width capped by the
+               * viewport, never at the inline width, which is reduced by a
+               * centre-column reservation this layout does not have (D1).
                */
-              style={regions.rightRail === "sheet" ? undefined : { width: `${rightRailWidth}px` }}
+              style={
+                regions.rightRail === "sheet" ? undefined : { width: `${overlayRightRailWidth}px` }
+              }
             >
-              {rightRail}
+              <div className="min-h-0 flex-1 overflow-y-auto">{rightRail}</div>
             </aside>
           </>
         ) : null}
