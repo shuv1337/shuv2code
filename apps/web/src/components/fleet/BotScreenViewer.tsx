@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { WEBSOCKET_TICKET_PATH, viewerSocketUrl } from "./BotScreenTab.logic";
@@ -22,13 +22,35 @@ import { WEBSOCKET_TICKET_PATH, viewerSocketUrl } from "./BotScreenTab.logic";
 export function BotScreenViewer({
   viewerPath,
   className,
+  frameClassName,
   surfaceClassName,
+  overlay,
 }: {
   readonly viewerPath: string;
   /** Wrapper class, so a rail thumbnail and a full tab can size differently. */
   readonly className?: string;
+  /**
+   * Class for the framed box around the canvas. Defaulted rather than
+   * hard-coded so the Screen tab keeps exactly the box it always had: the rail
+   * and the fullscreen dialog need it to flex, and a tab that silently
+   * inherited their `min-h-0 flex-1` would have changed layout for a reason
+   * nobody asked for.
+   */
+  readonly frameClassName?: string;
   /** Class for the RFB surface itself — the element noVNC scales into. */
   readonly surfaceClassName?: string;
+  /**
+   * Rendered inside the frame, over the canvas.
+   *
+   * This is a slot rather than something a caller wraps the viewer in, because
+   * the obvious wrapping — putting a `<button>` around the viewer to make the
+   * thumbnail clickable — produces invalid markup: a button may contain only
+   * phrasing content, and this renders `<div>`s and a `role="alert"`. An alert
+   * buried inside a button is also read out as part of the button's label
+   * instead of as the error it is. So the interactive layer goes *in* the
+   * frame, and the error stays outside it, readable.
+   */
+  readonly overlay?: ReactNode;
 }) {
   const container = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
@@ -103,7 +125,12 @@ export function BotScreenViewer({
           {failure}
         </p>
       )}
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-black">
+      <div
+        className={cn(
+          "relative overflow-hidden rounded-lg border border-border bg-black",
+          frameClassName,
+        )}
+      >
         <div
           ref={container}
           className={cn("h-[28rem] w-full", surfaceClassName)}
@@ -114,6 +141,7 @@ export function BotScreenViewer({
             {status === "connecting" ? "Connecting to the desktop…" : (failure ?? "Disconnected.")}
           </p>
         )}
+        {overlay}
       </div>
     </div>
   );

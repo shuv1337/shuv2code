@@ -6,12 +6,15 @@ import {
   CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY,
   CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX,
   CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX,
+  CAPTAIN_RIGHT_RAIL_OVERLAY_MARGIN_PX,
+  CAPTAIN_RIGHT_RAIL_WIDTH_PX,
   CAPTAIN_THREE_RAIL_MEDIA_QUERY,
   type CaptainLayoutMode,
   canToggleCaptainLeftRail,
   captainGridTemplateColumns,
   captainLeftRailToggleLabel,
   captainLeftRailWidth,
+  captainOverlayRailWidth,
   captainRightRailMaxWidth,
   resolveCaptainLayoutMode,
   resolveCaptainLayoutModeFromMediaMatches,
@@ -278,6 +281,31 @@ describe("right rail resize (M6)", () => {
     expect(
       captainRightRailMaxWidth({ viewportWidth: Number.POSITIVE_INFINITY, leftRailWidth: 380 }),
     ).toBe(CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX);
+  });
+
+  it("does not charge the overlay the centre column's reservation", () => {
+    // D1. The inline rail shares the grid with the conversation and must leave
+    // room for it; the overlay floats *over* the conversation and shares
+    // nothing. Charging both the same reservation collapsed a 470px panel to
+    // the 320px minimum at 1280px, for a column the overlay is not in.
+    expect(captainOverlayRailWidth(1280)).toBe(CAPTAIN_RIGHT_RAIL_WIDTH_PX);
+    expect(captainRightRailMaxWidth({ viewportWidth: 1280, leftRailWidth: 380 })).toBeLessThan(
+      captainOverlayRailWidth(1280),
+    );
+  });
+
+  it("keeps the overlay inside the viewport, with the conversation still showing behind it", () => {
+    const narrow = captainOverlayRailWidth(400);
+    expect(narrow).toBeLessThan(400);
+    expect(narrow).toBe(400 - CAPTAIN_RIGHT_RAIL_OVERLAY_MARGIN_PX);
+  });
+
+  it("never shrinks the overlay below the width at which it stops showing anything", () => {
+    expect(captainOverlayRailWidth(100)).toBe(CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX);
+  });
+
+  it("gives the overlay its design width when the viewport is unmeasurable", () => {
+    expect(captainOverlayRailWidth(Number.POSITIVE_INFINITY)).toBe(CAPTAIN_RIGHT_RAIL_WIDTH_PX);
   });
 
   it("gives back the width the left rail actually occupies, so the clamp is not a guess", () => {
