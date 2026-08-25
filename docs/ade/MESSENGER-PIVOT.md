@@ -1,0 +1,105 @@
+# ADE Messenger Pivot — Authoritative Design
+
+**Skeleton: hybrid-shell** (highest aggregate across the three lenses: maintenance winner, close second on feasibility and product, and the only candidate with zero contradicted code claims). Grafted from **messenger-first**: the three-rails-inline-at-reference-width breakpoint model and the closed card taxonomy (work/PR, instruction, approval, secure-input). Grafted from **incremental-reskin**: ship roster data on the existing surface before the new rail exists, and menu-first group assignment (drag is an affordance, not the accessible path). Every judge-confirmed flaw is resolved explicitly below.
+
+---
+
+## 1. Direction
+
+The captain surface stops being "the IDE with a fleet section" and ships as a **bot messenger**: one persistent three-region shell (contacts rail / conversation / bot side-panel) where every bot is a contact, every bot's deterministic primary thread (`adeBotThreadId(botId) = ade-bot-<botId>`, `apps/server/src/ade/AdeShuvcodeChatSession.ts:75`) is a conversation, and approvals, delegations, and PRs arrive as chat cards instead of a separate inbox.
+
+The architectural bet, verified against the code:
+
+- **~90% of captain-visible traffic is four kinds** — captain text, bot text, an approval/decision, an attribution line for sub-agent work. These get a **new, purpose-built bubble renderer** we fully control (16px radii, 15px/1.5 type, right-aligned captain bubbles, avatars, day dividers). We do **not** mount `ChatView` (6,956 lines, props union at `ChatView.tsx:510` with no chrome suppression) and we do **not** put a mode axis inside it — that is the theme-mode-conditional failure the maintenance lens rejected in incremental-reskin.
+- **The seam sits at the row model, not the view.** `deriveMessagesTimelineRows` (`apps/web/src/components/chat/MessagesTimeline.logic.ts:641`) and `computeStableMessagesTimelineRows` (`:849`) already produce a discriminated `MessagesTimelineRow` union. The bubble renderer consumes those same rows, claims the kinds it can render losslessly, and wraps everything else (tool calls, work groups, diffs, plans, images) in a collapsed **TraceCard** that mounts the *real* IDE row content on expand. One source of truth for message semantics; no second parser; a new provider event kind degrades to IDE-fidelity rendering, never to a blank bubble.
+- **Fail-safe by construction:** a pure `classifyBubbleRow(row): "bubble" | "trace"` lives next to the row union, with a test per row kind and a default-to-trace assertion. Unknown future rows fall toward the IDE renderer — ugly, not wrong.
+
+**Resolved flaw #1 (the under-scoped seam).** The judges confirmed `TimelineRowContent` is module-private (`MessagesTimeline.tsx:951`) behind two `createContext<…>(null!)` contexts (`:167–168`), and `TimelineRowSharedState` (`:138`) is an ~18-field bag computed inside ChatView (`:528`), including workspace callbacks (`onOpenTurnDiff`, `agentPanelModel`, `onOpenAgents`, revert, speech). "Export a host" is not a one-liner; it is a named, tested adapter with its own contract — see `CaptainRowHost` in §3 and ticket T4. Its cost is budgeted, its stub surface is enumerated, and it ships with a test mounting a `work` row outside `MessagesTimeline`.
+
+## 2. Layout
+
+Three regions inside one route-level shell (`CaptainShell`), replacing the per-page `SidebarInset` usage in `apps/web/src/components/fleet/*`.
+
+**LEFT RAIL — 380px fixed**, `bg-sidebar`, own scroll: app mark + `[+]` new-bot (reuses the `AddFromTemplateControl` flow from `FleetRosterPage`); search input (filters bots + last-message text); captain identity card; grouped contact list — captain-defined group headers with an implicit trailing "Ungrouped"; each row 64px: avatar blob (emoji/color from `BotDisplayMeta`, already in schema), name, optional `roleTag` chip, right-aligned relative time (`formatRelativeTimeLabel`), dim one-line preview; attention rows swap the preview for an amber "Approval required: …" line + unread dot. Footer: Plugins/Settings entry + account row (reuse `sidebar/SidebarChrome.tsx` footer atoms), with `SidebarKernelHealthPills` demoted into the footer.
+
+**CENTER — flex, min 520px**: sticky 56px header (avatar, editable name, presence/session line, gear → identity sheet, right-rail toggle); bubble timeline in a `TIMELINE_CONTENT_MAX_WIDTH` (768px) column; floating jump-to-latest pill; slim composer dock (`[+]` attach, "Message ⟨Bot⟩", mic). No worktree selector, model picker, publish bar, minimap, or diff-panel toggle.
+
+**RIGHT RAIL — 470px, collapsible, resizable** via `useResizableWidth`: "⟨Bot⟩'s screen" thumbnail (idle poster + Start when no desktop; scaled noVNC canvas, click → fullscreen dialog), then Routines list + `[Create Routine]`, then a collapsed Work section linking into the existing work graph.
+
+**Breakpoints** (grafted from messenger-first — the product judge docked hybrid for hiding the third rail at common laptop widths; captain-owned media queries, **not** `RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY`, which is `(max-width: 980px)` per `apps/web/src/rightPanelLayout.ts:1` and is shared with workspace mode — resolved flaw #2):
+
+- **≥1440px:** all three rails inline (the reference width shows three rails; this is non-negotiable).
+- **1180–1439px:** right rail auto-collapses to a header toggle; opens as a 470px overlay via `RightPanelSheet`-style scrim.
+- **900–1179px:** left rail collapses to a 64px avatar strip (`ui/sidebar` `collapsible="icon"`); group headers become dividers.
+- **<900px:** single column, route-driven — roster list full-bleed at the index route, conversation full-bleed with back chevron at `$botId`; right rail and identity sheet become bottom sheets; composer pins above the safe-area inset.
+
+Rail collapse state persists in `uiStateStore`.
+
+## 3. Component plan
+
+### New (`apps/web/src/components/captain/`)
+
+| Component | Reuse targets |
+|---|---|
+| `CaptainShell.tsx` + `captainShell.logic.ts` | grid regions, collapse state in `uiStateStore`, breakpoint resolution (pure, tested) |
+| `ContactRail.tsx`, `ContactGroupSection.tsx`, `ContactRow.tsx` + `contactRail.logic.ts` | absorbs `FleetRosterPage.logic.ts:getRosterRowViews` (Firstmate pin, open-assignment labels, server ordering) + adds preview/unread/attention/group bucketing/search; `ui/sidebar`, `ui/input`, `ui/badge`, `ui/scroll-area` |
+| `BotAvatar.tsx` | emoji/color blob from `BotDisplayMeta`, deterministic fallback hue from `botId`; used in rail, header, attribution lines, needs-you cards |
+| `BotIdentitySheet.tsx` + `GroupAssignMenu.tsx` | rename, emoji + color picker (`components/color-selector.tsx`), role chip, group assign (menu first, drag second); hosts persona/memory/computer-use forms lifted verbatim from `BotDetailPanel.tsx` |
+| `BubbleTimeline.tsx` + `bubbleTimeline.logic.ts` | consumes `deriveMessagesTimelineRows` / `computeStableMessagesTimelineRows`; virtualized with `LegendList`; reuses `timelineScrollAnchoring.ts` and `resolveTimelineIsAtEnd` |
+| `MessageBubble.tsx`, `DayDivider.tsx`, `AttributionLine.tsx`, `JumpToLatestPill.tsx` | text via `ChatMarkdown`; reuse `MessageCopyButton`, `ExpandedImagePreview`, `SkillInlineText`; attribution folds consecutive sub-agent traffic ("2 messages with Code Monkey") using `parseAssignmentDeliveryText` (`fleet/assignmentResult.logic.ts`) resolved to real bots via the roster |
+| `TraceCard.tsx` | **the seam** — collapsed one-liner (icon + label via `normalizeCompactToolLabel`, duration, ± via `DiffStatLabel`); expands into `CaptainRowHost` |
+| `CaptainRowHost.tsx` | the adapter for resolved flaw #1: mounts the exported `TimelineRowHost` (row content + both providers) with an explicitly synthesized `TimelineRowSharedState` — real values for display fields, **enumerated no-op/hidden stubs for the workspace-only callbacks** (`onOpenTurnDiff`, `onOpenAgents`, `agentPanelModel`, revert, speech). One file, one contract, one test mounting a `work` row outside ChatView |
+| `PrResultCard.tsx` | `AdePublicationStackView` layers + turn diff summary; status pill, branch + PR ref, `DiffStatLabel`, View PR / Open-in via `externalLinkContextMenu.ts` |
+| `InstructionCard.tsx` | plan/checklist rendering path over `ChatMarkdown` for bot-authored task lists |
+| `SecureInputCard.tsx` | secret `form` needs-you items; submits through the same `ade.submitNeedsYouDecision` path as `NeedsYouCard` so one item retires once; value never echoed into transcript or roster preview (tested) |
+| `CaptainComposer.tsx` | built on `ComposerPromptEditor` (`ComposerPromptEditorHandle`, `ComposerPromptEditor.tsx:868`) + `submitComposerDraft` / `getComposerSubmissionValidationMessage` (`chat/composerSubmission.ts`) + `resolveComposerTurnDispatch`; mounts `ComposerPendingApprovalPanel` / `ComposerPendingUserInputPanel` unchanged when blocked. Does **not** reuse the 3,528-line `ChatComposer`. Turn commands via `threadEnvironment` atoms — defined in `packages/client-runtime/src/state/threadCommands.ts` (re-exported through `apps/web/src/state/threads.ts`; resolved citation drift #3) |
+| `BotScreenPanel.tsx`, `RoutinesPanel.tsx` | thin wrappers over `fleet/BotScreenTab.logic.ts` helpers (untouched) and the automations atoms/form behind `routes/settings.automations.tsx` |
+
+### Changed (small, surgical)
+
+- `chat/MessagesTimeline.tsx` — export `TimelineRowHost` (row content + both providers). This is the whole edit to the IDE timeline; no captain conditionals inside it, ever.
+- `chat/MessagesTimeline.logic.ts` — add pure `classifyBubbleRow`, no behavior change.
+- `fleet/NeedsYouCard.tsx` — add `variant: "bubble"` alongside `inbox`/`inline` (one decision path, three renderings).
+- `fleet/AssignmentResultCard.tsx` — nested variant drops the outer border.
+- `sidebar/SidebarChrome.tsx` / `SidebarFleetEntry.tsx` — Fleet entry routes to the shell; Needs You badge routes to `?filter=attention`.
+- `state/ade.ts` (+ `packages/client-runtime/src/state/ade.ts`) — `useAdeBotGroups`, `useAdeUpdateBotIdentity`, roster subscription swap (T3).
+
+### Dies / absorbed
+
+`fleet/FleetRosterPage.tsx` (rail absorbs it, tests carried over), `fleet/BotDetailPanel.tsx` tab chrome (forms move to the identity sheet), `fleet/NeedsYouInboxPage.tsx` as a destination (becomes the rail's Attention filter; `NeedsYouInbox.logic.ts` survives), the roster poll in `client-runtime/state/ade.ts`. `ChatView`, `ChatComposer`, `BotChatPage`'s hook-count gate, and everything in `apps/server/src/ade/*` are untouched.
+
+## 4. Backend deltas (minimal; nothing in assignment/publication/screenbox engines moves)
+
+**Migration `057_AdeBotGroups.ts`:** `ade_bot_groups(group_id PK, name, order_index, created_at)`; `ade_bots` + `group_id REFERENCES ade_bot_groups ON DELETE SET NULL`, + `chat_last_read_at TEXT` (single-captain product — a column beats a read-marks table); index `(group_id, name)`.
+
+**Migration `058_AutomationBotAttribution.ts`:** `project_automations` + `ade_bot_id TEXT` + index. Routines reuse `project_automations`/`automation_runs` and the existing automations service wholesale — no new scheduler, no ADE-side cron. One new read, `ade.getBotRoutineContext {botId} → {projectId | null}`, resolves the bot's ADE project repo binding to the core project row; null → "Bind a repo to this bot's project" empty state.
+
+**Contracts (`packages/contracts/src/ade.ts`), additive:** `AdeBotGroupId`, `AdeBotGroup {id, name, orderIndex, createdAt}`; `Bot.groupId: NullOr`; `AdeRosterEntry` + `lastMessage: NullOr({preview ≤160, at, author: "bot"|"captain"|"system"})`, `attention: NullOr({kind: NeedsYouKind, line ≤160})`, `unreadCount`; `AdeRoster` + `groups`, `captain: {displayName, displayMeta}`. Inputs: `AdeUpdateBotIdentityInput` (partial-patch: `undefined` = leave, `null` = clear), `AdeUpsertBotGroupInput`, `AdeDeleteBotGroupInput` (members fall to Ungrouped, never cascade), `AdeMarkBotChatReadInput`. `automations.ts`: `ProjectAutomation.botId: NullOr(BotId)`.
+
+**RPCs (`rpc.ts` + `ws.ts` + `RpcAuthorization.ts`):** `ade.updateBotIdentity` (one RPC for rename/avatar/roleTag/group — allowed on every bot including the Firstmate; `structuralRole` and template lineage stay server-owned and **absent from the payload**, which is how strictness stays invisible rather than merely styled), `ade.upsertBotGroup`, `ade.deleteBotGroup`, `ade.markBotChatRead`, `ade.getBotRoutineContext`, and — staged inside T3, after the poll-based version proves the projection — `ade.subscribeRoster`, a streaming `AdeRoster` modeled on the existing `fleetHealth` subscription (`createEnvironmentRpcSubscriptionAtomFamily`), emitting on bot mutation, needs-you open/resolve, and primary-thread message commit, debounced ~250ms. The poll comment in `client-runtime/state/ade.ts` already concedes previews/unread are unusable without it. `ade:approve` remains the sole elevated RPC.
+
+**Server (`AdeCaptainApi.ts`):** `getRoster` gains a LEFT JOIN on the bot's `primary-text` binding thread's latest message (truncated 160 code points) and open NeedsYou items (approval kind wins the attention line); `unreadCount` = messages newer than `chat_last_read_at`. Preview precedence: approval > bot message > captain message > empty (tested).
+
+## 5. Migration path
+
+Additive first, deletion last; `/chat/*` and `components/chat/**` are never touched beyond the one `TimelineRowHost` export, so IDE chat cannot regress by construction.
+
+1. **Shell lands on the existing routes with the existing payload.** `/fleet` becomes the shell index (rail + empty state); `/fleet/$botId` becomes the conversation route. Center pane initially mounts today's `BotChatPage` inside the shell (its start/sync state machine and hook-count gate move in **unchanged**), so the messenger is usable before any backend delta merges.
+2. Roster liveness fields ship visible on the rail as they land (incremental-reskin graft: data provable before polish); poll first, subscription swap second.
+3. The bubble renderer replaces the embedded `BotChatPage` **behind a per-session `uiStateStore` toggle** for exactly one release, with "Open in workspace view" (the old rendering) as the escape hatch while `classifyBubbleRow` and the TraceCard seam are tuned.
+4. Redirects, one release each: `/fleet/$botId/chat` → `/fleet/$botId`; `/fleet/needs-you` → `/fleet?filter=attention`. `/fleet/work` and `/fleet/projects/$adeProjectId` survive as full pages reached from the right rail and footer — analysis surfaces, deliberately out of messenger scope. `SidebarFleetEntry` retargets.
+5. Deletions after absorption: `FleetRosterPage.*` (tests move to `contactRail.logic.test.ts`), `NeedsYouInboxPage.tsx`, `BotDetailPanel` tab chrome, the roster poll, the toggle.
+
+## 6. Ticket breakdown (dependency-ordered)
+
+**T1 — Captain shell + contact rail** (frontend only, no backend dependency). New `captain/` shell, rail, rows, `BotAvatar`, `captainShell.logic.ts`, `contactRail.logic.ts`; wire `/fleet` + `/fleet/$botId` to the shell with the current `AdeRoster` payload; center mounts today's `BotChatPage` unchanged; search, Firstmate pin, deterministic avatar colors, breakpoints (three rails ≥1440, overlay 1180–1439, icon rail 900–1179, single-column <900), collapse persistence; retarget `SidebarFleetEntry`. Port `FleetRosterPage.logic` tests; delete `FleetRosterPage.tsx`. Tests: `contactRail.logic.test.ts`, `captainShell.logic.test.ts`.
+
+**T2 — Bot identity: rename, avatar, groups (#197).** Migration 057 (groups portion); contracts + `ade.updateBotIdentity` / `upsertBotGroup` / `deleteBotGroup` in `AdeCaptainApi` + `ws.ts` + `RpcAuthorization`; `BotIdentitySheet` absorbing `BotDetailPanel` forms; `GroupAssignMenu` (menu-first) + drag; header inline rename. Server tests beside `AdeCaptainApi.test.ts`: Firstmate rename allowed, group delete = ungroup, `structuralRole`/lineage unwritable and absent from payloads.
+
+**T3 — Roster liveness: previews, unread, attention.** `lastMessage`/`attention`/`unreadCount` projection over the `ade-bot-<botId>` thread, `chat_last_read_at`, `ade.markBotChatRead` (fires on conversation focus + at-bottom); land on the poll, then `ade.subscribeRoster` modeled on `fleetHealth` and drop the poll; rail renders previews, relative time, unread dots, amber approval lines; `?filter=attention` retires the needs-you route (redirect). Tests: preview precedence, truncation, author attribution, unread arithmetic across a read-mark, secret payloads absent from previews.
+
+**T4 — Bubble renderer + the seam (the load-bearing ticket).** Export `TimelineRowHost` from `MessagesTimeline.tsx`; build `CaptainRowHost` with the fully enumerated synthesized `TimelineRowSharedState` (~18 fields: real display values, no-op/hidden workspace callbacks) + a test mounting a `work` row outside ChatView; pure `classifyBubbleRow` with a case per row kind and default-to-trace assertion; `BubbleTimeline`, `MessageBubble`, `DayDivider`, `AttributionLine`, `JumpToLatestPill`, `TraceCard`; bubble variants for `NeedsYouCard` / `AssignmentResultCard`; `CaptainComposer` on `ComposerPromptEditor` + `composerSubmission` + pending-approval/user-input panels; ship behind the per-session toggle with the workspace-view escape hatch. Heavy pure test file: fold rules and classification against fixture timelines.
+
+**T5 — Rich cards.** `PrResultCard` (publication stack + diff summary, View PR / Open-in), `InstructionCard` (checklists with highlighted code lines), `SecureInputCard` (secret `form` items via `ade.submitNeedsYouDecision`, shield line, never-echoed value tested), `ArtifactHoverActions`. Tests: card selection from rows, double-decision idempotency surface.
+
+**T6 — Right rail + cutover.** `BotScreenPanel` (thumbnail → fullscreen, explicit Start/Stop, viewing never provisions) over `BotScreenTab.logic`; migration 058 + `ade.getBotRoutineContext`; `RoutinesPanel` on existing automations RPCs/form; rail resize + overlay/bottom-sheet behavior; redirects for `/fleet/$botId/chat` and `/fleet/needs-you`; remove the toggle once `classifyBubbleRow` has a test per row kind; one integrated web pass with `test-shuv2code-app` (rail → chat → approval decide → screen expand → routine create at 1440px and 820px) plus a `test-shuv2code-mobile` pass.
