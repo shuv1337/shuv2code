@@ -9,12 +9,20 @@
  * Renaming is offered for every bot, the Firstmate included — permanence
  * protects that the Firstmate exists (spec §2.2), not the label on its contact
  * row — so there is deliberately no disabled branch here.
+ *
+ * **The chrome reads the roster, not the bot detail.** Both carry the same
+ * `Bot`, but the roster is already loaded — it is what drew the contact rail
+ * the captain clicked to get here — while `ade.getBot` is a second read that
+ * can be pending or can fail. Hanging the name, the blob and the gear off the
+ * slower one meant a header that renders empty, and an identity sheet with no
+ * way in, whenever that read did not land. Only the sheet's persona/memory
+ * forms genuinely need the detail, so only they wait for it.
  */
-import type { BotId } from "@shuv2code/contracts";
+import type { Bot, BotId } from "@shuv2code/contracts";
 import { SettingsIcon } from "lucide-react";
 import { useState } from "react";
 
-import { useAdeBotDetail, useAdeBotGroups } from "../../state/ade";
+import { useAdeBotDetail, useAdeBotGroups, useAdeRoster } from "../../state/ade";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -24,15 +32,20 @@ import { getBotAvatarView } from "./contactRail.logic";
 import { useInlineBotRename } from "./useBotIdentity";
 
 export function BotIdentityHeaderActions({ botId }: { readonly botId: BotId }) {
+  const roster = useAdeRoster();
   const detail = useAdeBotDetail(botId);
   const groups = useAdeBotGroups();
-  const bot = detail.data?.bot ?? null;
+
+  const rosterBot = roster.data?.entries.find((entry) => entry.bot.id === botId)?.bot ?? null;
+  // Detail wins when it is there — it is the copy a save round-trips against —
+  // but the roster is what makes the header appear at all.
+  const bot: Bot | null = detail.data?.bot ?? rosterBot;
   const rename = useInlineBotRename(bot);
   const [identityOpen, setIdentityOpen] = useState(false);
 
-  // The header is sticky and always mounted; the bot arrives a tick later.
-  // Rendering nothing beats rendering a skeleton that shifts the whole row.
-  if (detail.data === null || bot === null) {
+  // Neither read knows this bot yet. Rendering nothing beats a skeleton that
+  // would shift the whole header row a moment later.
+  if (bot === null) {
     return null;
   }
 
@@ -82,12 +95,20 @@ export function BotIdentityHeaderActions({ botId }: { readonly botId: BotId }) {
       >
         <SettingsIcon />
       </Button>
-      <BotIdentitySheet
-        detail={detail.data}
-        groups={groups}
-        open={identityOpen}
-        onOpenChange={setIdentityOpen}
-      />
+      {/*
+       * The sheet is the one part that needs the detail read. Opening the gear
+       * before it lands is not an error — the sheet appears as soon as the
+       * read resolves, which is normally the same tick the conversation itself
+       * becomes usable.
+       */}
+      {detail.data === null ? null : (
+        <BotIdentitySheet
+          detail={detail.data}
+          groups={groups}
+          open={identityOpen}
+          onOpenChange={setIdentityOpen}
+        />
+      )}
     </>
   );
 }

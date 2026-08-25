@@ -29,7 +29,7 @@ function BotConversationRouteView() {
       activeBotId={botId as BotId}
       conversationHeaderActions={<BotIdentityHeaderActions botId={botId as BotId} />}
     >
-      <BotChatPage botId={botId as BotId} />
+      <BotChatPage botId={botId as BotId} identityChrome="shell" />
     </CaptainShell>
   );
 }

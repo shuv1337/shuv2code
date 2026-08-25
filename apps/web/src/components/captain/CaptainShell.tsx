@@ -21,6 +21,7 @@ import {
   captainGridTemplateColumns,
   resolveCaptainLayoutModeFromMediaMatches,
   resolveCaptainShellRegions,
+  shouldRenderConversationHeader,
 } from "./captainShell.logic";
 
 /**
@@ -143,9 +144,11 @@ export function CaptainShell({
 
         {regions.showCenter ? (
           <div className="flex min-h-0 min-w-0 flex-col">
-            {regions.showBackChevron ||
-            conversationHeaderActions !== undefined ||
-            (hasRightRail && regions.showRightRailToggle) ? (
+            {shouldRenderConversationHeader({
+              regions,
+              hasActions: conversationHeaderActions !== undefined,
+              hasRightRail,
+            }) ? (
               <ConversationHeader
                 actions={conversationHeaderActions}
                 /*
@@ -218,7 +221,14 @@ export function CaptainShell({
  * M2's identity controls in the middle, right-rail toggle at the end. It always
  * renders, because it is also what clears the app's fixed sidebar trigger.
  */
-function ConversationHeader({
+/**
+ * The conversation region's sticky header (§2).
+ *
+ * Exported for tests: it is the only mount point for the identity controls, so
+ * "the actions actually render inside it" is a claim worth asserting against
+ * real markup rather than inferring from the predicate that gates it.
+ */
+export function ConversationHeader({
   actions,
   insetForTitlebar,
   onToggleRightRail,
