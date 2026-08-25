@@ -412,6 +412,61 @@ scenario("sends a protected candidate straight to captain approval", () =>
   }),
 );
 
+/**
+ * Parking on the captain is only real if the captain can see it (spec §7
+ * slice 5). The item is the durable half of that: one per waiting candidate,
+ * retired the moment the candidate stops waiting — whichever surface produced
+ * the verdict.
+ */
+scenario("raises one Needs You approval item while a candidate waits, and retires it", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "human-approval" });
+    const enqueued = yield* enqueue(fixture);
+    yield* fixture.service.processQueueHead(fixture.projectId);
+
+    const openItems = () =>
+      fixture.sql<{
+        readonly needs_you_item_id: string;
+        readonly subject_refs_json: string;
+      }>`SELECT needs_you_item_id, subject_refs_json FROM ade_needs_you_items
+         WHERE kind = 'approval' AND status = 'open'`;
+
+    const raised = yield* openItems();
+    assert.strictEqual(raised.length, 1);
+    assert.include(raised[0]?.subject_refs_json ?? "", enqueued.candidate.id);
+
+    // Re-running the pass must not pile up a second row: recovery re-derives
+    // parking from scratch (ADR §16.2 has no journal).
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual((yield* openItems()).length, 1);
+
+    yield* fixture.service.submitApproval({
+      candidateId: enqueued.candidate.id,
+      decision: "approve",
+    });
+    assert.strictEqual((yield* openItems()).length, 0);
+  }),
+);
+
+scenario("retires the approval item on a denial too", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "human-approval" });
+    const enqueued = yield* enqueue(fixture);
+    yield* fixture.service.processQueueHead(fixture.projectId);
+
+    const denied = yield* fixture.service.submitApproval({
+      candidateId: enqueued.candidate.id,
+      decision: "deny",
+    });
+    assert.strictEqual(denied.status, "bounced");
+
+    const stillOpen = yield* fixture.sql<{
+      readonly needs_you_item_id: string;
+    }>`SELECT needs_you_item_id FROM ade_needs_you_items WHERE kind = 'approval' AND status = 'open'`;
+    assert.strictEqual(stillOpen.length, 0);
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // Bounces + repair emission
 // ---------------------------------------------------------------------------

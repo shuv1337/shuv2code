@@ -57,7 +57,21 @@ const CAPTAIN_ERROR_TEXT: Record<AdeCaptainErrorReason, string> = {
   project_invalid: "That project could not be created.",
   project_not_found: "That project no longer exists.",
   persistence_failed: "The change could not be saved.",
+  needs_you_not_found: "That item is no longer in your inbox.",
+  // Not a failure the captain caused: the other rendering of the same item, or
+  // the service that raised it, got there first.
+  needs_you_already_resolved: "Already handled — this item is resolved.",
+  needs_you_not_actionable: "This item resolves on its own; there is nothing to approve.",
+  needs_you_decision_rejected: "That decision could not be applied — the item is still waiting.",
 };
+
+/**
+ * Reasons that mean "someone else already did it", not "you did something
+ * wrong". Both renderings show these as an outcome, never as an error.
+ */
+export function isBenignNeedsYouConflict(reason: AdeCaptainErrorReason | null): boolean {
+  return reason === "needs_you_already_resolved" || reason === "needs_you_not_found";
+}
 
 export function adeCaptainErrorMessage(error: unknown, fallback: string): string {
   const reason = adeCaptainErrorReason(error);

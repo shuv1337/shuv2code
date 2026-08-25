@@ -1,4 +1,5 @@
 import {
+  AuthAdeApproveScope,
   AuthAdministrativeScopes,
   AuthSessionId,
   AuthStandardClientScopes,
@@ -81,11 +82,24 @@ const tokenOnlyFlag = Flag.boolean("token-only").pipe(
   Flag.withDefault(false),
 );
 
+/**
+ * A pairing token is a device credential that may be handed around, so it
+ * carries the standard client scopes and nothing more. Captain approval
+ * authority (spec §5) is an explicit, opt-in extra grant.
+ */
+const approveFlag = Flag.boolean("approve").pipe(
+  Flag.withDescription(
+    "Also grant `ade:approve` — this token may approve or deny ADE Needs You items.",
+  ),
+  Flag.withDefault(false),
+);
+
 const pairingCreateCommand = Command.make("create", {
   ...authLocationFlags,
   ttl: ttlFlag,
   label: labelFlag,
   baseUrl: baseUrlFlag,
+  approve: approveFlag,
   json: jsonFlag,
 }).pipe(
   Command.withDescription("Issue a new client pairing token."),
@@ -95,7 +109,9 @@ const pairingCreateCommand = Command.make("create", {
       (environmentAuth) =>
         Effect.gen(function* () {
           const issued = yield* environmentAuth.createPairingLink({
-            scopes: AuthStandardClientScopes,
+            scopes: flags.approve
+              ? [...AuthStandardClientScopes, AuthAdeApproveScope]
+              : AuthStandardClientScopes,
             subject: "one-time-token",
             ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
             ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),

@@ -156,6 +156,10 @@ it.layer(NodeServices.layer)("PairingGrantStore.layer", (it) => {
         "access:read",
         "access:write",
         "relay:write",
+        // Captain approval authority rides the administrative credential and
+        // nothing else (spec §5): the startup link can approve, a pairing
+        // token cannot.
+        "ade:approve",
       ]);
       expect(first.subject).toBe("desktop-bootstrap");
       expect(second.method).toBe("desktop-bootstrap");

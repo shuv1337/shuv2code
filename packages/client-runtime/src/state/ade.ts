@@ -54,6 +54,46 @@ export function createAdeEnvironmentAtoms<R, E>(
   });
 
   /**
+   * The Needs You inbox (spec §7 slice 5). Polled on the badge's cadence: the
+   * list and the badge are two views of one number, and letting them drift by
+   * a different interval is how a captain ends up staring at a badge whose
+   * inbox is empty.
+   */
+  const needsYou = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:ade:needs-you",
+    tag: WS_METHODS.adeListNeedsYou,
+    staleTimeMs: 5_000,
+    refreshIntervalMs: 15_000,
+  });
+
+  /** One item, for the inbox detail pane. */
+  const needsYouItem = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:ade:needs-you-item",
+    tag: WS_METHODS.adeGetNeedsYouItem,
+    staleTimeMs: 5_000,
+    refreshIntervalMs: 15_000,
+  });
+
+  /**
+   * Re-read everything a decision moves. Both renderings of an item share
+   * these atoms, so approving inline updates the inbox and the badge without
+   * either surface knowing the other exists.
+   */
+  const refreshNeedsYou = (
+    target: { readonly environmentId: EnvironmentId },
+    registry: AtomRegistry.AtomRegistry,
+  ) =>
+    Effect.sync(() => {
+      registry.refresh(
+        needsYou({ environmentId: target.environmentId, input: { includeResolved: false } }),
+      );
+      registry.refresh(
+        needsYou({ environmentId: target.environmentId, input: { includeResolved: true } }),
+      );
+      registry.refresh(needsYouCount({ environmentId: target.environmentId, input: {} }));
+    });
+
+  /**
    * Project view header + crew (spec §7 slice 3, panel 1). Crew membership
    * changes about as often as the roster does, so it shares that cadence.
    */
@@ -136,6 +176,36 @@ export function createAdeEnvironmentAtoms<R, E>(
     projectCandidates,
     projectPublicationStack,
     assignmentGraph,
+    needsYou,
+    needsYouItem,
+    /**
+     * Approve or deny (requires an `ade:approve`-scoped connection, spec §5).
+     * Serialized per item so a double click cannot race itself into a
+     * spurious conflict, and re-read on failure as well as success: a benign
+     * "already resolved" means the list on screen is stale.
+     */
+    submitNeedsYouDecision: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:submit-needs-you-decision",
+      tag: WS_METHODS.adeSubmitNeedsYouDecision,
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => `${environmentId}:${input.needsYouItemId}`,
+      },
+      onSettled: (target, registry) =>
+        refreshNeedsYou(target, registry).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              registry.refresh(
+                needsYouItem({
+                  environmentId: target.environmentId,
+                  input: { needsYouItemId: target.input.needsYouItemId },
+                }),
+              );
+            }),
+          ),
+        ),
+    }),
     /** Adds one crew bot; the roster is what changed, so only it is re-read. */
     createBotFromTemplate: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:ade:create-bot-from-template",

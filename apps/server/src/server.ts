@@ -31,6 +31,7 @@ import { AdeAssignmentEngine } from "./ade/AdeAssignmentEngine.ts";
 import { AdeAssignmentRunner } from "./ade/AdeAssignmentRunner.ts";
 import { AdeAssignmentInlineChecks, AdeAssignmentToolHandlers } from "./ade/AdeAssignmentTools.ts";
 import { AdeBootstrap } from "./ade/AdeBootstrap.ts";
+import { AdeApprovalPortLayerLive } from "./ade/AdeApprovalPortLive.ts";
 import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
 import { layer as AdeIntegrationRepoPortLayer } from "./ade/AdeIntegrationRepoPort.ts";
@@ -413,6 +414,10 @@ const AdeCaptainLayerLive = Layer.mergeAll(
   AdeShuvcodeDispatchLoop.live,
 ).pipe(
   Layer.provideMerge(AdeCaptainApi.layer),
+  // The captain's approval verdict reaches the integration service through
+  // this port (spec §7 slice 5); it sits between the two so the captain API
+  // never depends on the integration service's own requirements.
+  Layer.provideMerge(AdeApprovalPortLayerLive),
   Layer.provideMerge(
     AdeIntegrationService.layer.pipe(Layer.provide(AdeIntegrationRepoPortLayerLive)),
   ),

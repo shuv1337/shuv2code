@@ -2,6 +2,8 @@ import type {
   AdeAssignmentGraph,
   AdeBotDetail,
   AdeNeedsYouCount,
+  AdeNeedsYouEntry,
+  AdeNeedsYouList,
   AdeProjectCandidates,
   AdeProjectDetail,
   AdeProjectId,
@@ -9,6 +11,7 @@ import type {
   AdeRoster,
   BotId,
   FleetHealthSnapshot,
+  NeedsYouItemId,
 } from "@shuv2code/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { AVAILABLE_CONNECTION_STATE } from "@shuv2code/client-runtime/connection";
@@ -128,5 +131,34 @@ export function useAdeNeedsYouCount(): EnvironmentQueryView<AdeNeedsYouCount> {
   const environmentId = useAdeEnvironmentId();
   return useEnvironmentQuery(
     environmentId === null ? null : adeEnvironment.needsYouCount({ environmentId, input: {} }),
+  );
+}
+
+/**
+ * The Needs You inbox (UI slice 5). The same list backs both renderings: the
+ * dedicated inbox reads all of it, and the inline rendering filters it by
+ * subject. One durable item, one client read, two places it shows up.
+ */
+export function useAdeNeedsYouList(
+  options: { readonly includeResolved?: boolean } = {},
+): EnvironmentQueryView<AdeNeedsYouList> {
+  const environmentId = useAdeEnvironmentId();
+  const includeResolved = options.includeResolved ?? false;
+  return useEnvironmentQuery(
+    environmentId === null
+      ? null
+      : adeEnvironment.needsYou({ environmentId, input: { includeResolved } }),
+  );
+}
+
+/** One item, for the inbox detail pane. A null id reads nothing. */
+export function useAdeNeedsYouItem(
+  needsYouItemId: NeedsYouItemId | null,
+): EnvironmentQueryView<AdeNeedsYouEntry> {
+  const environmentId = useAdeEnvironmentId();
+  return useEnvironmentQuery(
+    environmentId === null || needsYouItemId === null
+      ? null
+      : adeEnvironment.needsYouItem({ environmentId, input: { needsYouItemId } }),
   );
 }

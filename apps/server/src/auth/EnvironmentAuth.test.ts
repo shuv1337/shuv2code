@@ -1,5 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { AuthAdministrativeScopes } from "@shuv2code/contracts";
+import {
+  AuthAdeApproveScope,
+  AuthAdministrativeScopes,
+  AuthStandardClientScopes,
+} from "@shuv2code/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -159,6 +163,39 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
     }).pipe(Effect.provide(makeEnvironmentAuthLayer())),
   );
 
+  /**
+   * The other half of the `ade:approve` decision (spec §5): the startup link
+   * above carries it, and an ordinary pairing token — the credential that gets
+   * handed to a phone or another device — does not.
+   */
+  it.effect("withholds approval authority from an ordinary pairing token", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const pairingCredential = yield* serverAuth.issuePairingCredential({ label: "Phone" });
+      const paired = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+        pairingCredential.credential,
+        undefined,
+        requestMetadata,
+      );
+
+      expect(paired.scope.split(" ")).not.toContain(AuthAdeApproveScope);
+      expect(paired.scope.split(" ")).toContain("orchestration:operate");
+
+      // …but it is mintable on request, which is what `auth pairing create
+      // --approve` does.
+      const approvingCredential = yield* serverAuth.issuePairingCredential({
+        label: "Second captain surface",
+        scopes: [...AuthStandardClientScopes, AuthAdeApproveScope],
+      });
+      const approving = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+        approvingCredential.credential,
+        undefined,
+        requestMetadata,
+      );
+      expect(approving.scope.split(" ")).toContain(AuthAdeApproveScope);
+    }).pipe(Effect.provide(makeEnvironmentAuthLayer())),
+  );
+
   it.effect("issues startup pairing URLs that bootstrap administrative sessions", () =>
     Effect.gen(function* () {
       const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
@@ -188,6 +225,10 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
         "access:read",
         "access:write",
         "relay:write",
+        // Captain approval authority rides the administrative credential and
+        // nothing else (spec §5): the startup link can approve, a pairing
+        // token cannot.
+        "ade:approve",
       ]);
       expect(verified.subject).toBe("administrative-bootstrap");
     }).pipe(Effect.provide(makeEnvironmentAuthLayer())),

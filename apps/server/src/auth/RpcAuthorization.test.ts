@@ -1,4 +1,5 @@
 import {
+  AuthAdeApproveScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
@@ -60,6 +61,8 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.adeGetRoster,
       WS_METHODS.adeGetBot,
       WS_METHODS.adeGetNeedsYouCount,
+      WS_METHODS.adeListNeedsYou,
+      WS_METHODS.adeGetNeedsYouItem,
       WS_METHODS.subscribeAdeFleetHealth,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
@@ -75,6 +78,20 @@ describe("RPC authorization scopes", () => {
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
+  });
+
+  /**
+   * Captain authority is its own scope (spec §5, ADR §10.4): organizing the
+   * fleet and *deciding* on its behalf are different powers, and a client that
+   * can do the first must not silently gain the second.
+   */
+  it("holds the approval verdict apart from every other ADE mutation", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.adeSubmitNeedsYouDecision)).toBe(
+      AuthAdeApproveScope,
+    );
+    expect(
+      Object.entries(RPC_REQUIRED_SCOPES).filter(([, scope]) => scope === AuthAdeApproveScope),
+    ).toEqual([[WS_METHODS.adeSubmitNeedsYouDecision, AuthAdeApproveScope]]);
   });
 
   it("reads the reviewer menu under the same scope as the pull request it belongs to", () => {

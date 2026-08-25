@@ -25,6 +25,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { Skeleton } from "../ui/skeleton";
 import { getBotChatBody, getBotChatHeaderView, resolveChatSyncOutcome } from "./BotChatPage.logic";
+import { NeedsYouInline } from "./NeedsYouInline";
 
 /**
  * Firstmate/bot chat (spec §7 slice 1). The conversation itself is the
@@ -179,6 +180,15 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
           </>
         )}
       </header>
+      {/*
+       * The inline half of UI slice 5. Same durable items as the inbox,
+       * filtered to this bot; deciding here resolves the item the inbox lists.
+       * `empty:hidden` keeps the strip from reserving space when nothing is
+       * waiting, which is most of the time.
+       */}
+      <div className="shrink-0 px-4 pt-2 empty:hidden">
+        <NeedsYouInline subject={{ botId }} />
+      </div>
       {chatReady && threadRef !== null ? (
         <div className="flex min-h-0 flex-1 flex-col">
           {toolsMissing ? (

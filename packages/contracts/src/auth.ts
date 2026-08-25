@@ -81,6 +81,14 @@ export const AuthAccessReadScope = "access:read" as const;
 export const AuthAccessWriteScope = "access:write" as const;
 export const AuthRelayReadScope = "relay:read" as const;
 export const AuthRelayWriteScope = "relay:write" as const;
+/**
+ * Captain approval authority on the ADE surface (spec §5, ADR §10.4). Held
+ * separately from `orchestration:operate` on purpose: every other ADE mutation
+ * organizes the fleet, while this one *decides* on the fleet's behalf — it is
+ * what lets a client integrate a change or refuse it. A paired phone or a
+ * shared read/operate token drives ADE fine and simply cannot approve.
+ */
+export const AuthAdeApproveScope = "ade:approve" as const;
 export const AuthEnvironmentScope = Schema.Literals([
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
@@ -90,6 +98,7 @@ export const AuthEnvironmentScope = Schema.Literals([
   AuthAccessWriteScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
+  AuthAdeApproveScope,
 ]);
 export type AuthEnvironmentScope = typeof AuthEnvironmentScope.Type;
 export const AuthEnvironmentScopes = Schema.Array(AuthEnvironmentScope);
@@ -102,11 +111,18 @@ export const AuthStandardClientScopes = [
   AuthReviewWriteScope,
   AuthRelayReadScope,
 ] as const;
+/**
+ * The operator's own credential. `ade:approve` is here and deliberately not in
+ * {@link AuthStandardClientScopes}: the startup admin URL is the captain at
+ * their own machine, while an ordinary pairing token is a device that may be
+ * handed around. Granting approval authority stays an explicit act.
+ */
 export const AuthAdministrativeScopes = [
   ...AuthStandardClientScopes,
   AuthAccessReadScope,
   AuthAccessWriteScope,
   AuthRelayWriteScope,
+  AuthAdeApproveScope,
 ] as const;
 
 export const AuthTokenExchangeGrantType =
