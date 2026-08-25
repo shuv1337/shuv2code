@@ -38,6 +38,7 @@ import {
   useSidebar,
   useSidebarVisibility,
 } from "./ui/sidebar";
+import { resolveSidebarDefaultOpen } from "./ui/sidebarState";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 function subscribeToViewportWidth(onChange: () => void): () => void {
@@ -47,6 +48,24 @@ function subscribeToViewportWidth(onChange: () => void): () => void {
 
 function readViewportWidth(): number {
   return window.innerWidth;
+}
+
+/**
+ * The persisted collapse preference, read at mount.
+ *
+ * `SidebarProvider` writes this cookie on every toggle and, before #216, no
+ * code ever read it — the provider only unmounted with the document, so
+ * `defaultOpen` was never consulted twice. The captain surface swaps the
+ * provider out of the tree, so it now remounts on every return from `/fleet`
+ * and this is what keeps a collapsed sidebar collapsed across the round trip.
+ */
+function readSidebarDefaultOpen(): boolean {
+  try {
+    return resolveSidebarDefaultOpen(document.cookie);
+  } catch (error) {
+    console.error("Could not read the persisted sidebar state.", error);
+    return true;
+  }
 }
 
 function readInitialThreadSidebarWidth(): number {
@@ -139,6 +158,10 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
     select: (matches) => hidesWorkspaceSidebar(matches.map((match) => match.routeId)),
   });
   const macosTrafficLights = useMacosTrafficLightsInset();
+  // Read on every render rather than held in state: the provider below is
+  // unmounted while the captain surface is showing, so the value that matters
+  // is the one at *its* next mount, not the one at this component's first.
+  const sidebarDefaultOpen = readSidebarDefaultOpen();
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   // Subscribed rather than read once: the clamp must track live window size,
   // and a clamped drag ends with an unchanged width, which skips the re-render
@@ -185,56 +208,68 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
 
   /*
    * #216. The captain surface gets one rail, and it is not this one. The
-   * sidebar is not hidden here — it is not mounted, and neither is its
-   * provider, its `fixed` collapse trigger, nor the `Cmd+B` handler that would
-   * otherwise toggle a panel that is not on screen.
+   * sidebar is not hidden below — it is not mounted, and neither is its
+   * provider, its `fixed` collapse trigger, nor the `Cmd+B` handler (the
+   * captain shell binds that command to the contacts rail instead).
    *
-   * What stays above this line stays on purpose: the desktop menu's
-   * "Settings" action (the app menu is app-wide, not workspace-only) and the
-   * project projection retention (so returning to the workspace does not
-   * render a zero-project sidebar while the snapshot reconnects).
+   * Two things sit deliberately *outside* the branch so that crossing it does
+   * not disturb them:
+   *
+   * - `ProjectProjectionRetention` holds the same element position in both
+   *   trees, so React keeps the one instance mounted across a fleet round trip
+   *   rather than tearing the projection down and resubscribing.
+   * - The desktop menu's "Settings" action is registered above; the app menu is
+   *   app-wide, not workspace-only.
+   *
+   * What the branch *does* cost is the provider's own React state. Collapse is
+   * recovered from the `sidebar_state` cookie via `defaultOpen`. The thread
+   * search query and the list's scroll position are not recovered, and that is
+   * accepted: they are per-visit context, they reset on reload today, and the
+   * alternative — hoisting the provider above the branch — re-imports exactly
+   * the machinery this ticket removed from the captain surface.
    */
-  if (railOwnedByRoute) {
-    return (
-      <CaptainAppFrame macosTrafficLights={macosTrafficLights}>
-        <ProjectProjectionRetention />
-        {children}
-      </CaptainAppFrame>
-    );
-  }
-
   return (
-    <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={sidebarProviderStyle}>
+    <>
       <ProjectProjectionRetention />
-      <Sidebar
-        side="left"
-        collapsible="offcanvas"
-        data-app-sidebar=""
-        className="border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
-        resizable={{
-          maxWidth: sidebarMaximumWidth,
-          minWidth: THREAD_SIDEBAR_MIN_WIDTH,
-          shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>
-            nextWidth <= currentWidth ||
-            wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
-          storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
-          onResize: setSidebarWidth,
-        }}
-      >
-        {isOnSettings ? (
-          <>
-            <SidebarChromeHeader isElectron={isElectron} />
-            <SettingsSidebarNav pathname={pathname} />
-          </>
-        ) : legacySidebarEnabled ? (
-          <LegacyThreadSidebar />
-        ) : (
-          <ThreadSidebar />
-        )}
-        <SidebarRail onDoubleClick={resetSidebarWidth} />
-      </Sidebar>
-      {children}
-      <SidebarControl />
-    </SidebarProvider>
+      {railOwnedByRoute ? (
+        <CaptainAppFrame macosTrafficLights={macosTrafficLights}>{children}</CaptainAppFrame>
+      ) : (
+        <SidebarProvider
+          className="h-dvh! min-h-0!"
+          defaultOpen={sidebarDefaultOpen}
+          style={sidebarProviderStyle}
+        >
+          <Sidebar
+            side="left"
+            collapsible="offcanvas"
+            data-app-sidebar=""
+            className="border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
+            resizable={{
+              maxWidth: sidebarMaximumWidth,
+              minWidth: THREAD_SIDEBAR_MIN_WIDTH,
+              shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>
+                nextWidth <= currentWidth ||
+                wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
+              storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
+              onResize: setSidebarWidth,
+            }}
+          >
+            {isOnSettings ? (
+              <>
+                <SidebarChromeHeader isElectron={isElectron} />
+                <SettingsSidebarNav pathname={pathname} />
+              </>
+            ) : legacySidebarEnabled ? (
+              <LegacyThreadSidebar />
+            ) : (
+              <ThreadSidebar />
+            )}
+            <SidebarRail onDoubleClick={resetSidebarWidth} />
+          </Sidebar>
+          {children}
+          <SidebarControl />
+        </SidebarProvider>
+      )}
+    </>
   );
 }

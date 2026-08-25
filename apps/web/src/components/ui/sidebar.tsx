@@ -22,10 +22,13 @@ import { Skeleton } from "~/components/ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import { getLocalStorageItem, setLocalStorageItem } from "~/hooks/useLocalStorage";
-import { resolveSidebarState, type ResponsiveSidebarState } from "./sidebarState";
+import {
+  resolveSidebarState,
+  SIDEBAR_STATE_COOKIE_NAME,
+  type ResponsiveSidebarState,
+} from "./sidebarState";
 import * as Schema from "effect/Schema";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "calc(100vw - var(--spacing(3)))";
@@ -126,7 +129,7 @@ function SidebarProvider({
       // This sets the cookie to keep the sidebar state.
       await cookieStore.set({
         expires: Date.now() + SIDEBAR_COOKIE_MAX_AGE * 1000,
-        name: SIDEBAR_COOKIE_NAME,
+        name: SIDEBAR_STATE_COOKIE_NAME,
         path: "/",
         value: String(openState),
       });

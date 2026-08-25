@@ -303,6 +303,22 @@ export function shouldRenderConversationHeader(input: {
   );
 }
 
+/**
+ * Whether the conversation header owes the macOS traffic lights clearance.
+ *
+ * True whenever the contacts rail is not wide enough to cover them itself: at
+ * `hidden` the header is the leftmost surface outright, and at the 64px `icon`
+ * strip the lights reach past the rail and land on the header's leading
+ * control. Only the 380px expanded rail covers them completely.
+ *
+ * The *amount* is not decided here — `RAIL_TITLEBAR_INSET_CLASS` subtracts
+ * `captainLeftRailWidth` from the lights' reach, so this stays a question about
+ * which surface is exposed rather than a second copy of the arithmetic.
+ */
+export function shouldInsetConversationHeaderForTitlebar(regions: CaptainShellRegions): boolean {
+  return regions.leftRail !== "expanded";
+}
+
 /** Label for the left-rail collapse control, phrased as the action it performs. */
 export function captainLeftRailToggleLabel(regions: CaptainShellRegions): string {
   return regions.leftRail === "expanded" ? "Collapse contacts" : "Expand contacts";

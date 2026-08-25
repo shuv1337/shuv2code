@@ -24,9 +24,28 @@ export const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "90px";
  */
 export const RAIL_TITLEBAR_INSET_ATTRIBUTE = "data-rail-titlebar-inset";
 
-/** Leftmost header on a rail-only frame: start past the traffic lights. */
+/**
+ * How far from the window's left edge the header taking the inset begins.
+ *
+ * Set by any surface that is not itself at x=0 — the conversation region sits
+ * to the right of the contacts rail, so the clearance it owes the lights is
+ * what is left of them after the rail has already covered some. Unset means
+ * "flush against the window edge", which is the rail's own header.
+ */
+export const RAIL_TITLEBAR_OFFSET_VARIABLE = "--rail-titlebar-offset";
+
+/**
+ * Start past the traffic lights, counting whatever is already to the left.
+ *
+ * The subtraction is what makes one rule serve every rail width. At the 64px
+ * icon strip the conversation header begins 64px in, so a flat inset would
+ * clear the lights twice and open a visible gutter; without any inset its first
+ * control lands ~4px from the lights at browser zoom, which is the collision
+ * this exists to prevent. `max()` floors it at zero for the 380px rail, where
+ * the lights are covered by the rail entirely.
+ */
 export const RAIL_TITLEBAR_INSET_CLASS =
-  "[[data-rail-titlebar-inset]_&]:pl-[var(--workspace-controls-left)]";
+  "[[data-rail-titlebar-inset]_&]:pl-[max(0px,calc(var(--workspace-controls-left)-var(--rail-titlebar-offset,0px)))]";
 
 /**
  * The same clearance for a strip too narrow to give it up horizontally (the

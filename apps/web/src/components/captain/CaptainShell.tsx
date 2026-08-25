@@ -1,15 +1,18 @@
 import type { BotId } from "@shuv2code/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeftIcon, PanelRightIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
+import { resolveShortcutCommand } from "../../keybindings";
 import { cn } from "../../lib/utils";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useUiStateStore } from "../../uiStateStore";
-import { RAIL_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
+import { RAIL_TITLEBAR_INSET_CLASS, RAIL_TITLEBAR_OFFSET_VARIABLE } from "../../workspaceTitlebar";
 import { RightPanelResizeHandle } from "../preview/RightPanelResizeHandle";
 import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
@@ -24,12 +27,14 @@ import {
   CAPTAIN_RIGHT_RAIL_WIDTH_STORAGE_KEY,
   CAPTAIN_THREE_RAIL_MEDIA_QUERY,
   type CaptainLayoutMode,
+  canToggleCaptainLeftRail,
   captainGridTemplateColumns,
   captainLeftRailWidth,
   captainOverlayRailWidth,
   captainRightRailMaxWidth,
   resolveCaptainLayoutModeFromMediaMatches,
   resolveCaptainShellRegions,
+  shouldInsetConversationHeaderForTitlebar,
   shouldRenderConversationHeader,
 } from "./captainShell.logic";
 
@@ -161,6 +166,42 @@ export function CaptainShell({
     setCaptainRailCollapsed("left", !leftRailCollapsed);
   }, [leftRailCollapsed, setCaptainRailCollapsed]);
 
+  /*
+   * `sidebar.toggle` (Cmd+B by default) collapses the contacts rail here.
+   *
+   * The app sidebar — and with it the keybinding's usual handler — is not
+   * mounted on the captain routes since #216, which would otherwise leave a
+   * documented, user-rebindable command silently inert on this surface. It
+   * binds to the rail rather than to nothing because the command's meaning is
+   * "toggle the left rail", and the left rail is the contacts rail here.
+   *
+   * Only where the toggle is real: at 900–1179px the icon strip is imposed by
+   * width and the on-screen control is hidden for the same reason, so the
+   * shortcut does not claim a power the layout will not honour.
+   */
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const railToggleable = canToggleCaptainLeftRail(mode);
+  useEffect(() => {
+    if (!railToggleable) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest("[data-keybinding-capture]")
+      ) {
+        return;
+      }
+      if (resolveShortcutCommand(event, keybindings) !== "sidebar.toggle") return;
+      event.preventDefault();
+      event.stopPropagation();
+      toggleLeftRail();
+    };
+    // Capture, matching the workspace handler: the composer would otherwise
+    // consume Mod+B as rich-text formatting before it reached the window.
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [keybindings, railToggleable, toggleLeftRail]);
+
   const toggleRightRail = useCallback(() => {
     if (mode === "three-rails") {
       // Only here is there room to dock, so only here does the toggle mean
@@ -195,7 +236,15 @@ export function CaptainShell({
         )}
 
         {regions.showCenter ? (
-          <div className="flex min-h-0 min-w-0 flex-col">
+          <div
+            className="flex min-h-0 min-w-0 flex-col"
+            /*
+             * How far in from the window edge this column starts, so a header
+             * inside it can work out what is left of the macOS traffic lights
+             * after the rail has covered its share.
+             */
+            style={{ [RAIL_TITLEBAR_OFFSET_VARIABLE]: `${leftRailWidth}px` } as CSSProperties}
+          >
             {shouldRenderConversationHeader({
               regions,
               hasActions: conversationHeaderActions !== undefined,
@@ -204,15 +253,14 @@ export function CaptainShell({
               <ConversationHeader
                 actions={conversationHeaderActions}
                 /*
-                 * Single-column conversation: the rail is gone, so this header
-                 * is the leftmost surface and inherits its clearance under the
-                 * macOS traffic lights. (When the rail is visible the rail's
-                 * own header takes it instead.) Since #216 there is no app
-                 * sidebar trigger to inset around on these routes — the class
-                 * self-gates on the frame, so this stays a plain "am I
-                 * leftmost" question.
+                 * Clearance under the macOS traffic lights, owed whenever the
+                 * rail is too narrow to cover them itself — the rail is gone
+                 * (single column) or is the 64px strip, which the lights reach
+                 * past. Since #216 there is no app sidebar trigger to inset
+                 * around on these routes, so the class self-gates on the frame
+                 * and the width arithmetic lives in the class.
                  */
-                insetForTitlebar={regions.leftRail === "hidden"}
+                insetForTitlebar={shouldInsetConversationHeaderForTitlebar(regions)}
                 onToggleRightRail={toggleRightRail}
                 rightRailShown={rightRailShown}
                 rightRailToggleRef={rightRailToggleRef}
