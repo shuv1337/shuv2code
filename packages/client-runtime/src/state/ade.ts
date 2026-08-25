@@ -67,6 +67,22 @@ export function createAdeEnvironmentAtoms<R, E>(
   });
 
   /**
+   * Which workspace project a bot's routines belong to (messenger pivot §4,
+   * M6).
+   *
+   * Barely polled: the answer only changes when a project is created or a repo
+   * is bound, both of which are captain actions elsewhere in the app, and the
+   * rail's routine list is keyed on the resolved project so a stale-by-a-minute
+   * answer costs nothing.
+   */
+  const botRoutineContext = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:ade:bot-routine-context",
+    tag: WS_METHODS.adeGetBotRoutineContext,
+    staleTimeMs: 10_000,
+    refreshIntervalMs: 60_000,
+  });
+
+  /**
    * Sidebar "Needs You" badge. No stream backs it (spec §7.8 slice 8), so the
    * count is polled — slowly, because it is a badge and not a feed.
    */
@@ -230,6 +246,7 @@ export function createAdeEnvironmentAtoms<R, E>(
     roster,
     bot,
     botScreen,
+    botRoutineContext,
     needsYouCount,
     project,
     projectCandidates,

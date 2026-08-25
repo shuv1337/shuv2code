@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  CAPTAIN_CENTER_MIN_WIDTH_PX,
   CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY,
   CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY,
+  CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX,
+  CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX,
   CAPTAIN_THREE_RAIL_MEDIA_QUERY,
   type CaptainLayoutMode,
   canToggleCaptainLeftRail,
   captainGridTemplateColumns,
   captainLeftRailToggleLabel,
+  captainLeftRailWidth,
+  captainRightRailMaxWidth,
   resolveCaptainLayoutMode,
   resolveCaptainLayoutModeFromMediaMatches,
   resolveCaptainShellRegions,
@@ -240,6 +245,45 @@ describe("captainGridTemplateColumns", () => {
         ).toBe("minmax(0, 1fr)");
       }
     }
+  });
+});
+
+describe("right rail resize (M6)", () => {
+  it("draws the rail at the width it was dragged to", () => {
+    expect(captainGridTemplateColumns(regions(), 600)).toBe("380px minmax(520px, 1fr) 600px");
+  });
+
+  it("keeps the 470px default when nobody has dragged it", () => {
+    expect(captainGridTemplateColumns(regions())).toBe("380px minmax(520px, 1fr) 470px");
+  });
+
+  it("leaves the conversation its minimum however wide the rail was persisted", () => {
+    // The failure this prevents: a rail dragged to 720px on a 2560px monitor,
+    // then reopened on a 1440px one, squeezing the centre column under the
+    // 520px it is designed around.
+    const max = captainRightRailMaxWidth({ viewportWidth: 1440, leftRailWidth: 380 });
+    expect(max).toBe(1440 - 380 - CAPTAIN_CENTER_MIN_WIDTH_PX);
+    expect(380 + CAPTAIN_CENTER_MIN_WIDTH_PX + max).toBeLessThanOrEqual(1440);
+  });
+
+  it("never clamps below the width at which the rail stops showing anything", () => {
+    // A 40px rail is not a narrow rail, it is a wasted column. Below the
+    // minimum the answer is to collapse, which the toggle already does.
+    expect(captainRightRailMaxWidth({ viewportWidth: 900, leftRailWidth: 380 })).toBe(
+      CAPTAIN_RIGHT_RAIL_MIN_WIDTH_PX,
+    );
+  });
+
+  it("treats an unmeasurable viewport as unconstrained, matching the band resolver", () => {
+    expect(
+      captainRightRailMaxWidth({ viewportWidth: Number.POSITIVE_INFINITY, leftRailWidth: 380 }),
+    ).toBe(CAPTAIN_RIGHT_RAIL_MAX_WIDTH_PX);
+  });
+
+  it("gives back the width the left rail actually occupies, so the clamp is not a guess", () => {
+    expect(captainLeftRailWidth(regions())).toBe(380);
+    expect(captainLeftRailWidth(regions({ leftRailCollapsed: true }))).toBe(64);
+    expect(captainLeftRailWidth(regions({ mode: "single-column", hasConversation: true }))).toBe(0);
   });
 });
 

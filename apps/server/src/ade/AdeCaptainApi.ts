@@ -40,6 +40,7 @@ import {
   type AdeBotGroup,
   type AdeBotGroupId,
   type AdeBotGroupName,
+  type AdeBotRoutineContext,
   type AdeBotScreen,
   type AdeBotTemplateSummary,
   type AdeCreateBotFromTemplateInput,
@@ -67,6 +68,7 @@ import {
   type AdeUpsertBotGroupInput,
   type AdeWriteMemoryInput,
   AdeCaptainError,
+  ProjectId,
   BotDisplayMeta as BotDisplayMetaSchema,
   type Assignment,
   type Bot,
@@ -512,6 +514,14 @@ export interface AdeCaptainApiShape {
   ) => Effect.Effect<AdeDeletedBotGroup, AdeCaptainError>;
   /** Screen tab state (spec §4.6). A pure read: never provisions or starts. */
   readonly getBotScreen: (botId: BotId) => Effect.Effect<AdeBotScreen, AdeCaptainError>;
+  /**
+   * Where this bot's routines live (messenger pivot §4, M6). A pure read that
+   * creates nothing — see the implementation for why it stops short of the
+   * workspace project chat would have minted.
+   */
+  readonly getBotRoutineContext: (
+    botId: BotId,
+  ) => Effect.Effect<AdeBotRoutineContext, AdeCaptainError>;
   /** Explicit captain Start. Refused unless the bot's computer use is on. */
   readonly startBotDesktop: (botId: BotId) => Effect.Effect<AdeBotScreen, AdeCaptainError>;
   /** Explicit captain Stop. The home volume survives. */
@@ -1194,6 +1204,85 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         return yield* projectScreen(botId);
       }, captainize);
 
+      /**
+       * Resolve a bot to the workspace project its routines belong to
+       * (messenger pivot §4, M6).
+       *
+       * The path is `ade_bots.project_id` → `ade_projects.repo_path` →
+       * `projection_projects.workspace_root`, and it deliberately mirrors
+       * `AdeShuvcodeChatSession.resolveProject` in two respects and diverges in
+       * one:
+       *
+       * - mirrors the **fleet fallback**, because a coordinator has no home
+       *   project of its own and would otherwise be the one bot that can never
+       *   own a routine;
+       * - mirrors the **normalization**, because `ade_projects` stores what the
+       *   captain typed while workspace projects store a resolved root, so a raw
+       *   string comparison never matches;
+       * - **does not create the workspace project.** Chat mints one because the
+       *   captain asked to chat. Opening a side panel is not that request, and a
+       *   read RPC that provisions on read is how a poll turns into an unbounded
+       *   write loop. When the repo is bound but no workspace project covers it
+       *   yet, this reports `"no-workspace-project"` and the state heals itself
+       *   the first time the captain chats.
+       */
+      const getBotRoutineContext: AdeCaptainApiShape["getBotRoutineContext"] = Effect.fn(
+        "AdeCaptainApi.getBotRoutineContext",
+      )(function* (botId: BotId) {
+        yield* requireBot(botId);
+        const homeRows = yield* sql<{ repo_path: string | null; name: string | null }>`
+            SELECT p.repo_path AS repo_path, p.name AS name FROM ade_bots b
+            LEFT JOIN ade_projects p ON p.project_id = b.project_id
+            WHERE b.bot_id = ${botId}
+          `;
+        const home = homeRows[0];
+        const hasHomeProject = home !== undefined && home.name !== null;
+        const fallbackRows =
+          home?.repo_path != null
+            ? []
+            : yield* sql<{ repo_path: string | null; name: string | null }>`
+                SELECT repo_path, name FROM ade_projects
+                WHERE repo_path IS NOT NULL
+                ORDER BY created_at
+                LIMIT 1
+              `;
+        const bound = home?.repo_path != null ? home : fallbackRows[0];
+        const projectName = (bound?.name ??
+          home?.name ??
+          null) as AdeBotRoutineContext["projectName"];
+        const repoPath = bound?.repo_path ?? null;
+
+        if (repoPath === null) {
+          return {
+            botId,
+            projectId: null,
+            projectName,
+            // "The bot has a project, it just has no repo" and "there is no
+            // project at all" are different sentences for the captain, and the
+            // rail cannot recover the difference from a null id.
+            reason: hasHomeProject ? "no-repo-binding" : "no-project",
+          } satisfies AdeBotRoutineContext;
+        }
+
+        const normalized = yield* Effect.orElseSucceed(
+          workspacePaths.normalizeWorkspaceRoot(repoPath),
+          () => repoPath,
+        );
+        const workspaceRows = yield* sql<{ project_id: string }>`
+            SELECT project_id FROM projection_projects
+            WHERE workspace_root = ${normalized} AND deleted_at IS NULL
+            ORDER BY created_at
+            LIMIT 1
+          `;
+        const workspaceProjectId = workspaceRows[0]?.project_id ?? null;
+        return {
+          botId,
+          projectId: workspaceProjectId === null ? null : ProjectId.make(workspaceProjectId),
+          projectName,
+          reason: workspaceProjectId === null ? "no-workspace-project" : "ready",
+        } satisfies AdeBotRoutineContext;
+      }, captainize);
+
       const startBotDesktop: AdeCaptainApiShape["startBotDesktop"] = Effect.fn(
         "AdeCaptainApi.startBotDesktop",
       )(function* (botId: BotId) {
@@ -1808,6 +1897,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         submitNeedsYouDecision,
         startBotChat,
         markBotChatRead,
+        getBotRoutineContext,
       });
     }),
   );

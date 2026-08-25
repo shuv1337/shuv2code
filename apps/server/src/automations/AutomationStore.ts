@@ -10,6 +10,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import {
   AUTOMATION_SUMMARY_PREVIEW_CODE_POINTS,
+  AutomationBotAttribution,
   AutomationCreateInput,
   AutomationConcurrencyPolicy,
   AutomationCronExpression,
@@ -33,6 +34,7 @@ import {
   ProviderInstanceId,
   ProjectAutomation,
   ProjectAutomationSummary,
+  BotId,
   ProjectId,
   RuntimeMode,
   ThreadId,
@@ -48,6 +50,7 @@ const encodeModelSelection = Schema.encodeSync(ModelSelectionJson);
 const AutomationDbRow = Schema.Struct({
   id: AutomationId,
   projectId: ProjectId,
+  botId: AutomationBotAttribution,
   name: AutomationName,
   prompt: AutomationPrompt,
   enabled: Schema.Number,
@@ -68,6 +71,7 @@ const AutomationRunDbRow = AutomationRun;
 const AutomationSummaryDbRow = Schema.Struct({
   id: AutomationId,
   projectId: ProjectId,
+  botId: AutomationBotAttribution,
   name: AutomationName,
   promptPreview: AutomationPromptPreview,
   promptLength: NonNegativeInt,
@@ -93,6 +97,13 @@ const AutomationCursorProjectKey = Schema.String.check(
 const AutomationCursorPayload = Schema.Struct({
   version: Schema.Literal(1),
   projectKey: AutomationCursorProjectKey,
+  /**
+   * The bot filter the page was cut under. Optional so a cursor minted before
+   * M6 still decodes, and pinned for the same reason `enabled` is: resuming an
+   * unfiltered page under a bot filter (or the reverse) silently skips rows,
+   * because the keyset predicate assumes the row set has not moved.
+   */
+  botId: Schema.optional(Schema.NullOr(BotId)),
   enabled: Schema.NullOr(Schema.Boolean),
   createdAt: Schema.String,
   automationId: AutomationId,
@@ -106,6 +117,7 @@ type AutomationCursorPayload = typeof AutomationCursorPayload.Type;
 const automationColumns = `
   automation_id AS "id",
   project_id AS "projectId",
+  ade_bot_id AS "botId",
   name,
   prompt,
   enabled,
@@ -124,6 +136,7 @@ const automationColumns = `
 const automationSummaryColumns = `
   automation_id AS "id",
   project_id AS "projectId",
+  ade_bot_id AS "botId",
   name,
   substr(prompt, 1, ${AUTOMATION_SUMMARY_PREVIEW_CODE_POINTS}) AS "promptPreview",
   length(prompt) AS "promptLength",
@@ -172,6 +185,7 @@ function toAutomation(row: typeof AutomationDbRow.Type): ProjectAutomation {
   return {
     id: row.id,
     projectId: row.projectId,
+    botId: row.botId,
     name: row.name,
     prompt: row.prompt,
     enabled: row.enabled === 1,
@@ -307,15 +321,24 @@ export const make = Effect.gen(function* () {
   const listSummaryRows = SqlSchema.findAll({
     Request: Schema.Struct({
       projectId: ProjectId,
+      botId: Schema.NullOr(BotId),
       enabled: Schema.NullOr(Schema.Number),
       cursorCreatedAt: Schema.NullOr(Schema.String),
       cursorAutomationId: Schema.NullOr(AutomationId),
       limit: PositiveInt,
     }),
     Result: AutomationSummaryDbRow,
-    execute: ({ projectId, enabled, cursorCreatedAt, cursorAutomationId, limit }) => {
+    execute: ({ projectId, botId, enabled, cursorCreatedAt, cursorAutomationId, limit }) => {
       const clauses = ["project_id = ?"];
       const parameters: Array<string | number> = [projectId];
+      if (botId !== null) {
+        // "This bot's routines" includes the project's unattributed ones: a
+        // nightly job created from Settings is still something the captain
+        // expects to see on the rail, and hiding it there is how a routine
+        // gets created twice.
+        clauses.push("(ade_bot_id = ? OR ade_bot_id IS NULL)");
+        parameters.push(botId);
+      }
       if (enabled !== null) {
         clauses.push("enabled = ?");
         parameters.push(enabled);
@@ -335,17 +358,19 @@ export const make = Effect.gen(function* () {
   const upsert = (automation: ProjectAutomation) =>
     sql`
       INSERT INTO project_automations (
-        automation_id, project_id, name, prompt, enabled, cron_expression, time_zone,
+        automation_id, project_id, ade_bot_id, name, prompt, enabled, cron_expression, time_zone,
         model_selection_json, runtime_mode, interaction_mode, concurrency_policy,
         next_run_at, last_run_at, created_at, updated_at
       ) VALUES (
-        ${automation.id}, ${automation.projectId}, ${automation.name}, ${automation.prompt},
+        ${automation.id}, ${automation.projectId}, ${automation.botId},
+        ${automation.name}, ${automation.prompt},
         ${automation.enabled ? 1 : 0}, ${automation.cronExpression}, ${automation.timeZone},
         ${encodeModelSelection(automation.modelSelection)}, ${automation.runtimeMode},
         ${automation.interactionMode}, ${automation.concurrencyPolicy}, ${automation.nextRunAt},
         ${automation.lastRunAt}, ${automation.createdAt}, ${automation.updatedAt}
       )
       ON CONFLICT (automation_id) DO UPDATE SET
+        ade_bot_id = excluded.ade_bot_id,
         name = excluded.name,
         prompt = excluded.prompt,
         enabled = excluded.enabled,
@@ -369,9 +394,11 @@ export const make = Effect.gen(function* () {
       const cursor =
         input.cursor === undefined ? null : yield* decodeAutomationCursor(input.cursor);
       const projectKey = yield* cursorProjectKey(input.projectId);
+      const botId = input.botId ?? null;
       if (
         cursor !== null &&
         (cursor.projectKey !== projectKey ||
+          (cursor.botId ?? null) !== botId ||
           (input.enabled !== undefined && cursor.enabled !== input.enabled))
       ) {
         return yield* invalidAutomationCursor();
@@ -379,6 +406,7 @@ export const make = Effect.gen(function* () {
       const enabled = cursor === null ? (input.enabled ?? null) : cursor.enabled;
       const rows = yield* listSummaryRows({
         projectId: input.projectId,
+        botId,
         enabled: enabled === null ? null : enabled ? 1 : 0,
         cursorCreatedAt: cursor?.createdAt ?? null,
         cursorAutomationId: cursor?.automationId ?? null,
@@ -393,6 +421,7 @@ export const make = Effect.gen(function* () {
             ? encodeAutomationCursor({
                 version: 1,
                 projectKey,
+                botId,
                 enabled,
                 createdAt: last.createdAt,
                 automationId: last.id,
@@ -426,6 +455,9 @@ export const make = Effect.gen(function* () {
       const automation: ProjectAutomation = {
         id,
         ...input,
+        // `optional` means "absent", and absent is an unattributed project
+        // routine — the same thing Settings creates.
+        botId: input.botId ?? null,
         nextRunAt: input.enabled ? nextAutomationRunAt(input, now) : null,
         lastRunAt: null,
         createdAt: now,
@@ -457,6 +489,10 @@ export const make = Effect.gen(function* () {
             const now = DateTime.formatIso(yield* DateTime.now);
             const merged: ProjectAutomation = {
               ...existing,
+              // Partial patch: `undefined` leaves the attribution alone, `null`
+              // deliberately clears it back to a project routine, so `??` would
+              // be wrong here in a way it is not for the other fields.
+              botId: input.botId === undefined ? existing.botId : input.botId,
               name: input.name ?? existing.name,
               prompt: input.prompt ?? existing.prompt,
               enabled: input.enabled ?? existing.enabled,
@@ -489,6 +525,7 @@ export const make = Effect.gen(function* () {
             };
             const rows = yield* sql`
               UPDATE project_automations SET
+                ade_bot_id = ${updated.botId},
                 name = ${updated.name},
                 prompt = ${updated.prompt},
                 enabled = ${updated.enabled ? 1 : 0},

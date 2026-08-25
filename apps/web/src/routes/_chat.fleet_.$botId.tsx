@@ -6,6 +6,7 @@ import {
   CaptainConversation,
   CaptainConversationViewToggle,
 } from "../components/captain/CaptainConversation";
+import { BotSidePanel } from "../components/captain/BotSidePanel";
 import { CaptainShell } from "../components/captain/CaptainShell";
 
 // `fleet_` opts out of nesting under the index route, which renders the shell
@@ -36,6 +37,7 @@ function BotConversationRouteView() {
           <BotIdentityHeaderActions botId={botId as BotId} />
         </>
       }
+      rightRail={<BotSidePanel botId={botId as BotId} />}
     >
       <CaptainConversation botId={botId as BotId} />
     </CaptainShell>

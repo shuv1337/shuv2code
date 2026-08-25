@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 
+import { BotId } from "./ade.ts";
 import {
   IsoDateTime,
   NonNegativeInt,
@@ -47,9 +48,23 @@ export const AutomationRunStatus = Schema.Literals([
 ]);
 export type AutomationRunStatus = typeof AutomationRunStatus.Type;
 
+/**
+ * Which ADE bot a routine belongs to (`docs/ade/MESSENGER-PIVOT.md` §4, M6).
+ *
+ * Null means the routine is the project's, not any one bot's — which is what
+ * every automation created before ADE existed, and every automation created
+ * from Settings, still is. The captain's right rail shows a bot both its own
+ * routines and its project's, so this is an attribution, never a partition:
+ * nothing is hidden from the Settings surface by being attributed here, and
+ * nothing stops running because the bot it names was archived.
+ */
+export const AutomationBotAttribution = Schema.NullOr(BotId);
+export type AutomationBotAttribution = typeof AutomationBotAttribution.Type;
+
 export const ProjectAutomation = Schema.Struct({
   id: AutomationId,
   projectId: ProjectId,
+  botId: AutomationBotAttribution,
   name: AutomationName,
   prompt: AutomationPrompt,
   enabled: Schema.Boolean,
@@ -82,6 +97,7 @@ export type AutomationModelPreview = typeof AutomationModelPreview.Type;
 export const ProjectAutomationSummary = Schema.Struct({
   id: AutomationId,
   projectId: ProjectId,
+  botId: AutomationBotAttribution,
   name: AutomationName,
   promptPreview: AutomationPromptPreview,
   promptLength: NonNegativeInt,
@@ -123,6 +139,12 @@ export type AutomationListLimit = typeof AutomationListLimit.Type;
 
 export const AutomationListInput = Schema.Struct({
   projectId: ProjectId,
+  /**
+   * Narrow the page to what one bot's rail should show: routines attributed to
+   * that bot **plus** the project's unattributed ones. Absent means "everything
+   * in the project", which is what Settings asks for.
+   */
+  botId: Schema.optional(BotId),
   enabled: Schema.optional(Schema.Boolean),
   cursor: Schema.optional(AutomationListCursor),
   limit: Schema.optional(AutomationListLimit),
@@ -143,6 +165,7 @@ export type AutomationGetInput = typeof AutomationGetInput.Type;
 
 export const AutomationCreateInput = Schema.Struct({
   projectId: ProjectId,
+  botId: Schema.optional(AutomationBotAttribution),
   name: AutomationName,
   prompt: AutomationPrompt,
   enabled: Schema.Boolean,
@@ -158,6 +181,8 @@ export type AutomationCreateInput = typeof AutomationCreateInput.Type;
 export const AutomationUpdateInput = Schema.Struct({
   projectId: ProjectId,
   automationId: AutomationId,
+  /** Partial patch, ADE-style: `undefined` leaves it, `null` clears it. */
+  botId: Schema.optional(AutomationBotAttribution),
   name: Schema.optional(AutomationName),
   prompt: Schema.optional(AutomationPrompt),
   enabled: Schema.optional(Schema.Boolean),

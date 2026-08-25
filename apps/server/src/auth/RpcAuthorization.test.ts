@@ -64,6 +64,11 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.adeListNeedsYou,
       WS_METHODS.adeGetNeedsYouItem,
       WS_METHODS.subscribeAdeFleetHealth,
+      // Screen state and routine context are both pure reads: neither
+      // provisions a desktop nor creates a workspace project, which is the
+      // property that lets the right rail poll them (messenger pivot §4, M6).
+      WS_METHODS.adeGetBotScreen,
+      WS_METHODS.adeGetBotRoutineContext,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
     }

@@ -1590,3 +1590,118 @@ describe("AdeCaptainApi.deleteBot", () => {
     }),
   );
 });
+
+describe("AdeCaptainApi.getBotRoutineContext", () => {
+  it.effect("reports no-project for a bot the fleet has bound nowhere", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      // The Firstmate is deliberately fleet-wide, and a fresh fleet has no
+      // repo-bound project to fall back to.
+      const context = yield* api.getBotRoutineContext(firstmateId);
+      assert.equal(context.reason, "no-project");
+      assert.equal(context.projectId, null);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("distinguishes a project with no repository from having no project", () =>
+    Effect.gen(function* () {
+      const { api, bootstrap } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Unbound" });
+      const coder = yield* bootstrap.instantiateTemplate({
+        templateId: "coder",
+        projectId: project.projectId,
+      });
+      const context = yield* api.getBotRoutineContext(coder.botId);
+      // The whole reason the reason exists: telling this captain to "create a
+      // project" would be false, and a bare null id cannot tell them apart.
+      assert.equal(context.reason, "no-repo-binding");
+      assert.equal(context.projectId, null);
+      assert.equal(context.projectName, "Unbound");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("waits for the workspace project rather than creating one on a read", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      const created = yield* api.createProject({ name: "Demo", repoPath: "~/repos/demo" });
+      const detail = yield* api.getBot(created.secondMateBotId);
+      assert.equal(detail.bot.projectId, created.project.id);
+
+      const context = yield* api.getBotRoutineContext(created.secondMateBotId);
+      // Chat mints the workspace project because the captain asked to chat.
+      // Opening a side panel is not that request, and a polled read that
+      // provisions is an unbounded write loop.
+      assert.equal(context.reason, "no-workspace-project");
+      assert.equal(context.projectId, null);
+      assert.equal(context.projectName, "Demo");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("resolves the workspace project by normalized repo path", () =>
+    Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      // The captain typed a tilde and a trailing slash; workspace projects
+      // store the resolved root. Comparing the raw strings never matches, and
+      // a miss here is what strands the rail on an empty state forever.
+      const created = yield* api.createProject({ name: "Demo", repoPath: "~/repos/demo/" });
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES (
+          'workspace-1', 'Demo', '/normalized/repos/demo', '{}',
+          '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
+        )
+      `;
+      const context = yield* api.getBotRoutineContext(created.secondMateBotId);
+      assert.equal(context.reason, "ready");
+      assert.equal(context.projectId, "workspace-1");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("ignores a deleted workspace project instead of pointing routines at it", () =>
+    Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      const created = yield* api.createProject({ name: "Demo", repoPath: "~/repos/demo" });
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          'workspace-1', 'Demo', '/normalized/repos/demo', '{}',
+          '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', '2026-08-02T00:00:00.000Z'
+        )
+      `;
+      const context = yield* api.getBotRoutineContext(created.secondMateBotId);
+      assert.equal(context.reason, "no-workspace-project");
+      assert.equal(context.projectId, null);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("falls back to the fleet's bound project for a fleet-wide coordinator", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId, sql } = yield* setup;
+      yield* api.createProject({ name: "Demo", repoPath: "~/repos/demo" });
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES (
+          'workspace-1', 'Demo', '/normalized/repos/demo', '{}',
+          '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
+        )
+      `;
+      // Mirrors the chat session's fallback. Without it the Firstmate — the
+      // one bot that always exists — is the one bot that can never hold a
+      // routine.
+      const context = yield* api.getBotRoutineContext(firstmateId);
+      assert.equal(context.reason, "ready");
+      assert.equal(context.projectId, "workspace-1");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("refuses a bot that does not exist", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      const error = yield* Effect.flip(api.getBotRoutineContext("nope" as BotId));
+      assert.equal(error.reason, "bot_not_found");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+});

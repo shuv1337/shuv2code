@@ -274,8 +274,24 @@ export class AdeShuvcodeChatSession extends Context.Service<
         if (existing !== undefined) return existing;
 
         if (normalizedRepoPath === null) {
+          /*
+           * #212. The old copy said "This bot has no project. Create one from
+           * the Fleet page" — which was false in the case that actually
+           * produces it: a project *does* exist, it just has no repository, and
+           * creating a second one changes nothing. The repo-less state can only
+           * come from a project created before the CTA required a path, and
+           * nothing in the app binds a repo after the fact, so the honest
+           * remedy is to create a project with one.
+           */
+          // Read the *bot's own* project row, not `home` — `home` is null in
+          // exactly this branch, because it only resolves once a repo path
+          // exists. That is why the old copy could not tell the two cases
+          // apart in the first place.
+          const homeProjectName = repoRows[0]?.name ?? null;
           return yield* unavailable(
-            "This bot has no project. Create one from the Fleet page, then start the chat.",
+            homeProjectName === null
+              ? "This bot has no project. Create one with a repository path from the Fleet page, then start the chat."
+              : `Project '${homeProjectName}' has no repository path, so this bot has nowhere to run. Create a project bound to a repository, then start the chat.`,
           );
         }
 
