@@ -9,12 +9,15 @@ import {
 } from "../fleet/ProjectViewPage.logic";
 import { AssignmentResultCard } from "../fleet/AssignmentResultCard";
 import type { ParsedAssignmentDelivery } from "../fleet/assignmentResult.logic";
-import { DiffStatLabel, hasNonZeroStat } from "../chat/DiffStatLabel";
 import { Badge } from "../ui/badge";
 import { Skeleton } from "../ui/skeleton";
 import { ARTIFACT_HOVER_GROUP_CLASS, ArtifactHoverActions } from "./ArtifactHoverActions";
 import { CaptainExternalLink } from "./CaptainExternalLink";
-import { resolveDeliveryStatus, resolvePrResultArtifacts } from "./richCards.logic";
+import {
+  resolveDeliveryStatus,
+  resolvePrResultArtifacts,
+  resolvePrResultLayerUrl,
+} from "./richCards.logic";
 
 const DELIVERY_STATUS_TONE = {
   completed: "success",
@@ -45,24 +48,30 @@ const DELIVERY_STATUS_LABEL = {
  * that gap; `useAdePublicationStack(null)` starts no poller, so a delivery with
  * no stack costs nothing.
  *
- * ## Why the diff summary is usually absent
+ * ## Why there is no diff stat
  * This is the captain's route to a diff, and it is a *reference*, not a
  * rendering: `onOpenTurnDiff` is a workspace callback `CaptainRowHost` stubs to
  * a no-op, so there is no diff panel to open here. Nor is there a per-layer
  * stat to show — `PublicationLayer` carries SHAs and change ids, and no
- * contract on this path carries additions/deletions. A stat therefore appears
- * only when the captain's *own* thread produced the turn behind the card, which
- * delegated work never does; the layer's SHA is shown instead, which is the
- * honest handle. Inventing a number here would be worse than omitting one.
+ * contract on this path links a layer to an `OrchestrationCheckpointSummary`.
+ * The card shows the layer's SHA instead, which is the honest handle; per-layer
+ * stats need publication-contract support that does not exist yet (an
+ * S11-family follow-up). Inventing a number here would be worse than omitting
+ * one.
+ *
+ * ## Why a layer row links only sometimes
+ * A `url` artifact is unattributed — the delivery reports a flat list of URLs
+ * with nothing tying one to a layer. `resolvePrResultLayerUrl` therefore hands
+ * a row an href only when the delivery names exactly one layer and one URL;
+ * otherwise the PR badge renders unlinked and the header keeps the primary
+ * link. A badge that says `PR #43` and opens `PR #41` is worse than one that
+ * opens nothing.
  */
 export function PrResultCard({
   delivery,
-  diffStat,
   className,
 }: {
   readonly delivery: ParsedAssignmentDelivery;
-  /** The turn's changed-line totals, when this thread produced them. */
-  readonly diffStat?: { readonly additions: number; readonly deletions: number } | null;
   readonly className?: string;
 }) {
   const artifacts = resolvePrResultArtifacts(delivery);
@@ -81,6 +90,7 @@ export function PrResultCard({
   const layers = (stack?.layers ?? []).filter((layer) => claimedLayerIds.has(layer.layerId));
 
   const primaryUrl = artifacts.urls[0]?.href ?? stack?.stackUrl ?? null;
+  const layerUrl = resolvePrResultLayerUrl({ artifacts, renderedLayerCount: layers.length });
 
   return (
     <div className="flex w-full justify-start py-1">
@@ -102,14 +112,6 @@ export function PrResultCard({
               {stack.statusLabel}
             </Badge>
           )}
-          {diffStat != null && hasNonZeroStat(diffStat) ? (
-            <DiffStatLabel
-              additions={diffStat.additions}
-              className="text-[11px]"
-              deletions={diffStat.deletions}
-              layout="inline"
-            />
-          ) : null}
           <div className="flex-1" />
           <ArtifactHoverActions
             copyLabel={primaryUrl === null ? "Copy branch" : "Copy link"}
@@ -138,7 +140,7 @@ export function PrResultCard({
           ) : (
             <ul className="flex flex-col gap-1">
               {layers.map((layer) => (
-                <PrResultLayerRow key={layer.layerId} layer={layer} url={primaryUrl} />
+                <PrResultLayerRow key={layer.layerId} layer={layer} url={layerUrl} />
               ))}
             </ul>
           )}
@@ -153,6 +155,7 @@ function PrResultLayerRow({
   url,
 }: {
   readonly layer: PublicationLayerRowView;
+  /** Non-null only when this row's own URL is knowable; see the card's note. */
   readonly url: string | null;
 }) {
   return (

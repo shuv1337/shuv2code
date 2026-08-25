@@ -1,5 +1,5 @@
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import type { EnvironmentId, MessageId, ScopedThreadRef } from "@shuv2code/contracts";
+import type { EnvironmentId, ScopedThreadRef } from "@shuv2code/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { deriveTimelineEntries, deriveWorkLogEntries, deriveTurnPlans } from "../../session-logic";
@@ -26,10 +26,8 @@ import { MessageBubble } from "./MessageBubble";
 import { PrResultCard } from "./PrResultCard";
 import { TraceCard } from "./TraceCard";
 import type { CaptainRowHostActivity, CaptainRowHostDisplayState } from "./CaptainRowHost";
-import type { TurnDiffSummary } from "../../types";
 import {
   buildBubbleTimelineItems,
-  resolveRowDiffStat as diffStatFor,
   resolveBubbleMessageDisplay,
   resolveBubbleTimelineActivity,
   resolveTurnFoldAnchorKey,
@@ -159,24 +157,6 @@ export function BubbleTimeline({
     [thread?.messages, thread?.proposedPlans, turnPlans, workLogEntries],
   );
 
-  /**
-   * The turn's changed-line totals, keyed the way the row builder wants them.
-   *
-   * M4 passed an empty map here, which made every `diffStat` in
-   * `resolveTraceCardSummary` null — a card that had the arithmetic and never
-   * the numbers. The source needs no request: `checkpoints` already rides the
-   * thread snapshot this component is handed, and this is the same projection
-   * `ChatView` builds from `useTurnDiffSummaries`.
-   */
-  const turnDiffSummaryByAssistantMessageId = useMemo(() => {
-    const byMessageId = new Map<MessageId, TurnDiffSummary>();
-    for (const summary of thread?.checkpoints ?? EMPTY_CHECKPOINTS) {
-      if (!summary.assistantMessageId) continue;
-      byMessageId.set(summary.assistantMessageId, summary);
-    }
-    return byMessageId;
-  }, [thread?.checkpoints]);
-
   const latestTurn = thread?.latestTurn ?? null;
   const rows = useMemo(() => {
     const raw = deriveMessagesTimelineRows({
@@ -187,20 +167,13 @@ export function BubbleTimeline({
       expandedWorkGroupIds,
       isWorking,
       activeTurnStartedAt: latestTurn?.startedAt ?? null,
-      turnDiffSummaryByAssistantMessageId,
+      turnDiffSummaryByAssistantMessageId: EMPTY_DIFF_SUMMARIES,
       revertTurnCountByUserMessageId: EMPTY_REVERT_COUNTS,
     });
     const next = computeStableMessagesTimelineRows(raw, stableRowsRef.current);
     stableRowsRef.current = next;
     return next.result;
-  }, [
-    expandedTurnIds,
-    expandedWorkGroupIds,
-    isWorking,
-    latestTurn,
-    timelineEntries,
-    turnDiffSummaryByAssistantMessageId,
-  ]);
+  }, [expandedTurnIds, expandedWorkGroupIds, isWorking, latestTurn, timelineEntries]);
 
   const items = useMemo(() => buildBubbleTimelineItems({ rows, botNameById }), [botNameById, rows]);
 
@@ -443,12 +416,16 @@ function BubbleTimelineItemView({
         </div>
       );
     case "pr-result":
-      return <PrResultCard delivery={item.delivery} diffStat={diffStatFor(item.row)} />;
+      return <PrResultCard delivery={item.delivery} />;
     case "instruction":
       return (
         <InstructionCard
+          avatar={botAvatar}
           copyText={resolveBubbleMessageDisplay(item.row).copyText}
-          markdownCwd={display.markdownCwd}
+          // Explicit `undefined`, matching the bubbles beside it: the messenger
+          // has no workspace root to resolve a relative path against.
+          markdownCwd={undefined}
+          showAvatar={item.showAvatar}
           threadRef={threadRef}
           view={item.view}
         />
@@ -510,7 +487,29 @@ const BUBBLE_MAINTAIN_SCROLL_AT_END = {
 const EMPTY_ACTIVITIES: EnvironmentThread["activities"] = [];
 const EMPTY_MESSAGES: EnvironmentThread["messages"] = [];
 const EMPTY_PLANS: EnvironmentThread["proposedPlans"] = [];
-const EMPTY_CHECKPOINTS: EnvironmentThread["checkpoints"] = [];
+/**
+ * Empty, deliberately, and not a stub waiting to be filled.
+ *
+ * `turnDiffSummaryByAssistantMessageId` reaches exactly one place in the
+ * messenger — `resolveTraceCardSummary`'s `diffStat` — and nothing in the
+ * bubble projection can ever route a row there with a stat attached. An
+ * assistant message always classifies as a `bubble`, and `MessageBubble` does
+ * not read the field; the only `message` rows that become traces are `system`
+ * ones, which carry no assistant turn; and a `pr-result` row is the synthetic
+ * `role: "user"` delivery, whose work happened in a thread whose checkpoints
+ * this one never sees.
+ *
+ * Filling the map from `thread.checkpoints` therefore bought no number and cost
+ * a full re-derivation of the row model on every checkpoint refresh, because
+ * the map is a `rows` memo dependency. The captain-visible want behind it —
+ * per-layer diff stats on a `PrResultCard` — needs publication-contract
+ * support that does not exist: `PublicationLayer` carries SHAs and change ids,
+ * and no contract links `OrchestrationCheckpointSummary` to a layer. That is an
+ * S11-family follow-up, not something this seam can fake.
+ */
+const EMPTY_DIFF_SUMMARIES: Parameters<
+  typeof deriveMessagesTimelineRows
+>[0]["turnDiffSummaryByAssistantMessageId"] = new Map();
 const EMPTY_REVERT_COUNTS: Parameters<
   typeof deriveMessagesTimelineRows
 >[0]["revertTurnCountByUserMessageId"] = new Map();

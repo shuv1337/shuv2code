@@ -32,6 +32,13 @@ export interface NeedsYouRow {
   readonly created_at: string;
   readonly updated_at: string;
   readonly resolved_at: string | null;
+  /**
+   * 1 when the captain's decision carried a note (migration 059). The *value*
+   * is never stored — a `form` note is withheld entirely — so this flag is the
+   * only thing that distinguishes an answered item from a dismissed one. Not
+   * projected to the client: it is an audit fact, not something a card reads.
+   */
+  readonly resolution_note_present?: number;
 }
 
 /** Names the projection needs to say something a human recognizes. */

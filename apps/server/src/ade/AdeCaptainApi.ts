@@ -1409,9 +1409,19 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         // second decision — whichever rendering it came from — finds zero rows
         // and never reaches the integration service.
         const at = DateTime.formatIso(yield* DateTime.now);
+        // Recorded with the claim, because the claim is the only moment that
+        // knows. A `form` note is withheld below and never stored, which left
+        // "the captain answered" and "the captain dismissed it" as the same
+        // resolved row afterwards. The flag says which; it is a boolean, not a
+        // length and not a prefix, so it settles the audit question without
+        // becoming a signal about the secret itself.
+        const noteWasPresent = input.note !== undefined && input.note.trim().length > 0 ? 1 : 0;
         const claimed = yield* sql<NeedsYouRow>`
             UPDATE ade_needs_you_items
-            SET status = 'resolved', resolved_at = ${at}, updated_at = ${at}
+            SET status = 'resolved',
+                resolved_at = ${at},
+                updated_at = ${at},
+                resolution_note_present = ${noteWasPresent}
             WHERE needs_you_item_id = ${input.needsYouItemId} AND status = 'open'
             RETURNING *
           `;

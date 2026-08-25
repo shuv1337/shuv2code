@@ -4,6 +4,8 @@ import { CheckIcon, ListChecksIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 import ChatMarkdown from "../ChatMarkdown";
 import { ARTIFACT_HOVER_GROUP_CLASS, ArtifactHoverActions } from "./ArtifactHoverActions";
+import { BotAvatar } from "./BotAvatar";
+import type { BotAvatarView } from "./contactRail.logic";
 import type { InstructionCardView } from "./richCards.logic";
 
 /**
@@ -28,12 +30,21 @@ import type { InstructionCardView } from "./richCards.logic";
  * The list is a *report* of what the bot believes it has done; there is nothing
  * to write it back to, and a checkbox the captain can tick that forgets on the
  * next render is a worse lie than a static mark.
+ *
+ * ## Why it carries the bubble gutter
+ * The card is one element of a bot's bubble run, so it takes the run's left
+ * gutter — the same `w-7` avatar column `MessageBubble` reserves — and the same
+ * avatar rule: the run's last element wears it. Without the gutter the card
+ * hung ~36px to the left of every bubble around it, which read as a different
+ * speaker rather than as the same one changing register.
  */
 export function InstructionCard({
   view,
   copyText,
   markdownCwd,
   threadRef,
+  avatar,
+  showAvatar = false,
   className,
 }: {
   readonly view: InstructionCardView;
@@ -41,11 +52,16 @@ export function InstructionCard({
   readonly copyText: string;
   readonly markdownCwd: string | undefined;
   readonly threadRef?: ScopedThreadRef | undefined;
+  readonly avatar?: BotAvatarView | null | undefined;
+  readonly showAvatar?: boolean;
   readonly className?: string;
 }) {
   const total = view.items.length;
   return (
-    <div className="flex w-full justify-start py-1">
+    <div className="flex w-full items-end justify-start gap-2 py-1">
+      <div aria-hidden className="w-7 shrink-0">
+        {showAvatar && avatar != null ? <BotAvatar avatar={avatar} size="sm" /> : null}
+      </div>
       <article
         className={cn(
           ARTIFACT_HOVER_GROUP_CLASS,
@@ -56,9 +72,28 @@ export function InstructionCard({
       >
         <header className="flex items-center gap-2 px-3 pt-2.5 pb-1.5">
           <ListChecksIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-          <h3 className="min-w-0 flex-1 truncate text-sm font-medium">
-            {view.title ?? "Task list"}
-          </h3>
+          {/*
+            The title is a line the bot wrote, so it renders the way every
+            other line the bot wrote renders. Printing it raw made the one
+            piece of prose the card *promotes* the only piece it degraded — a
+            header naming a symbol in inline code showed its backticks.
+          */}
+          <div
+            aria-level={3}
+            className="min-w-0 flex-1 truncate text-sm font-medium"
+            role="heading"
+          >
+            {view.title === null ? (
+              "Task list"
+            ) : (
+              <ChatMarkdown
+                className="min-w-0 truncate text-sm text-foreground [&_p]:m-0 [&_p]:inline"
+                cwd={markdownCwd}
+                text={view.title}
+                threadRef={threadRef}
+              />
+            )}
+          </div>
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
             {view.completedCount} of {total}
           </span>
