@@ -5,9 +5,11 @@ import {
   AdeBotChatSession,
   AdeCaptainError,
   AdeCreateBotFromTemplateInput,
+  AdeListNeedsYouInput,
   AdeProject,
   AdeRoster,
   AdeRosterEntry,
+  AdeSubmitNeedsYouDecisionInput,
   ArtifactRef,
   Assignment,
   Bot,
@@ -511,6 +513,22 @@ it("carries a closed reason union on the captain error", () => {
   });
   assert.strictEqual(error.reason, "memory_conflict");
   assert.throws(() => decode({ _tag: "AdeCaptainError", reason: "teapot", message: "nope" }));
+});
+
+it("defaults the Needs You inbox to open items and closes the decision union", () => {
+  // The inbox is what a badge sends you to; defaulting to the whole history
+  // would answer a different question than the one the badge asked.
+  const decodeList = Schema.decodeUnknownSync(AdeListNeedsYouInput);
+  assert.deepStrictEqual(decodeList({}), { includeResolved: false });
+  assert.deepStrictEqual(decodeList({ includeResolved: true }), { includeResolved: true });
+
+  const decodeDecision = Schema.decodeUnknownSync(AdeSubmitNeedsYouDecisionInput);
+  assert.strictEqual(
+    decodeDecision({ needsYouItemId: "item-1", decision: "deny" }).decision,
+    "deny",
+  );
+  // No "dismiss" or "snooze": the only verdicts are the two that move the work.
+  assert.throws(() => decodeDecision({ needsYouItemId: "item-1", decision: "maybe" }));
 });
 
 it("refuses a change id that is a revset or a flag", () => {

@@ -8,13 +8,16 @@
  * a chat mints a kernel session.
  */
 import {
+  AuthAdeApproveScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSessionId,
   type AdeBotDetail,
   type AdeProjectId,
+  type AdeNeedsYouEntry,
   type AdeRoster,
   type BotId,
+  type NeedsYouItemId,
   WS_METHODS,
 } from "@shuv2code/contracts";
 import { assert, describe, it } from "@effect/vitest";
@@ -66,6 +69,28 @@ const botDetail = {
   assignments: [],
 } as unknown as AdeBotDetail;
 
+const NEEDS_YOU_ITEM_ID = "needs-you-1" as NeedsYouItemId;
+
+const needsYouEntry: AdeNeedsYouEntry = {
+  item: {
+    id: NEEDS_YOU_ITEM_ID,
+    kind: "approval",
+    subjectRefs: [],
+    status: "open",
+    createdAt: "2026-08-24T00:00:00.000Z",
+    updatedAt: "2026-08-24T00:00:00.000Z",
+    resolvedAt: null,
+  },
+  title: "A change is waiting for your approval",
+  detail: "Approving integrates it.",
+  actionable: true,
+  botId: null,
+  projectId: null,
+  assignmentId: null,
+  integrationCandidateId: null,
+  kernelEngine: null,
+};
+
 /** Records which methods actually reached the service. */
 const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"] => {
   const note = <A>(method: string, value: A) =>
@@ -90,6 +115,15 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
       } as unknown as never),
     setBotComputerUse: () => note("setBotComputerUse", botDetail.bot),
     getNeedsYouCount: () => note("getNeedsYouCount", { open: 3 }),
+    listNeedsYou: () =>
+      note("listNeedsYou", { entries: [needsYouEntry], open: 1 } as unknown as never),
+    getNeedsYouItem: () => note("getNeedsYouItem", needsYouEntry),
+    submitNeedsYouDecision: () =>
+      note("submitNeedsYouDecision", {
+        ...needsYouEntry,
+        actionable: false,
+        item: { ...needsYouEntry.item, status: "resolved" },
+      } as unknown as never),
     getProject: () =>
       note("getProject", {
         project: {
@@ -232,6 +266,107 @@ describe("authenticated ADE captain RPCs", () => {
         "setBotComputerUse",
         "startBotChat",
       ]);
+    }),
+  );
+});
+
+/**
+ * The `ade:approve` boundary (spec §5, ADR §10.4). Reading what is waiting is
+ * a read; *deciding* it is captain authority, and it is deliberately not
+ * reachable from `orchestration:operate` — that is what makes a paired phone
+ * safe to hand out.
+ */
+describe("ADE Needs You approval scope", () => {
+  it.effect("lets a fully operate-scoped client read the inbox but not decide it", () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+      const client = yield* RpcTest.makeClient(AdeWsRpcGroup).pipe(
+        Effect.provide(
+          makeAdeWsRpcLayer(
+            authenticatedSession("operate", [
+              AuthOrchestrationReadScope,
+              AuthOrchestrationOperateScope,
+            ]),
+            stubApi(calls),
+          ),
+        ),
+      );
+
+      const list = yield* client[WS_METHODS.adeListNeedsYou]({ includeResolved: false });
+      assert.strictEqual(list.open, 1);
+      const detail = yield* client[WS_METHODS.adeGetNeedsYouItem]({
+        needsYouItemId: NEEDS_YOU_ITEM_ID,
+      });
+      assert.strictEqual(detail.actionable, true);
+
+      const denial = yield* Effect.flip(
+        client[WS_METHODS.adeSubmitNeedsYouDecision]({
+          needsYouItemId: NEEDS_YOU_ITEM_ID,
+          decision: "approve",
+        }),
+      );
+      assert.strictEqual(denial._tag, "EnvironmentAuthorizationError");
+      if (denial._tag === "EnvironmentAuthorizationError") {
+        assert.strictEqual(denial.requiredScope, AuthAdeApproveScope);
+      }
+      // Refused at the wire: the decision never reached the service.
+      assert.deepStrictEqual(yield* Ref.get(calls), ["listNeedsYou", "getNeedsYouItem"]);
+    }),
+  );
+
+  it.effect("serves approve and deny to an `ade:approve` client", () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+      const client = yield* RpcTest.makeClient(AdeWsRpcGroup).pipe(
+        Effect.provide(
+          makeAdeWsRpcLayer(
+            authenticatedSession("captain", [
+              AuthOrchestrationReadScope,
+              AuthOrchestrationOperateScope,
+              AuthAdeApproveScope,
+            ]),
+            stubApi(calls),
+          ),
+        ),
+      );
+
+      const approved = yield* client[WS_METHODS.adeSubmitNeedsYouDecision]({
+        needsYouItemId: NEEDS_YOU_ITEM_ID,
+        decision: "approve",
+      });
+      assert.strictEqual(approved.item.status, "resolved");
+      yield* client[WS_METHODS.adeSubmitNeedsYouDecision]({
+        needsYouItemId: NEEDS_YOU_ITEM_ID,
+        decision: "deny",
+        note: "not yet",
+      });
+
+      assert.deepStrictEqual(yield* Ref.get(calls), [
+        "submitNeedsYouDecision",
+        "submitNeedsYouDecision",
+      ]);
+    }),
+  );
+
+  it.effect("refuses a read-only client the decision as well", () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+      const client = yield* RpcTest.makeClient(AdeWsRpcGroup).pipe(
+        Effect.provide(
+          makeAdeWsRpcLayer(
+            authenticatedSession("read", [AuthOrchestrationReadScope]),
+            stubApi(calls),
+          ),
+        ),
+      );
+      const denial = yield* Effect.flip(
+        client[WS_METHODS.adeSubmitNeedsYouDecision]({
+          needsYouItemId: NEEDS_YOU_ITEM_ID,
+          decision: "deny",
+        }),
+      );
+      assert.strictEqual(denial._tag, "EnvironmentAuthorizationError");
+      assert.deepStrictEqual(yield* Ref.get(calls), []);
     }),
   );
 });

@@ -31,6 +31,7 @@ import { Route as ConnectCallbackRouteImport } from './routes/connect_.callback'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatFleetRouteImport } from './routes/_chat.fleet'
 import { Route as ChatFleetWorkRouteImport } from './routes/_chat.fleet_.work'
+import { Route as ChatFleetNeedsYouRouteImport } from './routes/_chat.fleet_.needs-you'
 import { Route as ChatFleetBotIdRouteImport } from './routes/_chat.fleet_.$botId'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
@@ -146,6 +147,11 @@ const ChatFleetWorkRoute = ChatFleetWorkRouteImport.update({
   path: '/fleet/work',
   getParentRoute: () => ChatRoute,
 } as any)
+const ChatFleetNeedsYouRoute = ChatFleetNeedsYouRouteImport.update({
+  id: '/fleet_/needs-you',
+  path: '/fleet/needs-you',
+  getParentRoute: () => ChatRoute,
+} as any)
 const ChatFleetBotIdRoute = ChatFleetBotIdRouteImport.update({
   id: '/fleet_/$botId',
   path: '/fleet/$botId',
@@ -198,6 +204,7 @@ export interface FileRoutesByFullPath {
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/fleet/$botId': typeof ChatFleetBotIdRoute
+  '/fleet/needs-you': typeof ChatFleetNeedsYouRoute
   '/fleet/work': typeof ChatFleetWorkRoute
   '/fleet/$botId/chat': typeof ChatFleetBotIdChatRoute
   '/fleet/projects/$adeProjectId': typeof ChatFleetProjectsAdeProjectIdRoute
@@ -226,6 +233,7 @@ export interface FileRoutesByTo {
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/fleet/$botId': typeof ChatFleetBotIdRoute
+  '/fleet/needs-you': typeof ChatFleetNeedsYouRoute
   '/fleet/work': typeof ChatFleetWorkRoute
   '/fleet/$botId/chat': typeof ChatFleetBotIdChatRoute
   '/fleet/projects/$adeProjectId': typeof ChatFleetProjectsAdeProjectIdRoute
@@ -256,6 +264,7 @@ export interface FileRoutesById {
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/_chat/fleet_/$botId': typeof ChatFleetBotIdRoute
+  '/_chat/fleet_/needs-you': typeof ChatFleetNeedsYouRoute
   '/_chat/fleet_/work': typeof ChatFleetWorkRoute
   '/_chat/fleet_/$botId_/chat': typeof ChatFleetBotIdChatRoute
   '/_chat/fleet_/projects_/$adeProjectId': typeof ChatFleetProjectsAdeProjectIdRoute
@@ -286,6 +295,7 @@ export interface FileRouteTypes {
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
     | '/fleet/$botId'
+    | '/fleet/needs-you'
     | '/fleet/work'
     | '/fleet/$botId/chat'
     | '/fleet/projects/$adeProjectId'
@@ -314,6 +324,7 @@ export interface FileRouteTypes {
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
     | '/fleet/$botId'
+    | '/fleet/needs-you'
     | '/fleet/work'
     | '/fleet/$botId/chat'
     | '/fleet/projects/$adeProjectId'
@@ -343,6 +354,7 @@ export interface FileRouteTypes {
     | '/_chat/$environmentId/$threadId'
     | '/_chat/draft/$draftId'
     | '/_chat/fleet_/$botId'
+    | '/_chat/fleet_/needs-you'
     | '/_chat/fleet_/work'
     | '/_chat/fleet_/$botId_/chat'
     | '/_chat/fleet_/projects_/$adeProjectId'
@@ -515,6 +527,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatFleetWorkRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/fleet_/needs-you': {
+      id: '/_chat/fleet_/needs-you'
+      path: '/fleet/needs-you'
+      fullPath: '/fleet/needs-you'
+      preLoaderRoute: typeof ChatFleetNeedsYouRouteImport
+      parentRoute: typeof ChatRoute
+    }
     '/_chat/fleet_/$botId': {
       id: '/_chat/fleet_/$botId'
       path: '/fleet/$botId'
@@ -560,6 +579,7 @@ interface ChatRouteChildren {
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
   ChatDraftDraftIdRoute: typeof ChatDraftDraftIdRoute
   ChatFleetBotIdRoute: typeof ChatFleetBotIdRoute
+  ChatFleetNeedsYouRoute: typeof ChatFleetNeedsYouRoute
   ChatFleetWorkRoute: typeof ChatFleetWorkRoute
   ChatFleetBotIdChatRoute: typeof ChatFleetBotIdChatRoute
   ChatFleetProjectsAdeProjectIdRoute: typeof ChatFleetProjectsAdeProjectIdRoute
@@ -572,6 +592,7 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,
   ChatDraftDraftIdRoute: ChatDraftDraftIdRoute,
   ChatFleetBotIdRoute: ChatFleetBotIdRoute,
+  ChatFleetNeedsYouRoute: ChatFleetNeedsYouRoute,
   ChatFleetWorkRoute: ChatFleetWorkRoute,
   ChatFleetBotIdChatRoute: ChatFleetBotIdChatRoute,
   ChatFleetProjectsAdeProjectIdRoute: ChatFleetProjectsAdeProjectIdRoute,

@@ -5,14 +5,17 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  AdeCaptainError,
   IntegrationBounce,
   type AdeBotChatSession,
   type AdeProjectId,
   type BotId,
+  type NeedsYouItemId,
 } from "@shuv2code/contracts";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import { AdeApprovalPort } from "./AdeApprovalPort.ts";
 import { AdeAssignmentEngine, AdeAssignmentKernelPort } from "./AdeAssignmentEngine.ts";
 import { AdeBootstrap } from "./AdeBootstrap.ts";
 import { AdeCaptainApi } from "./AdeCaptainApi.ts";
@@ -42,7 +45,15 @@ const chatPortOk = Layer.succeed(AdeChatSessionPort, {
   startPrimaryChat: (botId: BotId) => Effect.succeed({ ...chatSession, botId }),
 });
 
-const makeLayer = (chatPort: Layer.Layer<AdeChatSessionPort> = chatPortOk) =>
+/** Records the verdicts the inbox forwards, so the seam stays observable. */
+const approvalPortOk = Layer.succeed(AdeApprovalPort, {
+  submitIntegrationApproval: () => Effect.void,
+});
+
+const makeLayer = (
+  chatPort: Layer.Layer<AdeChatSessionPort> = chatPortOk,
+  approvalPort: Layer.Layer<AdeApprovalPort> = approvalPortOk,
+) =>
   AdeCaptainApi.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
@@ -51,6 +62,7 @@ const makeLayer = (chatPort: Layer.Layer<AdeChatSessionPort> = chatPortOk) =>
         AdeSessionRollover.layer,
         AdeAssignmentEngine.layer,
         chatPort,
+        approvalPort,
         // Stands in for real path resolution: expands `~`, drops trailing
         // slashes, and refuses anything that does not exist.
         Layer.succeed(WorkspacePaths, {
@@ -443,6 +455,223 @@ describe("AdeCaptainApi.startBotChat", () => {
       const roster = yield* api.getRoster();
       assert.isAbove(roster.entries.length, 0);
     }).pipe(Effect.provide(makeLayer(AdeChatSessionPort.layerUnavailable))),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Needs You inbox (spec §7 slice 5, S13)
+// ---------------------------------------------------------------------------
+
+interface ForwardedVerdict {
+  readonly candidateId: string;
+  readonly decision: string;
+}
+
+/** An approval port that records every verdict actually forwarded. */
+const recordingApprovalPort = (calls: Array<ForwardedVerdict>) =>
+  Layer.succeed(AdeApprovalPort, {
+    submitIntegrationApproval: (input: {
+      readonly candidateId: string;
+      readonly decision: string;
+    }) =>
+      Effect.sync(() => {
+        calls.push({ candidateId: input.candidateId, decision: input.decision });
+      }),
+  } as AdeApprovalPort["Service"]);
+
+/** The candidate moved on underneath us; the verdict does not land. */
+const refusingApprovalPort = Layer.succeed(AdeApprovalPort, {
+  submitIntegrationApproval: () =>
+    Effect.fail(
+      new AdeCaptainError({
+        reason: "needs_you_decision_rejected",
+        message: "the candidate is no longer awaiting approval",
+      }),
+    ),
+});
+
+const APPROVAL_REFS = JSON.stringify([
+  { _tag: "integrationCandidate", integrationCandidateId: "candidate-1" },
+]);
+
+const insertNeedsYouItem = (
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly id: string;
+    readonly kind: string;
+    readonly subjectRefs: string;
+    readonly status?: string;
+  },
+) => sql`
+  INSERT INTO ade_needs_you_items (
+    needs_you_item_id, kind, subject_refs_json, status, created_at, updated_at, resolved_at
+  ) VALUES (
+    ${input.id}, ${input.kind}, ${input.subjectRefs}, ${input.status ?? "open"},
+    '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z', NULL
+  )
+`;
+
+describe("AdeCaptainApi.listNeedsYou", () => {
+  it.effect("lists open items by default and history on request", () =>
+    Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "open-1",
+        kind: "approval",
+        subjectRefs: APPROVAL_REFS,
+      });
+      yield* insertNeedsYouItem(sql, {
+        id: "done-1",
+        kind: "stall",
+        subjectRefs: "[]",
+        status: "resolved",
+      });
+
+      const open = yield* api.listNeedsYou({ includeResolved: false });
+      assert.deepEqual(
+        open.entries.map((entry) => entry.item.id),
+        ["open-1"],
+      );
+      // The badge and the list are one number. A captain who follows a badge
+      // into an inbox that disagrees with it has been lied to by one of them.
+      assert.equal(open.open, (yield* api.getNeedsYouCount()).open);
+
+      const all = yield* api.listNeedsYou({ includeResolved: true });
+      assert.deepEqual(
+        all.entries.map((entry) => entry.item.id),
+        ["open-1", "done-1"],
+      );
+      assert.equal(all.open, 1);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+});
+
+describe("AdeCaptainApi.submitNeedsYouDecision", () => {
+  it.effect("approves once and resolves the durable item", () => {
+    const verdicts: Array<ForwardedVerdict> = [];
+    return Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "item-1",
+        kind: "approval",
+        subjectRefs: APPROVAL_REFS,
+      });
+
+      const resolved = yield* api.submitNeedsYouDecision({
+        needsYouItemId: "item-1" as NeedsYouItemId,
+        decision: "approve",
+      });
+
+      assert.equal(resolved.item.status, "resolved");
+      assert.equal(resolved.actionable, false);
+      assert.deepEqual(verdicts, [{ candidateId: "candidate-1", decision: "approve" }]);
+      assert.deepEqual(yield* api.getNeedsYouCount(), { open: 0 });
+    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+  });
+
+  it.effect("denies, and forwards the denial rather than swallowing it", () => {
+    const verdicts: Array<ForwardedVerdict> = [];
+    return Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "item-1",
+        kind: "approval",
+        subjectRefs: APPROVAL_REFS,
+      });
+
+      const resolved = yield* api.submitNeedsYouDecision({
+        needsYouItemId: "item-1" as NeedsYouItemId,
+        decision: "deny",
+        note: "not yet",
+      });
+
+      assert.equal(resolved.item.status, "resolved");
+      assert.deepEqual(verdicts, [{ candidateId: "candidate-1", decision: "deny" }]);
+    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+  });
+
+  it.effect("resolves one item exactly once — the second decision is a benign conflict", () => {
+    const verdicts: Array<ForwardedVerdict> = [];
+    return Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "item-1",
+        kind: "approval",
+        subjectRefs: APPROVAL_REFS,
+      });
+      const decide = () =>
+        api.submitNeedsYouDecision({
+          needsYouItemId: "item-1" as NeedsYouItemId,
+          decision: "approve",
+        });
+
+      yield* decide();
+      const second = yield* Effect.flip(decide());
+
+      assert.equal(second.reason, "needs_you_already_resolved");
+      // The point of the claim: the integration service saw exactly one
+      // verdict, whichever rendering the second press came from.
+      assert.equal(verdicts.length, 1);
+    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+  });
+
+  it.effect("refuses to decide a kind that resolves itself", () => {
+    const verdicts: Array<ForwardedVerdict> = [];
+    return Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, { id: "kernel-1", kind: "kernel-down", subjectRefs: "[]" });
+
+      const error = yield* Effect.flip(
+        api.submitNeedsYouDecision({
+          needsYouItemId: "kernel-1" as NeedsYouItemId,
+          decision: "approve",
+        }),
+      );
+
+      assert.equal(error.reason, "needs_you_not_actionable");
+      // Still open: refusing to decide it must not retire it.
+      assert.deepEqual(yield* api.getNeedsYouCount(), { open: 1 });
+      assert.equal(verdicts.length, 0);
+    }).pipe(Effect.provide(makeLayer(chatPortOk, recordingApprovalPort(verdicts))));
+  });
+
+  it.effect("reopens the item when the verdict does not land", () =>
+    Effect.gen(function* () {
+      const { api, sql } = yield* setup;
+      yield* insertNeedsYouItem(sql, {
+        id: "item-1",
+        kind: "approval",
+        subjectRefs: APPROVAL_REFS,
+      });
+
+      const error = yield* Effect.flip(
+        api.submitNeedsYouDecision({
+          needsYouItemId: "item-1" as NeedsYouItemId,
+          decision: "approve",
+        }),
+      );
+
+      assert.equal(error.reason, "needs_you_decision_rejected");
+      // An item resolved against a decision nothing applied is work silently
+      // dropped; it has to come back.
+      const entry = yield* api.getNeedsYouItem("item-1" as NeedsYouItemId);
+      assert.equal(entry.item.status, "open");
+      assert.equal(entry.actionable, true);
+      assert.deepEqual(yield* api.getNeedsYouCount(), { open: 1 });
+    }).pipe(Effect.provide(makeLayer(chatPortOk, refusingApprovalPort))),
+  );
+
+  it.effect("reports a missing item rather than failing opaquely", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      const error = yield* Effect.flip(
+        api.submitNeedsYouDecision({
+          needsYouItemId: "ghost" as NeedsYouItemId,
+          decision: "approve",
+        }),
+      );
+      assert.equal(error.reason, "needs_you_not_found");
+    }).pipe(Effect.provide(makeLayer())),
   );
 });
 

@@ -13,12 +13,17 @@ import {
   AdeCreateProjectInput,
   AdeCreatedProject,
   AdeEditPersonaInput,
+  AdeListNeedsYouInput,
   AdeNeedsYouCount,
+  AdeNeedsYouEntry,
+  AdeNeedsYouItemIdInput,
+  AdeNeedsYouList,
   AdeProjectCandidates,
   AdeProjectDetail,
   AdeProjectIdInput,
   AdePublicationStackView,
   AdeRoster,
+  AdeSubmitNeedsYouDecisionInput,
   AdeSetComputerUseInput,
   AdeWriteMemoryInput,
   Bot,
@@ -422,6 +427,9 @@ export const WS_METHODS = {
   adeEditBotPersona: "ade.editBotPersona",
   adeSetBotComputerUse: "ade.setBotComputerUse",
   adeGetNeedsYouCount: "ade.getNeedsYouCount",
+  adeListNeedsYou: "ade.listNeedsYou",
+  adeGetNeedsYouItem: "ade.getNeedsYouItem",
+  adeSubmitNeedsYouDecision: "ade.submitNeedsYouDecision",
   adeStartBotChat: "ade.startBotChat",
 
   // Streaming subscriptions
@@ -1339,6 +1347,35 @@ export const WsAdeGetNeedsYouCountRpc = Rpc.make(WS_METHODS.adeGetNeedsYouCount,
 });
 
 /**
+ * The Needs You inbox (slice 5). One durable item, two renderings: this list
+ * backs the inbox, and the same entries — filtered by subject — render inline
+ * wherever the item's subject is on screen.
+ */
+export const WsAdeListNeedsYouRpc = Rpc.make(WS_METHODS.adeListNeedsYou, {
+  payload: AdeListNeedsYouInput,
+  success: AdeNeedsYouList,
+  error: AdeCaptainRpcError,
+});
+
+/** One item, for the inbox detail pane and for post-decision re-reads. */
+export const WsAdeGetNeedsYouItemRpc = Rpc.make(WS_METHODS.adeGetNeedsYouItem, {
+  payload: AdeNeedsYouItemIdInput,
+  success: AdeNeedsYouEntry,
+  error: AdeCaptainRpcError,
+});
+
+/**
+ * Approve or deny (spec §7 slice 5). The only RPC gated on `ade:approve`
+ * (spec §5): both renderings call exactly this, so the durable item resolves
+ * once no matter which one the captain used.
+ */
+export const WsAdeSubmitNeedsYouDecisionRpc = Rpc.make(WS_METHODS.adeSubmitNeedsYouDecision, {
+  payload: AdeSubmitNeedsYouDecisionInput,
+  success: AdeNeedsYouEntry,
+  error: AdeCaptainRpcError,
+});
+
+/**
  * Chat bootstrap (slice 1): resolve — creating it on first use — the bot's
  * active primary-text session and hand back the thread the existing
  * conversation stack renders.
@@ -1397,6 +1434,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsAdeEditBotPersonaRpc,
   WsAdeSetBotComputerUseRpc,
   WsAdeGetNeedsYouCountRpc,
+  WsAdeListNeedsYouRpc,
+  WsAdeGetNeedsYouItemRpc,
+  WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeStartBotChatRpc,
   WsAutomationsListRpc,
   WsAutomationsGetRpc,

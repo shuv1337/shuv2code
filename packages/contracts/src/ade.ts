@@ -725,6 +725,19 @@ export class AdeCaptainError extends Schema.TaggedErrorClass<AdeCaptainError>()(
     "project_invalid",
     "project_not_found",
     "persistence_failed",
+    // Needs You inbox (spec §7 slice 5, S13).
+    "needs_you_not_found",
+    /**
+     * Benign conflict: the item was already resolved — normally by the other
+     * rendering of the same durable item, or by the underlying service
+     * recovering. The captain is told what happened, not that they broke
+     * something.
+     */
+    "needs_you_already_resolved",
+    /** The item carries no captain decision (kernel-down, stall, …). */
+    "needs_you_not_actionable",
+    /** The decision reached the integration service and it refused it. */
+    "needs_you_decision_rejected",
   ]),
   message: Schema.String,
 }) {}
@@ -779,6 +792,77 @@ export const AdeSetComputerUseInput = Schema.Struct({
   computerUse: Schema.Boolean,
 });
 export type AdeSetComputerUseInput = typeof AdeSetComputerUseInput.Type;
+
+// ---------------------------------------------------------------------------
+// Needs You inbox (spec §7 slice 5 — S13)
+// ---------------------------------------------------------------------------
+
+/**
+ * The captain's verdict on an `approval` item. Deliberately not a general
+ * "resolve": the only Needs You item a captain *decides* is one that parked
+ * something waiting for that decision (spec §4.4). Every other kind is
+ * resolved by the service that raised it, when the condition clears.
+ */
+export const NeedsYouDecision = Schema.Literals(["approve", "deny"]);
+export type NeedsYouDecision = typeof NeedsYouDecision.Type;
+
+/**
+ * One rendering-ready Needs You row. The durable item is `item`; everything
+ * beside it is projection the server owns so the inbox and the inline
+ * rendering cannot drift into two different descriptions of one item
+ * (spec §7 slice 5: "one durable item, two renderings").
+ *
+ * The subject ids are flattened out of `item.subjectRefs` so both renderings
+ * can filter — "items about this bot", "items about this project" — without
+ * re-implementing the union walk.
+ */
+export const AdeNeedsYouEntry = Schema.Struct({
+  item: NeedsYouItem,
+  /** One line naming what is waiting. */
+  title: Schema.String,
+  /** One sentence saying what happens next. */
+  detail: Schema.String,
+  /** True only while the captain can still approve or deny it. */
+  actionable: Schema.Boolean,
+  botId: Schema.NullOr(BotId),
+  projectId: Schema.NullOr(AdeProjectId),
+  assignmentId: Schema.NullOr(AssignmentId),
+  integrationCandidateId: Schema.NullOr(IntegrationCandidateId),
+  kernelEngine: Schema.NullOr(KernelEngine),
+});
+export type AdeNeedsYouEntry = typeof AdeNeedsYouEntry.Type;
+
+/**
+ * Inbox payload. `open` is the same number the sidebar badge polls, returned
+ * alongside the list so opening the inbox and reading the badge cannot
+ * disagree by a poll interval.
+ */
+export const AdeNeedsYouList = Schema.Struct({
+  entries: Schema.Array(AdeNeedsYouEntry),
+  open: NonNegativeInt,
+});
+export type AdeNeedsYouList = typeof AdeNeedsYouList.Type;
+
+export const AdeListNeedsYouInput = Schema.Struct({
+  /** Recently-resolved items, for the inbox's "done" view. */
+  includeResolved: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+});
+export type AdeListNeedsYouInput = typeof AdeListNeedsYouInput.Type;
+
+export const AdeNeedsYouItemIdInput = Schema.Struct({ needsYouItemId: NeedsYouItemId });
+export type AdeNeedsYouItemIdInput = typeof AdeNeedsYouItemIdInput.Type;
+
+/**
+ * Approve or deny one item. Requires the `ade:approve` scope (spec §5,
+ * ADR §10.4) — this is the only captain-authority action on the ADE surface,
+ * and it is structurally unreachable from the bot-facing tool plane (§3.2).
+ */
+export const AdeSubmitNeedsYouDecisionInput = Schema.Struct({
+  needsYouItemId: NeedsYouItemId,
+  decision: NeedsYouDecision,
+  note: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))),
+});
+export type AdeSubmitNeedsYouDecisionInput = typeof AdeSubmitNeedsYouDecisionInput.Type;
 
 // ---------------------------------------------------------------------------
 // Project view + work graph (spec §7 slices 3, 4 — issue #166)

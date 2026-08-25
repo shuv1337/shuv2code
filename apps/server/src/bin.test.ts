@@ -410,6 +410,10 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
         "access:read",
         "access:write",
         "relay:write",
+        // Captain approval authority rides the administrative credential and
+        // nothing else (spec §5): the startup link can approve, a pairing
+        // token cannot.
+        "ade:approve",
       ]);
       assert.equal(listed.length, 1);
       assert.equal(listed[0]?.sessionId, issued.sessionId);
@@ -422,6 +426,10 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
         "access:read",
         "access:write",
         "relay:write",
+        // Captain approval authority rides the administrative credential and
+        // nothing else (spec §5): the startup link can approve, a pairing
+        // token cannot.
+        "ade:approve",
       ]);
       assert.equal("token" in (listed[0] ?? {}), false);
     }),

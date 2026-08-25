@@ -18,6 +18,7 @@
  * provider runtime, while everything else here is pure persistence.
  */
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -36,7 +37,10 @@ import {
   type AdeCreateProjectInput,
   type AdeCreatedProject,
   type AdeEditPersonaInput,
+  type AdeListNeedsYouInput,
   type AdeNeedsYouCount,
+  type AdeNeedsYouEntry,
+  type AdeNeedsYouList,
   type AdeProject,
   type AdeProjectCandidates,
   type AdeProjectCrewMember,
@@ -58,6 +62,7 @@ import {
   type IntegrationPolicy,
   type LimitsOverrides,
   type MemoryDocument,
+  type NeedsYouItemId,
   type PersonaVersion,
   type PersonaVersionId,
   type PublicationLayer,
@@ -65,16 +70,25 @@ import {
   type PublicationStack,
   type PublicationStackId,
   type SharedSpecialistAllowList,
+  type AdeSubmitNeedsYouDecisionInput,
 } from "@shuv2code/contracts";
 
 import { type PersistenceSqlError } from "../persistence/Errors.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
+import { AdeApprovalPort } from "./AdeApprovalPort.ts";
 import { AdeAssignmentEngine, type AssignmentRow, rowToAssignment } from "./AdeAssignmentEngine.ts";
 import { type CandidateRow, rowToCandidate } from "./AdeIntegrationService.ts";
 import { AdeBootstrap } from "./AdeBootstrap.ts";
 import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
 import { AdePersonaMemory } from "./AdePersonaMemory.ts";
 import { AdeSessionRollover } from "./AdeSessionRollover.ts";
+import {
+  compareNeedsYouEntries,
+  isActionableKind,
+  projectNeedsYouRow,
+  type NeedsYouNaming,
+  type NeedsYouRow,
+} from "./adeNeedsYou.ts";
 import { ADE_BOT_TEMPLATES } from "./personaTemplates.ts";
 
 // ---------------------------------------------------------------------------
@@ -173,6 +187,13 @@ export const compareRosterEntries = (left: AdeRosterEntry, right: AdeRosterEntry
   const byName = left.bot.name.localeCompare(right.bot.name);
   return byName !== 0 ? byName : left.bot.id.localeCompare(right.bot.id);
 };
+
+/**
+ * How far back the inbox's "include resolved" view reaches. Needs You is an
+ * inbox, not an audit log — resolved items are shown so a captain can confirm
+ * what they just did, and the durable rows stay in the table regardless.
+ */
+const NEEDS_YOU_HISTORY_LIMIT = 200;
 
 /** Statuses that count as "open work" on a roster row and in bot detail. */
 const OPEN_STATUSES = ["queued", "running", "blocked"] as const;
@@ -381,6 +402,21 @@ export interface AdeCaptainApiShape {
     input: AdeSetComputerUseInput,
   ) => Effect.Effect<Bot, AdeCaptainError>;
   readonly getNeedsYouCount: () => Effect.Effect<AdeNeedsYouCount, AdeCaptainError>;
+  readonly listNeedsYou: (
+    input: AdeListNeedsYouInput,
+  ) => Effect.Effect<AdeNeedsYouList, AdeCaptainError>;
+  readonly getNeedsYouItem: (
+    needsYouItemId: NeedsYouItemId,
+  ) => Effect.Effect<AdeNeedsYouEntry, AdeCaptainError>;
+  /**
+   * Approve or deny one item. Gated on `ade:approve` at the wire (spec §5) and
+   * idempotent underneath: the item is claimed with a conditional update, so a
+   * second decision — from the other rendering, or from a double click — is a
+   * benign `needs_you_already_resolved`, never a second verdict.
+   */
+  readonly submitNeedsYouDecision: (
+    input: AdeSubmitNeedsYouDecisionInput,
+  ) => Effect.Effect<AdeNeedsYouEntry, AdeCaptainError>;
   readonly startBotChat: (botId: BotId) => Effect.Effect<AdeBotChatSession, AdeCaptainError>;
   readonly getProject: (
     projectId: AdeProjectId,
@@ -408,6 +444,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
     | AdeSessionRollover
     | AdeAssignmentEngine
     | AdeChatSessionPort
+    | AdeApprovalPort
     | WorkspacePaths
   > = Layer.effect(
     AdeCaptainApi,
@@ -418,6 +455,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
       const rollover = yield* AdeSessionRollover;
       const assignments = yield* AdeAssignmentEngine;
       const chat = yield* AdeChatSessionPort;
+      const approvals = yield* AdeApprovalPort;
       const workspacePaths = yield* WorkspacePaths;
 
       const readBotRow = (botId: BotId) =>
@@ -651,6 +689,135 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         return { open: rows[0]?.open_count ?? 0 } satisfies AdeNeedsYouCount;
       }, captainize);
 
+      // -- Needs You inbox (spec §7 slice 5) ---------------------------------
+
+      /**
+       * One read of every name the projection might use. Three small table
+       * scans beat N+1 lookups per item, and the inbox is bounded by what a
+       * single captain has left unanswered.
+       */
+      const needsYouNaming = Effect.gen(function* () {
+        const bots = yield* sql<{ bot_id: string; name: string }>`
+            SELECT bot_id, name FROM ade_bots
+          `;
+        const projects = yield* sql<{ project_id: string; name: string }>`
+            SELECT project_id, name FROM ade_projects
+          `;
+        const assignments = yield* sql<{ assignment_id: string; instruction: string }>`
+            SELECT assignment_id, instruction FROM ade_assignments
+          `;
+        return {
+          botNames: new Map(bots.map((row) => [row.bot_id, row.name] as const)),
+          projectNames: new Map(projects.map((row) => [row.project_id, row.name] as const)),
+          assignmentInstructions: new Map(
+            assignments.map((row) => [row.assignment_id, row.instruction] as const),
+          ),
+        } satisfies NeedsYouNaming;
+      });
+
+      const readNeedsYouRow = (needsYouItemId: NeedsYouItemId) =>
+        sql<NeedsYouRow>`
+            SELECT * FROM ade_needs_you_items WHERE needs_you_item_id = ${needsYouItemId}
+          `;
+
+      const requireNeedsYouEntry = Effect.fn("AdeCaptainApi.requireNeedsYouEntry")(function* (
+        needsYouItemId: NeedsYouItemId,
+      ) {
+        const rows = yield* readNeedsYouRow(needsYouItemId);
+        const row = rows[0];
+        if (row === undefined) {
+          return yield* new AdeCaptainError({
+            reason: "needs_you_not_found",
+            message: `Needs You item '${needsYouItemId}' does not exist.`,
+          });
+        }
+        return projectNeedsYouRow(row, yield* needsYouNaming);
+      });
+
+      const listNeedsYou: AdeCaptainApiShape["listNeedsYou"] = Effect.fn(
+        "AdeCaptainApi.listNeedsYou",
+      )(function* (input: AdeListNeedsYouInput) {
+        const rows = input.includeResolved
+          ? yield* sql<NeedsYouRow>`
+                SELECT * FROM ade_needs_you_items
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ${NEEDS_YOU_HISTORY_LIMIT}
+              `
+          : yield* sql<NeedsYouRow>`
+                SELECT * FROM ade_needs_you_items WHERE status = 'open'
+                ORDER BY created_at DESC, rowid DESC
+              `;
+        const naming = yield* needsYouNaming;
+        const entries = rows
+          .map((row) => projectNeedsYouRow(row, naming))
+          .toSorted(compareNeedsYouEntries);
+        return {
+          entries,
+          open: entries.filter((entry) => entry.item.status === "open").length,
+        } satisfies AdeNeedsYouList;
+      }, captainize);
+
+      const getNeedsYouItem: AdeCaptainApiShape["getNeedsYouItem"] = Effect.fn(
+        "AdeCaptainApi.getNeedsYouItem",
+      )(function* (needsYouItemId: NeedsYouItemId) {
+        return yield* requireNeedsYouEntry(needsYouItemId);
+      }, captainize);
+
+      const submitNeedsYouDecision: AdeCaptainApiShape["submitNeedsYouDecision"] = Effect.fn(
+        "AdeCaptainApi.submitNeedsYouDecision",
+      )(function* (input: AdeSubmitNeedsYouDecisionInput) {
+        const entry = yield* requireNeedsYouEntry(input.needsYouItemId);
+        if (!isActionableKind(entry.item.kind)) {
+          return yield* new AdeCaptainError({
+            reason: "needs_you_not_actionable",
+            message: `A '${entry.item.kind}' item carries no captain decision; it resolves when the condition clears.`,
+          });
+        }
+        if (entry.integrationCandidateId === null) {
+          return yield* new AdeCaptainError({
+            reason: "needs_you_not_actionable",
+            message: "That approval names no integration candidate to decide.",
+          });
+        }
+
+        // Claim first. This conditional update is the exactly-once fence: the
+        // second decision — whichever rendering it came from — finds zero rows
+        // and never reaches the integration service.
+        const at = DateTime.formatIso(yield* DateTime.now);
+        const claimed = yield* sql<NeedsYouRow>`
+            UPDATE ade_needs_you_items
+            SET status = 'resolved', resolved_at = ${at}, updated_at = ${at}
+            WHERE needs_you_item_id = ${input.needsYouItemId} AND status = 'open'
+            RETURNING *
+          `;
+        if (claimed[0] === undefined) {
+          return yield* new AdeCaptainError({
+            reason: "needs_you_already_resolved",
+            message: "That item was already resolved.",
+          });
+        }
+
+        // The verdict has to land or the item has to come back: an item
+        // resolved against a decision nothing applied is work silently dropped.
+        yield* approvals
+          .submitIntegrationApproval({
+            candidateId: entry.integrationCandidateId,
+            decision: input.decision,
+            ...(input.note === undefined ? {} : { note: input.note }),
+          })
+          .pipe(
+            Effect.tapError(() =>
+              sql`
+                  UPDATE ade_needs_you_items
+                  SET status = 'open', resolved_at = NULL, updated_at = ${at}
+                  WHERE needs_you_item_id = ${input.needsYouItemId}
+                `.pipe(Effect.ignore),
+            ),
+          );
+
+        return yield* requireNeedsYouEntry(input.needsYouItemId);
+      }, captainize);
+
       const startBotChat: AdeCaptainApiShape["startBotChat"] = Effect.fn(
         "AdeCaptainApi.startBotChat",
       )(function* (botId: BotId) {
@@ -881,6 +1048,9 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         editBotPersona,
         setBotComputerUse,
         getNeedsYouCount,
+        listNeedsYou,
+        getNeedsYouItem,
+        submitNeedsYouDecision,
         startBotChat,
       });
     }),

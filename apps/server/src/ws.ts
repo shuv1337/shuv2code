@@ -71,7 +71,10 @@ import {
   type AdeCreateProjectInput,
   type AdeEditPersonaInput,
   type AdeProjectId,
+  type AdeListNeedsYouInput,
+  type AdeNeedsYouItemIdInput,
   type AdeSetComputerUseInput,
+  type AdeSubmitNeedsYouDecisionInput,
   type AdeWriteMemoryInput,
   type BotId,
   WsAdeCreateBotFromTemplateRpc,
@@ -83,7 +86,10 @@ import {
   WsAdeGetProjectRpc,
   WsAdeListProjectCandidatesRpc,
   WsAdeGetNeedsYouCountRpc,
+  WsAdeGetNeedsYouItemRpc,
   WsAdeGetRosterRpc,
+  WsAdeListNeedsYouRpc,
+  WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeSetBotComputerUseRpc,
   WsAdeStartBotChatRpc,
   WsAdeWriteBotMemoryRpc,
@@ -398,6 +404,23 @@ const makeAdeRpcHandlers = (
       ),
     [WS_METHODS.adeGetNeedsYouCount]: (_input: Record<never, never>) =>
       observeRpcEffect(WS_METHODS.adeGetNeedsYouCount, adeCaptainApi.getNeedsYouCount(), ade),
+    [WS_METHODS.adeListNeedsYou]: (input: AdeListNeedsYouInput) =>
+      observeRpcEffect(WS_METHODS.adeListNeedsYou, adeCaptainApi.listNeedsYou(input), ade),
+    [WS_METHODS.adeGetNeedsYouItem]: (input: AdeNeedsYouItemIdInput) =>
+      observeRpcEffect(
+        WS_METHODS.adeGetNeedsYouItem,
+        adeCaptainApi.getNeedsYouItem(input.needsYouItemId),
+        ade,
+      ),
+    // The one `ade:approve` RPC (spec §5). Both renderings of an item land
+    // here, which is what makes "one durable item, two renderings" true rather
+    // than aspirational.
+    [WS_METHODS.adeSubmitNeedsYouDecision]: (input: AdeSubmitNeedsYouDecisionInput) =>
+      observeRpcEffect(
+        WS_METHODS.adeSubmitNeedsYouDecision,
+        adeCaptainApi.submitNeedsYouDecision(input),
+        ade,
+      ),
     [WS_METHODS.adeStartBotChat]: (input: { readonly botId: BotId }) =>
       observeRpcEffect(WS_METHODS.adeStartBotChat, adeCaptainApi.startBotChat(input.botId), ade),
   };
@@ -417,6 +440,9 @@ export const AdeWsRpcGroup = RpcGroup.make(
   WsAdeEditBotPersonaRpc,
   WsAdeSetBotComputerUseRpc,
   WsAdeGetNeedsYouCountRpc,
+  WsAdeListNeedsYouRpc,
+  WsAdeGetNeedsYouItemRpc,
+  WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeStartBotChatRpc,
 );
 

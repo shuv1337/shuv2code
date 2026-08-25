@@ -1,5 +1,6 @@
 import {
   AuthAccessReadScope,
+  AuthAdeApproveScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
@@ -112,9 +113,9 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeVcsStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeResourceTelemetry]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAdeFleetHealth]: AuthOrchestrationReadScope,
-  // ADE captain surface (spec §7). No `ade:` scope exists yet — the approval
-  // surface introduces `ade:approve` in S13; until then reads and mutations
-  // ride the orchestration scopes like every other captain-facing RPC.
+  // ADE captain surface (spec §7). Organizing the fleet rides the
+  // orchestration scopes like every other captain-facing RPC; only the
+  // approval verdict is held apart, under `ade:approve` (spec §5, ADR §10.4).
   [WS_METHODS.adeGetRoster]: AuthOrchestrationReadScope,
   [WS_METHODS.adeGetBot]: AuthOrchestrationReadScope,
   [WS_METHODS.adeGetNeedsYouCount]: AuthOrchestrationReadScope,
@@ -123,6 +124,15 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.adeListProjectCandidates]: AuthOrchestrationReadScope,
   [WS_METHODS.adeGetProjectPublicationStack]: AuthOrchestrationReadScope,
   [WS_METHODS.adeGetAssignmentGraph]: AuthOrchestrationReadScope,
+  // Reading the inbox is reading. A client that may look at the fleet may see
+  // what is waiting on the captain — it just cannot answer it.
+  [WS_METHODS.adeListNeedsYou]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeGetNeedsYouItem]: AuthOrchestrationReadScope,
+  // The captain's verdict, and the only RPC behind `ade:approve`: approving
+  // integrates a change, denying bounces it. Deliberately *not*
+  // `orchestration:operate` — a paired device organizes the fleet without
+  // being able to decide on the captain's behalf.
+  [WS_METHODS.adeSubmitNeedsYouDecision]: AuthAdeApproveScope,
   [WS_METHODS.adeCreateBotFromTemplate]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeCreateProject]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeWriteBotMemory]: AuthOrchestrationOperateScope,

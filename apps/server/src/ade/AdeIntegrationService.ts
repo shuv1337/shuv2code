@@ -407,9 +407,18 @@ const decodeBounce = Schema.decodeUnknownEffect(BounceJson);
 const encodeBounce = Schema.encodeEffect(BounceJson);
 const decodeLimitsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(LimitsConfig));
 const decodeLimitsDefaults = Schema.decodeUnknownEffect(LimitsConfig);
+/**
+ * A structural projection of `NeedsYouSubjectRef` — the service only ever
+ * reads back the ids it wrote, so it does not need the full branded union.
+ */
 const SubjectRefsJson = Schema.fromJsonString(
   Schema.Array(
-    Schema.Struct({ _tag: Schema.String, integrationCandidateId: Schema.optional(Schema.String) }),
+    Schema.Struct({
+      _tag: Schema.String,
+      integrationCandidateId: Schema.optional(Schema.String),
+      projectId: Schema.optional(Schema.String),
+      botId: Schema.optional(Schema.String),
+    }),
   ),
 );
 const encodeSubjectRefs = Schema.encodeEffect(SubjectRefsJson);
@@ -804,6 +813,81 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
           .pipe(Effect.mapError(mapSql("openUnroutableRepairItem")));
       },
     );
+
+    /**
+     * Park an `approval` item on the captain (spec §7 slice 5). Same DB-backed
+     * dedupe as the stall item above: parking is re-derived on every recovery
+     * pass (ADR §16.2 has no journal), so without it a restart loop would pile
+     * up one inbox row per pass for a single waiting candidate.
+     */
+    const openApprovalItem = Effect.fn("AdeIntegrationService.openApprovalItem")(function* (input: {
+      readonly candidateId: string;
+      readonly projectId: string;
+      readonly originatingBotId: string | null;
+    }) {
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const open = yield* sql<{ readonly subject_refs_json: string }>`
+              SELECT subject_refs_json FROM ade_needs_you_items
+              WHERE kind = 'approval' AND status = 'open'
+            `;
+            for (const row of open) {
+              const refs = yield* Effect.orElseSucceed(
+                decodeSubjectRefs(row.subject_refs_json),
+                () => [],
+              );
+              if (
+                refs.some(
+                  (ref) =>
+                    ref._tag === "integrationCandidate" &&
+                    ref.integrationCandidateId === input.candidateId,
+                )
+              ) {
+                return;
+              }
+            }
+            const id = yield* uuid;
+            const at = yield* nowIso;
+            const subjectRefs = yield* Effect.orDie(
+              encodeSubjectRefs([
+                { _tag: "integrationCandidate", integrationCandidateId: input.candidateId },
+                { _tag: "project", projectId: input.projectId },
+                ...(input.originatingBotId === null
+                  ? []
+                  : ([{ _tag: "bot", botId: input.originatingBotId }] as const)),
+              ] as Parameters<typeof encodeSubjectRefs>[0]),
+            );
+            yield* sql`
+              INSERT INTO ade_needs_you_items (
+                needs_you_item_id, kind, subject_refs_json, status,
+                created_at, updated_at, resolved_at
+              ) VALUES (${id}, 'approval', ${subjectRefs}, 'open', ${at}, ${at}, NULL)
+            `;
+          }),
+        )
+        .pipe(Effect.mapError(mapSql("openApprovalItem")));
+    });
+
+    /**
+     * The candidate is no longer waiting on the captain, so neither is the
+     * item — whichever rendering (inbox or inline) produced the verdict, and
+     * even when the verdict never came from a rendering at all. This is what
+     * makes the item resolve exactly once: `claimForVerdict` is the single
+     * conditional exit from `awaiting-approval`.
+     */
+    const resolveApprovalItems = Effect.fn("AdeIntegrationService.resolveApprovalItems")(function* (
+      candidateId: string,
+    ) {
+      const at = yield* nowIso;
+      yield* sql`
+          UPDATE ade_needs_you_items
+          SET status = 'resolved', resolved_at = ${at}, updated_at = ${at}
+          WHERE kind = 'approval'
+            AND status = 'open'
+            AND subject_refs_json LIKE ${`%"integrationCandidateId":"${candidateId}"%`}
+        `.pipe(Effect.mapError(mapSql("resolveApprovalItems")));
+    });
 
     // -----------------------------------------------------------------------
     // Bounce (ADR §7.2, §13.3, §14.4)
@@ -1244,6 +1328,13 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         leaseHolder: null,
         leaseExpiresAt: null,
       });
+      // Parking is only real once the captain can see it: an approval that
+      // waits without an inbox row is an assignment nobody will ever answer.
+      yield* openApprovalItem({
+        candidateId,
+        projectId: project.projectId,
+        originatingBotId: candidate.originating_bot_id,
+      });
       return advancedTo(candidateId, "awaiting-approval");
     });
 
@@ -1415,7 +1506,15 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
           AND (${input.reviewerBotId ?? null} IS NULL OR reviewer_bot_id = ${input.reviewerBotId ?? null})
         RETURNING *
       `.pipe(Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<CandidateRow>)));
-      return rows[0] ?? null;
+      const claimed = rows[0] ?? null;
+      // The single conditional exit from `awaiting-approval`, so this is the
+      // one place the durable Needs You item can be retired — no matter which
+      // rendering (inbox, inline, or a later voice confirmation) produced the
+      // verdict. Second callers lose the claim and resolve nothing.
+      if (claimed !== null && input.fromStatus === "awaiting-approval") {
+        yield* resolveApprovalItems(input.candidateId);
+      }
+      return claimed;
     });
 
     const applyVerdict = Effect.fn("AdeIntegrationService.applyVerdict")(function* (input: {
