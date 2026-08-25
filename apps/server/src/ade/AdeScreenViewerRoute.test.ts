@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -149,8 +150,16 @@ describe("decideScreenViewerRequest", () => {
  * writes lands in `sent`, and `deliver` pushes bytes as if the viewer sent them.
  */
 const fakeViewerSocket = Effect.gen(function* () {
-  const inbound = yield* Queue.bounded<Uint8Array>(32);
+  const inbound = yield* Queue.bounded<Uint8Array, Cause.Done>(32);
   const sent: Array<Uint8Array> = [];
+  /**
+   * How the viewer's read loop ends. `null` means it is still open; a
+   * `SocketError` reproduces what `Socket.fromWebSocket` actually does when the
+   * browser closes — **including a clean 1000, which it reports as a failure**
+   * because `closeCodeIsError` defaults to true. That default is the whole
+   * reason this relay needs to race exits rather than effects.
+   */
+  let closedWith: Socket.SocketError | null = null;
   const socket = Socket.make({
     // `runRaw`'s handler may answer with an Effect or with nothing; normalize
     // both so the pump is one uniform loop.
@@ -161,6 +170,9 @@ const fakeViewerSocket = Effect.gen(function* () {
           return answer === undefined ? Effect.void : Effect.asVoid(answer);
         }),
         Effect.forever,
+        Effect.catchTag("Done", () =>
+          closedWith === null ? Effect.void : Effect.fail(closedWith),
+        ),
       ),
     writer: Effect.succeed((chunk: Uint8Array | string | Socket.CloseEvent) =>
       Effect.sync(() => {
@@ -172,6 +184,14 @@ const fakeViewerSocket = Effect.gen(function* () {
     socket,
     sent,
     deliver: (bytes: Uint8Array) => Queue.offer(inbound, bytes),
+    /** Close the way a browser tab does: a close code delivered as a failure. */
+    close: (code: number) =>
+      Effect.sync(() => {
+        closedWith = new Socket.SocketError({
+          reason: new Socket.SocketCloseError({ code }),
+        });
+        Queue.endUnsafe(inbound);
+      }),
   };
 });
 
@@ -271,6 +291,69 @@ describe("relayViewerToDesktop", () => {
         relayViewerToDesktop(viewer.socket, { host: "127.0.0.1", port: closed.port }),
       ).pipe(Effect.result);
       assert.strictEqual(outcome._tag, "Failure");
+    }),
+  );
+
+  it.live("ends when the viewer closes cleanly, even against a silent desktop", () =>
+    Effect.gen(function* () {
+      // The regression this guards: a desktop that is simply idle never ends
+      // the desktop→viewer pump, and `Socket` reports even a clean 1000 close
+      // as a *failure*. Racing the effects would wait for the other side to
+      // succeed and park here forever, so the relay's scope would never close
+      // and `viewerDetached` would never run.
+      let accepted = 0;
+      const desktop = yield* startFakeDesktop(() => {
+        accepted += 1;
+        // Deliberately silent: no banner, no close.
+      });
+      const viewer = yield* fakeViewerSocket;
+
+      // Close from a *separate* fiber and then await the relay itself. Racing
+      // the closer against the relay would let the closer win and prove
+      // nothing about whether the relay can end on its own.
+      yield* Effect.forkChild(Effect.sleep("200 millis").pipe(Effect.andThen(viewer.close(1000))));
+      const finished = yield* Effect.scoped(
+        relayViewerToDesktop(viewer.socket, { host: "127.0.0.1", port: desktop.port }),
+      ).pipe(Effect.as("ended" as const), Effect.timeoutOption("5 seconds"), Effect.orDie);
+
+      assert.deepStrictEqual(finished, Option.some("ended"));
+      assert.strictEqual(accepted, 1);
+    }),
+  );
+
+  it.live("ends on an abnormal viewer close too", () =>
+    Effect.gen(function* () {
+      const desktop = yield* startFakeDesktop(() => {});
+      const viewer = yield* fakeViewerSocket;
+
+      // 1006 is an abnormal close (dropped network). It must tear the relay
+      // down just as surely as a clean one — the viewer is gone either way.
+      yield* Effect.forkChild(Effect.sleep("200 millis").pipe(Effect.andThen(viewer.close(1006))));
+      const outcome = yield* Effect.scoped(
+        relayViewerToDesktop(viewer.socket, { host: "127.0.0.1", port: desktop.port }),
+      ).pipe(Effect.result, Effect.timeoutOption("5 seconds"), Effect.orDie);
+
+      assert.isTrue(Option.isSome(outcome), "relay must settle rather than hang");
+    }),
+  );
+
+  it.live("survives a desktop that resets the connection immediately after accepting", () =>
+    Effect.gen(function* () {
+      // Regression for the unhandled-'error' window: a reset arriving between
+      // the connect callback and the relay's own listeners used to reach Node
+      // with no `error` handler attached, which is an `ERR_UNHANDLED_ERROR`
+      // that takes the whole server process down.
+      const desktop = yield* startFakeDesktop((connection) => {
+        connection.resetAndDestroy();
+      });
+      const viewer = yield* fakeViewerSocket;
+
+      const outcome = yield* Effect.scoped(
+        relayViewerToDesktop(viewer.socket, { host: "127.0.0.1", port: desktop.port }),
+      ).pipe(Effect.result, Effect.timeoutOption("10 seconds"), Effect.orDie);
+
+      // Whatever it settles as, it must settle — and the process must survive.
+      assert.isTrue(Option.isSome(outcome));
     }),
   );
 });

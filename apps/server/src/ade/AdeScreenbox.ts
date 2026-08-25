@@ -268,6 +268,23 @@ export interface AdeScreenboxRuntimeShape {
   readonly stopDesktopFor: (botId: BotId) => Effect.Effect<void, AdeScreenboxProvisionError>;
   /** Bot delete (S15): destroy without snapshot + purge data + drop the record. */
   readonly destroyDesktopFor: (botId: BotId) => Effect.Effect<void, AdeScreenboxProvisionError>;
+  /**
+   * Purge the bot's desktop and run `finalize` (the bot-row delete) **without
+   * releasing the per-bot lock in between**.
+   *
+   * The gap matters: `ade_screenbox_provisionings.bot_id` cascades from
+   * `ade_bots`, so a tool forward that re-provisions between the purge and the
+   * row delete would have its brand-new provisioning record silently cascaded
+   * away, stranding a running container and its home volume with nothing left
+   * that knows they exist. Holding one lock across both is what makes delete
+   * atomic against `ensureDesktopReady`.
+   *
+   * Reports whether there was a desktop to purge at all.
+   */
+  readonly deleteDesktopAndFinalize: <A, E, R>(
+    botId: BotId,
+    finalize: (input: { readonly desktopPurged: boolean }) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, AdeScreenboxProvisionError | E, R>;
   readonly statusFor: (botId: BotId) => Effect.Effect<AdeScreenboxDesktopStatus>;
   /**
    * Loopback RFB endpoint for this bot's desktop, for the WS→VNC proxy (§4.6).
@@ -300,6 +317,34 @@ interface ProvisioningRow {
 }
 
 export const DEFAULT_IDLE_SWEEP_INTERVAL = Duration.minutes(1);
+
+/**
+ * Whether an upstream-reported port is plausibly a published desktop port.
+ *
+ * Not a security boundary on its own — the loopback-origin check above is —
+ * but a cheap bound on a number this process did not choose. Two things it
+ * rules out: privileged ports (a container publish never lands below 1024, and
+ * dialling one would splice a viewer into a system service), and this server's
+ * own listener, where the proxy would otherwise loop a captain back into ADE's
+ * own HTTP/WS port.
+ */
+const MIN_DESKTOP_PORT = 1024;
+
+export const isPlausibleDesktopPort = (port: number, ownPorts: ReadonlySet<number>): boolean =>
+  Number.isInteger(port) && port >= MIN_DESKTOP_PORT && port <= 65535 && !ownPorts.has(port);
+
+/**
+ * Ports this server itself listens on, which the viewer proxy must never dial.
+ *
+ * A reference rather than a dependency so the whole ADE layer graph — and every
+ * test that builds it — keeps working unchanged; `server.ts` supplies the real
+ * value at boot. Empty is the safe-by-omission default: the loopback-origin
+ * check and the privileged-port floor still stand on their own.
+ */
+export const AdeServerOwnPorts = Context.Reference<ReadonlySet<number>>(
+  "shuv2code/ade/AdeScreenbox/AdeServerOwnPorts",
+  { defaultValue: (): ReadonlySet<number> => new Set<number>() },
+);
 
 const desktopIdFor = (botId: BotId): string => botId;
 const containerRefFor = (botId: BotId): string => `screenbox-${botId}`;
@@ -658,6 +703,24 @@ export const makeAdeScreenboxRuntime = (
             reason: "Screenbox is not configured on this host.",
           });
         }
+        // A deleted bot must not be able to provision. Without this the FK on
+        // `ade_screenbox_provisionings` would still refuse the reservation, but
+        // as an opaque "internal" persistence failure — and only when foreign
+        // keys happen to be on. Checking the row makes the refusal typed,
+        // explicit, and independent of the pragma.
+        const botExists = yield* sql<{ bot_id: string }>`
+          SELECT bot_id FROM ade_bots WHERE bot_id = ${botId}
+        `.pipe(
+          Effect.map((rows) => rows.length > 0),
+          Effect.orElseSucceed(() => true),
+        );
+        if (!botExists) {
+          return yield* new AdeScreenboxProvisionError({
+            botId,
+            kind: "not-eligible",
+            reason: "This bot no longer exists, so it cannot be given a desktop.",
+          });
+        }
         const at = yield* nowIso;
         const row = yield* readRow(botId);
         if (row !== null && row.status === "running") {
@@ -730,46 +793,66 @@ export const makeAdeScreenboxRuntime = (
         ),
       );
 
+    /** The purge itself. Callers must already hold this bot's lock. */
+    const destroyDesktopUnsynchronized = (botId: BotId) =>
+      Effect.gen(function* () {
+        const desktopId = desktopIdFor(botId);
+        // Confirm-gated delete asks upstream to purge all three stores
+        // (§4.6): container (no snapshot), dossier, and home volume.
+        //
+        // Upstream defect, accommodated rather than worked around: the
+        // home volume removal fails silently (its docker-proxy whitelist
+        // has no `DELETE /volumes` route) yet delete-data still reports
+        // `{"deleted": true}`. ADE makes no docker calls and does not
+        // retry; it logs the operator's one-liner so a purge that left
+        // data behind is at least visible in the server log.
+        const outcome = yield* client
+          .destroyDesktop(desktopId)
+          .pipe(Effect.andThen(client.deleteDesktopData(desktopId)), Effect.result);
+        if (outcome._tag === "Success") {
+          yield* Effect.logWarning(
+            "ADE Screenbox deleted a desktop; upstream may have left its home volume behind",
+            {
+              botId,
+              desktopId,
+              operatorWorkaround: `docker volume rm -f screenbox-${desktopId}-home`,
+            },
+          );
+        }
+        yield* orLogAndSucceed(
+          sql`DELETE FROM ade_screenbox_provisionings WHERE bot_id = ${botId}`,
+          "ADE Screenbox could not delete a provisioning record",
+          undefined,
+        );
+        viewers.delete(botId);
+        if (outcome._tag === "Failure") {
+          return yield* new AdeScreenboxProvisionError({
+            botId,
+            kind: "upstream",
+            reason: `Screenbox could not fully delete this bot's desktop: ${boundScreenboxDetail(outcome.failure.message)}`,
+          });
+        }
+      });
+
     const destroyDesktopFor: AdeScreenboxRuntimeShape["destroyDesktopFor"] = (botId) =>
+      Effect.suspend(() => mutexFor(botId).withPermits(1)(destroyDesktopUnsynchronized(botId)));
+
+    const deleteDesktopAndFinalize: AdeScreenboxRuntimeShape["deleteDesktopAndFinalize"] = (
+      botId,
+      finalize,
+    ) =>
       Effect.suspend(() =>
         mutexFor(botId).withPermits(1)(
           Effect.gen(function* () {
-            const desktopId = desktopIdFor(botId);
-            // Confirm-gated delete asks upstream to purge all three stores
-            // (§4.6): container (no snapshot), dossier, and home volume.
-            //
-            // Upstream defect, accommodated rather than worked around: the
-            // home volume removal fails silently (its docker-proxy whitelist
-            // has no `DELETE /volumes` route) yet delete-data still reports
-            // `{"deleted": true}`. ADE makes no docker calls and does not
-            // retry; it logs the operator's one-liner so a purge that left
-            // data behind is at least visible in the server log.
-            const outcome = yield* client
-              .destroyDesktop(desktopId)
-              .pipe(Effect.andThen(client.deleteDesktopData(desktopId)), Effect.result);
-            if (outcome._tag === "Success") {
-              yield* Effect.logWarning(
-                "ADE Screenbox deleted a desktop; upstream may have left its home volume behind",
-                {
-                  botId,
-                  desktopId,
-                  operatorWorkaround: `docker volume rm -f screenbox-${desktopId}-home`,
-                },
-              );
-            }
-            yield* orLogAndSucceed(
-              sql`DELETE FROM ade_screenbox_provisionings WHERE bot_id = ${botId}`,
-              "ADE Screenbox could not delete a provisioning record",
-              undefined,
-            );
-            viewers.delete(botId);
-            if (outcome._tag === "Failure") {
-              return yield* new AdeScreenboxProvisionError({
-                botId,
-                kind: "upstream",
-                reason: `Screenbox could not fully delete this bot's desktop: ${boundScreenboxDetail(outcome.failure.message)}`,
-              });
-            }
+            // Status is read inside the lock too: reading it outside would let
+            // a provision land between the read and the purge, and the delete
+            // would then skip a desktop that now exists.
+            const row = yield* readRow(botId);
+            const desktopPurged = row !== null;
+            if (desktopPurged) yield* destroyDesktopUnsynchronized(botId);
+            // Still inside the lock: `ensureDesktopReady` cannot interleave, so
+            // nothing can create a provisioning row for the cascade to eat.
+            return yield* finalize({ desktopPurged });
           }),
         ),
       );
@@ -1049,6 +1132,12 @@ export const makeAdeScreenboxRuntime = (
         viewers: viewers.get(botId) ?? 0,
       }));
 
+    // Read once, at layer construction. A `Context.Reference` resolves against
+    // the *calling* fiber's context, and `viewerTargetFor` is called from the
+    // RPC/route fiber rather than from inside this layer — so reading it lazily
+    // would always see the default and silently disarm the guard.
+    const ownPorts = yield* AdeServerOwnPorts;
+
     const viewerRefusal = (botId: BotId, kind: AdeScreenboxProvisionFailureKind, reason: string) =>
       new AdeScreenboxProvisionError({ botId, kind, reason });
 
@@ -1059,6 +1148,23 @@ export const makeAdeScreenboxRuntime = (
             botId,
             "not-configured",
             "Screenbox is not configured on this host.",
+          );
+        }
+        // Checked here, not assumed. Everything below dials a loopback port
+        // that *upstream* chose; that is only safe while upstream is this same
+        // machine. Against a remote or compromised Screenbox, `vnc_port`
+        // becomes an attacker-chosen number and the viewer proxy would become a
+        // raw byte pipe from any operate-scoped captain to arbitrary ports on
+        // the ADE server's own loopback.
+        if (!client.isLoopback) {
+          yield* Effect.logWarning(
+            "ADE Screenbox viewer refused: the configured Screenbox is not on loopback",
+            { botId, note: "The desktop viewer only proxies to an operator-run local Screenbox." },
+          );
+          return yield* viewerRefusal(
+            botId,
+            "not-configured",
+            "The desktop viewer is only available for a Screenbox running on this host.",
           );
         }
         const row = yield* readRow(botId);
@@ -1104,6 +1210,21 @@ export const makeAdeScreenboxRuntime = (
             "Screenbox did not publish a VNC port for this desktop.",
           );
         }
+        // Second bound on the same trust problem: even a loopback Screenbox
+        // reports a number this process did not choose. Privileged ports are
+        // never where a container publishes a desktop, and dialling this
+        // server's own listener would splice a captain into ADE's HTTP/WS port.
+        if (!isPlausibleDesktopPort(desktop.vncPort, ownPorts)) {
+          yield* Effect.logWarning("ADE Screenbox viewer refused an implausible VNC port", {
+            botId,
+            port: desktop.vncPort,
+          });
+          return yield* viewerRefusal(
+            botId,
+            "upstream",
+            "Screenbox published a VNC port that is not usable for viewing.",
+          );
+        }
         // Loopback is not a default that a payload may override: upstream binds
         // desktop ports to 127.0.0.1, and hard-coding the host here means a
         // hostile or buggy `list` entry can never redirect the proxy off-box.
@@ -1139,6 +1260,7 @@ export const makeAdeScreenboxRuntime = (
       startDesktopFor: ensureDesktopReady,
       stopDesktopFor,
       destroyDesktopFor,
+      deleteDesktopAndFinalize,
       statusFor,
       viewerTargetFor,
       viewerAttached,

@@ -26,7 +26,9 @@
  */
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Socket from "effect/unstable/socket/Socket";
 import {
@@ -96,12 +98,24 @@ const connectToDesktop = (
   Effect.acquireRelease(
     Effect.callback<NodeNet.Socket, Socket.SocketError>((resume) => {
       const connection = NodeNet.connect({ host: target.host, port: target.port });
-      const onConnect = (): void => {
-        connection.off("error", onError);
-        resume(Effect.succeed(connection));
-      };
-      const onError = (cause: Error): void => {
-        connection.off("connect", onConnect);
+      let settled = false;
+      /**
+       * Registered once, at creation, and **never removed**.
+       *
+       * A Node socket with no `error` listener turns any error into an
+       * `ERR_UNHANDLED_ERROR` that takes the whole server down. Handling this
+       * only until connect (and re-registering later) leaves a window — a peer
+       * reset between the two registrations would be fatal — so this listener
+       * covers the socket's entire life and the phase is tracked in `settled`
+       * rather than in which listeners happen to be attached.
+       */
+      connection.on("error", (cause: Error) => {
+        if (settled) {
+          // Post-connect errors belong to the relay: the pumps observe them
+          // through the socket closing, and nothing here should resume twice.
+          return;
+        }
+        settled = true;
         connection.destroy();
         resume(
           Effect.fail(
@@ -110,9 +124,12 @@ const connectToDesktop = (
             }),
           ),
         );
-      };
-      connection.once("connect", onConnect);
-      connection.once("error", onError);
+      });
+      connection.once("connect", () => {
+        if (settled) return;
+        settled = true;
+        resume(Effect.succeed(connection));
+      });
       return Effect.sync(() => {
         connection.destroy();
       });
@@ -183,11 +200,48 @@ export const relayViewerToDesktop = (
       }),
     );
 
-    // Either direction ending ends the session: a half-open RFB stream is not
-    // recoverable, and leaving the other pump running would hold the desktop
-    // against the idle sweep with nobody watching.
-    yield* Effect.raceAll([pumpToViewer, pumpToDesktop]);
+    // Either direction ending ends the session — **however** it ends.
+    //
+    // Racing the effects directly is wrong here, and subtly so: `Socket`
+    // defaults to treating a close as an error (`closeCodeIsError`), so a
+    // browser closing the tab cleanly with code 1000 makes `pumpToDesktop`
+    // *fail* rather than succeed. `raceAll` waits for another competitor to
+    // succeed before surrendering to a failure, so it would then park forever
+    // on `pumpToViewer` — which never completes against a desktop that is
+    // simply idle and silent. The relay would hang, the enclosing scope would
+    // never close, and `viewerDetached` would never run: the viewer count would
+    // climb monotonically and permanently defeat the idle stop.
+    //
+    // Racing the *exits* makes the first settlement win whether it succeeded or
+    // failed, which is the actual intent: one side is gone, so tear down.
+    const outcome = yield* Effect.raceAllFirst([
+      Effect.exit(pumpToViewer),
+      Effect.exit(pumpToDesktop),
+    ]);
+    // A clean viewer close is an ordinary end of session, not a relay failure.
+    if (Exit.isFailure(outcome) && !isCleanViewerClose(outcome.cause)) {
+      return yield* Effect.failCause(outcome.cause);
+    }
   });
+
+/** Normal closure, and the "no code supplied" a closed tab often produces. */
+const CLEAN_CLOSE_CODES: ReadonlySet<number> = new Set([1000, 1005]);
+
+/**
+ * Whether a relay failure is just the viewer hanging up.
+ *
+ * `SocketCloseError` with a normal-closure code is what a closed tab looks
+ * like; reporting it as a relay failure would fill the log with noise for the
+ * single most common way a viewing session ends.
+ */
+const isCleanViewerClose = (cause: Cause.Cause<Socket.SocketError>): boolean => {
+  const found = Cause.findFail(cause);
+  if (Result.isFailure(found)) return false;
+  const error: unknown = found.success.error;
+  if (!Socket.isSocketError(error)) return false;
+  const reason = error.reason;
+  return reason._tag === "SocketCloseError" && CLEAN_CLOSE_CODES.has(reason.code);
+};
 
 /**
  * What the route should do with one viewer request, decided before anything is
@@ -282,7 +336,17 @@ export const adeScreenViewerRouteLayer = HttpRouter.add(
     }
     const botId = decision.botId;
 
-    const socket = yield* Effect.orDie(request.upgrade);
+    // A plain GET here is a client mistake, not a server fault: answer 426 so
+    // curl and a mis-linked browser tab get a real explanation instead of a
+    // 500 and a defect in the log.
+    const upgraded = yield* Effect.result(request.upgrade);
+    if (upgraded._tag === "Failure") {
+      return HttpServerResponse.text(
+        "This endpoint is a WebSocket upgrade for the ADE desktop viewer.",
+        { status: 426, headers: { upgrade: "websocket", connection: "Upgrade" } },
+      );
+    }
+    const socket = upgraded.success;
     // Presence is bracketed around the socket's entire life, so an abandoned
     // tab or a dropped connection still releases the desktop to the idle sweep.
     yield* Effect.acquireUseRelease(

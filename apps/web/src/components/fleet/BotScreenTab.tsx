@@ -9,7 +9,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
-import { getBotScreenView, viewerSocketUrl } from "./BotScreenTab.logic";
+import { getBotScreenView, viewerSocketUrl, WEBSOCKET_TICKET_PATH } from "./BotScreenTab.logic";
 
 /**
  * The bot detail Screen tab (spec §4.6).
@@ -115,6 +115,7 @@ export function BotScreenTab({ botId }: { readonly botId: BotId }) {
 function VncViewer({ viewerPath }: { readonly viewerPath: string }) {
   const container = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
+  const [failure, setFailure] = useState<string | null>(null);
 
   useEffect(() => {
     const target = container.current;
@@ -122,13 +123,33 @@ function VncViewer({ viewerPath }: { readonly viewerPath: string }) {
     let disposed = false;
     let client: { disconnect: () => void } | null = null;
 
-    // Loaded lazily: noVNC is a large, browser-only bundle and no other surface
-    // in the app needs it, so it must not sit in the main chunk.
-    void import("@novnc/novnc/lib/rfb.js").then(({ default: RFB }) => {
+    const connect = async (): Promise<void> => {
+      // A WebSocket cannot carry an Authorization header, so the upgrade is
+      // authenticated by a short-lived ticket minted here — the same mechanism
+      // the RPC socket uses. Without it, every client that is not a plain
+      // cookie-bearing browser tab is refused with a 401 the viewer cannot
+      // explain.
+      const response = await fetch(WEBSOCKET_TICKET_PATH, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(
+          response.status === 401 || response.status === 403
+            ? "Your session is not authorized to view desktops. Sign in again."
+            : `The viewer could not be authorized (HTTP ${response.status}).`,
+        );
+      }
+      const { ticket } = (await response.json()) as { ticket: string };
+      if (disposed) return;
+
+      // Loaded lazily: noVNC is a large, browser-only bundle and no other
+      // surface in the app needs it, so it must not sit in the main chunk.
+      const { default: RFB } = await import("@novnc/novnc/lib/rfb.js");
       if (disposed) return;
       const rfb = new RFB(
         target,
-        viewerSocketUrl({ pageOrigin: window.location.origin, viewerPath }),
+        viewerSocketUrl({ pageOrigin: window.location.origin, viewerPath, wsTicket: ticket }),
       );
       // Scale rather than resize: asking the desktop to match the panel would
       // change the resolution the bot's own screenshots are taken at, so what
@@ -136,9 +157,18 @@ function VncViewer({ viewerPath }: { readonly viewerPath: string }) {
       rfb.scaleViewport = true;
       rfb.resizeSession = false;
       rfb.background = "transparent";
-      rfb.addEventListener("connect", () => setStatus("connected"));
+      rfb.addEventListener("connect", () => {
+        setFailure(null);
+        setStatus("connected");
+      });
       rfb.addEventListener("disconnect", () => setStatus("disconnected"));
       client = rfb;
+    };
+
+    void connect().catch((cause: unknown) => {
+      if (disposed) return;
+      setStatus("disconnected");
+      setFailure(cause instanceof Error ? cause.message : "The viewer could not connect.");
     });
 
     return () => {
@@ -148,13 +178,20 @@ function VncViewer({ viewerPath }: { readonly viewerPath: string }) {
   }, [viewerPath]);
 
   return (
-    <div className="relative overflow-hidden rounded-lg border border-border bg-black">
-      <div ref={container} className="h-[28rem] w-full" data-testid="ade-vnc-viewport" />
-      {status === "connected" ? null : (
-        <p className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
-          {status === "connecting" ? "Connecting to the desktop…" : "Disconnected."}
+    <div className="flex flex-col gap-2">
+      {failure === null ? null : (
+        <p className="text-sm text-destructive" role="alert">
+          {failure}
         </p>
       )}
+      <div className="relative overflow-hidden rounded-lg border border-border bg-black">
+        <div ref={container} className="h-[28rem] w-full" data-testid="ade-vnc-viewport" />
+        {status === "connected" ? null : (
+          <p className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+            {status === "connecting" ? "Connecting to the desktop…" : (failure ?? "Disconnected.")}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

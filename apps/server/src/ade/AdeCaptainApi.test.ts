@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -1445,6 +1446,56 @@ describe("AdeCaptainApi.deleteBot", () => {
         SELECT bot_id FROM ade_bots WHERE bot_id = ${bot.botId}
       `;
       assert.strictEqual(bots.length, 0);
+    }),
+  );
+
+  screenCase(
+    "holds the per-bot lock across the purge so nothing can re-provision into the gap",
+    Effect.gen(function* () {
+      const { api, bootstrap, mock, sql } = yield* screenSetup;
+      const botId = yield* seedComputerUseBot(api, bootstrap);
+      yield* api.startBotDesktop(botId);
+
+      // A tool forward racing the delete. If the lock were released between the
+      // upstream purge and the row delete, this could insert a fresh
+      // provisioning record that the `ade_bots` cascade would then silently
+      // eat — leaving a live container nothing knows about.
+      // No sleep: `it.effect` runs on the TestClock, so a forked sleep would
+      // never advance. Forking bare makes the two contend on the real mutex.
+      const racer = yield* Effect.forkChild(Effect.result(api.startBotDesktop(botId)));
+      const deleted = yield* api.deleteBot(botId);
+      yield* Fiber.await(racer);
+
+      assert.strictEqual(deleted.botId, botId);
+      // Whoever lost, the end state must be consistent: no bot row, no
+      // provisioning record, and no desktop left running upstream.
+      const bots = yield* sql<{ bot_id: string }>`
+        SELECT bot_id FROM ade_bots WHERE bot_id = ${botId}
+      `;
+      assert.strictEqual(bots.length, 0);
+      const provisionings = yield* sql<{ bot_id: string }>`
+        SELECT bot_id FROM ade_screenbox_provisionings WHERE bot_id = ${botId}
+      `;
+      assert.strictEqual(provisionings.length, 0);
+      assert.isFalse(mock.desktops.has(botId), "no container may outlive the bot row");
+    }),
+  );
+
+  screenCase(
+    "refuses to provision a desktop for a bot that no longer exists",
+    Effect.gen(function* () {
+      const { api, bootstrap, mock } = yield* screenSetup;
+      const botId = yield* seedComputerUseBot(api, bootstrap);
+      yield* api.deleteBot(botId);
+
+      // The typed refusal is what stops a late tool forward from resurrecting a
+      // container for a deleted bot.
+      const outcome = yield* api.startBotDesktop(botId).pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      if (outcome._tag === "Failure") {
+        assert.strictEqual(outcome.failure.reason, "bot_not_found");
+      }
+      assert.strictEqual(mock.desktops.size, 0);
     }),
   );
 
