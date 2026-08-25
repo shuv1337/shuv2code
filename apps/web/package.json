@@ -24,6 +24,7 @@
     "@legendapp/list": "catalog:",
     "@lexical/react": "^0.41.0",
     "@noble/hashes": "catalog:",
+    "@novnc/novnc": "1.5.0",
     "@phosphor-icons/react": "^2.1.10",
     "@pierre/diffs": "catalog:",
     "@pierre/trees": "1.0.0-beta.4",

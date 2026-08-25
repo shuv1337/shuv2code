@@ -63,6 +63,10 @@ const CAPTAIN_ERROR_TEXT: Record<AdeCaptainErrorReason, string> = {
   needs_you_already_resolved: "Already handled — this item is resolved.",
   needs_you_not_actionable: "This item resolves on its own; there is nothing to approve.",
   needs_you_decision_rejected: "That decision could not be applied — the item is still waiting.",
+  firstmate_permanent: "The Firstmate is permanent and cannot be deleted.",
+  // The server appends the upstream detail, which is the part that says what
+  // to do next — cap reached, computer use off, Screenbox unreachable.
+  screenbox_unavailable: "The desktop is unavailable.",
 };
 
 /**

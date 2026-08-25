@@ -448,7 +448,11 @@ const makeAdeRpcHandlers = (
         ade,
       ),
     [WS_METHODS.adeStopBotDesktop]: (input: { readonly botId: BotId }) =>
-      observeRpcEffect(WS_METHODS.adeStopBotDesktop, adeCaptainApi.stopBotDesktop(input.botId), ade),
+      observeRpcEffect(
+        WS_METHODS.adeStopBotDesktop,
+        adeCaptainApi.stopBotDesktop(input.botId),
+        ade,
+      ),
     [WS_METHODS.adeDeleteBot]: (input: { readonly botId: BotId }) =>
       observeRpcEffect(WS_METHODS.adeDeleteBot, adeCaptainApi.deleteBot(input.botId), ade),
   };

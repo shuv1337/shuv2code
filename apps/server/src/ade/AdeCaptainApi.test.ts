@@ -1315,10 +1315,7 @@ const screenCase = <E>(name: string, body: Effect.Effect<void, E, Scope.Scope>) 
   it.effect(name, () => Effect.scoped(body).pipe(Effect.orDie));
 
 /** Creates a crew bot with computer use already enabled. */
-const seedComputerUseBot = (
-  api: AdeCaptainApi["Service"],
-  bootstrap: AdeBootstrap["Service"],
-) =>
+const seedComputerUseBot = (api: AdeCaptainApi["Service"], bootstrap: AdeBootstrap["Service"]) =>
   Effect.gen(function* () {
     const bot = yield* bootstrap.instantiateTemplate({ templateId: "coder", projectId: null });
     yield* api.setBotComputerUse({ botId: bot.botId, computerUse: true });
