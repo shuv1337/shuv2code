@@ -308,6 +308,15 @@ export default Effect.gen(function* () {
       stack_url TEXT,
       native_stack_number INTEGER,
       native_stack_node_id TEXT,
+      -- The branch the bottom layer targets. Persisted rather than assumed so a
+      -- project whose canonical bookmark is not 'main' still publishes onto the
+      -- branch its integration service advances (ADR §6.3, §8.3).
+      base_bookmark TEXT NOT NULL DEFAULT 'main',
+      -- Concurrency guard over the whole pass. Publication passes talk to
+      -- GitHub, so two overlapping sweeps would create duplicate PRs; the lease
+      -- is what makes "one pass at a time" true rather than hoped for.
+      lease_holder TEXT,
+      lease_expires_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES ade_projects(project_id) ON DELETE CASCADE
@@ -334,10 +343,17 @@ export default Effect.gen(function* () {
       merge_sha TEXT,
       pr_state TEXT CHECK (pr_state IS NULL OR pr_state IN ('open', 'closed', 'merged')),
       status TEXT NOT NULL CHECK (status IN ('pending', 'submitted', 'merged')),
+      -- The integrated candidate this layer represents, when the layer was
+      -- adopted from the integration queue. It is the deterministic idempotency
+      -- key for that adoption: a re-running pass must not append a second layer
+      -- for a candidate it already published.
+      integration_candidate_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (publication_stack_id)
-        REFERENCES ade_publication_stacks(publication_stack_id) ON DELETE CASCADE
+        REFERENCES ade_publication_stacks(publication_stack_id) ON DELETE CASCADE,
+      FOREIGN KEY (integration_candidate_id)
+        REFERENCES ade_integration_candidates(integration_candidate_id) ON DELETE SET NULL
     )
   `;
   // SQLite has no deferrable unique constraints, so the publication service
@@ -346,6 +362,19 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE UNIQUE INDEX idx_ade_publication_layers_order
     ON ade_publication_layers(publication_stack_id, layer_order)
+  `;
+  // One layer per candidate per stack — the DB half of adoption idempotency.
+  yield* sql`
+    CREATE UNIQUE INDEX idx_ade_publication_layers_candidate
+    ON ade_publication_layers(publication_stack_id, integration_candidate_id)
+    WHERE integration_candidate_id IS NOT NULL
+  `;
+  // Adopt-by-head-branch is a *lookup*, so the branch name has to be unique
+  // within a stack; two layers sharing one branch would make the adopted PR
+  // ambiguous (spec §4.5 invariant 2).
+  yield* sql`
+    CREATE UNIQUE INDEX idx_ade_publication_layers_bookmark
+    ON ade_publication_layers(publication_stack_id, bookmark_name)
   `;
 
   // Spec §2.5 / ADR §3.5 — durable provisioning record, botId-keyed for

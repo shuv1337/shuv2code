@@ -242,6 +242,61 @@ layer("055_AdeCoreTables", (it) => {
                   '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
       `;
 
+      // Publication layers: one layer per candidate and one layer per branch
+      // within a stack. Both are what make the S11 pass's adoption idempotent —
+      // by candidate id when it re-runs, by head branch when it adopts a PR.
+      yield* sql`
+        INSERT INTO ade_publication_layers (
+          publication_layer_id, publication_stack_id, layer_order, change_ids_json,
+          bookmark_name, status, integration_candidate_id, created_at, updated_at
+        ) VALUES ('layer-inv-1', 'stack-inv-3', 0, '[]', 'ade/pub/inv/0000',
+                  'pending', 'candidate-inv-5',
+                  '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
+      `;
+      const duplicateCandidateLayer = yield* sql`
+        INSERT INTO ade_publication_layers (
+          publication_layer_id, publication_stack_id, layer_order, change_ids_json,
+          bookmark_name, status, integration_candidate_id, created_at, updated_at
+        ) VALUES ('layer-inv-2', 'stack-inv-3', 1, '[]', 'ade/pub/inv/0001',
+                  'pending', 'candidate-inv-5',
+                  '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
+      `.pipe(Effect.flip);
+      assert.strictEqual(duplicateCandidateLayer._tag, "SqlError");
+
+      const duplicateBookmarkLayer = yield* sql`
+        INSERT INTO ade_publication_layers (
+          publication_layer_id, publication_stack_id, layer_order, change_ids_json,
+          bookmark_name, status, created_at, updated_at
+        ) VALUES ('layer-inv-3', 'stack-inv-3', 1, '[]', 'ade/pub/inv/0000',
+                  'pending',
+                  '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
+      `.pipe(Effect.flip);
+      assert.strictEqual(duplicateBookmarkLayer._tag, "SqlError");
+
+      // Layers with no candidate are hand-built ones; the partial index must
+      // not collapse them onto a single NULL row.
+      yield* sql`
+        INSERT INTO ade_publication_layers (
+          publication_layer_id, publication_stack_id, layer_order, change_ids_json,
+          bookmark_name, status, created_at, updated_at
+        ) VALUES
+          ('layer-inv-4', 'stack-inv-3', 1, '[]', 'ade/pub/inv/0001', 'pending',
+           '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z'),
+          ('layer-inv-5', 'stack-inv-3', 2, '[]', 'ade/pub/inv/0002', 'pending',
+           '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
+      `;
+
+      // Stacks carry their own base branch and pass lease (S11).
+      const stackDefaults = yield* sql<{
+        readonly base_bookmark: string;
+        readonly lease_holder: string | null;
+      }>`
+        SELECT base_bookmark, lease_holder FROM ade_publication_stacks
+        WHERE publication_stack_id = 'stack-inv-3'
+      `;
+      assert.strictEqual(stackDefaults[0]?.base_bookmark, "main");
+      assert.strictEqual(stackDefaults[0]?.lease_holder, null);
+
       // A bot requester must carry its bot id; a captain requester must not.
       const inconsistentRequester = yield* sql`
         INSERT INTO ade_assignments (

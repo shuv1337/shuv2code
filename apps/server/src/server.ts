@@ -35,6 +35,8 @@ import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
 import { layer as AdeIntegrationRepoPortLayer } from "./ade/AdeIntegrationRepoPort.ts";
 import { AdeIntegrationService } from "./ade/AdeIntegrationService.ts";
+import { layer as AdePublicationRepoPortLayer } from "./ade/AdePublicationRepoPort.ts";
+import { AdePublicationService } from "./ade/AdePublicationService.ts";
 import { AdeMemoryToolHandlers } from "./ade/AdeMemoryTools.ts";
 import { AdePersonaMemory } from "./ade/AdePersonaMemory.ts";
 import {
@@ -393,15 +395,29 @@ const AdeIntegrationRepoPortLayerLive = AdeIntegrationRepoPortLayer.pipe(
   Layer.provide(ProcessRunner.layer),
 );
 
+// ADE publication service (spec §4.5, S11): the GitHub-reconciling stacked-PR
+// pipeline. It reuses the same JJ-only driver stack as integration, and adds
+// `GitHubCli` for the `gh stack` / `gh pr` surface.
+const AdePublicationRepoPortLayerLive = AdePublicationRepoPortLayer.pipe(
+  Layer.provide(JjVcsDriver.layer),
+  Layer.provide(GitHubCli.layer),
+  Layer.provide(VcsProcess.layer),
+  Layer.provide(ProcessRunner.layer),
+);
+
 const AdeCaptainLayerLive = Layer.mergeAll(
   AdeAssignmentEngine.sweeperLive(),
   AdeAssignmentRunner.sweeperLive(),
   AdeIntegrationService.sweeperLive(),
+  AdePublicationService.sweeperLive(),
   AdeShuvcodeDispatchLoop.live,
 ).pipe(
   Layer.provideMerge(AdeCaptainApi.layer),
   Layer.provideMerge(
     AdeIntegrationService.layer.pipe(Layer.provide(AdeIntegrationRepoPortLayerLive)),
+  ),
+  Layer.provideMerge(
+    AdePublicationService.layer.pipe(Layer.provide(AdePublicationRepoPortLayerLive)),
   ),
   Layer.provideMerge(AdeAssignmentRunner.layer),
   Layer.provideMerge(AdeShuvcodeChatSession.layer),
