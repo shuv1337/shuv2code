@@ -14,6 +14,7 @@ import {
   BotExecutionBinding,
   FleetHealthSnapshot,
   IntegrationCandidate,
+  JjChangeId,
   LimitsConfig,
   MemoryDocument,
   NeedsYouItem,
@@ -242,6 +243,10 @@ it("round-trips an IntegrationCandidate", () => {
     gate: "agent-review",
     reviewerBotId: "bot-reviewer",
     workspacePath: null,
+    verdict: null,
+    verdictAt: null,
+    verdictByBotId: null,
+    verdictDetail: null,
     bounceCount: 0,
     bounce: null,
     repairAssignmentId: null,
@@ -263,6 +268,10 @@ it("round-trips a bounced IntegrationCandidate with its repair lineage", () => {
     gate: "human-approval",
     reviewerBotId: null,
     workspacePath: "/tmp/ade/project-1/candidate-2",
+    verdict: "rejected",
+    verdictAt: "2026-08-24T00:00:01.000Z",
+    verdictByBotId: null,
+    verdictDetail: "Not this release.",
     bounceCount: 1,
     bounce: {
       reason: "checks-failed",
@@ -344,6 +353,7 @@ it("decodes LimitsConfig defaults from an empty object (ADR §18.1 seed)", () =>
     maxResultSummaryLength: 16_384,
     maxConcurrentScreenboxDesktops: 4,
     screenboxIdleStopMinutes: 30,
+    integrationWorkspaceRetentionDays: 7,
   });
 });
 
@@ -357,6 +367,7 @@ it("round-trips an explicit LimitsConfig", () => {
     maxResultSummaryLength: 1_024,
     maxConcurrentScreenboxDesktops: 1,
     screenboxIdleStopMinutes: 5,
+    integrationWorkspaceRetentionDays: 30,
   });
 });
 
@@ -500,4 +511,22 @@ it("carries a closed reason union on the captain error", () => {
   });
   assert.strictEqual(error.reason, "memory_conflict");
   assert.throws(() => decode({ _tag: "AdeCaptainError", reason: "teapot", message: "nope" }));
+});
+
+it("refuses a change id that is a revset or a flag", () => {
+  // JjChangeId feeds `jj` arguments, so the alphabet is the first line of
+  // defense against revset/flag injection from bot tool calls.
+  const decodeChangeId = Schema.decodeUnknownSync(JjChangeId);
+  assert.strictEqual(decodeChangeId("zkmqwpxr"), "zkmqwpxr");
+  for (const hostile of [
+    "all()",
+    "root()",
+    "--help",
+    "zkmqwpxr | all()",
+    "abc",
+    "ZKMQWPXR",
+    "a1b2",
+  ]) {
+    assert.throws(() => decodeChangeId(hostile));
+  }
 });

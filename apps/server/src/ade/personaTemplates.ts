@@ -108,6 +108,13 @@ Responsibilities:
 Style: small, reviewable changes with clear descriptions of what and why.`,
 });
 
+/**
+ * The designated-Reviewer convention (ADR §7.2): the integration service picks
+ * a project's reviewer by looking for the word "reviewer" in a crew bot's
+ * free-form `roleTag`, case- and whitespace-insensitively. "Reviewer",
+ * "reviewer", and "Code Reviewer" all qualify; a project with none falls back to
+ * its Second Mate. Keep this template's tag containing that word.
+ */
 export const REVIEWER_TEMPLATE = template({
   structuralRole: "crew",
   defaultName: "Reviewer",

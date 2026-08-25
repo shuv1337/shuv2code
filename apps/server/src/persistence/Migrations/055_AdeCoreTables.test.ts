@@ -198,6 +198,22 @@ layer("055_AdeCoreTables", (it) => {
       `.pipe(Effect.flip);
       assert.strictEqual(replayedCandidate._tag, "SqlError");
 
+      // ...but a settled candidate must not burn its key: the repaired change
+      // comes back under the same tool-call-derived key and has to queue again.
+      yield* sql`
+        UPDATE ade_integration_candidates SET status = 'bounced'
+        WHERE integration_candidate_id = 'candidate-inv-3'
+      `;
+      yield* sql`
+        INSERT INTO ade_integration_candidates (
+          integration_candidate_id, project_id, idempotency_key,
+          source_assignment_ids_json, change_ids_json, originating_bot_id,
+          declared_risk, status, created_at, updated_at
+        ) VALUES ('candidate-inv-5', 'project-inv', 'inv-3', '[]', '[]', 'bot-inv',
+                  'normal', 'queued',
+                  '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
+      `;
+
       yield* sql`
         INSERT INTO ade_publication_stacks (
           publication_stack_id, project_id, mode, status, created_at, updated_at
