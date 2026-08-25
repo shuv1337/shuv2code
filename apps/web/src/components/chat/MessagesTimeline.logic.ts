@@ -240,6 +240,38 @@ export function computeMessageDurationStart(
   return result;
 }
 
+/**
+ * Which lane a timeline row belongs to in the captain messenger
+ * (MESSENGER-PIVOT §1). `bubble` means the purpose-built bubble renderer can
+ * show the row losslessly; `trace` means it is wrapped in a collapsed
+ * `TraceCard` that expands into the genuine IDE row via `CaptainRowHost`.
+ *
+ * The switch is exhaustive over `MessagesTimelineRow["kind"]` today, and the
+ * `default` is deliberately *not* unreachable-typed away: a provider event kind
+ * added tomorrow must fall toward the IDE renderer — ugly, never blank. Pure,
+ * with a case per kind pinned in `MessagesTimeline.logic.test.ts`.
+ *
+ * Assistant/user messages are the bot/captain bubbles. `working` is the typing
+ * indicator, which belongs in the bubble lane rather than behind a disclosure.
+ * `system` messages, work groups, folds, and plans are traces.
+ */
+export function classifyBubbleRow(row: MessagesTimelineRow): "bubble" | "trace" {
+  switch (row.kind) {
+    case "message":
+      return row.message.role === "system" ? "trace" : "bubble";
+    case "working":
+      return "bubble";
+    case "work":
+    case "work-toggle":
+    case "turn-fold":
+    case "proposed-plan":
+    case "turn-plan":
+      return "trace";
+    default:
+      return "trace";
+  }
+}
+
 export function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
 }

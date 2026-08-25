@@ -22,12 +22,20 @@ const STATUS_VARIANT: Record<
 export function AssignmentResultCard({
   delivery,
   className,
+  variant = "default",
 }: {
   readonly delivery: ParsedAssignmentDelivery;
   readonly className?: string;
+  /**
+   * `nested` drops the per-assignment border (MESSENGER-PIVOT §3). The captain
+   * messenger already draws a container — an attribution fold or a bubble — and
+   * a second border inside it reads as a box in a box.
+   */
+  readonly variant?: "default" | "nested";
 }) {
+  const nested = variant === "nested";
   return (
-    <div className={cn("flex flex-col gap-2", className)}>
+    <div className={cn("flex flex-col gap-2", className)} data-assignment-variant={variant}>
       <p className="text-xs text-muted-foreground">
         {delivery.assignments.length === 1
           ? "An assignment you delegated has finished."
@@ -39,7 +47,10 @@ export function AssignmentResultCard({
       {delivery.assignments.map((item) => (
         <div
           key={item.assignmentId}
-          className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2.5"
+          className={cn(
+            "flex flex-col gap-2",
+            nested ? "px-0.5 py-1" : "rounded-lg border border-border bg-card px-3 py-2.5",
+          )}
         >
           <div className="flex flex-wrap items-center gap-2">
             <Badge size="sm" variant={STATUS_VARIANT[item.status]}>
