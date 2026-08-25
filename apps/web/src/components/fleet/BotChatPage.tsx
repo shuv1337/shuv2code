@@ -219,7 +219,14 @@ export function BotChatPage({
     syncOutcome,
     startError,
     chatReady,
-    autoConnectBlocked: !autoConnectAllowed && startedThreadId === null,
+    /*
+     * `kernelHealth === null` is "no snapshot yet", not "unhealthy". Treating
+     * it as blocked would flash the failure notice on every cold load in the
+     * moment before the first health frame arrives, then silently connect.
+     * It still does not auto-start — `canAutoConnect(null)` is false — so this
+     * waits rather than guessing in either direction.
+     */
+    autoConnectBlocked: kernelHealth !== null && !autoConnectAllowed && startedThreadId === null,
   });
 
   /**
