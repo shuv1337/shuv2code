@@ -38,7 +38,24 @@ import { NeedsYouInline } from "./NeedsYouInline";
  * in a persona header strip. No kernel session is started on mount (§4.1);
  * that only happens when the captain presses the button.
  */
-export function BotChatPage({ botId }: { readonly botId: BotId }) {
+export function BotChatPage({
+  botId,
+  identityChrome = "own",
+}: {
+  readonly botId: BotId;
+  /**
+   * Who prints the bot's name, role and project.
+   *
+   * `"own"` keeps this page's original header, for any surface that mounts it
+   * bare. `"shell"` means the captain shell's conversation header is already
+   * showing all of it a few pixels above (§2: one sticky 56px header with the
+   * avatar, the name and the gear), so printing it again here is the same
+   * three facts twice with two different affordances — one of them renameable,
+   * one of them not. The live status line survives either way: it is the one
+   * thing this header says that the identity header does not.
+   */
+  readonly identityChrome?: "own" | "shell";
+}) {
   const environmentId = useAdeEnvironmentId();
   const detail = useAdeBotDetail(botId);
   const roster = useAdeRoster();
@@ -153,12 +170,26 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
 
   return (
     <SidebarInset className="isolate flex h-dvh min-h-0 flex-col overflow-hidden overscroll-y-none bg-background text-foreground">
-      <header className="flex shrink-0 flex-col gap-1 border-b border-border px-4 py-2.5">
+      <header
+        className={cn(
+          "flex shrink-0 flex-col gap-1 border-b border-border px-4 py-2.5",
+          // Nothing to say once the shell owns the identity line and no work is
+          // running: an empty bordered strip is worse than no strip.
+          identityChrome === "shell" &&
+            (header === null || header.runningInstruction === null) &&
+            "hidden",
+        )}
+      >
         {header === null ? (
           <Skeleton className="h-5 w-48" />
         ) : (
           <>
-            <div className="flex flex-wrap items-center gap-2">
+            <div
+              className={cn(
+                "flex flex-wrap items-center gap-2",
+                identityChrome === "shell" && "hidden",
+              )}
+            >
               <Link
                 className="truncate text-sm font-semibold"
                 params={{ botId }}

@@ -192,6 +192,36 @@ export function captainGridTemplateColumns(regions: CaptainShellRegions): string
   return tracks.length === 0 ? "minmax(0, 1fr)" : tracks.join(" ");
 }
 
+/**
+ * Whether the conversation region renders its header at all.
+ *
+ * Extracted from the JSX and tested across every band because of the failure
+ * it guards: the header is the *only* mount point for the identity controls
+ * (§2 — sticky 56px header with avatar, name, gear), so any band where it is
+ * skipped is a band where `conversationHeaderActions` is handed to the shell
+ * and silently goes nowhere. That is invisible in a component test of the
+ * actions and invisible in a logic test of the regions; it only shows up when
+ * someone opens the app at a width nobody checked.
+ *
+ * Supplied actions alone are therefore enough to render it. The header is not
+ * decoration that earns its place by having a chevron or a rail toggle to
+ * show — it is where the captain renames a bot.
+ */
+export function shouldRenderConversationHeader(input: {
+  readonly regions: CaptainShellRegions;
+  readonly hasActions: boolean;
+  readonly hasRightRail: boolean;
+}): boolean {
+  if (!input.regions.showCenter) {
+    return false;
+  }
+  return (
+    input.hasActions ||
+    input.regions.showBackChevron ||
+    (input.hasRightRail && input.regions.showRightRailToggle)
+  );
+}
+
 /** Label for the left-rail collapse control, phrased as the action it performs. */
 export function captainLeftRailToggleLabel(regions: CaptainShellRegions): string {
   return regions.leftRail === "expanded" ? "Collapse contacts" : "Expand contacts";
