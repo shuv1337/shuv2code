@@ -43,6 +43,7 @@ export function BotChatPage({
   botId,
   identityChrome = "own",
   renderConversation,
+  conversationAtEnd,
 }: {
   readonly botId: BotId;
   /**
@@ -69,6 +70,15 @@ export function BotChatPage({
     readonly threadSyncPhase: ReturnType<typeof resolveThreadSyncPhase>;
     readonly botName: string;
   }) => ReactNode;
+  /**
+   * The other half of M3's read signal, which M3 deliberately left for M4.
+   *
+   * A caller that renders its own conversation body also owns its scroll
+   * position, so it can say whether the captain is actually at the bottom of
+   * the thread. `undefined` — the `ChatView` path, whose at-end state stays
+   * private to `components/chat/**` — keeps M3's focus-only behaviour.
+   */
+  readonly conversationAtEnd?: boolean;
 }) {
   const environmentId = useAdeEnvironmentId();
   const detail = useAdeBotDetail(botId);
@@ -150,11 +160,13 @@ export function BotChatPage({
   // Clearing this contact's unread dot (M3). Gated on `chatReady` rather than
   // on the route: a captain staring at a spinner has not read anything, and
   // marking on navigation alone would clear a count for a conversation that
-  // never rendered.
+  // never rendered. `conversationAtEnd` completes the signal wherever the
+  // caller knows it: a captain scrolled far up a long thread is reading
+  // history, not the tail.
   const rosterEntry = roster.data?.entries.find((entry) => entry.bot.id === botId);
   useBotChatRead({
     botId,
-    enabled: chatReady,
+    enabled: chatReady && conversationAtEnd !== false,
     unreadCount: rosterEntry?.unreadCount ?? 0,
     lastMessageAt: rosterEntry?.lastMessage?.at ?? null,
   });

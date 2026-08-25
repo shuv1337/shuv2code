@@ -1,6 +1,6 @@
 import type { BotId, ScopedThreadRef } from "@shuv2code/contracts";
 import { MessageSquareIcon, PanelsTopLeftIcon } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { useThread } from "../../state/entities";
 import { useAdeBotDetail, useAdeEnvironmentId, useAdeRoster } from "../../state/ade";
@@ -59,6 +59,15 @@ export function CaptainConversation({ botId }: { readonly botId: BotId }) {
 
   const botAvatar = avatarByBotId.get(botId) ?? null;
 
+  /**
+   * The at-end half of M3's read signal, held here because `BotChatPage` owns
+   * `useBotChatRead` and the timeline that knows the answer is mounted
+   * *inside* it. M3 reserved this for M4 by name; on the workspace-view side
+   * the prop stays absent, so `ChatView`'s private at-end state does not have
+   * to be threaded out of `components/chat/**`.
+   */
+  const [isAtEnd, setIsAtEnd] = useState(true);
+
   if (!bubbleView || environmentId === null) {
     return <BotChatPage botId={botId} identityChrome="shell" />;
   }
@@ -66,6 +75,7 @@ export function CaptainConversation({ botId }: { readonly botId: BotId }) {
   return (
     <BotChatPage
       botId={botId}
+      conversationAtEnd={isAtEnd}
       identityChrome="shell"
       renderConversation={({ threadRef, botName }) => (
         <CaptainConversationBody
@@ -73,6 +83,7 @@ export function CaptainConversation({ botId }: { readonly botId: BotId }) {
           botAvatar={botAvatar}
           botName={detail.data?.bot.name ?? botName}
           botNameById={botNameById}
+          onIsAtEndChange={setIsAtEnd}
           threadRef={threadRef}
         />
       )}
@@ -86,12 +97,14 @@ function CaptainConversationBody({
   botAvatar,
   botNameById,
   avatarByBotId,
+  onIsAtEndChange,
 }: {
   readonly threadRef: ScopedThreadRef;
   readonly botName: string;
   readonly botAvatar: BotAvatarView | null;
   readonly botNameById: ReadonlyMap<string, string>;
   readonly avatarByBotId: ReadonlyMap<string, BotAvatarView>;
+  readonly onIsAtEndChange: (isAtEnd: boolean) => void;
 }) {
   const thread = useThread(threadRef);
   const isWorking = thread?.session?.status === "running";
@@ -104,6 +117,7 @@ function CaptainConversationBody({
           botNameById={botNameById}
           environmentId={threadRef.environmentId}
           isWorking={isWorking}
+          onIsAtEndChange={onIsAtEndChange}
           thread={thread}
           threadRef={threadRef}
         />
