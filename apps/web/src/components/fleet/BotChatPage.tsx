@@ -1,7 +1,7 @@
-import type { BotId, ThreadId } from "@shuv2code/contracts";
+import type { BotId, ScopedThreadRef, ThreadId } from "@shuv2code/contracts";
 import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtime";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { openCommandPalette } from "../../commandPaletteBus";
 import { cn } from "../../lib/utils";
@@ -42,6 +42,7 @@ import { useBotChatRead } from "../captain/useBotChatRead";
 export function BotChatPage({
   botId,
   identityChrome = "own",
+  renderConversation,
 }: {
   readonly botId: BotId;
   /**
@@ -56,6 +57,18 @@ export function BotChatPage({
    * thing this header says that the identity header does not.
    */
   readonly identityChrome?: "own" | "shell";
+  /**
+   * M4's seam (MESSENGER-PIVOT §5 step 3). The start/sync state machine, the
+   * welcome copy, and the hook-count gate above are the *only* thing that knows
+   * when a bot conversation is safe to mount, so the bubble renderer borrows
+   * them rather than growing a second copy. Absent — the default and the
+   * workspace-view escape hatch — the conversation is `ChatView`, unchanged.
+   */
+  readonly renderConversation?: (args: {
+    readonly threadRef: ScopedThreadRef;
+    readonly threadSyncPhase: ReturnType<typeof resolveThreadSyncPhase>;
+    readonly botName: string;
+  }) => ReactNode;
 }) {
   const environmentId = useAdeEnvironmentId();
   const detail = useAdeBotDetail(botId);
@@ -238,7 +251,10 @@ export function BotChatPage({
        * waiting, which is most of the time.
        */}
       <div className="shrink-0 px-4 pt-2 empty:hidden">
-        <NeedsYouInline subject={{ botId }} />
+        <NeedsYouInline
+          subject={{ botId }}
+          variant={renderConversation === undefined ? "inline" : "bubble"}
+        />
       </div>
       {chatReady && threadRef !== null ? (
         <div className="flex min-h-0 flex-1 flex-col">
@@ -257,12 +273,20 @@ export function BotChatPage({
               assignments or update its memory. Chat still works.
             </p>
           ) : null}
-          <ChatView
-            environmentId={threadRef.environmentId}
-            routeKind="server"
-            threadId={threadRef.threadId}
-            threadSyncPhase={threadSyncPhase}
-          />
+          {renderConversation === undefined ? (
+            <ChatView
+              environmentId={threadRef.environmentId}
+              routeKind="server"
+              threadId={threadRef.threadId}
+              threadSyncPhase={threadSyncPhase}
+            />
+          ) : (
+            renderConversation({
+              threadRef,
+              threadSyncPhase,
+              botName: header?.name ?? "this bot",
+            })
+          )}
         </div>
       ) : (
         <ScrollArea className="min-h-0 flex-1">

@@ -12,15 +12,25 @@ import { entriesForSubject, type NeedsYouSubject } from "./NeedsYouInbox.logic";
  * Renders nothing when nothing is waiting: this sits above other content, and
  * a permanent empty panel is worse than no panel.
  */
-export function NeedsYouInline({ subject }: { readonly subject: NeedsYouSubject }) {
+export function NeedsYouInline({
+  subject,
+  variant = "inline",
+}: {
+  readonly subject: NeedsYouSubject;
+  /** `bubble` when the conversation is the captain messenger (M4). */
+  readonly variant?: "inline" | "bubble";
+}) {
   const list = useAdeNeedsYouList();
   const entries = entriesForSubject(list.data?.entries ?? [], subject);
   if (entries.length === 0) return null;
 
   return (
-    <section aria-label="Needs you" className="flex flex-col gap-2">
+    <section
+      aria-label="Needs you"
+      className={variant === "bubble" ? "flex flex-col items-start gap-2" : "flex flex-col gap-2"}
+    >
       {entries.map((entry) => (
-        <NeedsYouCard entry={entry} key={entry.item.id} variant="inline" />
+        <NeedsYouCard entry={entry} key={entry.item.id} variant={variant} />
       ))}
     </section>
   );

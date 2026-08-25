@@ -135,7 +135,7 @@ import type { SpeechPlaybackState } from "../../textToSpeech/SpeechPlaybackContr
 // components (WorkingTimer, LiveElapsed) handle it.
 // ---------------------------------------------------------------------------
 
-interface TimelineRowSharedState {
+export interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
   routeThreadKey: string;
   threadRef: ScopedThreadRef | null;
@@ -155,7 +155,7 @@ interface TimelineRowSharedState {
   onToggleAssistantSpeech: (messageId: MessageId, text: string) => void;
 }
 
-interface TimelineRowActivityState {
+export interface TimelineRowActivityState {
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
@@ -980,6 +980,45 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
     </div>
   );
 });
+
+// ---------------------------------------------------------------------------
+// TimelineRowHost — the seam (MESSENGER-PIVOT §3, resolved flaw #1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders one IDE timeline row outside `MessagesTimeline`.
+ *
+ * `TimelineRowContent` reads everything it needs from two module-private
+ * contexts, so it cannot be mounted anywhere else without them. This host is
+ * the only supported way to do that: it takes both context values explicitly
+ * and renders the real row content underneath them.
+ *
+ * It exists for the captain messenger's `TraceCard`, which renders a collapsed
+ * one-liner and expands into the genuine IDE rendering rather than a second,
+ * drifting parser (`captain/CaptainRowHost.tsx` synthesizes the shared state).
+ * This export is the *whole* contract between the two surfaces: no captain
+ * conditional ever goes inside this file, and every caller is responsible for
+ * supplying a complete, honest `TimelineRowSharedState`.
+ */
+export function TimelineRowHost({
+  row,
+  sharedState,
+  activityState,
+}: {
+  readonly row: MessagesTimelineRow;
+  readonly sharedState: TimelineRowSharedState;
+  readonly activityState: TimelineRowActivityState;
+}) {
+  return (
+    <TimelineRowCtx value={sharedState}>
+      <TimelineRowActivityCtx value={activityState}>
+        <div data-timeline-root="true">
+          <TimelineRowContent row={row} />
+        </div>
+      </TimelineRowActivityCtx>
+    </TimelineRowCtx>
+  );
+}
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  classifyBubbleRow,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
@@ -1583,5 +1584,143 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(reordered).not.toBe(initial);
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
+  });
+});
+
+describe("classifyBubbleRow", () => {
+  // One case per arm of `MessagesTimelineRow`. If the union grows, this
+  // describe is where the new kind gets a lane — and the default case below
+  // guarantees that forgetting to add one degrades to IDE fidelity rather
+  // than to a blank bubble (MESSENGER-PIVOT §1).
+  const createdAt = "2026-01-01T00:00:00Z";
+
+  it("sends captain and bot messages to the bubble lane", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt,
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "Ship it",
+            turnId: null,
+            createdAt,
+            updatedAt: createdAt,
+            streaming: false,
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:05Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "On it.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:05Z",
+            updatedAt: "2026-01-01T00:00:06Z",
+            streaming: false,
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map(classifyBubbleRow)).toEqual(["bubble", "bubble"]);
+  });
+
+  it("sends system messages to the trace lane", () => {
+    expect(
+      classifyBubbleRow({
+        kind: "message",
+        id: "system-1",
+        createdAt,
+        message: {
+          id: "system-1" as never,
+          role: "system",
+          text: "Session restarted.",
+          turnId: null,
+          createdAt,
+          updatedAt: createdAt,
+          streaming: false,
+        },
+        durationStart: createdAt,
+        showAssistantMeta: false,
+        showAssistantCopyButton: false,
+        assistantCopyStreaming: false,
+      }),
+    ).toBe("trace");
+  });
+
+  it("keeps the working indicator in the bubble lane", () => {
+    expect(classifyBubbleRow({ kind: "working", id: "working", createdAt })).toBe("bubble");
+  });
+
+  it("sends work groups, work toggles, turn folds, and both plan kinds to the trace lane", () => {
+    expect(
+      classifyBubbleRow({
+        kind: "work",
+        id: "work-1",
+        createdAt,
+        groupedEntries: [{ id: "entry-1", createdAt, label: "Ran command", tone: "tool" }],
+      }),
+    ).toBe("trace");
+    expect(
+      classifyBubbleRow({
+        kind: "work-toggle",
+        id: "work-toggle-1",
+        createdAt,
+        groupId: "group-1",
+        hiddenCount: 3,
+        expanded: false,
+        onlyToolEntries: true,
+      }),
+    ).toBe("trace");
+    expect(
+      classifyBubbleRow({
+        kind: "turn-fold",
+        id: "fold-1",
+        createdAt,
+        foldId: "fold-1",
+        turnId: "turn-1" as never,
+        label: "Worked for a while",
+        expanded: false,
+        images: [],
+      }),
+    ).toBe("trace");
+    expect(
+      classifyBubbleRow({
+        kind: "proposed-plan",
+        id: "plan-1",
+        createdAt,
+        proposedPlan: { id: "plan-1", createdAt } as never,
+      }),
+    ).toBe("trace");
+    expect(
+      classifyBubbleRow({
+        kind: "turn-plan",
+        id: "turn-plan-1",
+        createdAt,
+        turnPlan: { id: "turn-plan-1", createdAt } as never,
+      }),
+    ).toBe("trace");
+  });
+
+  it("defaults an unknown future row kind to trace, never to a blank bubble", () => {
+    // Deliberately not a member of the union: this stands in for the provider
+    // event kind that lands after this file was written. It must fall toward
+    // the IDE renderer — ugly, not wrong.
+    const futureRow = {
+      kind: "artifact-preview",
+      id: "future-1",
+      createdAt,
+    } as unknown as Parameters<typeof classifyBubbleRow>[0];
+    expect(classifyBubbleRow(futureRow)).toBe("trace");
   });
 });

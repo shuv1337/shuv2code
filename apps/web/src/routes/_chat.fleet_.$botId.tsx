@@ -2,8 +2,11 @@ import type { BotId } from "@shuv2code/contracts";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { BotIdentityHeaderActions } from "../components/captain/BotIdentityHeaderActions";
+import {
+  CaptainConversation,
+  CaptainConversationViewToggle,
+} from "../components/captain/CaptainConversation";
 import { CaptainShell } from "../components/captain/CaptainShell";
-import { BotChatPage } from "../components/fleet/BotChatPage";
 
 // `fleet_` opts out of nesting under the index route, which renders the shell
 // itself rather than an outlet.
@@ -12,10 +15,10 @@ export const Route = createFileRoute("/_chat/fleet_/$botId")({
 });
 
 /**
- * The conversation route (§5 step 1). The centre mounts today's `BotChatPage`
- * unchanged — its lazy-start state machine and its hook-count gate move in as
- * they are — so the messenger is usable before any backend delta or the M4
- * bubble renderer lands.
+ * The conversation route. The centre mounts `CaptainConversation`, which is
+ * today's `BotChatPage` (its lazy-start state machine and hook-count gate
+ * unchanged) until the per-session M4 toggle selects the bubble renderer over
+ * the same thread. Default off; the header carries the switch both ways.
  *
  * The header carries M2's identity controls (#197): blob, inline rename, role
  * chip, and the gear that opens the identity sheet. They arrive as one node
@@ -27,9 +30,14 @@ function BotConversationRouteView() {
   return (
     <CaptainShell
       activeBotId={botId as BotId}
-      conversationHeaderActions={<BotIdentityHeaderActions botId={botId as BotId} />}
+      conversationHeaderActions={
+        <>
+          <CaptainConversationViewToggle />
+          <BotIdentityHeaderActions botId={botId as BotId} />
+        </>
+      }
     >
-      <BotChatPage botId={botId as BotId} identityChrome="shell" />
+      <CaptainConversation botId={botId as BotId} />
     </CaptainShell>
   );
 }

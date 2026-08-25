@@ -37,7 +37,13 @@ export function NeedsYouCard({
   variant = "inbox",
 }: {
   readonly entry: AdeNeedsYouEntry;
-  readonly variant?: "inbox" | "inline";
+  /**
+   * One decision path, three renderings (MESSENGER-PIVOT §3). `bubble` is the
+   * captain messenger's: a bot-side chat card, so an approval arrives in the
+   * conversation instead of in a separate inbox. It changes the container's
+   * geometry and nothing else — the decision it submits is the same one.
+   */
+  readonly variant?: "inbox" | "inline" | "bubble";
 }) {
   const environmentId = useAdeEnvironmentId();
   const session = usePrimarySessionState();
@@ -75,8 +81,11 @@ export function NeedsYouCard({
   return (
     <article
       className={cn(
-        "flex flex-col gap-2 rounded-lg border p-3",
-        variant === "inline" ? "bg-muted/40" : "bg-card",
+        "flex flex-col gap-2 border p-3",
+        variant === "bubble"
+          ? "max-w-[min(90%,34rem)] self-start rounded-2xl rounded-bl-md border-amber-500/40 bg-amber-500/5"
+          : "rounded-lg",
+        variant === "inline" ? "bg-muted/40" : variant === "inbox" ? "bg-card" : null,
         entry.item.status === "open" ? null : "opacity-70",
       )}
       data-needs-you-id={entry.item.id}
