@@ -7,15 +7,18 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useLocation, useMatches, useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../env";
 import { getLocalStorageItem, removeLocalStorageItem } from "../hooks/useLocalStorage";
+import { useMacosTrafficLightsInset } from "../hooks/useMacosTrafficLightsInset";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
-import { isMacPlatform } from "../lib/utils";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { useProjects } from "../state/entities";
 import { useLegacySidebarEnabled } from "../hooks/useSettings";
+import { MACOS_TRAFFIC_LIGHTS_LEFT_INSET } from "../workspaceTitlebar";
+import { hidesWorkspaceSidebar } from "./appChrome.logic";
+import { CaptainAppFrame } from "./captain/CaptainAppFrame";
 import LegacyThreadSidebar from "./LegacySidebar";
 import ThreadSidebar from "./Sidebar";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
@@ -36,8 +39,6 @@ import {
   useSidebarVisibility,
 } from "./ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-
-const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "90px";
 
 function subscribeToViewportWidth(onChange: () => void): () => void {
   window.addEventListener("resize", onChange);
@@ -130,7 +131,14 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   // sidebar is active.
   const pathname = useLocation({ select: (location) => location.pathname });
   const isOnSettings = pathname === "/settings" || pathname.startsWith("/settings/");
-  const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
+  // #216: the captain shell routes render the contacts rail as *the* left rail.
+  // Read from the matched route ids rather than the pathname so `/fleet/work`
+  // and `/fleet/projects/$id` — full pages with no rail of their own — keep the
+  // workspace sidebar they navigate with.
+  const railOwnedByRoute = useMatches({
+    select: (matches) => hidesWorkspaceSidebar(matches.map((match) => match.routeId)),
+  });
+  const macosTrafficLights = useMacosTrafficLightsInset();
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   // Subscribed rather than read once: the clamp must track live window size,
   // and a clamped drag ends with an unchanged width, which skips the re-render
@@ -145,38 +153,15 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
     }
     setSidebarWidth(resolveInitialThreadSidebarWidth(null, viewportWidth));
   };
-  const [isWindowFullscreen, setIsWindowFullscreen] = useState(() => {
-    const getWindowFullscreenState = window.desktopBridge?.getWindowFullscreenState;
-    return isMacosDesktop && typeof getWindowFullscreenState === "function"
-      ? getWindowFullscreenState()
-      : false;
-  });
   const sidebarProviderStyle = {
     "--sidebar-width": `${sidebarWidth}px`,
-    ...(isMacosDesktop && !isWindowFullscreen
+    ...(macosTrafficLights
       ? {
           "--workspace-controls-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET,
           "--workspace-sidebar-brand-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET,
         }
       : {}),
   } as CSSProperties;
-
-  useEffect(() => {
-    if (!isMacosDesktop) return;
-    const bridge = window.desktopBridge;
-    if (!bridge) return;
-    const { getWindowFullscreenState, onWindowFullscreenStateChange } = bridge;
-    if (
-      typeof getWindowFullscreenState !== "function" ||
-      typeof onWindowFullscreenStateChange !== "function"
-    ) {
-      return;
-    }
-
-    const unsubscribe = onWindowFullscreenStateChange(setIsWindowFullscreen);
-    setIsWindowFullscreen(getWindowFullscreenState());
-    return unsubscribe;
-  }, [isMacosDesktop]);
 
   useEffect(() => {
     const onMenuAction = window.desktopBridge?.onMenuAction;
@@ -197,6 +182,26 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       unsubscribe?.();
     };
   }, [navigate, pathname]);
+
+  /*
+   * #216. The captain surface gets one rail, and it is not this one. The
+   * sidebar is not hidden here — it is not mounted, and neither is its
+   * provider, its `fixed` collapse trigger, nor the `Cmd+B` handler that would
+   * otherwise toggle a panel that is not on screen.
+   *
+   * What stays above this line stays on purpose: the desktop menu's
+   * "Settings" action (the app menu is app-wide, not workspace-only) and the
+   * project projection retention (so returning to the workspace does not
+   * render a zero-project sidebar while the snapshot reconnects).
+   */
+  if (railOwnedByRoute) {
+    return (
+      <CaptainAppFrame macosTrafficLights={macosTrafficLights}>
+        <ProjectProjectionRetention />
+        {children}
+      </CaptainAppFrame>
+    );
+  }
 
   return (
     <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={sidebarProviderStyle}>
