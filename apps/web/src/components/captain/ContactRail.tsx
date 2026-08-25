@@ -3,15 +3,18 @@ import { Link } from "@tanstack/react-router";
 import { FolderGit2Icon, NetworkIcon, PanelLeftIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
-import { useAdeRoster } from "../../state/ade";
+import { useAdeEnvironmentId, useAdeRoster } from "../../state/ade";
+import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
+import { SidebarKernelHealthPills } from "../sidebar/SidebarKernelHealthPills";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { SidebarKernelHealthPills } from "../sidebar/SidebarKernelHealthPills";
+import { FirstProjectCta } from "./CaptainIndexPane";
 import { ContactGroupSection } from "./ContactGroupSection";
 import { NewBotPopover } from "./NewBotPopover";
 import type { CaptainShellRegions } from "./captainShell.logic";
@@ -21,7 +24,16 @@ import {
   filterContactRows,
   getContactGroupSections,
   getContactRowViews,
+  rosterNeedsFirstProject,
+  shouldShowFirstProjectCtaInRail,
 } from "./contactRail.logic";
+
+/**
+ * The 64px strip has no room to inset content horizontally past the app's
+ * fixed sidebar trigger, so it drops its controls below the trigger instead.
+ */
+const COLLAPSED_SIDEBAR_TITLEBAR_TOP_INSET_CLASS =
+  "[[data-sidebar-state=collapsed]_&]:pt-[var(--workspace-topbar-height)]";
 
 /**
  * The captain's contacts (§2 LEFT RAIL). Every bot is a contact; the server
@@ -29,9 +41,10 @@ import {
  *
  * The rail is the roster now — `FleetRosterPage` is gone — so it also carries
  * what that page owned and nothing else does yet: creating a bot from a
- * template, and the way into the project and work-graph pages (§5.4 keeps
- * those as full analysis surfaces reached from the shell, not messenger
- * scope).
+ * template, the first-project CTA (#141), the kernel health pills, and the way
+ * into the project and work-graph pages (§5.4 keeps those as full analysis
+ * surfaces reached from the shell, not messenger scope). All of that has to
+ * survive every rail width, not just the widest one.
  */
 export function ContactRail({
   activeBotId,
@@ -42,6 +55,7 @@ export function ContactRail({
   readonly regions: CaptainShellRegions;
   readonly onToggleCollapsed: () => void;
 }) {
+  const environmentId = useAdeEnvironmentId();
   const roster = useAdeRoster();
   const [query, setQuery] = useState("");
   const collapsed = regions.leftRail === "icon";
@@ -57,6 +71,16 @@ export function ContactRail({
 
   const loading = roster.data === null && roster.isPending;
   const emptyCopy = contactRailEmptyCopy({ totalRows: rows.length, query: effectiveQuery });
+  // Below 900px the conversation region does not exist at the index route, so
+  // `CaptainIndexPane` — and with it the only "create your first project" CTA —
+  // never renders. The rail carries it instead. A captain with no project
+  // cannot create a bot that can do anything, so this CTA has to exist at every
+  // width.
+  const showCtaInRail = shouldShowFirstProjectCtaInRail({
+    needsFirstProject: rosterNeedsFirstProject(roster.data),
+    showCenter: regions.showCenter,
+    railCollapsed: collapsed,
+  });
 
   return (
     <div
@@ -68,11 +92,17 @@ export function ContactRail({
     >
       <header
         className={cn(
-          "flex shrink-0 items-center gap-1 pt-2 pb-1",
-          collapsed ? "flex-col" : "justify-between",
+          "flex shrink-0 items-center gap-1 pb-1 transition-[padding] duration-200 ease-linear motion-reduce:transition-none",
+          isElectron && "drag-region",
+          collapsed
+            ? ["flex-col pt-2", COLLAPSED_SIDEBAR_TITLEBAR_TOP_INSET_CLASS]
+            : [
+                "h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] justify-between",
+                COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+              ],
         )}
       >
-        {collapsed ? null : <span className="ps-1 text-sm font-semibold">Fleet</span>}
+        {collapsed ? null : <span className="truncate ps-1 text-sm font-semibold">Fleet</span>}
         <span className={cn("flex items-center gap-1", collapsed && "flex-col")}>
           <NewBotPopover
             collapsed={collapsed}
@@ -120,6 +150,9 @@ export function ContactRail({
 
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-1 pb-2">
+          {showCtaInRail ? (
+            <FirstProjectCta className="mb-1 bg-background" environmentId={environmentId} />
+          ) : null}
           {roster.error === null ? null : (
             <p className="px-2 py-1 text-sm text-destructive" role="alert">
               {roster.error}
@@ -164,9 +197,10 @@ export function ContactRail({
 
 /**
  * Rail footer (§2): the analysis surfaces, Settings, and the demoted kernel
- * health pills. The pills used to sit in the app sidebar footer beside the
- * Fleet nav row; the messenger is the fleet surface now, so their audience is
- * here.
+ * health pills, whose home is now this footer **in every rail mode**. They used
+ * to sit in the app sidebar footer and so were visible app-wide; a captain who
+ * narrows the window must not lose sight of a degraded kernel, and
+ * `/fleet/projects/$adeProjectId` must not lose its only entry point.
  */
 function RailFooter({
   collapsed,
@@ -175,81 +209,104 @@ function RailFooter({
   readonly collapsed: boolean;
   readonly projects: ReadonlyArray<{ readonly id: AdeProjectId; readonly name: string }>;
 }) {
+  if (collapsed) {
+    return (
+      <footer className="flex shrink-0 flex-col items-center gap-1 border-t border-sidebar-border py-2">
+        {projects.map((project) => (
+          <Tooltip key={project.id}>
+            <TooltipTrigger
+              render={
+                <Button
+                  aria-label={project.name}
+                  render={
+                    <Link
+                      params={{ adeProjectId: project.id }}
+                      to="/fleet/projects/$adeProjectId"
+                    />
+                  }
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  <FolderGit2Icon />
+                </Button>
+              }
+            />
+            <TooltipPopup side="right">{project.name}</TooltipPopup>
+          </Tooltip>
+        ))}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                aria-label="Work graph"
+                render={<Link to="/fleet/work" />}
+                size="icon-sm"
+                variant="ghost"
+              >
+                <NetworkIcon />
+              </Button>
+            }
+          />
+          <TooltipPopup side="right">Work graph</TooltipPopup>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                aria-label="Settings"
+                render={<Link to="/settings" />}
+                size="icon-sm"
+                variant="ghost"
+              >
+                <SettingsIcon />
+              </Button>
+            }
+          />
+          <TooltipPopup side="right">Settings</TooltipPopup>
+        </Tooltip>
+        <SidebarKernelHealthPills compact />
+      </footer>
+    );
+  }
+
   return (
     <footer className="flex shrink-0 flex-col gap-1 border-t border-sidebar-border py-2">
-      {collapsed ? (
-        <div className="flex flex-col items-center gap-1">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  aria-label="Work graph"
-                  render={<Link to="/fleet/work" />}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  <NetworkIcon />
-                </Button>
-              }
-            />
-            <TooltipPopup side="right">Work graph</TooltipPopup>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  aria-label="Settings"
-                  render={<Link to="/settings" />}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  <SettingsIcon />
-                </Button>
-              }
-            />
-            <TooltipPopup side="right">Settings</TooltipPopup>
-          </Tooltip>
-        </div>
-      ) : (
-        <>
-          <div className="flex flex-wrap items-center gap-1 px-1">
-            {projects.map((project) => (
-              <Button
-                key={project.id}
-                render={
-                  <Link params={{ adeProjectId: project.id }} to="/fleet/projects/$adeProjectId">
-                    <FolderGit2Icon aria-hidden />
-                    {project.name}
-                  </Link>
-                }
-                size="compact"
-                variant="ghost"
-              />
-            ))}
-            <Button
-              render={
-                <Link to="/fleet/work">
-                  <NetworkIcon aria-hidden />
-                  Work graph
-                </Link>
-              }
-              size="compact"
-              variant="ghost"
-            />
-            <Button
-              render={
-                <Link to="/settings">
-                  <SettingsIcon aria-hidden />
-                  Settings
-                </Link>
-              }
-              size="compact"
-              variant="ghost"
-            />
-          </div>
-          <SidebarKernelHealthPills />
-        </>
-      )}
+      <div className="flex flex-wrap items-center gap-1 px-1">
+        {projects.map((project) => (
+          <Button
+            key={project.id}
+            render={
+              <Link params={{ adeProjectId: project.id }} to="/fleet/projects/$adeProjectId">
+                <FolderGit2Icon aria-hidden />
+                {project.name}
+              </Link>
+            }
+            size="compact"
+            variant="ghost"
+          />
+        ))}
+        <Button
+          render={
+            <Link to="/fleet/work">
+              <NetworkIcon aria-hidden />
+              Work graph
+            </Link>
+          }
+          size="compact"
+          variant="ghost"
+        />
+        <Button
+          render={
+            <Link to="/settings">
+              <SettingsIcon aria-hidden />
+              Settings
+            </Link>
+          }
+          size="compact"
+          variant="ghost"
+        />
+      </div>
+      <SidebarKernelHealthPills />
     </footer>
   );
 }

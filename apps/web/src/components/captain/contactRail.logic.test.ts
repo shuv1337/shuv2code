@@ -11,7 +11,9 @@ import {
   getContactGroupSections,
   getContactRowView,
   getContactRowViews,
+  resolveBotAvatarBackground,
   rosterNeedsFirstProject,
+  shouldShowFirstProjectCtaInRail,
   templateOptionLabel,
 } from "./contactRail.logic";
 
@@ -60,6 +62,16 @@ describe("getContactRowView", () => {
     expect(getContactRowView(entry({ hasActivePrimarySession: true })).chatLabel).toBe(
       "Resume chat",
     );
+  });
+
+  it("reports the warm session as visible presence, not only as button wording", () => {
+    const idle = getContactRowView(entry());
+    expect(idle.isOnline).toBe(false);
+    expect(idle.presenceLabel).toBe("No session");
+
+    const warm = getContactRowView(entry({ hasActivePrimarySession: true }));
+    expect(warm.isOnline).toBe(true);
+    expect(warm.presenceLabel).toBe("Session active");
   });
 
   it("counts open assignments in words the row can print", () => {
@@ -207,6 +219,81 @@ describe("getBotAvatarView", () => {
     });
     expect(view.emoji).toBeNull();
     expect(view.color).toBeNull();
+  });
+});
+
+describe("resolveBotAvatarBackground", () => {
+  const avatar = (color: string | null) =>
+    getBotAvatarView({
+      botId: "bot_1",
+      name: "Coder",
+      displayMeta: color === null ? null : { color },
+    });
+
+  it("uses a real CSS colour when the captain picked one", () => {
+    expect(resolveBotAvatarBackground(avatar("#ff8800"))).toBe("#ff8800");
+    expect(resolveBotAvatarBackground(avatar("rgb(1 2 3)"))).toBe("rgb(1 2 3)");
+    expect(resolveBotAvatarBackground(avatar("var(--color-amber-500)"))).toBe(
+      "var(--color-amber-500)",
+    );
+  });
+
+  it("falls back to the deterministic hue when no colour is set", () => {
+    expect(resolveBotAvatarBackground(avatar(null))).toBe(`hsl(${botAvatarHue("bot_1")} 62% 42%)`);
+  });
+
+  it("never renders a transparent blob for an unresolvable colour", () => {
+    // M2 stores theme *token names* ("amber"), which `background-color` does
+    // not understand; painting them raw makes the blob invisible.
+    for (const token of ["amber", "emerald", "", "   ", "not-a-colour"]) {
+      const background = resolveBotAvatarBackground(avatar(token));
+      expect(background).toBe(`hsl(${botAvatarHue("bot_1")} 62% 42%)`);
+      expect(background).not.toBe("transparent");
+    }
+  });
+});
+
+describe("shouldShowFirstProjectCtaInRail", () => {
+  it("stays out of the rail whenever the conversation region can host it", () => {
+    expect(
+      shouldShowFirstProjectCtaInRail({
+        needsFirstProject: true,
+        showCenter: true,
+        railCollapsed: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("moves into the rail when there is no conversation region at all", () => {
+    // Single-column at the index route: the rail is the only surface, so the
+    // #141 CTA has to live there or it does not exist at that width.
+    expect(
+      shouldShowFirstProjectCtaInRail({
+        needsFirstProject: true,
+        showCenter: false,
+        railCollapsed: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("says nothing when there is already a project", () => {
+    expect(
+      shouldShowFirstProjectCtaInRail({
+        needsFirstProject: false,
+        showCenter: false,
+        railCollapsed: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not try to fit a form into the 64px strip", () => {
+    expect(
+      shouldShowFirstProjectCtaInRail({
+        needsFirstProject: true,
+        showCenter: false,
+        railCollapsed: true,
+      }),
+    ).toBe(false);
   });
 });
 

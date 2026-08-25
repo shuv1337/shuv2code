@@ -47,6 +47,14 @@ export interface ContactRowView {
   readonly openAssignmentLabel: string | null;
   /** A warm session is resumed rather than started (spec §4.1 lazy sessions). */
   readonly chatLabel: string;
+  /**
+   * Whether a `primary-text` binding is already live. The rail shows this as a
+   * presence dot: "is this bot awake" is the first thing a messenger contact
+   * list answers, and burying it in a `title` attribute answers it for nobody.
+   */
+  readonly isOnline: boolean;
+  /** What the presence dot announces, since the dot itself is decoration. */
+  readonly presenceLabel: string;
   /** The dim one-line under the name until M3 lands real message previews. */
   readonly secondaryLine: string;
   readonly avatar: BotAvatarView;
@@ -103,6 +111,29 @@ export function getBotAvatarView(input: {
   };
 }
 
+/** A CSS colour this file is willing to hand straight to `background-color`. */
+const CSS_COLOUR_LITERAL =
+  /^(?:#[0-9a-f]{3,8}|(?:rgba?|hsla?|okla[bc]|la[bc]|lch|color|color-mix|var)\()/iu;
+
+/**
+ * The blob's background. Resolved through one function so there is exactly one
+ * place to teach about colour, and so an unusable value degrades to the
+ * deterministic hue instead of to `background-color: amber` — which no browser
+ * understands and which paints a transparent blob.
+ *
+ * M2 (#197) constrains `BotDisplayMeta.color` to a theme-token union
+ * ("amber", "emerald", …) and exports `resolveBotAvatarColor(token)` from
+ * `captain/botIdentity.logic.ts`. When that lands, this delegates to it before
+ * falling through; the fallback below stays as the answer for unset and for
+ * anything the resolver does not recognise.
+ */
+export function resolveBotAvatarBackground(avatar: BotAvatarView): string {
+  if (avatar.color !== null && CSS_COLOUR_LITERAL.test(avatar.color)) {
+    return avatar.color;
+  }
+  return `hsl(${avatar.hue} 62% 42%)`;
+}
+
 /** Ported from `FleetRosterPage.logic.ts`; the wording is unchanged. */
 export function openAssignmentLabel(openAssignmentCount: number): string | null {
   if (openAssignmentCount <= 0) {
@@ -125,6 +156,8 @@ export function getContactRowView(entry: AdeRosterEntry): ContactRowView {
     isFirstmate: entry.bot.structuralRole === "firstmate",
     openAssignmentLabel: assignments,
     chatLabel: entry.hasActivePrimarySession ? "Resume chat" : "Chat",
+    isOnline: entry.hasActivePrimarySession,
+    presenceLabel: entry.hasActivePrimarySession ? "Session active" : "No session",
     secondaryLine: assignments === null ? projectLabel : `${projectLabel} · ${assignments}`,
     avatar: getBotAvatarView({
       botId: entry.bot.id,
@@ -189,6 +222,24 @@ export function getContactGroupSections(
  */
 export function rosterNeedsFirstProject(roster: AdeRoster | null): boolean {
   return roster !== null && roster.projects.length === 0;
+}
+
+/**
+ * Whether the rail itself has to carry the first-project CTA (#141).
+ *
+ * Normally the CTA lives in the conversation region via `CaptainIndexPane`.
+ * Below 900px that region does not exist at the index route, so the rail is the
+ * only surface left and the CTA moves into it — otherwise a captain on a phone
+ * is told to pick a bot they cannot usefully create. A 64px icon strip has no
+ * room for a form, but the icon strip only exists at ≥900px, where the
+ * conversation region is showing the CTA anyway.
+ */
+export function shouldShowFirstProjectCtaInRail(input: {
+  readonly needsFirstProject: boolean;
+  readonly showCenter: boolean;
+  readonly railCollapsed: boolean;
+}): boolean {
+  return input.needsFirstProject && !input.showCenter && !input.railCollapsed;
 }
 
 export function templateOptionLabel(template: AdeBotTemplateSummary): string {

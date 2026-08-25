@@ -24,11 +24,20 @@ export const CAPTAIN_LEFT_RAIL_ICON_WIDTH_PX = 64;
 export const CAPTAIN_RIGHT_RAIL_WIDTH_PX = 470;
 export const CAPTAIN_CENTER_MIN_WIDTH_PX = 520;
 
-/** Captain-owned media queries, mirroring the bands below exactly. */
+/**
+ * Captain-owned media queries. Each is a bare **lower** bound and the bands are
+ * resolved widest-first, so the four together cover the real line with no gap
+ * and no overlap.
+ *
+ * A previous cut paired each `min-width` with a `max-width: n - 1px` upper
+ * bound. That leaves an uncovered sliver — a viewport of 899.5px (ordinary on a
+ * fractional-DPR display or at browser zoom) matched *no* query, fell through
+ * to the default, and rendered the three-rail layout clipped inside 900px. A
+ * band boundary must be a single number, named once.
+ */
 export const CAPTAIN_THREE_RAIL_MEDIA_QUERY = `(min-width: ${CAPTAIN_THREE_RAIL_MIN_WIDTH}px)`;
-export const CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY = `(min-width: ${CAPTAIN_RIGHT_OVERLAY_MIN_WIDTH}px) and (max-width: ${CAPTAIN_THREE_RAIL_MIN_WIDTH - 1}px)`;
-export const CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY = `(min-width: ${CAPTAIN_ICON_LEFT_RAIL_MIN_WIDTH}px) and (max-width: ${CAPTAIN_RIGHT_OVERLAY_MIN_WIDTH - 1}px)`;
-export const CAPTAIN_SINGLE_COLUMN_MEDIA_QUERY = `(max-width: ${CAPTAIN_ICON_LEFT_RAIL_MIN_WIDTH - 1}px)`;
+export const CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY = `(min-width: ${CAPTAIN_RIGHT_OVERLAY_MIN_WIDTH}px)`;
+export const CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY = `(min-width: ${CAPTAIN_ICON_LEFT_RAIL_MIN_WIDTH}px)`;
 
 export type CaptainLayoutMode =
   /** ≥1440: contacts, conversation, bot panel, all inline. */
@@ -70,6 +79,37 @@ export function resolveCaptainLayoutMode(viewportWidth: number): CaptainLayoutMo
     return "right-overlay";
   }
   if (viewportWidth >= CAPTAIN_ICON_LEFT_RAIL_MIN_WIDTH) {
+    return "icon-left-rail";
+  }
+  return "single-column";
+}
+
+/**
+ * The same band decision, made from `matchMedia` results instead of a number.
+ * Widest-first: every width satisfies the lower bounds of its own band and all
+ * narrower ones, so the first match wins and nothing can fall between bands.
+ *
+ * `hasMediaSupport: false` means nobody could measure anything (no
+ * `matchMedia` at all — SSR, a bare test renderer). That resolves to the
+ * reference layout, matching `resolveCaptainLayoutMode`'s rule for an
+ * unmeasurable width: guessing "phone" on a desktop is the expensive mistake.
+ */
+export function resolveCaptainLayoutModeFromMediaMatches(matches: {
+  readonly hasMediaSupport: boolean;
+  readonly threeRails: boolean;
+  readonly rightOverlay: boolean;
+  readonly iconLeftRail: boolean;
+}): CaptainLayoutMode {
+  if (!matches.hasMediaSupport) {
+    return "three-rails";
+  }
+  if (matches.threeRails) {
+    return "three-rails";
+  }
+  if (matches.rightOverlay) {
+    return "right-overlay";
+  }
+  if (matches.iconLeftRail) {
     return "icon-left-rail";
   }
   return "single-column";
@@ -128,6 +168,11 @@ export function resolveCaptainShellRegions(input: CaptainShellRegionsInput): Cap
  * 520px min would force a horizontal scrollbar instead of a narrower column.
  */
 export function captainGridTemplateColumns(regions: CaptainShellRegions): string {
+  if (regions.mode === "single-column") {
+    // Whichever column the route chose is full-bleed. A fixed 380px rail on a
+    // 375px phone is a horizontal scrollbar, not a layout.
+    return "minmax(0, 1fr)";
+  }
   const tracks: string[] = [];
   if (regions.leftRail === "expanded") {
     tracks.push(`${CAPTAIN_LEFT_RAIL_WIDTH_PX}px`);

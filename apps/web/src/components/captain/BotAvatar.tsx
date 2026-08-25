@@ -1,5 +1,5 @@
 import { cn } from "../../lib/utils";
-import type { BotAvatarView } from "./contactRail.logic";
+import { type BotAvatarView, resolveBotAvatarBackground } from "./contactRail.logic";
 
 const SIZE_CLASS = {
   sm: "size-6 text-[11px]",
@@ -28,7 +28,7 @@ export function BotAvatar({
   readonly className?: string;
   readonly size?: BotAvatarSize;
 }) {
-  const background = avatar.color ?? `hsl(${avatar.hue} 62% 42%)`;
+  const background = resolveBotAvatarBackground(avatar);
   return (
     <span
       aria-hidden
