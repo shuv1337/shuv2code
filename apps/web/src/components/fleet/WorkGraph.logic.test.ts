@@ -13,6 +13,7 @@ import {
   NO_WORK_GRAPH_FILTER,
   workGraphIsFilteredEmpty,
   workGraphStatusCounts,
+  workGraphTruncationLabel,
 } from "./WorkGraph.logic";
 
 function node(
@@ -22,43 +23,42 @@ function node(
     readonly bot?: string;
     readonly status?: Assignment["status"];
     readonly childCount?: number;
-    readonly instruction?: string;
+    readonly title?: string;
     readonly blockedReason?: Assignment["blockedReason"];
     readonly declaredRisk?: Assignment["declaredRisk"];
-    readonly result?: Assignment["result"];
+    readonly resultLine?: string | null;
   } = {},
 ): AdeAssignmentGraphNode {
   return {
-    assignment: {
-      id,
-      idempotencyKey: id,
-      requester: { _tag: "captain" },
-      recipientBotId: overrides.bot ?? "bot_1",
-      projectId: "project_1",
-      instruction: overrides.instruction ?? `Do ${id}`,
-      declaredRisk: overrides.declaredRisk ?? "normal",
-      parentAssignmentId: overrides.parent ?? null,
-      status: overrides.status ?? "queued",
-      blockedReason: overrides.blockedReason ?? null,
-      queuePosition: 0,
-      result: overrides.result ?? null,
-      delivery: { delivered: false, deliveredAt: null },
-      createdAt: "2026-08-24T00:00:00.000Z",
-      updatedAt: "2026-08-24T00:00:00.000Z",
-    },
+    id,
+    parentAssignmentId: overrides.parent ?? null,
+    recipientBotId: overrides.bot ?? "bot_1",
     botName: overrides.bot === "bot_2" ? "Coder" : "Second Mate",
+    projectId: "project_1",
     projectName: "Demo",
+    status: overrides.status ?? "queued",
+    blockedReason: overrides.blockedReason ?? null,
+    declaredRisk: overrides.declaredRisk ?? "normal",
+    title: overrides.title ?? `Do ${id}`,
+    resultLine: overrides.resultLine ?? null,
+    resultStatus: null,
     childCount: overrides.childCount ?? 0,
+    createdAt: "2026-08-24T00:00:00.000Z",
   } as unknown as AdeAssignmentGraphNode;
 }
 
-function graph(nodes: ReadonlyArray<AdeAssignmentGraphNode>): AdeAssignmentGraph {
+function graph(
+  nodes: ReadonlyArray<AdeAssignmentGraphNode>,
+  extra: { readonly truncated?: boolean; readonly unreadableRows?: number } = {},
+): AdeAssignmentGraph {
   return {
     nodes,
     bots: [
       { id: "bot_1", name: "Second Mate" },
       { id: "bot_2", name: "Coder" },
     ],
+    truncated: extra.truncated ?? false,
+    unreadableRows: extra.unreadableRows ?? 0,
   } as unknown as AdeAssignmentGraph;
 }
 
@@ -84,9 +84,9 @@ describe("getWorkGraphTreeRows", () => {
     expect(rows[0]?.hiddenChildCount).toBe(0);
   });
 
-  it("roots a node whose parent is outside this scope instead of dropping it", () => {
-    // The project-scoped graph is full of these: the captain-requested parent
-    // may live on another project entirely.
+  it("roots a node whose parent is outside this window instead of dropping it", () => {
+    // Both the project scope and the most-recent-N window produce these: the
+    // parent may live on another project, or simply be older than the window.
     const rows = getWorkGraphTreeRows(
       graph([node("orphan", { parent: "elsewhere" }), node("child", { parent: "orphan" })]),
       NO_WORK_GRAPH_FILTER,
@@ -98,13 +98,13 @@ describe("getWorkGraphTreeRows", () => {
     ]);
   });
 
-  it("reports children the graph is not drawing", () => {
-    // Two children recorded, one inside this scope.
+  it("reports nothing hidden when every counted child is on screen", () => {
+    // `childCount` is scoped to the response, so an unfiltered tree hides none.
     const rows = getWorkGraphTreeRows(
-      graph([node("root", { childCount: 2 }), node("child", { parent: "root" })]),
+      graph([node("root", { childCount: 1 }), node("child", { parent: "root" })]),
       NO_WORK_GRAPH_FILTER,
     );
-    expect(rows[0]?.hiddenChildCount).toBe(1);
+    expect(rows[0]?.hiddenChildCount).toBe(0);
   });
 
   it("keeps a non-matching ancestor as context so the lineage stays whole", () => {
@@ -186,14 +186,7 @@ describe("getWorkGraphListRows", () => {
           blockedReason: "approval",
           declaredRisk: "protected",
         }),
-        node("b", {
-          status: "completed",
-          result: {
-            status: "completed",
-            summary: "  Landed the panel.  ",
-            artifacts: [],
-          } as Assignment["result"],
-        }),
+        node("b", { status: "completed", resultLine: "Landed the panel." }),
       ]),
       NO_WORK_GRAPH_FILTER,
     );
@@ -223,6 +216,18 @@ describe("work graph filters", () => {
     expect(workGraphIsFilteredEmpty(populated, [])).toBe(true);
     expect(workGraphIsFilteredEmpty(graph([]), [])).toBe(false);
     expect(workGraphIsFilteredEmpty(null, [])).toBe(false);
+  });
+});
+
+describe("workGraphTruncationLabel", () => {
+  it("says nothing when the window held everything", () => {
+    expect(workGraphTruncationLabel(graph([node("a")]))).toBeNull();
+    expect(workGraphTruncationLabel(null)).toBeNull();
+  });
+
+  it("admits the window cut off older work rather than implying it is all of it", () => {
+    const label = workGraphTruncationLabel(graph([node("a"), node("b")], { truncated: true }));
+    expect(label).toBe("Showing the 2 most recent assignments; older work is not loaded.");
   });
 });
 

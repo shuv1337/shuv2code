@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { useAdeAssignmentGraph } from "../../state/ade";
+import { unreadableRowsLabel } from "./ProjectViewPage.logic";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
@@ -17,6 +18,7 @@ import {
   getWorkGraphTreeRows,
   workGraphIsFilteredEmpty,
   workGraphStatusCounts,
+  workGraphTruncationLabel,
   type WorkGraphFilter,
   type WorkGraphRow,
 } from "./WorkGraph.logic";
@@ -44,6 +46,8 @@ export function WorkGraphPanel({ projectId }: { readonly projectId: AdeProjectId
   const rows =
     mode === "tree" ? getWorkGraphTreeRows(graph, filter) : getWorkGraphListRows(graph, filter);
   const filteredEmpty = workGraphIsFilteredEmpty(graph, rows);
+  const truncationLabel = workGraphTruncationLabel(graph);
+  const unreadableLabel = unreadableRowsLabel(graph?.unreadableRows ?? 0);
 
   return (
     <Card>
@@ -125,6 +129,16 @@ export function WorkGraphPanel({ projectId }: { readonly projectId: AdeProjectId
             {query.error}
           </p>
         )}
+        {truncationLabel === null ? null : (
+          <p role="status" className="text-muted-foreground text-xs">
+            {truncationLabel}
+          </p>
+        )}
+        {unreadableLabel === null ? null : (
+          <p role="status" className="text-warning-foreground text-xs">
+            {unreadableLabel}
+          </p>
+        )}
 
         {graph === null && query.isPending ? (
           <Skeleton className="h-12 w-full rounded-md" />
@@ -190,7 +204,7 @@ function WorkGraphRowView({
           <span className="text-muted-foreground text-xs">{row.blockedLabel}</span>
         )}
       </div>
-      <p className="line-clamp-2 text-sm">{row.instruction}</p>
+      <p className="line-clamp-2 text-sm">{row.title}</p>
       {row.resultSummary === null ? null : (
         <p className="line-clamp-2 text-muted-foreground text-xs">{row.resultSummary}</p>
       )}

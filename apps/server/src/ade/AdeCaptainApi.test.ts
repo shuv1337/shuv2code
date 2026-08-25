@@ -4,7 +4,12 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import type { AdeBotChatSession, AdeProjectId, BotId } from "@shuv2code/contracts";
+import {
+  IntegrationBounce,
+  type AdeBotChatSession,
+  type AdeProjectId,
+  type BotId,
+} from "@shuv2code/contracts";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -448,6 +453,12 @@ describe("AdeCaptainApi.startBotChat", () => {
 type Sql = SqlClient.SqlClient;
 
 /**
+ * Encodes a bounce the way the integration service does, so the fixture is
+ * exercising the same wire shape the projection has to decode.
+ */
+const encodeBounce = Schema.encodeSync(Schema.fromJsonString(IntegrationBounce));
+
+/**
  * Seeds a candidate row directly. The integration service's own
  * `enqueueCandidate` insists on a repo-bound project and a real JJ workspace;
  * these tests are about the *projection*, so they write the states a pass would
@@ -462,7 +473,8 @@ const seedCandidate = (
     readonly status: string;
     readonly createdAt: string;
     readonly gate?: string | null;
-    readonly bounce?: { reason: string; detail: string; at: string } | null;
+    /** Pre-encoded `bounce_json`; build it with {@link encodeBounce}. */
+    readonly bounce?: string | null;
   },
 ) => sql`
   INSERT INTO ade_integration_candidates (
@@ -474,7 +486,7 @@ const seedCandidate = (
     ${row.id}, ${row.projectId}, ${row.id},
     '[]', '["kmnopqrs"]', ${row.botId},
     'normal', ${row.status}, ${row.gate ?? null},
-    ${row.bounce == null ? 0 : 1}, ${row.bounce == null ? null : JSON.stringify(row.bounce)},
+    ${row.bounce == null ? 0 : 1}, ${row.bounce ?? null},
     ${row.createdAt}, ${row.createdAt}
   )
 `;
@@ -554,11 +566,11 @@ describe("AdeCaptainApi.listProjectCandidates", () => {
         botId: project.secondMate.botId,
         status: "bounced",
         createdAt: "2026-08-24T00:00:00.000Z",
-        bounce: {
+        bounce: encodeBounce({
           reason: "checks-failed",
           detail: "vp check exited 1",
           at: "2026-08-24T00:01:00.000Z",
-        },
+        }),
       });
       yield* seedCandidate(sql, {
         id: "cand-awaiting",
@@ -586,21 +598,7 @@ describe("AdeCaptainApi.listProjectCandidates", () => {
       assert.equal(all.candidates[0]?.bounce?.detail, "vp check exited 1");
       assert.equal(all.candidates[1]?.gate, "human-approval");
 
-      const parked = yield* api.listProjectCandidates({
-        projectId: project.projectId,
-        statuses: ["awaiting-approval"],
-      });
-      assert.deepEqual(
-        parked.candidates.map((candidate) => candidate.id),
-        ["cand-awaiting"],
-      );
-
-      // An empty filter means "no narrowing", not "match nothing".
-      const unfiltered = yield* api.listProjectCandidates({
-        projectId: project.projectId,
-        statuses: [],
-      });
-      assert.lengthOf(unfiltered.candidates, 2);
+      assert.equal(all.unreadableRows, 0);
     }).pipe(Effect.provide(makeLayer())),
   );
 
@@ -738,16 +736,19 @@ describe("AdeCaptainApi.getAssignmentGraph", () => {
       const scoped = yield* api.getAssignmentGraph({ projectId: project.projectId });
 
       assert.deepEqual(
-        scoped.nodes.map((node) => node.assignment.instruction),
+        scoped.nodes.map((node) => node.title),
         ["Land the feature.", "Write the panel."],
       );
       const root = scoped.nodes[0];
-      assert.equal(root?.assignment.parentAssignmentId, null);
-      // Two children exist; only one is inside this scope.
-      assert.equal(root?.childCount, 2);
+      assert.equal(root?.parentAssignmentId, null);
+      // childCount is scoped to the response: the off-project child is not
+      // in this window, so it is not counted here.
+      assert.equal(root?.childCount, 1);
       assert.equal(root?.projectName, "Demo");
-      assert.equal(scoped.nodes[1]?.assignment.parentAssignmentId, parent.assignment.id);
+      assert.equal(scoped.nodes[1]?.parentAssignmentId, parent.assignment.id);
       assert.equal(scoped.nodes[1]?.botName, (yield* api.getBot(coder.botId)).bot.name);
+      assert.isFalse(scoped.truncated);
+      assert.equal(scoped.unreadableRows, 0);
       assert.deepEqual(
         scoped.bots.map((bot) => bot.id).toSorted(),
         [coder.botId, project.secondMate.botId].toSorted(),
@@ -756,11 +757,11 @@ describe("AdeCaptainApi.getAssignmentGraph", () => {
       // Fleet-wide sees all three, and a fleet-shared bot has no project name.
       const fleet = yield* api.getAssignmentGraph({ projectId: null });
       assert.lengthOf(fleet.nodes, 3);
-      const offProject = fleet.nodes.find(
-        (node) => node.assignment.instruction === "Go read the spec.",
-      );
+      const offProject = fleet.nodes.find((node) => node.title === "Go read the spec.");
       assert.equal(offProject?.projectName, null);
       assert.equal(offProject?.botName, (yield* api.getBot(shared.botId)).bot.name);
+      // Fleet-wide, both children are in scope.
+      assert.equal(fleet.nodes.find((node) => node.id === parent.assignment.id)?.childCount, 2);
     }).pipe(Effect.provide(makeLayer())),
   );
 
@@ -771,6 +772,93 @@ describe("AdeCaptainApi.getAssignmentGraph", () => {
         api.getAssignmentGraph({ projectId: "nope" as AdeProjectId }),
       );
       assert.equal(error.reason, "project_not_found");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("windows to the most recent N and says so", () =>
+    Effect.gen(function* () {
+      const { api, bootstrap, engine } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Demo" });
+
+      for (let index = 0; index < 5; index += 1) {
+        yield* engine.createAssignment({
+          requester: { _tag: "captain" },
+          recipientBotId: project.secondMate.botId,
+          instruction: `Task ${index}`,
+          idempotencyKey: `task-${index}`,
+          projectId: project.projectId,
+        });
+      }
+
+      const windowed = yield* api.getAssignmentGraph({ projectId: project.projectId, limit: 2 });
+      assert.isTrue(windowed.truncated);
+      // The *most recent* two, still oldest-first within the window.
+      assert.deepEqual(
+        windowed.nodes.map((node) => node.title),
+        ["Task 3", "Task 4"],
+      );
+
+      const whole = yield* api.getAssignmentGraph({ projectId: project.projectId, limit: 50 });
+      assert.isFalse(whole.truncated);
+      assert.lengthOf(whole.nodes, 5);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("carries a bounded title instead of the whole instruction body", () =>
+    Effect.gen(function* () {
+      const { api, bootstrap, engine } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Demo" });
+      // A realistic instruction: a one-line summary, then a wall of context.
+      const body = "x".repeat(5_000);
+      yield* engine.createAssignment({
+        requester: { _tag: "captain" },
+        recipientBotId: project.secondMate.botId,
+        instruction: `Rewrite the panel\n\n${body}`,
+        idempotencyKey: "long-1",
+        projectId: project.projectId,
+      });
+
+      const graph = yield* api.getAssignmentGraph({ projectId: project.projectId });
+      assert.equal(graph.nodes[0]?.title, "Rewrite the panel");
+      // The body never reaches the wire: the node carries a title, not a
+      // 5KB instruction, and nothing else on it smuggles the text through.
+      assert.isBelow(graph.nodes[0]?.title.length ?? 0, 100);
+      assert.equal(graph.nodes[0]?.resultLine, null);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("skips an undecodable row instead of failing the whole polled read", () =>
+    Effect.gen(function* () {
+      const { api, sql, bootstrap, engine } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Demo" });
+      const good = yield* engine.createAssignment({
+        requester: { _tag: "captain" },
+        recipientBotId: project.secondMate.botId,
+        instruction: "Readable.",
+        idempotencyKey: "good-1",
+        projectId: project.projectId,
+      });
+      const bad = yield* engine.createAssignment({
+        requester: { _tag: "captain" },
+        recipientBotId: project.secondMate.botId,
+        instruction: "Corrupt.",
+        idempotencyKey: "bad-1",
+        projectId: project.projectId,
+      });
+      // Corrupt one row's JSON the way a partial write or a hand-edit would.
+      yield* sql`
+        UPDATE ade_assignments SET result_json = '{not json'
+        WHERE assignment_id = ${bad.assignment.id}
+      `;
+
+      const graph = yield* api.getAssignmentGraph({ projectId: project.projectId });
+
+      // The panel still renders, minus the row it could not read.
+      assert.deepEqual(
+        graph.nodes.map((node) => node.id),
+        [good.assignment.id],
+      );
+      assert.equal(graph.unreadableRows, 1);
     }).pipe(Effect.provide(makeLayer())),
   );
 });

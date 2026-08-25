@@ -15,7 +15,9 @@ import {
   getProjectCrewRowViews,
   getProjectHeaderView,
   getPublicationStackView,
+  isProjectNotFound,
   queueHeadId,
+  unreadableRowsLabel,
 } from "./ProjectViewPage.logic";
 
 function bot(overrides: Partial<Bot> = {}): Bot {
@@ -240,6 +242,33 @@ describe("integration queue", () => {
     expect(counts.bounced).toBe(1);
     expect(counts.integrated).toBe(0);
     expect(counts["awaiting-review"]).toBe(0);
+  });
+});
+
+describe("isProjectNotFound", () => {
+  it("recognises the tagged reason so the route can stop polling a dead row", () => {
+    expect(isProjectNotFound({ _tag: "AdeCaptainError", reason: "project_not_found" })).toBe(true);
+  });
+
+  it("treats every other failure as transient — a dropped socket is not a deletion", () => {
+    expect(isProjectNotFound({ _tag: "AdeCaptainError", reason: "persistence_failed" })).toBe(
+      false,
+    );
+    expect(isProjectNotFound(new Error("socket closed"))).toBe(false);
+    expect(isProjectNotFound(null)).toBe(false);
+    expect(isProjectNotFound(undefined)).toBe(false);
+  });
+});
+
+describe("unreadableRowsLabel", () => {
+  it("stays silent when every row decoded", () => {
+    expect(unreadableRowsLabel(0)).toBeNull();
+    expect(unreadableRowsLabel(-1)).toBeNull();
+  });
+
+  it("counts skipped rows in words the panel can print", () => {
+    expect(unreadableRowsLabel(1)).toBe("1 row could not be read and is not shown");
+    expect(unreadableRowsLabel(3)).toBe("3 rows could not be read and are not shown");
   });
 });
 

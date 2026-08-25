@@ -13,7 +13,6 @@ import {
   AdeCreateProjectInput,
   AdeCreatedProject,
   AdeEditPersonaInput,
-  AdeListProjectCandidatesInput,
   AdeNeedsYouCount,
   AdeProjectCandidates,
   AdeProjectDetail,
@@ -1357,9 +1356,9 @@ export const WsAdeGetProjectRpc = Rpc.make(WS_METHODS.adeGetProject, {
   error: AdeCaptainRpcError,
 });
 
-/** Integration queue panel (slice 3, panel 2), optionally status-filtered. */
+/** Integration queue panel (slice 3, panel 2); the client owns status narrowing. */
 export const WsAdeListProjectCandidatesRpc = Rpc.make(WS_METHODS.adeListProjectCandidates, {
-  payload: AdeListProjectCandidatesInput,
+  payload: AdeProjectIdInput,
   success: AdeProjectCandidates,
   error: AdeCaptainRpcError,
 });

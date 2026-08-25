@@ -1,6 +1,12 @@
 import type { AdeProjectId, IntegrationCandidateStatus } from "@shuv2code/contracts";
 import { Link } from "@tanstack/react-router";
-import { AnchorIcon, ExternalLinkIcon, GitBranchIcon, MessageSquareIcon } from "lucide-react";
+import {
+  AnchorIcon,
+  ArrowLeftIcon,
+  ExternalLinkIcon,
+  GitBranchIcon,
+  MessageSquareIcon,
+} from "lucide-react";
 import { useState } from "react";
 
 import { isElectron } from "../../env";
@@ -27,6 +33,8 @@ import {
   getProjectCrewRowViews,
   getProjectHeaderView,
   getPublicationStackView,
+  isProjectNotFound,
+  unreadableRowsLabel,
 } from "./ProjectViewPage.logic";
 import { WorkGraphPanel } from "./WorkGraphPanel";
 
@@ -40,6 +48,7 @@ import { WorkGraphPanel } from "./WorkGraphPanel";
 export function ProjectViewPage({ projectId }: { readonly projectId: AdeProjectId }) {
   const project = useAdeProject(projectId);
   const header = getProjectHeaderView(project.data);
+  const notFound = isProjectNotFound(project.failure);
 
   return (
     <SidebarInset className="isolate h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -61,40 +70,67 @@ export function ProjectViewPage({ projectId }: { readonly projectId: AdeProjectI
         )}
         <ScrollArea className="min-h-0 flex-1">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6 sm:px-6">
-            {project.error === null ? null : (
-              <p role="alert" className="text-sm text-destructive">
-                {project.error}
-              </p>
-            )}
+            {notFound ? (
+              <Empty>
+                <EmptyHeader>
+                  <EmptyTitle>Project not found</EmptyTitle>
+                  <EmptyDescription>
+                    This project no longer exists. It may have been deleted from another window.
+                  </EmptyDescription>
+                </EmptyHeader>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  render={
+                    <Link to="/fleet">
+                      <ArrowLeftIcon aria-hidden />
+                      Back to the fleet
+                    </Link>
+                  }
+                />
+              </Empty>
+            ) : (
+              <>
+                {project.error === null ? null : (
+                  <p role="alert" className="text-sm text-destructive">
+                    {project.error}
+                  </p>
+                )}
 
-            {header === null && project.isPending ? (
-              <Skeleton className="h-24 w-full rounded-lg" />
-            ) : header === null ? null : (
-              <div className="flex flex-col gap-2">
-                <h1 className="font-semibold text-xl">{header.name}</h1>
-                <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-sm">
-                  <Badge variant={header.isRepoBound ? "outline" : "warning"} size="sm">
-                    <GitBranchIcon aria-hidden />
-                    {header.repoLabel}
-                  </Badge>
-                  <Badge variant="secondary" size="sm">
-                    {header.policyLabel}
-                  </Badge>
-                  <span>{header.checkCommandsLabel}</span>
-                </div>
-              </div>
-            )}
+                {header === null && project.isPending ? (
+                  <Skeleton className="h-24 w-full rounded-lg" />
+                ) : header === null ? null : (
+                  <div className="flex flex-col gap-2">
+                    <h1 className="font-semibold text-xl">{header.name}</h1>
+                    <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-sm">
+                      <Badge variant={header.isRepoBound ? "outline" : "warning"} size="sm">
+                        <GitBranchIcon aria-hidden />
+                        {header.repoLabel}
+                      </Badge>
+                      <Badge variant="secondary" size="sm">
+                        {header.policyLabel}
+                      </Badge>
+                      <span>{header.checkCommandsLabel}</span>
+                    </div>
+                  </div>
+                )}
 
-            <CrewPanel projectId={projectId} />
-            <IntegrationQueuePanel
-              projectId={projectId}
-              isRepoBound={header?.isRepoBound ?? true}
-            />
-            <PublicationStackPanel
-              projectId={projectId}
-              isRepoBound={header?.isRepoBound ?? true}
-            />
-            <WorkGraphPanel projectId={projectId} />
+                <CrewPanel projectId={projectId} />
+                {/*
+                  The three heavy panels only mount once the project has
+                  answered. Without that gate a deleted project fans one 404 out
+                  into four pollers, each retrying forever against a row that is
+                  never coming back.
+                */}
+                {header === null ? null : (
+                  <>
+                    <IntegrationQueuePanel projectId={projectId} isRepoBound={header.isRepoBound} />
+                    <PublicationStackPanel projectId={projectId} isRepoBound={header.isRepoBound} />
+                    <WorkGraphPanel projectId={projectId} />
+                  </>
+                )}
+              </>
+            )}
           </div>
         </ScrollArea>
       </div>
@@ -176,6 +212,7 @@ function IntegrationQueuePanel({
   const all = candidates.data?.candidates ?? [];
   const counts = candidateStatusCounts(all);
   const rows = getCandidateRowViews(all, status);
+  const unreadableLabel = unreadableRowsLabel(candidates.data?.unreadableRows ?? 0);
 
   return (
     <Card>
@@ -209,6 +246,11 @@ function IntegrationQueuePanel({
         {candidates.error === null ? null : (
           <p role="alert" className="text-sm text-destructive">
             {candidates.error}
+          </p>
+        )}
+        {unreadableLabel === null ? null : (
+          <p role="status" className="text-warning-foreground text-xs">
+            {unreadableLabel}
           </p>
         )}
 

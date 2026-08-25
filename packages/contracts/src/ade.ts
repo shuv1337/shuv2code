@@ -816,16 +816,21 @@ export const AdeProjectDetail = Schema.Struct({
 });
 export type AdeProjectDetail = typeof AdeProjectDetail.Type;
 
-export const AdeListProjectCandidatesInput = Schema.Struct({
-  projectId: AdeProjectId,
-  /** Omit for every status; the panel's filter chips narrow it. */
-  statuses: Schema.optional(Schema.Array(IntegrationCandidateStatus)),
-});
-export type AdeListProjectCandidatesInput = typeof AdeListProjectCandidatesInput.Type;
-
-/** Integration queue panel (slice 3, panel 2), oldest first — queue order. */
+/**
+ * Integration queue panel (slice 3, panel 2), oldest first — queue order.
+ *
+ * There is no status filter on the wire: the panel's chips have to report how
+ * many candidates each status holds, so the client needs the whole queue
+ * regardless and narrows it itself.
+ */
 export const AdeProjectCandidates = Schema.Struct({
   candidates: Schema.Array(IntegrationCandidate),
+  /**
+   * Rows the projection could not decode and skipped. One corrupt blob must
+   * degrade to a missing row and a warning, never a failed panel that retries
+   * forever — the queue polls every few seconds.
+   */
+  unreadableRows: NonNegativeInt,
 });
 export type AdeProjectCandidates = typeof AdeProjectCandidates.Type;
 
@@ -842,27 +847,59 @@ export const AdePublicationStackView = Schema.Struct({
 });
 export type AdePublicationStackView = typeof AdePublicationStackView.Type;
 
+/** Default and hard ceiling for the work graph's most-recent-N window. */
+export const ASSIGNMENT_GRAPH_DEFAULT_LIMIT = 500;
+export const ASSIGNMENT_GRAPH_MAX_LIMIT = 1000;
+
+/** Bound on the one-line instruction/result excerpts the graph carries. */
+export const ASSIGNMENT_GRAPH_LINE_MAX_LENGTH = 200;
+
 /**
  * Work graph scope (slice 4). `projectId: null` is the fleet-wide graph;
  * bot and status filtering is client-side so that narrowing the list cannot
  * silently sever the lineage the tree is drawing.
+ *
+ * `limit` bounds the window to the most recent N assignments. The graph is
+ * polled on a timer and `ade_assignments` grows without bound, so an unbounded
+ * read would turn this into a multi-megabyte payload within weeks.
  */
 export const AdeAssignmentGraphInput = Schema.Struct({
   projectId: Schema.NullOr(AdeProjectId),
+  /** Defaults to {@link ASSIGNMENT_GRAPH_DEFAULT_LIMIT}; capped server-side. */
+  limit: Schema.optional(PositiveInt),
 });
 export type AdeAssignmentGraphInput = typeof AdeAssignmentGraphInput.Type;
 
+/**
+ * One node of the work graph. Deliberately **not** the whole `Assignment`:
+ * instruction and result bodies run to 120KB and 16KB respectively (spec
+ * §2.2), and several hundred of them on a polling timer is a payload nobody
+ * asked for. The graph carries one bounded line of each; the full text lives
+ * on the assignment itself.
+ */
 export const AdeAssignmentGraphNode = Schema.Struct({
-  assignment: Assignment,
+  id: AssignmentId,
+  parentAssignmentId: Schema.NullOr(AssignmentId),
+  recipientBotId: BotId,
   /** Recipient's name, so the graph renders without a roster round-trip. */
   botName: Schema.String,
+  projectId: Schema.NullOr(AdeProjectId),
   projectName: Schema.NullOr(Schema.String),
+  status: AssignmentStatus,
+  blockedReason: Schema.NullOr(AssignmentBlockedReason),
+  declaredRisk: DeclaredRisk,
+  /** First line of the instruction, bounded. */
+  title: Schema.String,
+  /** First line of the result summary once terminal; null while open. */
+  resultLine: Schema.NullOr(Schema.String),
+  resultStatus: Schema.NullOr(AssignmentTerminalStatus),
   /**
-   * Children recorded in the store, *including* any outside this scope — a
-   * child may be addressed to a bot on another project (spec §2.2), so the
-   * node has to admit to descendants the graph is not showing.
+   * Children **within this response**. Scoped rather than counted across the
+   * table so the read stays bounded; a child outside the window or the project
+   * scope is simply not counted here.
    */
   childCount: NonNegativeInt,
+  createdAt: IsoDateTime,
 });
 export type AdeAssignmentGraphNode = typeof AdeAssignmentGraphNode.Type;
 
@@ -875,12 +912,17 @@ export type AdeAssignmentGraphBot = typeof AdeAssignmentGraphBot.Type;
 
 /**
  * Assignment lineage payload (slice 4). Nodes arrive oldest-first; lineage is
- * `Assignment.parentAssignmentId`. A node whose parent is absent from `nodes`
- * is a root *of this scope* — the tree builder must not drop it.
+ * `parentAssignmentId`. A node whose parent is absent from `nodes` is a root
+ * *of this window* — the tree builder must not drop it, and the most-recent-N
+ * window makes those common rather than exceptional.
  */
 export const AdeAssignmentGraph = Schema.Struct({
   nodes: Schema.Array(AdeAssignmentGraphNode),
   /** Distinct recipients present in `nodes`, name-ordered. */
   bots: Schema.Array(AdeAssignmentGraphBot),
+  /** True when older assignments exist beyond the window. */
+  truncated: Schema.Boolean,
+  /** Rows the projection could not decode and skipped (see §2.3 above). */
+  unreadableRows: NonNegativeInt,
 });
 export type AdeAssignmentGraph = typeof AdeAssignmentGraph.Type;
