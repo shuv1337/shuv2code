@@ -96,6 +96,14 @@ export function CaptainComposer({
     }
 
     setSending(true);
+    // Cleared *before* the await, the way a messenger clears: the captain's
+    // line is already in the timeline optimistically, and a draft that lingers
+    // for the length of a round trip invites a duplicate send. A failure puts
+    // it back verbatim rather than losing it.
+    promptRef.current = "";
+    setPrompt("");
+    setCursor(0);
+
     const message = {
       messageId: newMessageId(),
       role: "user" as const,
@@ -129,12 +137,12 @@ export function CaptainComposer({
           });
     setSending(false);
     if (result._tag === "Failure") {
+      promptRef.current = text;
+      setPrompt(text);
+      setCursor(text.length);
       setValidationMessage(`The message could not be sent to ${botName}.`);
       return;
     }
-    promptRef.current = "";
-    setPrompt("");
-    setCursor(0);
     editorRef.current?.focusAtEnd();
   }, [botName, environmentId, startTurn, steerTurn, thread, threadRef.threadId]);
 
@@ -195,9 +203,15 @@ export function CaptainComposer({
             />
           </div>
         ) : null}
-        <div className="flex items-end gap-2 rounded-2xl border border-border bg-card px-2.5 py-1.5">
+        {/*
+         * `ComposerPromptEditor`'s `className` lands on the Lexical
+         * `ContentEditable`, not on its wrapper — flex sizing has to go on the
+         * dock itself, and the send button floats over a reserved gutter rather
+         * than sitting in the same flex row as a min-height text area.
+         */}
+        <div className="relative rounded-2xl border border-border bg-card px-3 py-2">
           <ComposerPromptEditor
-            className="min-w-0 flex-1"
+            className="pr-10"
             cursor={cursor}
             disabled={disabled || blocked}
             editorRef={editorRef}
@@ -212,7 +226,7 @@ export function CaptainComposer({
           />
           <Button
             aria-label={`Send to ${botName}`}
-            className="size-8 shrink-0 rounded-full"
+            className="absolute right-2 bottom-2 size-8 shrink-0 rounded-full"
             disabled={!canSend}
             onClick={() => submit()}
             size="icon-sm"
