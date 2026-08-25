@@ -99,6 +99,8 @@ const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function
   );
 });
 
+import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
+import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as AutomationService from "./automations/AutomationService.ts";
 import * as ServerConfig from "./config.ts";
@@ -677,6 +679,12 @@ const buildAppUnderTest = (options?: {
             subscribe: () => Stream.empty,
           }),
           Layer.mock(ThreadControlService)({}),
+          // The WebSocket route resolves the ADE captain surface and fleet-health
+          // ticker while it builds its handler layer, so the router seam cannot be
+          // constructed without them. These tests never exercise `ade.*` RPCs —
+          // `ws.ade.integration.test.ts` owns that seam with real services.
+          Layer.mock(AdeHealthChecker)({}),
+          Layer.mock(AdeCaptainApi)({}),
           Layer.mock(ControllerActionContextResolver)({}),
           Layer.mock(VoiceControllerBindingRepository)({}),
         ),

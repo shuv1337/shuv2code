@@ -11,6 +11,8 @@ import type {
   VoiceGetControllerHistoryResult,
   VoiceListVoicesInput,
   VoiceListVoicesResult,
+  VoicePrepareThreadCallInput,
+  VoicePrepareThreadCallResult,
   VoiceRealtimeIngressInput,
   VoiceRealtimeIngressResult,
   VoiceResetControllerInput,
@@ -52,6 +54,9 @@ export interface VoiceControllerServiceShape {
   readonly listVoices: (
     input: VoiceListVoicesInput,
   ) => Effect.Effect<VoiceListVoicesResult, VoiceControllerError>;
+  readonly prepareThreadCall: (
+    input: VoicePrepareThreadCallInput,
+  ) => Effect.Effect<VoicePrepareThreadCallResult, VoiceControllerError>;
   readonly start: (
     input: VoiceSessionStartInput,
   ) => Effect.Effect<VoiceSessionStartResult, VoiceControllerError>;
