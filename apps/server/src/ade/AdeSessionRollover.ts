@@ -312,6 +312,20 @@ export interface AdeSessionRolloverShape {
     | AdeSessionBindingConflictError
     | PersistenceSqlError
   >;
+  /**
+   * Components 1–3 of the projection for a bot, without opening, retiring, or
+   * otherwise touching any binding.
+   *
+   * A non-primary session (voice, §4.7) needs the same persona + memory +
+   * active-assignment context a primary session is started with, but it is not
+   * a rollover: nothing is retired, so there is no outgoing session to
+   * summarize and `outgoingSessionSummary` is always null. Persona activation
+   * still happens here — this is a session start (ADR §12.1), just not a
+   * primary one.
+   */
+  readonly projectSessionContext: (
+    botId: BotId,
+  ) => Effect.Effect<AdeSessionProjection, AdeBotNotFoundError | PersistenceSqlError>;
   /** Open a non-primary binding (parallel-work / voice / specialized-work). */
   readonly openBinding: (
     input: OpenBindingInput,
@@ -676,6 +690,24 @@ export class AdeSessionRollover extends Context.Service<
           );
       });
 
+      const projectSessionContext: AdeSessionRolloverShape["projectSessionContext"] = Effect.fn(
+        "AdeSessionRollover.projectSessionContext",
+      )(function* (botId: BotId) {
+        const at = yield* nowIso;
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* requireBot(botId);
+              return yield* composeProjection(botId, at, null);
+            }),
+          )
+          .pipe(
+            Effect.catchTag("SqlError", (cause) =>
+              Effect.fail(toPersistenceSqlError("AdeSessionRollover.projectSessionContext")(cause)),
+            ),
+          );
+      });
+
       const openBinding: AdeSessionRolloverShape["openBinding"] = Effect.fn(
         "AdeSessionRollover.openBinding",
       )(function* (input: OpenBindingInput) {
@@ -816,6 +848,7 @@ export class AdeSessionRollover extends Context.Service<
       return AdeSessionRollover.of({
         startPrimarySession,
         rolloverPrimarySession,
+        projectSessionContext,
         openBinding,
         closeBinding,
         listBindings,
