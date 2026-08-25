@@ -9,7 +9,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useResizableWidth } from "../../hooks/useResizableWidth";
 import { cn } from "../../lib/utils";
 import { useUiStateStore } from "../../uiStateStore";
-import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
+import { RAIL_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { RightPanelResizeHandle } from "../preview/RightPanelResizeHandle";
 import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
@@ -204,11 +204,13 @@ export function CaptainShell({
               <ConversationHeader
                 actions={conversationHeaderActions}
                 /*
-                 * The app sidebar's own collapse trigger is `fixed` at z-50
-                 * over the top-left corner. When the left rail is hidden this
-                 * header is what sits under it, so it takes the same titlebar
-                 * inset every other full-page surface uses. (When the rail is
-                 * visible the rail's own header takes it instead.)
+                 * Single-column conversation: the rail is gone, so this header
+                 * is the leftmost surface and inherits its clearance under the
+                 * macOS traffic lights. (When the rail is visible the rail's
+                 * own header takes it instead.) Since #216 there is no app
+                 * sidebar trigger to inset around on these routes — the class
+                 * self-gates on the frame, so this stays a plain "am I
+                 * leftmost" question.
                  */
                 insetForTitlebar={regions.leftRail === "hidden"}
                 onToggleRightRail={toggleRightRail}
@@ -317,7 +319,7 @@ export function ConversationHeader({
       className={cn(
         "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center justify-between gap-2 border-b border-border px-2 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
         isElectron && "drag-region",
-        insetForTitlebar && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+        insetForTitlebar && RAIL_TITLEBAR_INSET_CLASS,
       )}
     >
       <span className="flex min-w-0 items-center gap-2">

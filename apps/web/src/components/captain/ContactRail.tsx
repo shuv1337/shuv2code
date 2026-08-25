@@ -13,7 +13,7 @@ import { useMemo, useState } from "react";
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { useAdeEnvironmentId, useAdeNeedsYouList, useAdeRoster } from "../../state/ade";
-import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
+import { RAIL_TITLEBAR_INSET_CLASS, RAIL_TITLEBAR_TOP_INSET_CLASS } from "../../workspaceTitlebar";
 import { SidebarKernelHealthPills } from "../sidebar/SidebarKernelHealthPills";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
@@ -38,13 +38,6 @@ import {
   shouldShowFirstProjectCtaInRail,
   type ContactRailFilter,
 } from "./contactRail.logic";
-
-/**
- * The 64px strip has no room to inset content horizontally past the app's
- * fixed sidebar trigger, so it drops its controls below the trigger instead.
- */
-const COLLAPSED_SIDEBAR_TITLEBAR_TOP_INSET_CLASS =
-  "[[data-sidebar-state=collapsed]_&]:pt-[var(--workspace-topbar-height)]";
 
 /**
  * The captain's contacts (§2 LEFT RAIL). Every bot is a contact; the server
@@ -130,19 +123,29 @@ export function ContactRail({
         collapsed ? "items-stretch px-1.5" : "px-2",
       )}
     >
+      {/*
+        The rail is the leftmost surface on this route now (#216), so its header
+        is what sits under the macOS traffic lights — the app sidebar is not
+        there to take that inset for it. The 64px strip is narrower than the
+        lights are wide, so it drops below the titlebar band instead of insetting
+        into it.
+      */}
       <header
         className={cn(
           "flex shrink-0 items-center gap-1 pb-1 transition-[padding] duration-200 ease-linear motion-reduce:transition-none",
           isElectron && "drag-region",
           collapsed
-            ? ["flex-col pt-2", COLLAPSED_SIDEBAR_TITLEBAR_TOP_INSET_CLASS]
+            ? ["flex-col pt-2", RAIL_TITLEBAR_TOP_INSET_CLASS]
             : [
                 "h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] justify-between",
-                COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+                RAIL_TITLEBAR_INSET_CLASS,
               ],
         )}
       >
-        {collapsed ? null : <span className="truncate ps-1 text-sm font-semibold">Fleet</span>}
+        <span className={cn("flex min-w-0 items-center gap-1", collapsed && "flex-col")}>
+          <WorkspaceSwitcher collapsed={collapsed} />
+          {collapsed ? null : <span className="truncate text-sm font-semibold">Fleet</span>}
+        </span>
         <span className={cn("flex items-center gap-1", collapsed && "flex-col")}>
           <NewBotPopover
             collapsed={collapsed}
@@ -300,11 +303,62 @@ export function ContactRail({
 }
 
 /**
+ * The way back out of the captain surface (#216).
+ *
+ * With the app sidebar gone from these routes, the rail is the only left rail —
+ * which means it is also the only thing that can carry the return trip. The app
+ * mark is the affordance because it is the same mark, in the same corner, that
+ * goes to `/` from the workspace sidebar header ("Go to threads"): the two
+ * surfaces switch through one recognisable control rather than through a
+ * captain-only invention.
+ *
+ * `SidebarFleetEntry` remains the way *in*, untouched. This is the other half
+ * of that trip, not a duplicate of it.
+ *
+ * Exported for tests: with the app sidebar gone this is the *only* way back to
+ * the coding interface from the captain surface, so where it points is worth
+ * asserting rather than eyeballing.
+ */
+export function WorkspaceSwitcher({ collapsed }: { readonly collapsed: boolean }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label="Back to workspace threads"
+            render={<Link to="/" />}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <img
+              alt=""
+              aria-hidden
+              className="size-[22px] shrink-0"
+              src="/brand/shuv2code-mark.svg"
+            />
+          </Button>
+        }
+      />
+      <TooltipPopup side={collapsed ? "right" : "bottom"}>Back to workspace threads</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+/**
  * Rail footer (§2): the analysis surfaces, Settings, and the demoted kernel
  * health pills, whose home is now this footer **in every rail mode**. They used
  * to sit in the app sidebar footer and so were visible app-wide; a captain who
  * narrows the window must not lose sight of a degraded kernel, and
  * `/fleet/projects/$adeProjectId` must not lose its only entry point.
+ *
+ * #216 audited what else disappears with the app sidebar and settled the split
+ * here. **Settings** is absorbed — already present, and it stays, because it is
+ * app-wide state (appearance, connections, keybindings) a captain reaches for
+ * without a coding thread in mind. **Pull Requests** and **Usage** are not:
+ * both are workspace analysis surfaces about the coding interface's own work,
+ * they are one click away through the app mark at the rail top, and adding them
+ * would rebuild the second sidebar's footer inside the first. The account row
+ * stays workspace-only for the same reason.
  */
 /**
  * One rail view toggle. A button rather than a link even though the state
