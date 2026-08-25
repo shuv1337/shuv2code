@@ -256,6 +256,23 @@ describe("resolveBotChatConnectState", () => {
     expect(state.notice.details).toContain("Retry");
   });
 
+  it("waits rather than claiming a failure before health has been read", () => {
+    /*
+     * A pre-first-frame `null` snapshot must not raise the kernel-down notice:
+     * the caller passes `autoConnectBlocked: false` for it precisely so a cold
+     * load does not flash a failure and then silently connect. It still does
+     * not auto-start — that is `canAutoConnect(null) === false`, tested above.
+     */
+    const state = resolveBotChatConnectState({
+      body: connecting,
+      syncOutcome: waiting,
+      startError: null,
+      chatReady: false,
+      autoConnectBlocked: false,
+    });
+    expect(state.kind).toBe("connecting");
+  });
+
   it("never throws a live conversation away over a health snapshot", () => {
     // A session that outlived the kernel going down, or a Retry that beat the
     // pill, keeps its conversation.

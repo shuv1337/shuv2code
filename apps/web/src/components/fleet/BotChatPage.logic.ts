@@ -191,6 +191,11 @@ export function shouldAutoStartChat(input: {
  * button press; guessing wrong in the other direction writes rows. Retry is
  * deliberately *not* gated on this — an explicit press is intent, and the
  * captain is allowed to disagree with the pill.
+ *
+ * Note the asymmetry with the *notice*: refusing to auto-connect and telling
+ * the captain the kernel is down are different claims. `null` earns the first
+ * and not the second, because "the health snapshot has not arrived" is not
+ * evidence of anything; see `autoConnectBlocked` at the call site.
  */
 export function canAutoConnect(kernelHealth: HealthState | null): boolean {
   return kernelHealth === "healthy";
