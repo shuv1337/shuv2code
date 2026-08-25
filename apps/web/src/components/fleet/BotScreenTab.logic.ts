@@ -29,6 +29,27 @@ export const DELETE_VOLUME_WORKAROUND_NOTE =
 export const WEBSOCKET_TICKET_PATH = "/api/auth/websocket-ticket";
 
 /**
+ * Picks the RFB class out of a dynamically imported `@novnc/novnc/lib/rfb.js`.
+ *
+ * noVNC ships Babel CJS (`exports.default = RFB` + `__esModule`). The dev
+ * server interops that into `{ default: RFB }`, but the production bundler
+ * hands the dynamic import the raw `module.exports` object as `default`, so
+ * `new mod.default(...)` throws "is not a constructor" in a built app while
+ * working in dev. Accept every shape the two pipelines produce.
+ */
+export function resolveRfbConstructor(mod: unknown): unknown {
+  const record = (value: unknown): Record<string, unknown> | null =>
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+  if (typeof mod === "function") return mod;
+  const top = record(mod);
+  if (top === null) return null;
+  if (typeof top.default === "function") return top.default;
+  const nested = record(top.default);
+  if (nested !== null && typeof nested.default === "function") return nested.default;
+  return null;
+}
+
+/**
  * Turns the server-issued viewer path into the WebSocket URL noVNC opens.
  *
  * Same-origin by construction: ADE is a primary-environment-only surface and
