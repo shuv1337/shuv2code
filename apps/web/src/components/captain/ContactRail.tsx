@@ -65,8 +65,8 @@ export function ContactRail({
   // hide contacts the captain can no longer see they filtered.
   const effectiveQuery = collapsed ? "" : query;
   const sections = useMemo(
-    () => getContactGroupSections(filterContactRows(rows, effectiveQuery)),
-    [rows, effectiveQuery],
+    () => getContactGroupSections(filterContactRows(rows, effectiveQuery), roster.data?.groups),
+    [rows, effectiveQuery, roster.data?.groups],
   );
 
   const loading = roster.data === null && roster.isPending;

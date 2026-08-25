@@ -6,12 +6,15 @@
  * re-sorts; it only decides what each row says — and adds the rail's own
  * concerns: the avatar model, search, and group bucketing.
  *
- * Groups are an M2 (#197) delivery. Until `Bot.groupId` exists in the contract
- * the bucketing is real but degenerate: every bot falls into the implicit
- * trailing "Ungrouped" section. Shipping the section shape now means M2 adds
- * captain-defined headers without re-cutting the rail.
+ * Groups are an M2 (#197) delivery, and they have landed: `getContactGroupSections`
+ * buckets by `Bot.groupId` against the roster's captain-defined groups. The
+ * trailing "Ungrouped" section stays implicit — it is the absence of a group,
+ * not a row the server stores — which is what keeps deleting a group a pure
+ * ungrouping rather than something that could reach a bot.
  */
 import type {
+  AdeBotGroup,
+  AdeBotGroupId,
   AdeBotTemplateSummary,
   AdeRoster,
   AdeRosterEntry,
@@ -20,6 +23,7 @@ import type {
 } from "@shuv2code/contracts";
 
 import { structuralRoleLabel } from "../../state/ade.logic";
+import { resolveBotAvatarColor } from "./botIdentity.logic";
 
 /** The implicit trailing bucket every ungrouped bot falls into (§2). */
 export const UNGROUPED_SECTION_ID = "__ungrouped__";
@@ -58,6 +62,8 @@ export interface ContactRowView {
   /** The dim one-line under the name until M3 lands real message previews. */
   readonly secondaryLine: string;
   readonly avatar: BotAvatarView;
+  /** Captain-defined group membership; null is the implicit Ungrouped bucket. */
+  readonly groupId: AdeBotGroupId | null;
 }
 
 export interface ContactGroupSectionView {
@@ -123,11 +129,16 @@ const CSS_COLOUR_LITERAL =
  *
  * M2 (#197) constrains `BotDisplayMeta.color` to a theme-token union
  * ("amber", "emerald", …) and exports `resolveBotAvatarColor(token)` from
- * `captain/botIdentity.logic.ts`. When that lands, this delegates to it before
- * falling through; the fallback below stays as the answer for unset and for
- * anything the resolver does not recognise.
+ * `captain/botIdentity.logic.ts`. That is what the token branch below
+ * delegates to, so the picker's swatch and the blob it paints cannot disagree.
+ * The literal branch stays for a value stored before the union landed, and the
+ * hue stays as the answer for unset and for anything neither recognises.
  */
 export function resolveBotAvatarBackground(avatar: BotAvatarView): string {
+  const token = avatar.color === null ? null : resolveBotAvatarColor(avatar.color);
+  if (token !== null) {
+    return token;
+  }
   if (avatar.color !== null && CSS_COLOUR_LITERAL.test(avatar.color)) {
     return avatar.color;
   }
@@ -164,6 +175,7 @@ export function getContactRowView(entry: AdeRosterEntry): ContactRowView {
       name: entry.bot.name,
       displayMeta: entry.bot.displayMeta,
     }),
+    groupId: entry.bot.groupId,
   };
 }
 
@@ -202,17 +214,38 @@ function normalizeSearchText(value: string): string {
 
 /**
  * Bucket rows into rendered sections, preserving the server's order inside each
- * one. Until M2 there is exactly one section — the implicit "Ungrouped" — and
- * an empty roster produces no sections at all so the rail can show its own
- * empty state rather than an empty header.
+ * one — the roster is already Firstmate-first, so nothing here re-sorts.
+ *
+ * Group headers come out in the captain's order; "Ungrouped" always trails,
+ * because it is where a bot lands by *not* being filed rather than by being
+ * filed last. Sections with no rows are dropped: while a search is running,
+ * printing a header over nothing describes the group rather than the results.
+ * A bot whose `groupId` names a group the roster does not carry falls to
+ * Ungrouped rather than vanishing — the rail is where a captain would notice a
+ * bot is missing, so it must never be the thing that hides one.
  */
 export function getContactGroupSections(
   rows: ReadonlyArray<ContactRowView>,
+  groups: ReadonlyArray<AdeBotGroup> = [],
 ): ReadonlyArray<ContactGroupSectionView> {
   if (rows.length === 0) {
     return [];
   }
-  return [{ groupId: UNGROUPED_SECTION_ID, name: UNGROUPED_SECTION_NAME, rows }];
+  const known = new Set(groups.map((group) => group.id));
+  const sections = groups.map((group) => ({
+    groupId: group.id as string,
+    name: group.name,
+    rows: rows.filter((row) => row.groupId === group.id),
+  }));
+  const ungrouped = rows.filter((row) => row.groupId === null || !known.has(row.groupId));
+  if (ungrouped.length > 0) {
+    sections.push({
+      groupId: UNGROUPED_SECTION_ID,
+      name: UNGROUPED_SECTION_NAME,
+      rows: ungrouped,
+    });
+  }
+  return sections.filter((section) => section.rows.length > 0);
 }
 
 /**

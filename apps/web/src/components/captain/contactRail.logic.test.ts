@@ -1,8 +1,17 @@
-import type { AdeRoster, AdeRosterEntry, Bot, BotId } from "@shuv2code/contracts";
+import type {
+  AdeBotGroup,
+  AdeBotGroupId,
+  AdeRoster,
+  AdeRosterEntry,
+  Bot,
+  BotDisplayMeta,
+  BotId,
+} from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   UNGROUPED_SECTION_ID,
+  UNGROUPED_SECTION_NAME,
   botAvatarHue,
   botAvatarInitials,
   contactRailEmptyCopy,
@@ -16,6 +25,13 @@ import {
   shouldShowFirstProjectCtaInRail,
   templateOptionLabel,
 } from "./contactRail.logic";
+
+const BACKEND = "group_backend" as AdeBotGroupId;
+const FRONTEND = "group_frontend" as AdeBotGroupId;
+
+function group(id: AdeBotGroupId, name: string, orderIndex: number): AdeBotGroup {
+  return { id, name, orderIndex, createdAt: "2026-08-24T00:00:00.000Z" } as AdeBotGroup;
+}
 
 function bot(overrides: Partial<Bot> = {}): Bot {
   return {
@@ -191,12 +207,23 @@ describe("botAvatarInitials", () => {
   });
 });
 
+/**
+ * `BotDisplayMeta.color` is a closed token union since M2 (#197), but the
+ * column predates it and `parseDisplayMeta` is deliberately lenient, so the
+ * resolver still has to answer for a hex, a blank, or a word that is neither.
+ * This cast is how those cases stay reachable from a test without widening the
+ * contract they exist to defend against.
+ */
+function legacyMeta(meta: { emoji?: string; color?: string }): BotDisplayMeta {
+  return meta as BotDisplayMeta;
+}
+
 describe("getBotAvatarView", () => {
   it("prefers the captain's emoji and colour when display meta carries them", () => {
     const view = getBotAvatarView({
       botId: "bot_1",
       name: "Coder",
-      displayMeta: { emoji: "🐒", color: "#ff8800" },
+      displayMeta: legacyMeta({ emoji: "🐒", color: "#ff8800" }),
     });
     expect(view.emoji).toBe("🐒");
     expect(view.color).toBe("#ff8800");
@@ -215,7 +242,7 @@ describe("getBotAvatarView", () => {
     const view = getBotAvatarView({
       botId: "bot_1",
       name: "Coder",
-      displayMeta: { emoji: "   ", color: "" },
+      displayMeta: legacyMeta({ emoji: "   ", color: "" }),
     });
     expect(view.emoji).toBeNull();
     expect(view.color).toBeNull();
@@ -227,7 +254,7 @@ describe("resolveBotAvatarBackground", () => {
     getBotAvatarView({
       botId: "bot_1",
       name: "Coder",
-      displayMeta: color === null ? null : { color },
+      displayMeta: color === null ? null : legacyMeta({ color }),
     });
 
   it("uses a real CSS colour when the captain picked one", () => {
@@ -242,10 +269,21 @@ describe("resolveBotAvatarBackground", () => {
     expect(resolveBotAvatarBackground(avatar(null))).toBe(`hsl(${botAvatarHue("bot_1")} 62% 42%)`);
   });
 
+  /**
+   * M2 (#197) stores theme *token names*, which `background-color` does not
+   * understand — painting "amber" raw makes the blob invisible. The seam now
+   * delegates to `resolveBotAvatarColor`, so the token becomes the theme
+   * variable rather than the fallback hue.
+   */
+  it("resolves a stored theme token through the shared resolver", () => {
+    expect(resolveBotAvatarBackground(avatar("amber"))).toBe("var(--color-amber-500)");
+    expect(resolveBotAvatarBackground(avatar("emerald"))).toBe("var(--color-emerald-500)");
+  });
+
   it("never renders a transparent blob for an unresolvable colour", () => {
-    // M2 stores theme *token names* ("amber"), which `background-color` does
-    // not understand; painting them raw makes the blob invisible.
-    for (const token of ["amber", "emerald", "", "   ", "not-a-colour"]) {
+    // Neither a palette token nor a CSS literal: the hue is the only honest
+    // answer, and it is never `transparent`.
+    for (const token of ["", "   ", "not-a-colour", "chartreuse", "AMBER"]) {
       const background = resolveBotAvatarBackground(avatar(token));
       expect(background).toBe(`hsl(${botAvatarHue("bot_1")} 62% 42%)`);
       expect(background).not.toBe("transparent");
@@ -341,7 +379,7 @@ describe("getContactGroupSections", () => {
     expect(getContactGroupSections([])).toEqual([]);
   });
 
-  it("buckets everything into the implicit Ungrouped section until M2", () => {
+  it("buckets everything into the implicit Ungrouped section when nothing is filed", () => {
     const rows = getContactRowViews({
       entries: [entry(), entry({ bot: bot({ id: "bot_2" as BotId, name: "Coder" }) })],
       projects: [],
@@ -351,6 +389,66 @@ describe("getContactGroupSections", () => {
     expect(sections).toHaveLength(1);
     expect(sections[0]!.groupId).toBe(UNGROUPED_SECTION_ID);
     expect(sections[0]!.rows.map((row) => row.name)).toEqual(["Firstmate", "Coder"]);
+  });
+
+  it("renders captain groups in their order with Ungrouped always trailing", () => {
+    const rows = getContactRowViews({
+      entries: [
+        entry({ bot: bot({ id: "bot_1" as BotId, name: "Firstmate" }) }),
+        entry({ bot: bot({ id: "bot_2" as BotId, name: "Coder", groupId: BACKEND }) }),
+        entry({ bot: bot({ id: "bot_3" as BotId, name: "Designer", groupId: FRONTEND }) }),
+        entry({ bot: bot({ id: "bot_4" as BotId, name: "Reviewer", groupId: BACKEND }) }),
+      ],
+      projects: [],
+      templates: [],
+    } as unknown as AdeRoster);
+
+    const sections = getContactGroupSections(rows, [
+      group(BACKEND, "Backend", 0),
+      group(FRONTEND, "Frontend", 1),
+    ]);
+
+    expect(sections.map((section) => section.name)).toEqual([
+      "Backend",
+      "Frontend",
+      UNGROUPED_SECTION_NAME,
+    ]);
+    // Server order is preserved inside a bucket; nothing here re-sorts.
+    expect(sections[0]!.rows.map((row) => row.name)).toEqual(["Coder", "Reviewer"]);
+    expect(sections[2]!.rows.map((row) => row.name)).toEqual(["Firstmate"]);
+  });
+
+  it("drops a group with no rows rather than heading an empty list", () => {
+    const rows = getContactRowViews({
+      entries: [entry({ bot: bot({ id: "bot_2" as BotId, name: "Coder", groupId: BACKEND }) })],
+      projects: [],
+      templates: [],
+    } as unknown as AdeRoster);
+
+    const sections = getContactGroupSections(rows, [
+      group(BACKEND, "Backend", 0),
+      group(FRONTEND, "Frontend", 1),
+    ]);
+
+    expect(sections.map((section) => section.name)).toEqual(["Backend"]);
+  });
+
+  /**
+   * The rail is where a captain would notice a bot went missing, so it must
+   * never be the thing that hides one.
+   */
+  it("falls a bot in an unknown group back to Ungrouped instead of hiding it", () => {
+    const rows = getContactRowViews({
+      entries: [entry({ bot: bot({ id: "bot_2" as BotId, name: "Coder", groupId: BACKEND }) })],
+      projects: [],
+      templates: [],
+    } as unknown as AdeRoster);
+
+    const sections = getContactGroupSections(rows, []);
+
+    expect(sections).toHaveLength(1);
+    expect(sections[0]!.groupId).toBe(UNGROUPED_SECTION_ID);
+    expect(sections[0]!.rows.map((row) => row.name)).toEqual(["Coder"]);
   });
 });
 
