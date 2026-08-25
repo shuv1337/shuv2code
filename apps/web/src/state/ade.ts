@@ -1,6 +1,11 @@
 import type {
+  AdeAssignmentGraph,
   AdeBotDetail,
   AdeNeedsYouCount,
+  AdeProjectCandidates,
+  AdeProjectDetail,
+  AdeProjectId,
+  AdePublicationStackView,
   AdeRoster,
   BotId,
   FleetHealthSnapshot,
@@ -63,6 +68,58 @@ export function useAdeBotDetail(botId: BotId | null): EnvironmentQueryView<AdeBo
     environmentId === null || botId === null
       ? null
       : adeEnvironment.bot({ environmentId, input: { botId } }),
+  );
+}
+
+/** Project header + crew panel (UI slice 3). A null `projectId` reads nothing. */
+export function useAdeProject(
+  projectId: AdeProjectId | null,
+): EnvironmentQueryView<AdeProjectDetail> {
+  const environmentId = useAdeEnvironmentId();
+  return useEnvironmentQuery(
+    environmentId === null || projectId === null
+      ? null
+      : adeEnvironment.project({ environmentId, input: { projectId } }),
+  );
+}
+
+/**
+ * The project's integration queue (UI slice 3, panel 2). Status filtering is
+ * deliberately client-side — the chips have to show how many candidates each
+ * status holds, which a server-filtered list cannot answer.
+ */
+export function useAdeProjectCandidates(
+  projectId: AdeProjectId | null,
+): EnvironmentQueryView<AdeProjectCandidates> {
+  const environmentId = useAdeEnvironmentId();
+  return useEnvironmentQuery(
+    environmentId === null || projectId === null
+      ? null
+      : adeEnvironment.projectCandidates({ environmentId, input: { projectId } }),
+  );
+}
+
+/** The project's publication stack and layers (UI slice 3, panel 3). */
+export function useAdeProjectPublicationStack(
+  projectId: AdeProjectId | null,
+): EnvironmentQueryView<AdePublicationStackView | null> {
+  const environmentId = useAdeEnvironmentId();
+  return useEnvironmentQuery(
+    environmentId === null || projectId === null
+      ? null
+      : adeEnvironment.projectPublicationStack({ environmentId, input: { projectId } }),
+  );
+}
+
+/** Assignment lineage for the work graph (UI slice 4); null scope is fleet-wide. */
+export function useAdeAssignmentGraph(
+  projectId: AdeProjectId | null,
+): EnvironmentQueryView<AdeAssignmentGraph> {
+  const environmentId = useAdeEnvironmentId();
+  return useEnvironmentQuery(
+    environmentId === null
+      ? null
+      : adeEnvironment.assignmentGraph({ environmentId, input: { projectId } }),
   );
 }
 

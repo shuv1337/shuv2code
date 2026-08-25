@@ -2,7 +2,8 @@
  * ADE client state (spec `docs/ade/ADE-V1-SPEC.md` §4.8, §7.8): the fleet
  * health subscription backing the sidebar kernel pills, plus the S9 captain
  * skeleton reads and writes (UI slices 1, 2, 8) — roster, bot detail, the
- * Needs You badge count, and the five captain mutations.
+ * Needs You badge count, and the five captain mutations — plus the S12
+ * project-view and work-graph reads (slices 3, 4).
  */
 import type { Atom, AtomRegistry } from "effect/unstable/reactivity";
 
@@ -52,6 +53,50 @@ export function createAdeEnvironmentAtoms<R, E>(
     refreshIntervalMs: 15_000,
   });
 
+  /**
+   * Project view header + crew (spec §7 slice 3, panel 1). Crew membership
+   * changes about as often as the roster does, so it shares that cadence.
+   */
+  const project = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:ade:project",
+    tag: WS_METHODS.adeGetProject,
+    staleTimeMs: 2_000,
+    refreshIntervalMs: 15_000,
+  });
+
+  /**
+   * Integration queue (slice 3, panel 2). Polled harder than the rest of the
+   * page: a queue pass moves a candidate through `running` in seconds, and a
+   * panel that showed the head as `queued` for fifteen of them would be
+   * describing a pipeline that has already moved on.
+   */
+  const projectCandidates = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:ade:project-candidates",
+    tag: WS_METHODS.adeListProjectCandidates,
+    staleTimeMs: 1_000,
+    refreshIntervalMs: 5_000,
+  });
+
+  /**
+   * Publication stack (slice 3, panel 3). A stack pass is a network round trip
+   * to GitHub, so PR state moves in minutes; polling it at the queue's rate
+   * would only spend the connection.
+   */
+  const projectPublicationStack = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:ade:project-publication-stack",
+    tag: WS_METHODS.adeGetProjectPublicationStack,
+    staleTimeMs: 5_000,
+    refreshIntervalMs: 30_000,
+  });
+
+  /** Assignment lineage for the work graph (slice 4). */
+  const assignmentGraph = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:ade:assignment-graph",
+    tag: WS_METHODS.adeGetAssignmentGraph,
+    staleTimeMs: 2_000,
+    refreshIntervalMs: 10_000,
+  });
+
   const refreshRoster = (
     target: { readonly environmentId: EnvironmentId },
     registry: AtomRegistry.AtomRegistry,
@@ -87,6 +132,10 @@ export function createAdeEnvironmentAtoms<R, E>(
     roster,
     bot,
     needsYouCount,
+    project,
+    projectCandidates,
+    projectPublicationStack,
+    assignmentGraph,
     /** Adds one crew bot; the roster is what changed, so only it is re-read. */
     createBotFromTemplate: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:ade:create-bot-from-template",

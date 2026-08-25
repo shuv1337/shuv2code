@@ -4,7 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import type { AdeBotChatSession, BotId } from "@shuv2code/contracts";
+import type { AdeBotChatSession, AdeProjectId, BotId } from "@shuv2code/contracts";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -438,5 +438,339 @@ describe("AdeCaptainApi.startBotChat", () => {
       const roster = yield* api.getRoster();
       assert.isAbove(roster.entries.length, 0);
     }).pipe(Effect.provide(makeLayer(AdeChatSessionPort.layerUnavailable))),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Project view + work graph (spec §7 slices 3, 4 — issue #166)
+// ---------------------------------------------------------------------------
+
+type Sql = SqlClient.SqlClient;
+
+/**
+ * Seeds a candidate row directly. The integration service's own
+ * `enqueueCandidate` insists on a repo-bound project and a real JJ workspace;
+ * these tests are about the *projection*, so they write the states a pass would
+ * produce and assert the panel reads them back.
+ */
+const seedCandidate = (
+  sql: Sql,
+  row: {
+    readonly id: string;
+    readonly projectId: string;
+    readonly botId: string;
+    readonly status: string;
+    readonly createdAt: string;
+    readonly gate?: string | null;
+    readonly bounce?: { reason: string; detail: string; at: string } | null;
+  },
+) => sql`
+  INSERT INTO ade_integration_candidates (
+    integration_candidate_id, project_id, idempotency_key,
+    source_assignment_ids_json, change_ids_json, originating_bot_id,
+    declared_risk, status, gate, bounce_count, bounce_json,
+    created_at, updated_at
+  ) VALUES (
+    ${row.id}, ${row.projectId}, ${row.id},
+    '[]', '["kmnopqrs"]', ${row.botId},
+    'normal', ${row.status}, ${row.gate ?? null},
+    ${row.bounce == null ? 0 : 1}, ${row.bounce == null ? null : JSON.stringify(row.bounce)},
+    ${row.createdAt}, ${row.createdAt}
+  )
+`;
+
+const seedStack = (
+  sql: Sql,
+  row: { id: string; projectId: string; status: string; createdAt: string },
+) => sql`
+  INSERT INTO ade_publication_stacks (
+    publication_stack_id, project_id, mode, status, stack_url,
+    native_stack_number, native_stack_node_id, created_at, updated_at
+  ) VALUES (
+    ${row.id}, ${row.projectId}, 'chained', ${row.status},
+    ${`https://example.test/${row.id}`}, NULL, NULL, ${row.createdAt}, ${row.createdAt}
+  )
+`;
+
+describe("AdeCaptainApi.getProject", () => {
+  it.effect("pins the Second Mate, counts open work, and omits archived crew", () =>
+    Effect.gen(function* () {
+      const { api, bootstrap, engine } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Demo" });
+      const coder = yield* bootstrap.instantiateTemplate({
+        templateId: "coder",
+        projectId: project.projectId,
+      });
+      const archived = yield* bootstrap.instantiateTemplate({
+        templateId: "reviewer",
+        projectId: project.projectId,
+      });
+      yield* bootstrap.archiveBot(archived.botId);
+      // A fleet-shared specialist is on loan, not on the crew.
+      yield* bootstrap.instantiateTemplate({ templateId: "researcher", projectId: null });
+
+      yield* engine.createAssignment({
+        requester: { _tag: "captain" },
+        recipientBotId: coder.botId,
+        instruction: "Ship the panel.",
+        idempotencyKey: "crew-1",
+        projectId: project.projectId,
+      });
+
+      const detail = yield* api.getProject(project.projectId);
+
+      assert.equal(detail.project.name, "Demo");
+      assert.deepEqual(
+        detail.crew.map((member) => member.bot.structuralRole),
+        ["second-mate", "crew"],
+      );
+      assert.equal(detail.crew[0]?.isSecondMate, true);
+      assert.equal(detail.crew[1]?.isSecondMate, false);
+      assert.equal(detail.crew[1]?.openAssignmentCount, 1);
+      assert.equal(detail.crew[1]?.hasActivePrimarySession, false);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("narrows a missing project to project_not_found", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      const error = yield* Effect.flip(api.getProject("nope" as AdeProjectId));
+      assert.equal(error._tag, "AdeCaptainError");
+      assert.equal(error.reason, "project_not_found");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+});
+
+describe("AdeCaptainApi.listProjectCandidates", () => {
+  it.effect("returns queue order with gates and bounce reasons intact", () =>
+    Effect.gen(function* () {
+      const { api, sql, bootstrap } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Demo" });
+      const other = yield* bootstrap.createProject({ name: "Other" });
+
+      yield* seedCandidate(sql, {
+        id: "cand-bounced",
+        projectId: project.projectId,
+        botId: project.secondMate.botId,
+        status: "bounced",
+        createdAt: "2026-08-24T00:00:00.000Z",
+        bounce: {
+          reason: "checks-failed",
+          detail: "vp check exited 1",
+          at: "2026-08-24T00:01:00.000Z",
+        },
+      });
+      yield* seedCandidate(sql, {
+        id: "cand-awaiting",
+        projectId: project.projectId,
+        botId: project.secondMate.botId,
+        status: "awaiting-approval",
+        createdAt: "2026-08-24T00:02:00.000Z",
+        gate: "human-approval",
+      });
+      // Another project's queue must never leak into this panel.
+      yield* seedCandidate(sql, {
+        id: "cand-other",
+        projectId: other.projectId,
+        botId: other.secondMate.botId,
+        status: "queued",
+        createdAt: "2026-08-24T00:00:30.000Z",
+      });
+
+      const all = yield* api.listProjectCandidates({ projectId: project.projectId });
+      assert.deepEqual(
+        all.candidates.map((candidate) => candidate.id),
+        ["cand-bounced", "cand-awaiting"],
+      );
+      assert.equal(all.candidates[0]?.bounce?.reason, "checks-failed");
+      assert.equal(all.candidates[0]?.bounce?.detail, "vp check exited 1");
+      assert.equal(all.candidates[1]?.gate, "human-approval");
+
+      const parked = yield* api.listProjectCandidates({
+        projectId: project.projectId,
+        statuses: ["awaiting-approval"],
+      });
+      assert.deepEqual(
+        parked.candidates.map((candidate) => candidate.id),
+        ["cand-awaiting"],
+      );
+
+      // An empty filter means "no narrowing", not "match nothing".
+      const unfiltered = yield* api.listProjectCandidates({
+        projectId: project.projectId,
+        statuses: [],
+      });
+      assert.lengthOf(unfiltered.candidates, 2);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("refuses a missing project rather than returning an empty queue", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      const error = yield* Effect.flip(
+        api.listProjectCandidates({ projectId: "nope" as AdeProjectId }),
+      );
+      assert.equal(error.reason, "project_not_found");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+});
+
+describe("AdeCaptainApi.getProjectPublicationStack", () => {
+  it.effect("prefers the live stack over a newer settled one and orders layers bottom-up", () =>
+    Effect.gen(function* () {
+      const { api, sql, bootstrap } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Demo" });
+
+      yield* seedStack(sql, {
+        id: "stack-live",
+        projectId: project.projectId,
+        status: "building",
+        createdAt: "2026-08-24T00:00:00.000Z",
+      });
+      // Newer, but settled: recency must not beat liveness.
+      yield* seedStack(sql, {
+        id: "stack-merged",
+        projectId: project.projectId,
+        status: "merged",
+        createdAt: "2026-08-24T01:00:00.000Z",
+      });
+      // Inserted out of order so the ORDER BY is what sorts them.
+      for (const layer of [
+        { id: "layer-1", order: 1, pr: 42, state: "open", status: "submitted" },
+        { id: "layer-0", order: 0, pr: 41, state: "merged", status: "merged" },
+      ]) {
+        yield* sql`
+          INSERT INTO ade_publication_layers (
+            publication_layer_id, publication_stack_id, layer_order, change_ids_json,
+            bookmark_name, pr_number, head_sha, submitted_sha, merge_sha, pr_state,
+            status, created_at, updated_at
+          ) VALUES (
+            ${layer.id}, 'stack-live', ${layer.order}, '["kmnopqrs"]',
+            ${`ade/${layer.id}`}, ${layer.pr}, 'headsha', 'submittedsha', NULL,
+            ${layer.state}, ${layer.status},
+            '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z'
+          )
+        `;
+      }
+
+      const view = yield* api.getProjectPublicationStack(project.projectId);
+
+      assert.equal(view?.stack.id, "stack-live");
+      assert.equal(view?.stack.status, "building");
+      assert.deepEqual(
+        view?.layers.map((layer) => layer.order),
+        [0, 1],
+      );
+      assert.equal(view?.layers[0]?.prNumber, 41);
+      assert.equal(view?.layers[0]?.prState, "merged");
+      assert.equal(view?.layers[1]?.prState, "open");
+      assert.deepEqual(view?.layers[1]?.changeIds as ReadonlyArray<string>, ["kmnopqrs"]);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("falls back to the most recent settled stack, and null when there is none", () =>
+    Effect.gen(function* () {
+      const { api, sql, bootstrap } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Demo" });
+
+      // A project that has never published is normal, not an error.
+      assert.isNull(yield* api.getProjectPublicationStack(project.projectId));
+
+      yield* seedStack(sql, {
+        id: "stack-old",
+        projectId: project.projectId,
+        status: "merged",
+        createdAt: "2026-08-24T00:00:00.000Z",
+      });
+      yield* seedStack(sql, {
+        id: "stack-new",
+        projectId: project.projectId,
+        status: "reconciled",
+        createdAt: "2026-08-24T02:00:00.000Z",
+      });
+
+      const view = yield* api.getProjectPublicationStack(project.projectId);
+      assert.equal(view?.stack.id, "stack-new");
+      assert.deepEqual(view?.layers, []);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+});
+
+describe("AdeCaptainApi.getAssignmentGraph", () => {
+  it.effect("scopes to a project, names bots, and counts out-of-scope children", () =>
+    Effect.gen(function* () {
+      const { api, bootstrap, engine } = yield* setup;
+      const project = yield* bootstrap.createProject({ name: "Demo" });
+      const coder = yield* bootstrap.instantiateTemplate({
+        templateId: "coder",
+        projectId: project.projectId,
+      });
+      const shared = yield* bootstrap.instantiateTemplate({
+        templateId: "researcher",
+        projectId: null,
+      });
+
+      const parent = yield* engine.createAssignment({
+        requester: { _tag: "captain" },
+        recipientBotId: project.secondMate.botId,
+        instruction: "Land the feature.",
+        idempotencyKey: "parent-1",
+        projectId: project.projectId,
+      });
+      yield* engine.createAssignment({
+        requester: { _tag: "bot", botId: project.secondMate.botId },
+        recipientBotId: coder.botId,
+        instruction: "Write the panel.",
+        idempotencyKey: "child-1",
+        projectId: project.projectId,
+        parentAssignmentId: parent.assignment.id,
+      });
+      // Delegated off-project: it must be counted but not listed in this scope.
+      yield* engine.createAssignment({
+        requester: { _tag: "bot", botId: project.secondMate.botId },
+        recipientBotId: shared.botId,
+        instruction: "Go read the spec.",
+        idempotencyKey: "child-2",
+        projectId: null,
+        parentAssignmentId: parent.assignment.id,
+      });
+
+      const scoped = yield* api.getAssignmentGraph({ projectId: project.projectId });
+
+      assert.deepEqual(
+        scoped.nodes.map((node) => node.assignment.instruction),
+        ["Land the feature.", "Write the panel."],
+      );
+      const root = scoped.nodes[0];
+      assert.equal(root?.assignment.parentAssignmentId, null);
+      // Two children exist; only one is inside this scope.
+      assert.equal(root?.childCount, 2);
+      assert.equal(root?.projectName, "Demo");
+      assert.equal(scoped.nodes[1]?.assignment.parentAssignmentId, parent.assignment.id);
+      assert.equal(scoped.nodes[1]?.botName, (yield* api.getBot(coder.botId)).bot.name);
+      assert.deepEqual(
+        scoped.bots.map((bot) => bot.id).toSorted(),
+        [coder.botId, project.secondMate.botId].toSorted(),
+      );
+
+      // Fleet-wide sees all three, and a fleet-shared bot has no project name.
+      const fleet = yield* api.getAssignmentGraph({ projectId: null });
+      assert.lengthOf(fleet.nodes, 3);
+      const offProject = fleet.nodes.find(
+        (node) => node.assignment.instruction === "Go read the spec.",
+      );
+      assert.equal(offProject?.projectName, null);
+      assert.equal(offProject?.botName, (yield* api.getBot(shared.botId)).bot.name);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("narrows a missing project scope to project_not_found", () =>
+    Effect.gen(function* () {
+      const { api } = yield* setup;
+      const error = yield* Effect.flip(
+        api.getAssignmentGraph({ projectId: "nope" as AdeProjectId }),
+      );
+      assert.equal(error.reason, "project_not_found");
+    }).pipe(Effect.provide(makeLayer())),
   );
 });

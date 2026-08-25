@@ -118,6 +118,11 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.adeGetRoster]: AuthOrchestrationReadScope,
   [WS_METHODS.adeGetBot]: AuthOrchestrationReadScope,
   [WS_METHODS.adeGetNeedsYouCount]: AuthOrchestrationReadScope,
+  // Project view + work graph (S12) are pure projections over ADE-owned tables.
+  [WS_METHODS.adeGetProject]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeListProjectCandidates]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeGetProjectPublicationStack]: AuthOrchestrationReadScope,
+  [WS_METHODS.adeGetAssignmentGraph]: AuthOrchestrationReadScope,
   [WS_METHODS.adeCreateBotFromTemplate]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeCreateProject]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeWriteBotMemory]: AuthOrchestrationOperateScope,
