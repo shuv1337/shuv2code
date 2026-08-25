@@ -15,9 +15,11 @@
  *   key for either, so there is nothing to disable — the strictness is in the
  *   payload shape rather than in the styling.
  *
- * Exported standalone so the captain shell (M1) can mount it beside the
- * conversation header; until that shell exists, `fleet/BotDetailPanel` opens
- * it from the bot's header.
+ * Mounted from `BotIdentityHeaderActions`, which the conversation route hands
+ * to `CaptainShell`'s `conversationHeaderActions` seam. It takes an
+ * `AdeBotDetail` rather than reading one, so the same sheet can be opened from
+ * anywhere that already holds the bot — a contact row's context menu, say —
+ * without a second read of the same thing.
  */
 import type { AdeBotDetail, AdeBotGroup } from "@shuv2code/contracts";
 import { AnchorIcon } from "lucide-react";
