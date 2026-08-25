@@ -1,11 +1,11 @@
 /**
  * Identity mutations for the captain surface (`docs/ade/MESSENGER-PIVOT.md`
- * §3, ticket T2 / #197).
+ * §3, ticket M2 / #197).
  *
  * Two hooks, one RPC. `useBotIdentityUpdate` is the plumbing every identity
  * control shares; `useInlineBotRename` is the editable-name behavior the
  * conversation header needs — exported from here rather than owned by the
- * header so the shell (T1) can mount it without importing the whole sheet.
+ * header so the shell (M1) can mount it without importing the whole sheet.
  */
 import type { AdeUpdateBotIdentityInput, Bot } from "@shuv2code/contracts";
 import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtime";

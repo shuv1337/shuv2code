@@ -14,6 +14,7 @@ import {
   AuthSessionId,
   type AdeBotDetail,
   type AdeBotScreen,
+  type AdeBotGroupId,
   type AdeProjectId,
   type AdeNeedsYouEntry,
   type AdeRoster,
@@ -245,6 +246,15 @@ describe("authenticated ADE captain RPCs", () => {
         ),
         // Starting a chat mints a kernel session — a write, not a look.
         yield* Effect.flip(readClient[WS_METHODS.adeStartBotChat]({ botId: BOT_ID })),
+        // Relabelling and filing bots is organizing the fleet (#197): a
+        // read-only client sees the rail and cannot rearrange it.
+        yield* Effect.flip(
+          readClient[WS_METHODS.adeUpdateBotIdentity]({ botId: BOT_ID, name: "Nope" }),
+        ),
+        yield* Effect.flip(readClient[WS_METHODS.adeUpsertBotGroup]({ name: "Nope" })),
+        yield* Effect.flip(
+          readClient[WS_METHODS.adeDeleteBotGroup]({ groupId: "group-1" as AdeBotGroupId }),
+        ),
       ];
 
       for (const denial of denials) {
@@ -289,14 +299,30 @@ describe("authenticated ADE captain RPCs", () => {
       yield* fullClient[WS_METHODS.adeEditBotPersona]({ botId: BOT_ID, content: "Be terse." });
       yield* fullClient[WS_METHODS.adeSetBotComputerUse]({ botId: BOT_ID, computerUse: true });
       const chat = yield* fullClient[WS_METHODS.adeStartBotChat]({ botId: BOT_ID });
+      // Rename + decorate + re-tag + re-group in one payload, which is the
+      // whole point of there being one identity RPC rather than four.
+      yield* fullClient[WS_METHODS.adeUpdateBotIdentity]({
+        botId: BOT_ID,
+        name: "Number One",
+        roleTag: "Coordinator",
+        displayMeta: { emoji: "⚓", color: "blue" },
+        groupId: "group-1" as AdeBotGroupId,
+      });
+      const group = yield* fullClient[WS_METHODS.adeUpsertBotGroup]({ name: "Backend" });
+      const removed = yield* fullClient[WS_METHODS.adeDeleteBotGroup]({ groupId: group.id });
 
       assert.strictEqual(chat.threadId, `ade-bot-${BOT_ID}`);
+      // Deleting a bucket hands its members back, never deletes them.
+      assert.deepStrictEqual(removed.ungroupedBotIds, [BOT_ID]);
       assert.deepStrictEqual(yield* Ref.get(calls), [
         "createBotFromTemplate",
         "writeBotMemory",
         "editBotPersona",
         "setBotComputerUse",
         "startBotChat",
+        "updateBotIdentity",
+        "upsertBotGroup",
+        "deleteBotGroup",
       ]);
     }),
   );
