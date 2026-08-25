@@ -24,14 +24,23 @@ export function createAdeEnvironmentAtoms<R, E>(
   const scheduler = createAtomCommandScheduler();
 
   /**
-   * The captain's crew list. Cheap enough to re-read on focus, but there is no
-   * roster stream yet, so a slow poll keeps a left-open list from going stale.
+   * The captain's crew list, live (`docs/ade/MESSENGER-PIVOT.md` §4, M3).
+   *
+   * This was a 15s poll while a roster row only said which project a bot lived
+   * in. It carries previews, unread counts and attention lines now, and those
+   * are exactly the fields a poll interval is most visibly wrong about — a
+   * messenger whose contact list lags a quarter of a minute behind the
+   * conversation next to it does not read as slow, it reads as broken. The
+   * server debounces and change-gates the frames, so a quiet fleet costs one
+   * idle subscription.
+   *
+   * `idleTtlMs: 0`, like the pill feed: the rail is either on screen or it is
+   * not, and a rail nobody is looking at should not hold a subscription open.
    */
-  const roster = createEnvironmentRpcQueryAtomFamily(runtime, {
+  const roster = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:ade:roster",
-    tag: WS_METHODS.adeGetRoster,
-    staleTimeMs: 2_000,
-    refreshIntervalMs: 15_000,
+    tag: WS_METHODS.subscribeAdeRoster,
+    idleTtlMs: 0,
   });
 
   /** One bot's bindings, memory, persona history and open assignments. */
@@ -152,13 +161,18 @@ export function createAdeEnvironmentAtoms<R, E>(
     refreshIntervalMs: 10_000,
   });
 
+  /**
+   * Re-reading the roster after a mutation used to be the only way the rail
+   * heard about it. It is no longer: `subscribeAdeRoster` pushes the next frame
+   * within the server's debounce window, so a refresh here would tear down and
+   * re-establish a live subscription to learn something arriving anyway. Kept
+   * as a named no-op rather than deleted at every call site, so the mutations
+   * still say out loud which of them change the rail (M3).
+   */
   const refreshRoster = (
-    target: { readonly environmentId: EnvironmentId },
-    registry: AtomRegistry.AtomRegistry,
-  ) =>
-    Effect.sync(() => {
-      registry.refresh(roster({ environmentId: target.environmentId, input: {} }));
-    });
+    _target: { readonly environmentId: EnvironmentId },
+    _registry: AtomRegistry.AtomRegistry,
+  ) => Effect.void;
 
   const refreshBot = (
     target: {
@@ -397,6 +411,24 @@ export function createAdeEnvironmentAtoms<R, E>(
       },
       onSettled: (target, registry) =>
         refreshBot(target, registry).pipe(Effect.andThen(refreshRoster(target, registry))),
+    }),
+    /**
+     * "I have seen this conversation" (M3). Fired from more than one trigger,
+     * which is why the concurrency mode matters: `latest` per bot collapses a
+     * burst — focus, then reaching the bottom, then another message arriving
+     * while still at the bottom — into one write, and guarantees the *last*
+     * intent wins rather than whichever request the network happened to
+     * deliver first. The mark is monotonic server-side either way; this just
+     * stops the client generating the churn.
+     */
+    markBotChatRead: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:mark-bot-chat-read",
+      tag: WS_METHODS.adeMarkBotChatRead,
+      scheduler,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) => `${environmentId}:${input.botId}`,
+      },
     }),
   };
 }

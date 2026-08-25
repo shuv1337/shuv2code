@@ -10,14 +10,14 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
-import { rosterNeedsFirstProject } from "./contactRail.logic";
+import { rosterNeedsFirstProject, type ContactRailFilter } from "./contactRail.logic";
 
 /**
  * What the conversation region says at `/fleet` — no contact selected yet.
  * It also carries the #141 first-run CTA that `FleetRosterPage` used to own,
  * because a captain with no project needs that before they need a chat.
  */
-export function CaptainIndexPane() {
+export function CaptainIndexPane({ filter = "all" }: { readonly filter?: ContactRailFilter }) {
   const environmentId = useAdeEnvironmentId();
   const roster = useAdeRoster();
 
@@ -29,9 +29,18 @@ export function CaptainIndexPane() {
         ) : (
           <Empty>
             <EmptyHeader>
-              <EmptyTitle>Pick a bot</EmptyTitle>
+              {/*
+                Arriving here from the retired needs-you inbox — or from the
+                sidebar badge — the captain came to answer something, so the
+                pane names that rather than repeating the generic index copy.
+              */}
+              <EmptyTitle>
+                {filter === "attention" ? "Pick what to answer" : "Pick a bot"}
+              </EmptyTitle>
               <EmptyDescription>
-                Choose a contact to open the conversation, or add a new bot from a template.
+                {filter === "attention"
+                  ? "The rail is showing only the bots waiting on you. Open one to decide it."
+                  : "Choose a contact to open the conversation, or add a new bot from a template."}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
