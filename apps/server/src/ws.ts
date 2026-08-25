@@ -74,6 +74,7 @@ import {
   type AdeDeleteBotGroupInput,
   type AdeEditPersonaInput,
   type AdeProjectId,
+  type PublicationStackId,
   type AdeListNeedsYouInput,
   type AdeNeedsYouItemIdInput,
   type AdeSetComputerUseInput,
@@ -89,6 +90,7 @@ import {
   WsAdeGetAssignmentGraphRpc,
   WsAdeGetBotRpc,
   WsAdeGetProjectPublicationStackRpc,
+  WsAdeGetPublicationStackRpc,
   WsAdeGetProjectRpc,
   WsAdeListProjectCandidatesRpc,
   WsAdeGetNeedsYouCountRpc,
@@ -415,6 +417,12 @@ const makeAdeRpcHandlers = (
         adeCaptainApi.getProjectPublicationStack(input.projectId),
         ade,
       ),
+    [WS_METHODS.adeGetPublicationStack]: (input: { readonly stackId: PublicationStackId }) =>
+      observeRpcEffect(
+        WS_METHODS.adeGetPublicationStack,
+        adeCaptainApi.getPublicationStack(input.stackId),
+        ade,
+      ),
     [WS_METHODS.adeGetAssignmentGraph]: (input: AdeAssignmentGraphInput) =>
       observeRpcEffect(
         WS_METHODS.adeGetAssignmentGraph,
@@ -503,6 +511,7 @@ export const AdeWsRpcGroup = RpcGroup.make(
   WsAdeGetProjectRpc,
   WsAdeListProjectCandidatesRpc,
   WsAdeGetProjectPublicationStackRpc,
+  WsAdeGetPublicationStackRpc,
   WsAdeGetAssignmentGraphRpc,
   WsAdeCreateBotFromTemplateRpc,
   WsAdeCreateProjectRpc,

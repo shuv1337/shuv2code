@@ -1244,6 +1244,20 @@ export const AdeProjectIdInput = Schema.Struct({ projectId: AdeProjectId });
 export type AdeProjectIdInput = typeof AdeProjectIdInput.Type;
 
 /**
+ * Read one publication stack by its own id (MESSENGER-PIVOT §6 M5).
+ *
+ * The project-keyed read is the project view's; this one exists because the
+ * messenger arrives from the other direction. A finished assignment reports a
+ * `publicationLayer` artifact carrying `{stackId, layerId}` and nothing else —
+ * no `projectId` — so a `PrResultCard` mounted on that delivery holds a stack
+ * id it has no way to resolve. Every other route is a guess: the project-keyed
+ * read returns only the *newest* stack, and recovering a project id would mean
+ * hoping the same assignment happened to also report a `jjChange` artifact.
+ */
+export const AdePublicationStackIdInput = Schema.Struct({ stackId: PublicationStackId });
+export type AdePublicationStackIdInput = typeof AdePublicationStackIdInput.Type;
+
+/**
  * One row of the project view's crew panel (slice 3, panel 1). Mirrors
  * `AdeRosterEntry` minus `projectName` — every member shares this project, so
  * repeating its name on each row says nothing.

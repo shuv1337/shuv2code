@@ -195,6 +195,21 @@ describe("describeDecisionOutcome", () => {
     }
   });
 
+  it("reports a second secure answer as handled, not as a lost secret", () => {
+    // M5's double-decision idempotency surface. `SecureInputCard` submits
+    // `acknowledge` on the same item id as the inbox card, so the loser of the
+    // race must read as benign — a captain told "that failed" would retype the
+    // credential, which is the one reaction this card must never provoke.
+    expect(
+      describeDecisionOutcome({
+        reason: "needs_you_already_resolved",
+        decision: "acknowledge",
+        failed: true,
+        fallback: "That value could not be saved.",
+      }),
+    ).toEqual({ tone: "conflict", message: "Already handled elsewhere." });
+  });
+
   it("surfaces a real failure as one", () => {
     expect(
       describeDecisionOutcome({

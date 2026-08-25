@@ -10,6 +10,7 @@ import type {
   AdeProjectDetail,
   AdeProjectId,
   AdePublicationStackView,
+  PublicationStackId,
   AdeRoster,
   BotId,
   FleetHealthSnapshot,
@@ -141,6 +142,24 @@ export function useAdeProjectPublicationStack(
     environmentId === null || projectId === null
       ? null
       : adeEnvironment.projectPublicationStack({ environmentId, input: { projectId } }),
+  );
+}
+
+/**
+ * One publication stack by its own id (MESSENGER-PIVOT §6 M5).
+ *
+ * `null` reads nothing and starts no poller, which is what lets a `PrResultCard`
+ * mount unconditionally in a conversation and only fetch when the delivery it
+ * renders actually named a stack.
+ */
+export function useAdePublicationStack(
+  stackId: PublicationStackId | null,
+): EnvironmentQueryView<AdePublicationStackView | null> {
+  const environmentId = useAdeEnvironmentId();
+  return useEnvironmentQuery(
+    environmentId === null || stackId === null
+      ? null
+      : adeEnvironment.publicationStack({ environmentId, input: { stackId } }),
   );
 }
 

@@ -85,13 +85,29 @@ describe("projectNeedsYouRow", () => {
   });
 
   it("describes the kinds that resolve themselves without offering a decision", () => {
-    for (const kind of ["kernel-down", "stall", "provision-failure", "form"] as const) {
+    for (const kind of ["kernel-down", "stall", "provision-failure"] as const) {
       const entry = projectNeedsYouRow(row({ kind }), naming);
       expect(entry.actionable).toBe(false);
       expect(entry.action).toBeNull();
       expect(entry.title.length).toBeGreaterThan(0);
       expect(entry.detail.length).toBeGreaterThan(0);
     }
+  });
+
+  /**
+   * A `form` item asks the captain to *type a value* (MESSENGER-PIVOT §6 M5).
+   * No service can satisfy that, so without an action it would count on the
+   * badge forever — the same trap the unroutable repair describes.
+   * `acknowledge` rather than `approve-deny` because there is no verdict to
+   * forward and nobody to forward it to; the captain's answer retires the item
+   * and travels no further.
+   */
+  it("offers a secure request an answer instead of leaving it to count forever", () => {
+    const entry = projectNeedsYouRow(row({ kind: "form" }), naming);
+    expect(entry.actionable).toBe(true);
+    expect(entry.action).toBe("acknowledge");
+    expect(entry.title.length).toBeGreaterThan(0);
+    expect(entry.detail.length).toBeGreaterThan(0);
   });
 
   /**

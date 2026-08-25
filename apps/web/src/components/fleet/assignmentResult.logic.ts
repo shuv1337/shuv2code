@@ -36,6 +36,84 @@ export interface ParsedAssignmentDelivery {
   readonly assignments: ReadonlyArray<ParsedAssignmentDeliveryItem>;
 }
 
+/**
+ * The structured form of one `Artifacts:` line, recovered from the string the
+ * engine flattened it into.
+ *
+ * Mirrors the `ArtifactRef` union in `packages/contracts/src/ade.ts` and the
+ * `renderArtifact` switch in `AdeAssignmentEngine.ts`. Kept beside
+ * {@link parseAssignmentDeliveryText} on purpose: both halves of the engine's
+ * text contract live in one file, so a change to the rendering breaks a test
+ * here rather than silently degrading a card somewhere else.
+ */
+export type ParsedAssignmentArtifact =
+  | { readonly kind: "jjChange"; readonly changeId: string; readonly projectId: string }
+  | { readonly kind: "publicationLayer"; readonly stackId: string; readonly layerId: string }
+  | { readonly kind: "file"; readonly path: string }
+  | { readonly kind: "url"; readonly href: string };
+
+const JJ_CHANGE_ARTIFACT = /^jj change (\S+) \(project (\S+)\)$/;
+const PUBLICATION_LAYER_ARTIFACT = /^publication layer (\S+) \(stack (\S+)\)$/;
+const FILE_ARTIFACT = /^file (.+)$/;
+const URL_ARTIFACT = /^url (.+)$/;
+
+/**
+ * Recovers one artifact reference from its rendered line, or `null` when the
+ * line is not a shape `renderArtifact` can produce.
+ *
+ * Strict for the same reason the delivery parser is strict: a summary sentence
+ * that happens to start with "file " must not be promoted into a typed artifact
+ * and given an Open action that points nowhere.
+ */
+export function parseAssignmentArtifactLine(line: string): ParsedAssignmentArtifact | null {
+  const jjChange = JJ_CHANGE_ARTIFACT.exec(line);
+  if (jjChange !== null) {
+    return {
+      kind: "jjChange",
+      changeId: jjChange[1] as string,
+      projectId: jjChange[2] as string,
+    };
+  }
+  const layer = PUBLICATION_LAYER_ARTIFACT.exec(line);
+  if (layer !== null) {
+    return {
+      kind: "publicationLayer",
+      stackId: layer[2] as string,
+      layerId: layer[1] as string,
+    };
+  }
+  const file = FILE_ARTIFACT.exec(line);
+  if (file !== null) {
+    return { kind: "file", path: file[1] as string };
+  }
+  const url = URL_ARTIFACT.exec(line);
+  if (url !== null) {
+    return { kind: "url", href: url[1] as string };
+  }
+  return null;
+}
+
+/**
+ * Every artifact across a delivery's assignments, in first-seen order, with the
+ * lines that did not parse dropped. Unparsed lines are *not* an error: the
+ * `AssignmentResultCard` still shows them verbatim, and this function only
+ * feeds surfaces that need the typed form.
+ */
+export function parseAssignmentDeliveryArtifacts(
+  delivery: ParsedAssignmentDelivery,
+): ReadonlyArray<ParsedAssignmentArtifact> {
+  const parsed: Array<ParsedAssignmentArtifact> = [];
+  for (const assignment of delivery.assignments) {
+    for (const line of assignment.artifacts) {
+      const artifact = parseAssignmentArtifactLine(line);
+      if (artifact !== null) {
+        parsed.push(artifact);
+      }
+    }
+  }
+  return parsed;
+}
+
 /** Reads `OPEN\n…\nCLOSE` starting at `index`; null when it is not there. */
 function readFence(
   lines: ReadonlyArray<string>,

@@ -1,5 +1,5 @@
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import type { EnvironmentId, ScopedThreadRef } from "@shuv2code/contracts";
+import type { EnvironmentId, MessageId, ScopedThreadRef } from "@shuv2code/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { deriveTimelineEntries, deriveWorkLogEntries, deriveTurnPlans } from "../../session-logic";
@@ -21,11 +21,15 @@ import { AttributionLine } from "./AttributionLine";
 import { BotAvatar } from "./BotAvatar";
 import { DayDivider } from "./DayDivider";
 import { JumpToLatestPill } from "./JumpToLatestPill";
+import { InstructionCard } from "./InstructionCard";
 import { MessageBubble } from "./MessageBubble";
+import { PrResultCard } from "./PrResultCard";
 import { TraceCard } from "./TraceCard";
 import type { CaptainRowHostActivity, CaptainRowHostDisplayState } from "./CaptainRowHost";
+import type { TurnDiffSummary } from "../../types";
 import {
   buildBubbleTimelineItems,
+  resolveRowDiffStat as diffStatFor,
   resolveBubbleMessageDisplay,
   resolveBubbleTimelineActivity,
   resolveTurnFoldAnchorKey,
@@ -155,6 +159,24 @@ export function BubbleTimeline({
     [thread?.messages, thread?.proposedPlans, turnPlans, workLogEntries],
   );
 
+  /**
+   * The turn's changed-line totals, keyed the way the row builder wants them.
+   *
+   * M4 passed an empty map here, which made every `diffStat` in
+   * `resolveTraceCardSummary` null — a card that had the arithmetic and never
+   * the numbers. The source needs no request: `checkpoints` already rides the
+   * thread snapshot this component is handed, and this is the same projection
+   * `ChatView` builds from `useTurnDiffSummaries`.
+   */
+  const turnDiffSummaryByAssistantMessageId = useMemo(() => {
+    const byMessageId = new Map<MessageId, TurnDiffSummary>();
+    for (const summary of thread?.checkpoints ?? EMPTY_CHECKPOINTS) {
+      if (!summary.assistantMessageId) continue;
+      byMessageId.set(summary.assistantMessageId, summary);
+    }
+    return byMessageId;
+  }, [thread?.checkpoints]);
+
   const latestTurn = thread?.latestTurn ?? null;
   const rows = useMemo(() => {
     const raw = deriveMessagesTimelineRows({
@@ -165,13 +187,20 @@ export function BubbleTimeline({
       expandedWorkGroupIds,
       isWorking,
       activeTurnStartedAt: latestTurn?.startedAt ?? null,
-      turnDiffSummaryByAssistantMessageId: EMPTY_DIFF_SUMMARIES,
+      turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId: EMPTY_REVERT_COUNTS,
     });
     const next = computeStableMessagesTimelineRows(raw, stableRowsRef.current);
     stableRowsRef.current = next;
     return next.result;
-  }, [expandedTurnIds, expandedWorkGroupIds, isWorking, latestTurn, timelineEntries]);
+  }, [
+    expandedTurnIds,
+    expandedWorkGroupIds,
+    isWorking,
+    latestTurn,
+    timelineEntries,
+    turnDiffSummaryByAssistantMessageId,
+  ]);
 
   const items = useMemo(() => buildBubbleTimelineItems({ rows, botNameById }), [botNameById, rows]);
 
@@ -413,6 +442,17 @@ function BubbleTimelineItemView({
           </div>
         </div>
       );
+    case "pr-result":
+      return <PrResultCard delivery={item.delivery} diffStat={diffStatFor(item.row)} />;
+    case "instruction":
+      return (
+        <InstructionCard
+          copyText={resolveBubbleMessageDisplay(item.row).copyText}
+          markdownCwd={display.markdownCwd}
+          threadRef={threadRef}
+          view={item.view}
+        />
+      );
     case "attribution":
       return (
         <AttributionLine
@@ -470,9 +510,7 @@ const BUBBLE_MAINTAIN_SCROLL_AT_END = {
 const EMPTY_ACTIVITIES: EnvironmentThread["activities"] = [];
 const EMPTY_MESSAGES: EnvironmentThread["messages"] = [];
 const EMPTY_PLANS: EnvironmentThread["proposedPlans"] = [];
-const EMPTY_DIFF_SUMMARIES: Parameters<
-  typeof deriveMessagesTimelineRows
->[0]["turnDiffSummaryByAssistantMessageId"] = new Map();
+const EMPTY_CHECKPOINTS: EnvironmentThread["checkpoints"] = [];
 const EMPTY_REVERT_COUNTS: Parameters<
   typeof deriveMessagesTimelineRows
 >[0]["revertTurnCountByUserMessageId"] = new Map();

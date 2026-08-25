@@ -9,6 +9,8 @@ import { adeCaptainErrorMessage, adeCaptainErrorReason } from "../../state/ade.l
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { SecureInputCard } from "../captain/SecureInputCard";
+import { isSecureInputEntry } from "../captain/richCards.logic";
 import {
   canApproveWithSession,
   describeDecisionOutcome,
@@ -44,6 +46,24 @@ export function NeedsYouCard({
    * geometry and nothing else — the decision it submits is the same one.
    */
   readonly variant?: "inbox" | "inline" | "bubble";
+}) {
+  // The card taxonomy's fourth member (MESSENGER-PIVOT §3, M5). A `form` item
+  // is answered by typing a value rather than by pressing a verdict, so it gets
+  // a field instead of buttons — but it is still *this* item, decided through
+  // this RPC, retiring once. Selecting here rather than at each call site is
+  // what keeps that true for the inbox and the conversation alike.
+  if (isSecureInputEntry(entry)) {
+    return <SecureInputCard entry={entry} />;
+  }
+  return <NeedsYouDecisionCard entry={entry} variant={variant} />;
+}
+
+function NeedsYouDecisionCard({
+  entry,
+  variant,
+}: {
+  readonly entry: AdeNeedsYouEntry;
+  readonly variant: "inbox" | "inline" | "bubble";
 }) {
   const environmentId = useAdeEnvironmentId();
   const session = usePrimarySessionState();
