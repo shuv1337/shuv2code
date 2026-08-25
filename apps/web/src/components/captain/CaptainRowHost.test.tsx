@@ -182,4 +182,66 @@ describe("CaptainRowHost", () => {
       workingStepLabel: null,
     });
   });
+
+  /**
+   * The activity context decides whether a row draws its work as *running* or
+   * as *finished*. Mounting every row with `activeTurnInProgress: false` and
+   * `latestTurnId: null` — which the first cut did — told the captain that
+   * in-flight tool calls had succeeded.
+   */
+  it("carries real activity through instead of assuming a settled turn", () => {
+    expect(
+      buildCaptainRowActivityState({
+        isWorking: true,
+        activeTurnInProgress: true,
+        latestTurnId: "turn-9" as never,
+        workingStepLabel: "Running tests",
+      }),
+    ).toEqual({
+      isWorking: true,
+      isRevertingCheckpoint: false,
+      activeTurnInProgress: true,
+      latestTurnId: "turn-9",
+      workingStepLabel: "Running tests",
+    });
+  });
+
+  it("hands the caller's image-expand handler to the row rather than swallowing it", () => {
+    const previews: Array<unknown> = [];
+    const onImageExpand = (preview: unknown) => {
+      previews.push(preview);
+    };
+    const shared = buildCaptainRowSharedState({ ...display(), onImageExpand });
+
+    // Identity, not a lookalike: the row calls exactly what the messenger
+    // supplied, so an expanded tool-result image reaches a real dialog.
+    expect(shared.onImageExpand).toBe(onImageExpand);
+    shared.onImageExpand({ images: [{ name: "shot.png", src: "blob:one" }], index: 0 });
+    expect(previews).toHaveLength(1);
+  });
+
+  it("renders a tool-result image as an expandable control", () => {
+    const markup = renderToStaticMarkup(
+      <CaptainRowHost
+        display={{ ...display(), onImageExpand: () => {} }}
+        row={{
+          kind: "turn-fold",
+          id: "turn-fold:turn-1",
+          createdAt: CREATED_AT,
+          foldId: "turn-1",
+          turnId: "turn-1" as never,
+          label: "1 tool call",
+          expanded: false,
+          images: [
+            { id: "img-1", name: "shot.png", mimeType: "image/png", previewUrl: "blob:one" },
+          ],
+        }}
+      />,
+    );
+
+    // The bare turn-fold row carries the gallery; the messenger has to be able
+    // to expand what it renders as clickable.
+    expect(markup).toContain('data-tool-result-images="1"');
+    expect(markup).toContain("Expand shot.png");
+  });
 });

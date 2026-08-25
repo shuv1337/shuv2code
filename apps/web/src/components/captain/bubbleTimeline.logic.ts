@@ -1,3 +1,5 @@
+import type { TurnId } from "@shuv2code/contracts";
+
 import {
   classifyBubbleRow,
   normalizeCompactToolLabel,
@@ -7,6 +9,15 @@ import {
   parseAssignmentDeliveryText,
   type ParsedAssignmentDelivery,
 } from "../fleet/assignmentResult.logic";
+import { deriveDisplayedUserMessageState } from "../../lib/terminalContext";
+import { extractTrailingElementContexts } from "../../lib/elementContext";
+import { extractTrailingPreviewAnnotation } from "../../lib/previewAnnotation";
+import {
+  selectUserMessageFiles,
+  selectUserMessageImages,
+  selectUserMessagePreviewAnnotationImages,
+  type UserMessageAttachment,
+} from "../chat/userMessageAttachments.logic";
 
 /**
  * The captain messenger's projection of the IDE timeline (MESSENGER-PIVOT §1,
@@ -253,6 +264,134 @@ export function buildBubbleTimelineItems(input: {
   }
 
   return items;
+}
+
+// ---------------------------------------------------------------------------
+// Disclosure anchoring
+// ---------------------------------------------------------------------------
+
+/**
+ * The anchor key for a turn-fold toggle.
+ *
+ * `deriveMessagesTimelineRows` mints `turn-fold:<foldId>` as the row id, and a
+ * trace item carries the row id verbatim — so this is what
+ * `shouldRestoreBubblePosition` will be asked about when that fold is toggled.
+ * The IDE timeline uses the identical key; keeping them equal is what lets the
+ * shared `onToggleTurnFold` callback anchor correctly on both surfaces.
+ */
+export function resolveTurnFoldAnchorKey(foldId: string): string {
+  return `turn-fold:${foldId}`;
+}
+
+/**
+ * Whether LegendList should restore this item's position after a size change.
+ *
+ * While a disclosure is settling, only the *toggled* row is anchored: anchoring
+ * every row would fight the growth the toggle just caused. With no toggle in
+ * flight (`anchorKey === null`) every row anchors, which is the ordinary
+ * "content above me changed height" case.
+ */
+export function shouldRestoreBubblePosition(anchorKey: string | null, itemId: string): boolean {
+  return anchorKey === null || itemId === anchorKey;
+}
+
+// ---------------------------------------------------------------------------
+// Activity
+// ---------------------------------------------------------------------------
+
+export interface BubbleTimelineActivity {
+  readonly isWorking: boolean;
+  readonly activeTurnInProgress: boolean;
+  readonly latestTurnId: TurnId | null;
+  readonly workingStepLabel: string | null;
+}
+
+/**
+ * The activity an expanded IDE row is mounted with.
+ *
+ * Not cosmetic: `activeTurnInProgress` is how a row decides whether the work it
+ * describes is still running, and `latestTurnId` gates the changed-files
+ * behaviour. Hard-coding them to `false` / `null` — which the first cut did —
+ * painted in-flight tool calls with success chrome, so a captain watching a bot
+ * work saw it finish things it had not finished.
+ */
+export function resolveBubbleTimelineActivity(input: {
+  readonly isWorking: boolean;
+  readonly latestTurn: { readonly turnId: TurnId; readonly state: string } | null;
+}): BubbleTimelineActivity {
+  return {
+    isWorking: input.isWorking,
+    activeTurnInProgress: input.latestTurn?.state === "running",
+    latestTurnId: input.latestTurn?.turnId ?? null,
+    workingStepLabel: null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Bubble contents
+// ---------------------------------------------------------------------------
+
+export interface BubbleMessageDisplay {
+  /** What the bubble draws: trailer markup already stripped. */
+  readonly text: string;
+  /** What the copy button yields: the message exactly as it was sent. */
+  readonly copyText: string;
+  readonly images: ReadonlyArray<UserMessageAttachment>;
+  readonly files: ReadonlyArray<UserMessageAttachment>;
+  /** False for a message with neither text nor attachments — never rendered. */
+  readonly hasContent: boolean;
+}
+
+/**
+ * What one bubble actually shows.
+ *
+ * A captain message carries send-time trailers — `<terminal_context>`,
+ * `<element_context>`, and preview-annotation blocks — appended after the typed
+ * line. The IDE row has always stripped them; a bubble that printed
+ * `row.message.text` verbatim leaked that markup into the conversation. It also
+ * dropped attachments entirely, so an image-only message rendered as an empty
+ * bubble.
+ *
+ * Both are the same omission: a bubble is not "the text field of a message", it
+ * is the message. This runs the *same* derivation `UserTimelineRow` runs, and
+ * hands back the attachments alongside it.
+ */
+export function resolveBubbleMessageDisplay(row: MessageRow): BubbleMessageDisplay {
+  const rawText = row.message.text ?? "";
+  const attachments = (row.message.attachments ?? []) as ReadonlyArray<UserMessageAttachment>;
+  // Preview-annotation crops are folded in with the ordinary images: the
+  // messenger has no annotation card, and showing the crop beats dropping it.
+  const images = [
+    ...selectUserMessageImages(attachments),
+    ...selectUserMessagePreviewAnnotationImages(attachments),
+  ];
+  const files = selectUserMessageFiles(attachments);
+
+  if (row.message.role !== "user") {
+    return {
+      text: rawText,
+      copyText: rawText,
+      images,
+      files,
+      hasContent: rawText.trim().length > 0 || images.length > 0 || files.length > 0,
+    };
+  }
+
+  const displayed = deriveDisplayedUserMessageState(rawText);
+  let visibleText = displayed.visibleText;
+  while (true) {
+    const extracted = extractTrailingPreviewAnnotation(visibleText);
+    if (!extracted.annotation) break;
+    visibleText = extracted.promptText;
+  }
+  const text = extractTrailingElementContexts(visibleText).promptText;
+  return {
+    text,
+    copyText: displayed.copyText,
+    images,
+    files,
+    hasContent: text.trim().length > 0 || images.length > 0 || files.length > 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
