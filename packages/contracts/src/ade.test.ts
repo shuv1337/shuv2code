@@ -39,6 +39,7 @@ const decodeArtifactRef = Schema.decodeUnknownSync(ArtifactRef);
 const decodeAssignment = Schema.decodeUnknownSync(Assignment);
 const decodeLimitsConfig = Schema.decodeUnknownSync(LimitsConfig);
 const decodeFleetHealthSnapshot = Schema.decodeUnknownSync(FleetHealthSnapshot);
+const decodeAdeBotChatSession = Schema.decodeUnknownSync(AdeBotChatSession);
 
 it("round-trips a Bot and defaults computerUse to false", () => {
   const bot = roundTrip(Bot, {
@@ -484,9 +485,25 @@ it("round-trips a chat session binding a thread to a kernel session", () => {
     bindingId: "binding-1",
     sessionId: "oc-session-1",
     startedNow: true,
+    toolsProbe: "attached",
     toolsAttached: true,
   });
   assert.strictEqual(session.engine, "shuvcode");
+});
+
+it("defaults the tool probe for a payload minted before the tri-state existed", () => {
+  // An older peer only knows the boolean. Decoding must not invent a
+  // "missing", because that is the false negative issue #199 was.
+  const session = decodeAdeBotChatSession({
+    botId: "bot-firstmate",
+    threadId: "ade-bot-bot-firstmate",
+    engine: "shuvcode",
+    bindingId: "binding-1",
+    sessionId: "oc-session-1",
+    startedNow: false,
+  });
+  assert.strictEqual(session.toolsProbe, "attached");
+  assert.isTrue(session.toolsAttached);
 });
 
 it("offers only the one-click crew templates, never a coordinator", () => {

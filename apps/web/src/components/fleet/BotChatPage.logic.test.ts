@@ -1,4 +1,4 @@
-import type { AdeBotDetail, ThreadId } from "@shuv2code/contracts";
+import type { AdeBotChatSession, AdeBotDetail, ThreadId } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -7,7 +7,33 @@ import {
   getBotChatHeaderView,
   getBotChatWelcomeCopy,
   resolveChatSyncOutcome,
+  shouldWarnToolsMissing,
 } from "./BotChatPage.logic";
+
+const chatSession = (toolsProbe: AdeBotChatSession["toolsProbe"]): AdeBotChatSession => ({
+  botId: "bot_1" as AdeBotChatSession["botId"],
+  threadId: "ade-bot-bot_1" as ThreadId,
+  engine: "shuvcode",
+  bindingId: "binding_1" as AdeBotChatSession["bindingId"],
+  sessionId: "oc-1" as AdeBotChatSession["sessionId"],
+  startedNow: false,
+  toolsProbe,
+  toolsAttached: toolsProbe !== "missing",
+});
+
+describe("shouldWarnToolsMissing", () => {
+  it("warns only when the kernel answered and the catalog was not there", () => {
+    expect(shouldWarnToolsMissing(chatSession("missing"))).toBe(true);
+    expect(shouldWarnToolsMissing(chatSession("attached"))).toBe(false);
+  });
+
+  it("stays silent on an unanswerable probe (#199)", () => {
+    // A restarted server cannot ask the kernel before it stands the session
+    // back up. Claiming the fleet tools are gone there is a false negative
+    // that never clears, because nothing re-checks it until the next start.
+    expect(shouldWarnToolsMissing(chatSession("unknown"))).toBe(false);
+  });
+});
 
 function detail(overrides: Partial<AdeBotDetail> = {}): AdeBotDetail {
   return {
