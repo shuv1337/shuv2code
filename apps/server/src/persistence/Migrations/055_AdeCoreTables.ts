@@ -247,6 +247,23 @@ export default Effect.gen(function* () {
       ),
       reviewer_bot_id TEXT,
       workspace_path TEXT,
+      -- The gate verdict is durable and is applied by the pass, not by the
+      -- caller: an approval parks the row back on 'running' under this column,
+      -- so a crash mid-integration converges on restart instead of stranding
+      -- the project queue on a gate nobody will answer again.
+      verdict TEXT CHECK (verdict IS NULL OR verdict IN ('approved', 'rejected')),
+      verdict_at TEXT,
+      verdict_by_bot_id TEXT,
+      verdict_detail TEXT,
+      -- Lease over the running slot. The partial unique index stops two rows
+      -- from running; the lease stops two workers from adopting the *same*
+      -- running row (and sharing one workspace directory). A pass refreshes it
+      -- as it goes and re-asserts it immediately before canonical advancement.
+      lease_holder TEXT,
+      lease_expires_at TEXT,
+      -- Order-insensitive canonical form of change_ids_json, so repeat-bounce
+      -- detection sees ["a","b"] and ["b","a"] as the same change set.
+      change_ids_key TEXT NOT NULL DEFAULT '',
       bounce_count INTEGER NOT NULL DEFAULT 0,
       bounce_json TEXT,
       repair_assignment_id TEXT,
@@ -261,10 +278,18 @@ export default Effect.gen(function* () {
     WHERE status = 'running'
   `;
   // Enqueue idempotency is per project (the queue is per project), mirroring
-  // the per-requester assignment key (ADR §13.6).
+  // the per-requester assignment key (ADR §13.6) — but scoped to *live* rows.
+  // A settled candidate must not burn its key: after a bounce, the repaired
+  // change is re-submitted under the same tool-call-derived key and has to
+  // produce a fresh candidate rather than silently returning the old corpse.
   yield* sql`
     CREATE UNIQUE INDEX idx_ade_integration_candidates_idempotency
     ON ade_integration_candidates(project_id, idempotency_key)
+    WHERE status NOT IN ('integrated', 'bounced')
+  `;
+  yield* sql`
+    CREATE INDEX idx_ade_integration_candidates_change_set
+    ON ade_integration_candidates(project_id, change_ids_key, status)
   `;
   yield* sql`
     CREATE INDEX idx_ade_integration_candidates_queue

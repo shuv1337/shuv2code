@@ -103,6 +103,7 @@ it.layer(makeLayer())("AdeBootstrap.ensureSeeded", (it) => {
         maxResultSummaryLength: 16_384,
         maxConcurrentScreenboxDesktops: 4,
         screenboxIdleStopMinutes: 30,
+        integrationWorkspaceRetentionDays: 7,
       });
     }),
   );

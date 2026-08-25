@@ -57,8 +57,18 @@ export type BotExecutionBindingId = typeof BotExecutionBindingId.Type;
 export const KernelSessionId = entityId("KernelSessionId");
 export type KernelSessionId = typeof KernelSessionId.Type;
 
-/** Durable Jujutsu change identity (ADR §6.2 — change ids, not branch names). */
-export const JjChangeId = entityId("JjChangeId");
+/**
+ * Durable Jujutsu change identity (ADR §6.2 — change ids, not branch names).
+ *
+ * Constrained to JJ's reverse-hex alphabet (`k`–`z`) because change ids arrive
+ * from bot tool calls and end up as arguments to `jj`. Without this, an id like
+ * `all()`, `root()`, or `--help` is a revset/flag injection into every
+ * integration operation. Call sites still quote ids as revset literals — this
+ * is the first of the two defenses, not the only one.
+ */
+export const JJ_CHANGE_ID_PATTERN = /^[k-z]{4,64}$/;
+
+export const JjChangeId = entityId("JjChangeId").check(Schema.isPattern(JJ_CHANGE_ID_PATTERN));
 export type JjChangeId = typeof JjChangeId.Type;
 
 // ---------------------------------------------------------------------------
@@ -374,6 +384,15 @@ export const IntegrationBounce = Schema.Struct({
 export type IntegrationBounce = typeof IntegrationBounce.Type;
 
 /**
+ * A gate verdict, recorded on the candidate *before* it is acted on. This is
+ * what makes the approval path crash-safe: the verdict is durable, the row goes
+ * back to `running` under it, and a restart re-runs the pass and applies the
+ * recorded verdict instead of stranding the candidate on a gate forever.
+ */
+export const IntegrationVerdict = Schema.Literals(["approved", "rejected"]);
+export type IntegrationVerdict = typeof IntegrationVerdict.Type;
+
+/**
  * Serialized per-project integration unit (ADR §7.2, §16.2). One running
  * candidate per project; restart re-runs the queue head — no per-step journal.
  *
@@ -400,6 +419,11 @@ export const IntegrationCandidate = Schema.Struct({
   reviewerBotId: Schema.NullOr(BotId),
   /** Retained on a bounce for forensics; cleared on cleanup (ADR §14.4). */
   workspacePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** Durable gate verdict, applied by the pass rather than by the caller. */
+  verdict: Schema.NullOr(IntegrationVerdict),
+  verdictAt: Schema.NullOr(IsoDateTime),
+  verdictByBotId: Schema.NullOr(BotId),
+  verdictDetail: Schema.NullOr(Schema.String),
   bounceCount: NonNegativeInt,
   bounce: Schema.NullOr(IntegrationBounce),
   repairAssignmentId: Schema.NullOr(AssignmentId),
@@ -580,6 +604,13 @@ export const LimitsConfig = Schema.Struct({
   ),
   maxConcurrentScreenboxDesktops: PositiveInt.pipe(Schema.withDecodingDefault(Effect.succeed(4))),
   screenboxIdleStopMinutes: PositiveInt.pipe(Schema.withDecodingDefault(Effect.succeed(30))),
+  /**
+   * How long a bounced candidate's workspace is kept for forensics before the
+   * age-based sweep reclaims it (ADR §14.4 "a generous age-based sweep").
+   */
+  integrationWorkspaceRetentionDays: PositiveInt.pipe(
+    Schema.withDecodingDefault(Effect.succeed(7)),
+  ),
 });
 export type LimitsConfig = typeof LimitsConfig.Type;
 

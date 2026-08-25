@@ -9,26 +9,33 @@
  * holds the queue, so every candidate is rebased fresh onto the *just-advanced*
  * canonical and a reviewer always sees the true final diff (ADR §7.2).
  *
- * Three invariants carry the design:
+ * Five invariants carry the design:
  *
- * 1. **One running candidate per project** is enforced twice — by
- *    `idx_ade_integration_candidates_one_running` (a lost claim surfaces as a
- *    constraint failure, not a double pass) and by the service refusing to
- *    start work while a candidate sits on a gate.
- * 2. **No per-step journal** (ADR §16.2). Nothing here records "which step we
- *    reached". Restart resets `running` rows to `queued` and the pass re-runs
- *    from scratch: upstream is re-synced, the workspace is destroyed and
- *    recreated from canonical, checks re-execute. Canonical advancement is the
- *    single durable commit point — it either happened or the candidate re-runs.
- *    `awaiting-review` / `awaiting-approval` are *parked*, not mid-pipeline, so
- *    a restart leaves them alone; the verdict they wait for is still coming.
- * 3. **Repair, never retry** (ADR §13.3, §7.2). A conflict, a red check, a
- *    rejection, or a denial bounces the candidate and emits one repair
- *    assignment to the originating bot under a deterministic idempotency key,
- *    so a restart mid-bounce cannot fan out duplicates.
+ * 1. **One running candidate per project**, enforced three times: the partial
+ *    unique index refuses a second running row, a lease over the running slot
+ *    refuses a second worker adopting the *same* row, and the service refuses
+ *    to start work while a candidate sits on a gate.
+ * 2. **No per-step journal** (ADR §16.2). Nothing records "which step we
+ *    reached". Recovery re-queues `running` rows whose lease has expired and
+ *    the pass re-runs from scratch: upstream re-synced, workspace destroyed and
+ *    recreated from canonical, checks re-executed.
+ * 3. **Canonical advancement is idempotent and fast-forward only.** A pass that
+ *    died after advancing canonical re-derives that fact from ancestry instead
+ *    of re-rebasing an already-landed change (which reads as a conflict and
+ *    would bounce the author for nothing). A candidate whose head canonical no
+ *    longer descends from is re-queued for a fresh rebase, never forced.
+ * 4. **Gate verdicts are durable and applied by the pass, not the caller.** An
+ *    approval or rejection is recorded on the row and parks it back on
+ *    `running`; a crash mid-integration converges on the next pass instead of
+ *    stranding the project queue on a gate nobody will answer twice.
+ * 5. **Repair, never retry** (ADR §13.3, §7.2). The repair assignment is
+ *    created *before* the candidate is settled `bounced`, under a deterministic
+ *    key, so a crash in between leaves the candidate running and the re-run
+ *    re-emits exactly one repair. An unroutable author raises a Needs You item
+ *    rather than vanishing into a log line.
  *
  * The service is backend-only; S12 renders the queue and S13 owns the captain
- * approval surface. Nothing here writes Needs You items or WS traffic.
+ * approval surface.
  */
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
@@ -55,12 +62,15 @@ import {
   type IntegrationCandidateId,
   type IntegrationCandidateStatus,
   type IntegrationPolicy,
+  type IntegrationVerdict,
+  JJ_CHANGE_ID_PATTERN,
+  LimitsConfig,
 } from "@shuv2code/contracts";
 
 import { type PersistenceSqlError, toPersistenceSqlError } from "../persistence/Errors.ts";
 import { forkParked } from "../serverActivation.ts";
 import { AdeAssignmentEngine } from "./AdeAssignmentEngine.ts";
-import { AdeIntegrationRepoPort } from "./AdeIntegrationRepoPort.ts";
+import { AdeIntegrationRepoError, AdeIntegrationRepoPort } from "./AdeIntegrationRepoPort.ts";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -131,7 +141,7 @@ export class AdeIntegrationBusyError extends Schema.TaggedErrorClass<AdeIntegrat
   },
 ) {
   override get message(): string {
-    return `ADE project '${this.projectId}' is integrating candidate '${this.candidateId}'; retry the sync once it settles.`;
+    return `ADE project '${this.projectId}' is integrating candidate '${this.candidateId}'; retry once it settles.`;
   }
 }
 
@@ -141,6 +151,23 @@ export class AdeIntegrationCandidateEmptyError extends Schema.TaggedErrorClass<A
 ) {
   override get message(): string {
     return `An integration candidate for project '${this.projectId}' must carry at least one change id.`;
+  }
+}
+
+/**
+ * Change ids arrive from bot tool calls and become `jj` arguments. Anything
+ * outside JJ's reverse-hex alphabet is refused at the door — `all()`, `root()`,
+ * and `--help` are all valid revsets/flags and none of them is a change id.
+ */
+export class AdeIntegrationChangeIdInvalidError extends Schema.TaggedErrorClass<AdeIntegrationChangeIdInvalidError>()(
+  "AdeIntegrationChangeIdInvalidError",
+  {
+    projectId: Schema.String,
+    changeId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `'${this.changeId}' is not a JJ change id, so it cannot enter project '${this.projectId}'s integration queue.`;
   }
 }
 
@@ -173,6 +200,14 @@ export const effectiveIntegrationGate = (
   return GATE_ORDER[fromRisk] >= GATE_ORDER[projectDefault] ? fromRisk : projectDefault;
 };
 
+/**
+ * Order-insensitive identity for a change set, so repeat-bounce detection sees
+ * `["a","b"]` and `["b","a"]` as the same work. Safe to join on `|` because
+ * change ids are constrained to `[k-z]`.
+ */
+export const changeSetKey = (changeIds: ReadonlyArray<string>): string =>
+  [...changeIds].sort().join("|");
+
 // ---------------------------------------------------------------------------
 // Service shape
 // ---------------------------------------------------------------------------
@@ -190,7 +225,7 @@ export interface EnqueueCandidateInput {
 
 export interface EnqueueCandidateOutcome {
   readonly candidate: IntegrationCandidate;
-  /** False when `(projectId, idempotencyKey)` already existed. */
+  /** False when a *live* candidate already held this key for the project. */
   readonly created: boolean;
 }
 
@@ -199,7 +234,7 @@ export type ProcessQueueHeadOutcome =
   | { readonly _tag: "idle" }
   /** A candidate is parked on its gate; the queue stays held (ADR §7.2). */
   | { readonly _tag: "waiting"; readonly candidateId: IntegrationCandidateId }
-  /** Another pass holds the running slot (the partial unique index refused us). */
+  /** Another worker holds the running slot (index or lease refused us). */
   | { readonly _tag: "busy" }
   /** The pass ran and settled the candidate into a durable state. */
   | {
@@ -235,7 +270,12 @@ export interface RunOnceOutcome {
   readonly projects: ReadonlyArray<AdeProjectId>;
 }
 
+export interface SweepRetainedWorkspacesOutcome {
+  readonly cleaned: ReadonlyArray<IntegrationCandidateId>;
+}
+
 export type SubmitVerdictError =
+  | AdeIntegrationBusyError
   | AdeIntegrationCandidateNotFoundError
   | AdeIntegrationCandidateStateError
   | AdeIntegrationProjectNotFoundError
@@ -249,6 +289,7 @@ export interface AdeIntegrationServiceShape {
   ) => Effect.Effect<
     EnqueueCandidateOutcome,
     | AdeIntegrationCandidateEmptyError
+    | AdeIntegrationChangeIdInvalidError
     | AdeIntegrationProjectNotFoundError
     | AdeIntegrationProjectNotRepoBoundError
     | PersistenceSqlError
@@ -297,7 +338,12 @@ export interface AdeIntegrationServiceShape {
     IntegrationCandidate,
     AdeIntegrationCandidateNotFoundError | PersistenceSqlError
   >;
-  /** Restart recovery: running rows go back on the queue head (ADR §16.2). */
+  /** The age-based half of ADR §14.4's retention rule. */
+  readonly sweepRetainedWorkspaces: () => Effect.Effect<
+    SweepRetainedWorkspacesOutcome,
+    PersistenceSqlError
+  >;
+  /** Restart recovery: expired-lease running rows go back on the queue head. */
   readonly recoverRunningCandidates: () => Effect.Effect<RecoverOutcome, PersistenceSqlError>;
 }
 
@@ -311,12 +357,19 @@ interface CandidateRow {
   readonly idempotency_key: string;
   readonly source_assignment_ids_json: string;
   readonly change_ids_json: string;
+  readonly change_ids_key: string;
   readonly originating_bot_id: string;
   readonly declared_risk: string;
   readonly status: string;
   readonly gate: string | null;
   readonly reviewer_bot_id: string | null;
   readonly workspace_path: string | null;
+  readonly verdict: string | null;
+  readonly verdict_at: string | null;
+  readonly verdict_by_bot_id: string | null;
+  readonly verdict_detail: string | null;
+  readonly lease_holder: string | null;
+  readonly lease_expires_at: string | null;
   readonly bounce_count: number;
   readonly bounce_json: string | null;
   readonly repair_assignment_id: string | null;
@@ -348,6 +401,15 @@ const encodeStringArray = Schema.encodeEffect(StringArrayJson);
 const BounceJson = Schema.fromJsonString(IntegrationBounceSchema);
 const decodeBounce = Schema.decodeUnknownEffect(BounceJson);
 const encodeBounce = Schema.encodeEffect(BounceJson);
+const decodeLimitsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(LimitsConfig));
+const decodeLimitsDefaults = Schema.decodeUnknownEffect(LimitsConfig);
+const SubjectRefsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({ _tag: Schema.String, integrationCandidateId: Schema.optional(Schema.String) }),
+  ),
+);
+const encodeSubjectRefs = Schema.encodeEffect(SubjectRefsJson);
+const decodeSubjectRefs = Schema.decodeUnknownEffect(SubjectRefsJson);
 
 const rowToCandidate = Effect.fn("AdeIntegrationService.rowToCandidate")(function* (
   row: CandidateRow,
@@ -368,6 +430,10 @@ const rowToCandidate = Effect.fn("AdeIntegrationService.rowToCandidate")(functio
     gate: row.gate as IntegrationPolicy | null,
     reviewerBotId: row.reviewer_bot_id as BotId | null,
     workspacePath: row.workspace_path,
+    verdict: row.verdict as IntegrationVerdict | null,
+    verdictAt: row.verdict_at,
+    verdictByBotId: row.verdict_by_bot_id as BotId | null,
+    verdictDetail: row.verdict_detail,
     bounceCount: row.bounce_count,
     bounce,
     repairAssignmentId: row.repair_assignment_id as AssignmentId | null,
@@ -412,7 +478,11 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
 
     const workspaceRoot =
       options.workspaceRoot ?? path.join(NodeOS.homedir(), ".ade", "workspaces");
+    const leaseTtl = options.leaseTtl ?? ADE_INTEGRATION_LEASE_TTL_DEFAULT;
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+    const leaseExpiryIso = Effect.map(DateTime.now, (now) =>
+      DateTime.formatIso(DateTime.addDuration(now, leaseTtl)),
+    );
     const uuid = Effect.sync(() => NodeCrypto.randomUUID());
     const mapSql = (operation: string) =>
       toPersistenceSqlError(`AdeIntegrationService.${operation}`);
@@ -443,10 +513,10 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
     const requireRepoBoundProject = Effect.fn("AdeIntegrationService.requireRepoBoundProject")(
       function* (projectId: AdeProjectId) {
         const rows = yield* sql<ProjectRow>`
-        SELECT project_id, second_mate_bot_id, repo_path, repo_remote,
-               integration_policy_default, check_commands_json
-        FROM ade_projects WHERE project_id = ${projectId}
-      `.pipe(Effect.mapError(mapSql("requireRepoBoundProject")));
+          SELECT project_id, second_mate_bot_id, repo_path, repo_remote,
+                 integration_policy_default, check_commands_json
+          FROM ade_projects WHERE project_id = ${projectId}
+        `.pipe(Effect.mapError(mapSql("requireRepoBoundProject")));
         const row = rows[0];
         if (row === undefined) {
           return yield* new AdeIntegrationProjectNotFoundError({ projectId });
@@ -466,6 +536,16 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       },
     );
 
+    const readLimits = Effect.gen(function* () {
+      const rows = yield* sql<{ readonly config_json: string }>`
+        SELECT config_json FROM ade_limits_config WHERE id = 1
+      `;
+      const json = rows[0]?.config_json;
+      return json === undefined
+        ? yield* Effect.orDie(decodeLimitsDefaults({}))
+        : yield* Effect.orDie(decodeLimitsJson(json));
+    });
+
     // -----------------------------------------------------------------------
     // Enqueue / reads
     // -----------------------------------------------------------------------
@@ -477,15 +557,30 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       if (input.changeIds.length === 0) {
         return yield* new AdeIntegrationCandidateEmptyError({ projectId: input.projectId });
       }
+      // Validate before anything is persisted: a hostile change id must never
+      // reach the port, let alone `jj`.
+      for (const changeId of input.changeIds) {
+        if (!JJ_CHANGE_ID_PATTERN.test(changeId)) {
+          return yield* new AdeIntegrationChangeIdInvalidError({
+            projectId: input.projectId,
+            changeId,
+          });
+        }
+      }
       const idempotencyKey =
         input.idempotencyKey ??
         (input.sourceAssignmentIds.length > 0
           ? input.sourceAssignmentIds.join("|")
           : input.changeIds.join("|"));
 
+      // Replay only matches a *live* candidate. A settled one must not burn the
+      // key: after a bounce, the repaired change comes back under the same
+      // tool-call-derived key and has to queue a fresh candidate.
       const existing = yield* sql<CandidateRow>`
         SELECT * FROM ade_integration_candidates
-        WHERE project_id = ${input.projectId} AND idempotency_key = ${idempotencyKey}
+        WHERE project_id = ${input.projectId}
+          AND idempotency_key = ${idempotencyKey}
+          AND status NOT IN ('integrated', 'bounced')
       `.pipe(Effect.mapError(mapSql("enqueueCandidate.replay")));
       const replay = existing[0];
       if (replay !== undefined) {
@@ -501,13 +596,17 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       const inserted = yield* sql<CandidateRow>`
         INSERT INTO ade_integration_candidates (
           integration_candidate_id, project_id, idempotency_key,
-          source_assignment_ids_json, change_ids_json, originating_bot_id,
-          declared_risk, status, gate, reviewer_bot_id, workspace_path,
+          source_assignment_ids_json, change_ids_json, change_ids_key,
+          originating_bot_id, declared_risk, status, gate, reviewer_bot_id,
+          workspace_path, verdict, verdict_at, verdict_by_bot_id, verdict_detail,
+          lease_holder, lease_expires_at,
           bounce_count, bounce_json, repair_assignment_id, created_at, updated_at
         ) VALUES (
           ${candidateId}, ${input.projectId}, ${idempotencyKey},
-          ${sourceJson}, ${changesJson}, ${input.originatingBotId},
-          ${input.declaredRisk ?? "normal"}, 'queued', NULL, NULL, NULL,
+          ${sourceJson}, ${changesJson}, ${changeSetKey(input.changeIds)},
+          ${input.originatingBotId}, ${input.declaredRisk ?? "normal"}, 'queued', NULL, NULL,
+          NULL, NULL, NULL, NULL, NULL,
+          NULL, NULL,
           0, NULL, NULL, ${at}, ${at}
         )
         ON CONFLICT DO NOTHING
@@ -520,7 +619,9 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       // Lost the race against the per-project idempotency index: re-read.
       const raced = yield* sql<CandidateRow>`
         SELECT * FROM ade_integration_candidates
-        WHERE project_id = ${input.projectId} AND idempotency_key = ${idempotencyKey}
+        WHERE project_id = ${input.projectId}
+          AND idempotency_key = ${idempotencyKey}
+          AND status NOT IN ('integrated', 'bounced')
       `.pipe(Effect.mapError(mapSql("enqueueCandidate.raced")));
       const racedRow = raced[0];
       if (racedRow === undefined) {
@@ -551,7 +652,7 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       const rows = yield* sql<CandidateRow>`
         SELECT * FROM ade_integration_candidates
         WHERE project_id = ${projectId}
-        ORDER BY created_at, integration_candidate_id
+        ORDER BY created_at ASC, rowid ASC
       `.pipe(Effect.mapError(mapSql("listCandidates")));
       const filtered = rows.filter(
         (row) =>
@@ -561,7 +662,7 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
     });
 
     // -----------------------------------------------------------------------
-    // Verdict transitions
+    // Row transitions
     // -----------------------------------------------------------------------
 
     const settle = Effect.fn("AdeIntegrationService.settle")(function* (input: {
@@ -571,6 +672,9 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       readonly reviewerBotId?: BotId | null;
       readonly workspacePath?: string | null;
       readonly bounce?: IntegrationBounce | null;
+      readonly repairAssignmentId?: string | null;
+      readonly leaseHolder?: string | null;
+      readonly leaseExpiresAt?: string | null;
       readonly bumpBounceCount?: boolean;
     }) {
       const at = yield* nowIso;
@@ -600,6 +704,19 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
                     ? row.workspace_path
                     : (input.workspacePath ?? null)
                 },
+                repair_assignment_id = ${
+                  input.repairAssignmentId === undefined
+                    ? row.repair_assignment_id
+                    : (input.repairAssignmentId ?? null)
+                },
+                lease_holder = ${
+                  input.leaseHolder === undefined ? row.lease_holder : (input.leaseHolder ?? null)
+                },
+                lease_expires_at = ${
+                  input.leaseExpiresAt === undefined
+                    ? row.lease_expires_at
+                    : (input.leaseExpiresAt ?? null)
+                },
                 bounce_json = ${input.bounce === undefined ? row.bounce_json : bounceJson},
                 bounce_count = ${row.bounce_count + (input.bumpBounceCount === true ? 1 : 0)},
                 updated_at = ${at}
@@ -616,12 +733,84 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       return row;
     });
 
+    /** Extend our hold on the running slot. Returns false once we have lost it. */
+    const refreshLease = Effect.fn("AdeIntegrationService.refreshLease")(function* (
+      candidateId: string,
+      holder: string,
+    ) {
+      const expiresAt = yield* leaseExpiryIso;
+      const rows = yield* sql<{ readonly integration_candidate_id: string }>`
+        UPDATE ade_integration_candidates
+        SET lease_expires_at = ${expiresAt}
+        WHERE integration_candidate_id = ${candidateId}
+          AND status = 'running'
+          AND lease_holder = ${holder}
+        RETURNING integration_candidate_id
+      `.pipe(Effect.mapError(mapSql("refreshLease")));
+      return rows.length === 1;
+    });
+
+    // -----------------------------------------------------------------------
+    // Needs You (S13 renders these; the row is the durable item)
+    // -----------------------------------------------------------------------
+
     /**
-     * A bounce is terminal for the candidate and emits exactly one repair
-     * assignment under a candidate-scoped idempotency key, so a crash between
-     * the status write and the assignment write cannot fan out duplicates on
-     * the next pass (ADR §7.2, §13.3, §13.6). The workspace is deliberately
-     * retained for forensics (ADR §14.4).
+     * DB-backed dedupe, mirroring the health checker: one open item per
+     * candidate, so a re-running pass cannot pile up duplicates.
+     */
+    const openUnroutableRepairItem = Effect.fn("AdeIntegrationService.openUnroutableRepairItem")(
+      function* (candidateId: string) {
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const open = yield* sql<{ readonly subject_refs_json: string }>`
+              SELECT subject_refs_json FROM ade_needs_you_items
+              WHERE kind = 'stall' AND status = 'open'
+            `;
+              for (const row of open) {
+                const refs = yield* Effect.orElseSucceed(
+                  decodeSubjectRefs(row.subject_refs_json),
+                  () => [],
+                );
+                if (
+                  refs.some(
+                    (ref) =>
+                      ref._tag === "integrationCandidate" &&
+                      ref.integrationCandidateId === candidateId,
+                  )
+                ) {
+                  return;
+                }
+              }
+              const id = yield* uuid;
+              const at = yield* nowIso;
+              const subjectRefs = yield* Effect.orDie(
+                encodeSubjectRefs([
+                  { _tag: "integrationCandidate", integrationCandidateId: candidateId },
+                ]),
+              );
+              yield* sql`
+              INSERT INTO ade_needs_you_items (
+                needs_you_item_id, kind, subject_refs_json, status,
+                created_at, updated_at, resolved_at
+              ) VALUES (${id}, 'stall', ${subjectRefs}, 'open', ${at}, ${at}, NULL)
+            `;
+            }),
+          )
+          .pipe(Effect.mapError(mapSql("openUnroutableRepairItem")));
+      },
+    );
+
+    // -----------------------------------------------------------------------
+    // Bounce (ADR §7.2, §13.3, §14.4)
+    // -----------------------------------------------------------------------
+
+    /**
+     * The repair assignment is created *first*, under a candidate-scoped
+     * deterministic key. A crash between the two writes leaves the candidate
+     * `running`, so the re-run re-emits — and idempotent creation collapses it
+     * to the same single repair. Settling first (and swallowing a failed
+     * creation) is how a bounce silently loses its repair forever.
      */
     const bounce = Effect.fn("AdeIntegrationService.bounce")(function* (input: {
       readonly project: RepoBoundProject;
@@ -632,73 +821,89 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
     }) {
       const at = yield* nowIso;
       const detail = input.detail.slice(0, 16_384);
-      const row = yield* settle({
-        candidateId: input.candidate.integration_candidate_id,
-        status: "bounced",
-        ...(input.workspacePath !== null ? { workspacePath: input.workspacePath } : {}),
-        bounce: { reason: input.reason, detail, at },
-        bumpBounceCount: true,
-      });
+      const candidateId = input.candidate.integration_candidate_id;
+      const changeIds = yield* Effect.orDie(decodeStringArray(input.candidate.change_ids_json));
+      const sourceIds = yield* Effect.orDie(
+        decodeStringArray(input.candidate.source_assignment_ids_json),
+      );
+      const retainedWorkspace = input.workspacePath ?? input.candidate.workspace_path;
 
-      const changeIds = yield* Effect.orDie(decodeStringArray(row.change_ids_json));
-      const sourceIds = yield* Effect.orDie(decodeStringArray(row.source_assignment_ids_json));
       const instruction = [
         `Integration bounced this change back to you (${input.reason}).`,
         ``,
         `Project: ${input.project.projectId}`,
-        `Candidate: ${row.integration_candidate_id}`,
+        `Candidate: ${candidateId}`,
         `Changes: ${changeIds.join(", ")}`,
-        ...(row.workspace_path !== null ? [`Retained workspace: ${row.workspace_path}`] : []),
+        ...(retainedWorkspace !== null ? [`Retained workspace: ${retainedWorkspace}`] : []),
         ``,
         detail,
         ``,
         `Fix the change and submit a new integration candidate; this is a new assignment, not a retry.`,
       ].join("\n");
 
-      // A repair that cannot be created (author archived/deleted, queue full)
-      // must not strand the bounce itself — the candidate is already terminal
-      // and the failure is logged for the Second Mate.
       const repair = yield* assignments
         .createAssignment({
           requester: { _tag: "bot", botId: input.project.secondMateBotId },
-          recipientBotId: row.originating_bot_id as BotId,
+          recipientBotId: input.candidate.originating_bot_id as BotId,
           instruction,
-          idempotencyKey: `ade-integration-repair:${row.integration_candidate_id}`,
-          declaredRisk: row.declared_risk as DeclaredRisk,
+          idempotencyKey: `ade-integration-repair:${candidateId}`,
+          declaredRisk: input.candidate.declared_risk as DeclaredRisk,
           projectId: input.project.projectId,
           parentAssignmentId: (sourceIds[0] as AssignmentId | undefined) ?? null,
         })
         .pipe(
-          Effect.catchCause((cause) =>
-            Effect.as(
-              Effect.logWarning("ADE integration repair assignment failed", {
-                cause,
-                candidateId: row.integration_candidate_id,
+          Effect.map((outcome) => outcome.assignment.id as string),
+          // The author is gone (archived or deleted). There is nobody to repair
+          // this, so it becomes the captain's problem as a durable Needs You
+          // item rather than a warning nobody reads.
+          Effect.catchTags({
+            AdeBotNotFoundError: () => Effect.succeed(null),
+            AdeBotArchivedError: () => Effect.succeed(null),
+          }),
+          // Anything else (a full queue, a vanished parent) is a transient
+          // failure to *emit*, not a reason to settle a bounce without its
+          // repair. Route it into the pipeline's existing "mechanical failure,
+          // re-run from scratch" channel: the candidate stays `running`, the
+          // lease lapses, and the next pass re-emits under the same key.
+          Effect.mapError(
+            (cause) =>
+              new AdeIntegrationRepoError({
+                operation: "bounce.repair",
+                detail: cause.message,
               }),
-              null,
-            ),
           ),
         );
-
-      if (repair !== null) {
-        yield* sql`
-          UPDATE ade_integration_candidates
-          SET repair_assignment_id = ${repair.assignment.id}
-          WHERE integration_candidate_id = ${row.integration_candidate_id}
-        `.pipe(Effect.mapError(mapSql("bounce.recordRepair")));
+      if (repair === null) {
+        yield* openUnroutableRepairItem(candidateId);
+        yield* Effect.logWarning("ADE integration repair is unroutable", {
+          candidateId,
+          originatingBotId: input.candidate.originating_bot_id,
+        });
       }
 
-      // Repeated bounces on the same change set notify the Second Mate, who
-      // may reroute or escalate. No hard bounce cap in V1 (ADR §7.2).
+      const row = yield* settle({
+        candidateId,
+        status: "bounced",
+        ...(retainedWorkspace !== null ? { workspacePath: retainedWorkspace } : {}),
+        bounce: { reason: input.reason, detail, at },
+        repairAssignmentId: repair,
+        leaseHolder: null,
+        leaseExpiresAt: null,
+        bumpBounceCount: true,
+      });
+
+      // Repeated bounces on the same change set notify the Second Mate, who may
+      // reroute or escalate. No hard bounce cap in V1 (ADR §7.2). The comparison
+      // is order-insensitive via change_ids_key.
       const priorBounces = yield* sql<{ readonly n: number }>`
         SELECT COUNT(*) AS n FROM ade_integration_candidates
         WHERE project_id = ${input.project.projectId}
           AND status = 'bounced'
-          AND change_ids_json = ${row.change_ids_json}
-          AND integration_candidate_id != ${row.integration_candidate_id}
+          AND change_ids_key = ${row.change_ids_key}
+          AND integration_candidate_id != ${candidateId}
       `.pipe(Effect.mapError(mapSql("bounce.priorBounces")));
       const priorCount = priorBounces[0]?.n ?? 0;
-      if (priorCount > 0 && input.project.secondMateBotId !== row.originating_bot_id) {
+      if (priorCount > 0 && input.project.secondMateBotId !== input.candidate.originating_bot_id) {
         yield* assignments
           .createAssignment({
             requester: { _tag: "captain" },
@@ -711,46 +916,68 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
               ``,
               `Reroute to a Reviewer/Integrator or escalate to the captain.`,
             ].join("\n"),
-            idempotencyKey: `ade-integration-bounce-notice:${row.integration_candidate_id}`,
+            idempotencyKey: `ade-integration-bounce-notice:${candidateId}`,
             declaredRisk: "normal",
             projectId: input.project.projectId,
           })
           .pipe(
             Effect.catchCause((cause) =>
               Effect.as(
-                Effect.logWarning("ADE integration bounce notice failed", {
-                  cause,
-                  candidateId: row.integration_candidate_id,
-                }),
+                Effect.logWarning("ADE integration bounce notice failed", { cause, candidateId }),
                 null,
               ),
             ),
           );
       }
 
-      return yield* rowToCandidate(
-        (yield* readCandidateRow(row.integration_candidate_id).pipe(
-          Effect.mapError(mapSql("bounce.reread")),
-        ))[0] ?? row,
-      );
+      return row;
     });
 
-    /**
-     * Canonical advancement — the single durable commit point (ADR §16.2). The
-     * workspace is cleaned up only after canonical moved; a cleanup failure is
-     * logged rather than un-integrating a landed change.
-     */
+    // -----------------------------------------------------------------------
+    // Canonical advancement (ADR §6.3, §16.2)
+    // -----------------------------------------------------------------------
+
+    // `integrate` reports one of three outcomes: `integrated` (canonical moved
+    // or already contained the head), `requeued` (canonical diverged — never
+    // forced backwards), or `lost` (the running lease lapsed under us).
     const integrate = Effect.fn("AdeIntegrationService.integrate")(function* (input: {
       readonly project: RepoBoundProject;
       readonly candidate: CandidateRow;
       readonly gate: IntegrationPolicy;
+      readonly leaseHolder: string | null;
     }) {
+      const candidateId = input.candidate.integration_candidate_id;
       const changeIds = yield* Effect.orDie(decodeStringArray(input.candidate.change_ids_json));
       const headRevision = changeIds[changeIds.length - 1] as string;
-      const candidateId = input.candidate.integration_candidate_id;
-      const advanced = yield* repo
-        .advanceCanonical({ repoPath: input.project.repoPath, headRevision })
-        .pipe(Effect.map((result) => result.canonicalCommitId));
+
+      // Re-assert the lease immediately before the durable commit point: if it
+      // lapsed, another worker may already be rebasing this candidate and two
+      // advancements would race over the same bookmark.
+      if (input.leaseHolder !== null) {
+        const held = yield* refreshLease(candidateId, input.leaseHolder);
+        if (!held) return { _tag: "lost" } as const;
+      }
+
+      const advanced = yield* repo.advanceCanonical({
+        repoPath: input.project.repoPath,
+        headRevision,
+      });
+      if (advanced._tag === "diverged") {
+        // Never force the bookmark backwards — that drops whatever landed in
+        // between. Put the candidate back on the queue head for a fresh rebase;
+        // its recorded verdict rides along, so an approval is not re-asked.
+        yield* settle({
+          candidateId,
+          status: "queued",
+          leaseHolder: null,
+          leaseExpiresAt: null,
+        });
+        yield* Effect.logInfo("ADE integration re-queued a diverged candidate", {
+          candidateId,
+          detail: advanced.detail,
+        });
+        return { _tag: "requeued", detail: advanced.detail } as const;
+      }
 
       const workspacePath =
         input.candidate.workspace_path ?? workspacePathFor(input.project.projectId, candidateId);
@@ -763,10 +990,7 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         .pipe(
           Effect.catchCause((cause) =>
             Effect.as(
-              Effect.logWarning("ADE integration workspace cleanup failed", {
-                cause,
-                candidateId,
-              }),
+              Effect.logWarning("ADE integration workspace cleanup failed", { cause, candidateId }),
               undefined,
             ),
           ),
@@ -777,13 +1001,16 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         status: "integrated",
         gate: input.gate,
         workspacePath: null,
+        leaseHolder: null,
+        leaseExpiresAt: null,
       });
       yield* Effect.log("ADE integration advanced canonical", {
         candidateId,
         projectId: input.project.projectId,
-        canonicalCommitId: advanced,
+        canonicalCommitId: advanced.canonicalCommitId,
+        alreadyIntegrated: advanced._tag === "already-integrated",
       });
-      return row;
+      return { _tag: "integrated", row } as const;
     });
 
     // -----------------------------------------------------------------------
@@ -794,13 +1021,17 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       readonly project: RepoBoundProject;
       readonly originatingBotId: string;
     }) {
+      // `roleTag` is a free-form label (spec §2.1), so the designated-Reviewer
+      // convention is a word match, not equality: "Reviewer", "reviewer", and
+      // "Code Reviewer" are all the project's reviewer. Padding both sides makes
+      // one LIKE cover the leading, trailing, and interior cases.
       const designated = yield* sql<{ readonly bot_id: string }>`
         SELECT bot_id FROM ade_bots
         WHERE project_id = ${input.project.projectId}
           AND archived_at IS NULL
-          AND role_tag = 'Reviewer'
+          AND (' ' || LOWER(TRIM(role_tag)) || ' ') LIKE '% reviewer %'
           AND bot_id != ${input.originatingBotId}
-        ORDER BY created_at, bot_id
+        ORDER BY created_at ASC, rowid ASC
         LIMIT 1
       `.pipe(Effect.mapError(mapSql("resolveReviewer.designated")));
       const reviewer = designated[0];
@@ -842,10 +1073,7 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         .pipe(
           Effect.catchCause((cause) =>
             Effect.as(
-              Effect.logWarning("ADE integration review assignment failed", {
-                cause,
-                candidateId,
-              }),
+              Effect.logWarning("ADE integration review assignment failed", { cause, candidateId }),
               null,
             ),
           ),
@@ -856,6 +1084,8 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         gate: "agent-review",
         reviewerBotId: input.reviewerBotId,
         workspacePath: input.workspacePath,
+        leaseHolder: null,
+        leaseExpiresAt: null,
       });
     });
 
@@ -866,11 +1096,32 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
     const runPass = Effect.fn("AdeIntegrationService.runPass")(function* (input: {
       readonly project: RepoBoundProject;
       readonly candidate: CandidateRow;
+      readonly leaseHolder: string;
     }) {
-      const { candidate, project } = input;
+      const { candidate, leaseHolder, project } = input;
       const candidateId = candidate.integration_candidate_id;
       const changeIds = yield* Effect.orDie(decodeStringArray(candidate.change_ids_json));
+      const headRevision = changeIds[changeIds.length - 1] as string;
       const workspacePath = workspacePathFor(project.projectId, candidateId);
+      const recordedGate = candidate.gate as IntegrationPolicy | null;
+      const gate =
+        recordedGate ??
+        effectiveIntegrationGate(
+          project.integrationPolicyDefault,
+          candidate.declared_risk as DeclaredRisk,
+        );
+
+      // A recorded rejection settles without touching the repository at all.
+      if (candidate.verdict === "rejected") {
+        yield* bounce({
+          project,
+          candidate,
+          reason: gate === "human-approval" ? "approval-denied" : "review-rejected",
+          detail: candidate.verdict_detail ?? "The change was rejected without feedback.",
+          workspacePath: candidate.workspace_path,
+        });
+        return advancedTo(candidateId, "bounced");
+      }
 
       // 1. Explicit upstream sync (ADR §14.3) — remote truth before mutation.
       const sync = yield* repo.syncUpstream({
@@ -887,8 +1138,21 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         });
         return advancedTo(candidateId, "bounced");
       }
+      yield* refreshLease(candidateId, leaseHolder);
 
-      // 2. Isolated workspace, rebased fresh onto the just-advanced canonical.
+      // 2. Converge on the durable commit point before redoing any work: if
+      //    canonical already contains this head, a previous pass advanced it and
+      //    died before writing the status. Re-rebasing here would surface as a
+      //    conflict and bounce the author for an integrated change.
+      const canonical = yield* repo.canonicalState({ repoPath: project.repoPath, headRevision });
+      if (canonical.containsHead) {
+        const outcome = yield* integrate({ project, candidate, gate, leaseHolder });
+        return outcome._tag === "integrated"
+          ? advancedTo(candidateId, "integrated")
+          : ({ _tag: "busy" } as const);
+      }
+
+      // 3. Isolated workspace, rebased fresh onto the just-advanced canonical.
       const prepared = yield* repo.prepareCandidateWorkspace({
         repoPath: project.repoPath,
         workspacePath,
@@ -898,6 +1162,7 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       // Record the workspace immediately so a crash still leaves a forensic
       // trail pointing at it.
       yield* settle({ candidateId, status: "running", workspacePath: prepared.workspacePath });
+      yield* refreshLease(candidateId, leaseHolder);
       if (prepared.conflictDetail !== null) {
         yield* bounce({
           project,
@@ -909,11 +1174,13 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         return advancedTo(candidateId, "bounced");
       }
 
-      // 3. Green checks are required at every gate level, including automatic.
+      // 4. Green checks are required at every gate level, including automatic —
+      //    and including on the far side of an approval.
       const checks = yield* repo.runChecks({
         workspacePath: prepared.workspacePath,
         checkCommands: project.checkCommands,
       });
+      yield* refreshLease(candidateId, leaseHolder);
       if (!checks.passed) {
         yield* bounce({
           project,
@@ -925,14 +1192,23 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         return advancedTo(candidateId, "bounced");
       }
 
-      // 4. Gate.
-      const gate = effectiveIntegrationGate(
-        project.integrationPolicyDefault,
-        candidate.declared_risk as DeclaredRisk,
-      );
+      // 5. Apply the recorded verdict, or classify the gate for the first time.
+      if (candidate.verdict === "approved") {
+        const outcome = yield* integrate({ project, candidate, gate, leaseHolder });
+        return outcome._tag === "integrated"
+          ? advancedTo(candidateId, "integrated")
+          : outcome._tag === "requeued"
+            ? advancedTo(candidateId, "queued")
+            : ({ _tag: "busy" } as const);
+      }
+
       if (gate === "automatic") {
-        yield* integrate({ project, candidate, gate });
-        return advancedTo(candidateId, "integrated");
+        const outcome = yield* integrate({ project, candidate, gate, leaseHolder });
+        return outcome._tag === "integrated"
+          ? advancedTo(candidateId, "integrated")
+          : outcome._tag === "requeued"
+            ? advancedTo(candidateId, "queued")
+            : ({ _tag: "busy" } as const);
       }
       if (gate === "agent-review") {
         const reviewerBotId = yield* resolveReviewer({
@@ -954,14 +1230,6 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
           candidateId,
           reason: "no-eligible-reviewer",
         });
-        yield* settle({
-          candidateId,
-          status: "awaiting-approval",
-          gate: "human-approval",
-          reviewerBotId: null,
-          workspacePath: prepared.workspacePath,
-        });
-        return advancedTo(candidateId, "awaiting-approval");
       }
       yield* settle({
         candidateId,
@@ -969,6 +1237,8 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         gate: "human-approval",
         reviewerBotId: null,
         workspacePath: prepared.workspacePath,
+        leaseHolder: null,
+        leaseExpiresAt: null,
       });
       return advancedTo(candidateId, "awaiting-approval");
     });
@@ -984,7 +1254,7 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         SELECT * FROM ade_integration_candidates
         WHERE project_id = ${projectId}
           AND status IN ('awaiting-review', 'awaiting-approval')
-        ORDER BY created_at, integration_candidate_id
+        ORDER BY created_at ASC, rowid ASC
         LIMIT 1
       `.pipe(Effect.mapError(mapSql("processQueueHead.parked")));
       const parkedRow = parked[0];
@@ -995,31 +1265,51 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         } as const;
       }
 
-      // Adopt a `running` row left by a crashed pass before claiming new work:
-      // converge, then act.
-      const running = yield* sql<CandidateRow>`
-        SELECT * FROM ade_integration_candidates
-        WHERE project_id = ${projectId} AND status = 'running'
-        ORDER BY created_at, integration_candidate_id
-        LIMIT 1
-      `.pipe(Effect.mapError(mapSql("processQueueHead.running")));
+      const leaseHolder = yield* uuid;
+      const at = yield* nowIso;
+      const expiresAt = yield* leaseExpiryIso;
 
-      let head = running[0];
+      // Adopt a `running` row left by a dead pass — but only if its lease has
+      // lapsed. Without the conditional claim two workers happily adopt the same
+      // row and share one workspace directory.
+      const adopted = yield* sql<CandidateRow>`
+        UPDATE ade_integration_candidates
+        SET lease_holder = ${leaseHolder}, lease_expires_at = ${expiresAt}, updated_at = ${at}
+        WHERE integration_candidate_id = (
+          SELECT integration_candidate_id FROM ade_integration_candidates
+          WHERE project_id = ${projectId} AND status = 'running'
+          ORDER BY created_at ASC, rowid ASC
+          LIMIT 1
+        )
+          AND status = 'running'
+          AND (lease_expires_at IS NULL OR lease_expires_at <= ${at})
+        RETURNING *
+      `.pipe(Effect.mapError(mapSql("processQueueHead.adopt")));
+
+      let head = adopted[0];
       if (head === undefined) {
+        // Distinguish "nothing running" from "someone else holds it".
+        const running = yield* sql<{ readonly integration_candidate_id: string }>`
+          SELECT integration_candidate_id FROM ade_integration_candidates
+          WHERE project_id = ${projectId} AND status = 'running'
+          LIMIT 1
+        `.pipe(Effect.mapError(mapSql("processQueueHead.running")));
+        if (running.length > 0) return { _tag: "busy" } as const;
+
         const queued = yield* sql<CandidateRow>`
           SELECT * FROM ade_integration_candidates
           WHERE project_id = ${projectId} AND status = 'queued'
-          ORDER BY created_at, integration_candidate_id
+          ORDER BY created_at ASC, rowid ASC
           LIMIT 1
         `.pipe(Effect.mapError(mapSql("processQueueHead.queued")));
         const next = queued[0];
         if (next === undefined) return { _tag: "idle" } as const;
-        const at = yield* nowIso;
-        // The partial unique index is the real arbiter: a concurrent claim
-        // fails here rather than producing a second running pass.
+        // The partial unique index is the arbiter: a concurrent claim fails
+        // here rather than producing a second running pass.
         const claimed = yield* sql<CandidateRow>`
           UPDATE ade_integration_candidates
-          SET status = 'running', updated_at = ${at}
+          SET status = 'running', lease_holder = ${leaseHolder},
+              lease_expires_at = ${expiresAt}, updated_at = ${at}
           WHERE integration_candidate_id = ${next.integration_candidate_id}
             AND status = 'queued'
           RETURNING *
@@ -1030,18 +1320,20 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       }
 
       const candidate = head;
-      return yield* runPass({ project, candidate }).pipe(
+      return yield* runPass({ project, candidate, leaseHolder }).pipe(
         Effect.catchTag("AdeIntegrationRepoError", (error) =>
           Effect.gen(function* () {
-            // Mechanical failure: leave the candidate on the queue head so the
-            // next sweep re-runs it from scratch (ADR §16.2). No bounce — the
-            // author did nothing wrong.
-            const at = yield* nowIso;
+            // Mechanical failure: release the slot so the next sweep re-runs the
+            // candidate from scratch (ADR §16.2). No bounce — the author did
+            // nothing wrong. Only release what we still hold.
+            const releasedAt = yield* nowIso;
             yield* sql`
               UPDATE ade_integration_candidates
-              SET status = 'queued', updated_at = ${at}
+              SET status = 'queued', lease_holder = NULL, lease_expires_at = NULL,
+                  updated_at = ${releasedAt}
               WHERE integration_candidate_id = ${candidate.integration_candidate_id}
                 AND status = 'running'
+                AND lease_holder = ${leaseHolder}
             `.pipe(Effect.mapError(mapSql("processQueueHead.release")));
             yield* Effect.logWarning("ADE integration pass deferred", {
               candidateId: candidate.integration_candidate_id,
@@ -1072,7 +1364,9 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
           Effect.catchCause((cause) =>
             Effect.as(
               Effect.logWarning("ADE integration queue head failed", { cause, projectId }),
-              { _tag: "idle" } as const,
+              {
+                _tag: "idle",
+              } as const,
             ),
           ),
         );
@@ -1084,6 +1378,104 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
     // -----------------------------------------------------------------------
     // Verdicts
     // -----------------------------------------------------------------------
+
+    /**
+     * Record the verdict and take the running slot in one conditional update.
+     * This is what makes the gate crash-safe: from here on the candidate is a
+     * normal running candidate carrying a durable decision, so recovery and the
+     * ordinary pass converge on it.
+     */
+    const claimForVerdict = Effect.fn("AdeIntegrationService.claimForVerdict")(function* (input: {
+      readonly candidateId: string;
+      readonly fromStatus: "awaiting-review" | "awaiting-approval";
+      readonly verdict: IntegrationVerdict;
+      readonly verdictByBotId: string | null;
+      readonly verdictDetail: string | null;
+      readonly leaseHolder: string;
+      readonly reviewerBotId?: string;
+    }) {
+      const at = yield* nowIso;
+      const expiresAt = yield* leaseExpiryIso;
+      const rows = yield* sql<CandidateRow>`
+        UPDATE ade_integration_candidates
+        SET status = 'running',
+            verdict = ${input.verdict},
+            verdict_at = ${at},
+            verdict_by_bot_id = ${input.verdictByBotId},
+            verdict_detail = ${input.verdictDetail},
+            lease_holder = ${input.leaseHolder},
+            lease_expires_at = ${expiresAt},
+            updated_at = ${at}
+        WHERE integration_candidate_id = ${input.candidateId}
+          AND status = ${input.fromStatus}
+          AND (${input.reviewerBotId ?? null} IS NULL OR reviewer_bot_id = ${input.reviewerBotId ?? null})
+        RETURNING *
+      `.pipe(Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<CandidateRow>)));
+      return rows[0] ?? null;
+    });
+
+    const applyVerdict = Effect.fn("AdeIntegrationService.applyVerdict")(function* (input: {
+      readonly claimed: CandidateRow;
+      readonly project: RepoBoundProject;
+      readonly leaseHolder: string;
+      readonly reason: IntegrationBounceReason;
+    }) {
+      const gate =
+        (input.claimed.gate as IntegrationPolicy | null) ??
+        effectiveIntegrationGate(
+          input.project.integrationPolicyDefault,
+          input.claimed.declared_risk as DeclaredRisk,
+        );
+      // The verdict is already durable, so a repository or repair-emission
+      // failure hands the candidate back to the sweeper rather than failing the
+      // caller's verdict submission.
+      const deferToSweeper = (error: AdeIntegrationRepoError) =>
+        Effect.gen(function* () {
+          const at = yield* nowIso;
+          yield* sql`
+            UPDATE ade_integration_candidates
+            SET status = 'queued', lease_holder = NULL, lease_expires_at = NULL, updated_at = ${at}
+            WHERE integration_candidate_id = ${input.claimed.integration_candidate_id}
+              AND status = 'running'
+              AND lease_holder = ${input.leaseHolder}
+          `.pipe(Effect.mapError(mapSql("applyVerdict.release")));
+          yield* Effect.logWarning("ADE integration verdict deferred to the sweeper", {
+            candidateId: input.claimed.integration_candidate_id,
+            detail: error.message,
+          });
+          return { _tag: "requeued", detail: error.message } as const;
+        });
+
+      if (input.claimed.verdict === "rejected") {
+        const bounced = yield* bounce({
+          project: input.project,
+          candidate: input.claimed,
+          reason: input.reason,
+          detail: input.claimed.verdict_detail ?? "The change was rejected without feedback.",
+          workspacePath: input.claimed.workspace_path,
+        }).pipe(
+          Effect.catchTag("AdeIntegrationRepoError", (error) =>
+            Effect.as(deferToSweeper(error), null),
+          ),
+        );
+        if (bounced !== null) return bounced;
+        const requeuedRows = yield* readCandidateRow(input.claimed.integration_candidate_id).pipe(
+          Effect.mapError(mapSql("applyVerdict.reread")),
+        );
+        return requeuedRows[0] ?? input.claimed;
+      }
+      const outcome = yield* integrate({
+        project: input.project,
+        candidate: input.claimed,
+        gate,
+        leaseHolder: input.leaseHolder,
+      }).pipe(Effect.catchTag("AdeIntegrationRepoError", deferToSweeper));
+      if (outcome._tag === "integrated") return outcome.row;
+      const rows = yield* readCandidateRow(input.claimed.integration_candidate_id).pipe(
+        Effect.mapError(mapSql("applyVerdict.reread")),
+      );
+      return rows[0] ?? input.claimed;
+    });
 
     const submitReview: AdeIntegrationServiceShape["submitReview"] = Effect.fn(
       "AdeIntegrationService.submitReview",
@@ -1109,30 +1501,33 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         });
       }
       const project = yield* requireRepoBoundProject(candidate.project_id as AdeProjectId);
-      if (input.decision === "approve") {
-        const row = yield* integrate({ project, candidate, gate: "agent-review" }).pipe(
-          Effect.catchTag("AdeIntegrationRepoError", (error) =>
-            // Canonical did not move; park the candidate back on review so the
-            // approval can be re-submitted once the repo is operable.
-            Effect.as(
-              Effect.logWarning("ADE integration approval could not advance canonical", {
-                candidateId: input.candidateId,
-                detail: error.message,
-              }),
-              candidate,
-            ),
-          ),
-        );
-        return yield* rowToCandidate(row);
-      }
-      return yield* bounce({
-        project,
-        candidate,
-        reason: "review-rejected",
-        detail:
-          input.feedback ?? `Reviewer ${input.reviewerBotId} rejected the change without feedback.`,
-        workspacePath: candidate.workspace_path,
+      const leaseHolder = yield* uuid;
+      const claimed = yield* claimForVerdict({
+        candidateId: input.candidateId,
+        fromStatus: "awaiting-review",
+        verdict: input.decision === "approve" ? "approved" : "rejected",
+        verdictByBotId: input.reviewerBotId,
+        verdictDetail:
+          input.feedback ??
+          (input.decision === "reject"
+            ? `Reviewer ${input.reviewerBotId} rejected the change without feedback.`
+            : null),
+        leaseHolder,
+        reviewerBotId: input.reviewerBotId,
       });
+      if (claimed === null) {
+        return yield* new AdeIntegrationBusyError({
+          projectId: project.projectId,
+          candidateId: input.candidateId,
+        });
+      }
+      const row = yield* applyVerdict({
+        claimed,
+        project,
+        leaseHolder,
+        reason: "review-rejected",
+      });
+      return yield* rowToCandidate(row);
     });
 
     const submitApproval: AdeIntegrationServiceShape["submitApproval"] = Effect.fn(
@@ -1147,41 +1542,50 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         });
       }
       const project = yield* requireRepoBoundProject(candidate.project_id as AdeProjectId);
-      if (input.decision === "approve") {
-        const row = yield* integrate({ project, candidate, gate: "human-approval" }).pipe(
-          Effect.catchTag("AdeIntegrationRepoError", (error) =>
-            Effect.as(
-              Effect.logWarning("ADE integration approval could not advance canonical", {
-                candidateId: input.candidateId,
-                detail: error.message,
-              }),
-              candidate,
-            ),
-          ),
-        );
-        return yield* rowToCandidate(row);
-      }
-      return yield* bounce({
-        project,
-        candidate,
-        reason: "approval-denied",
-        detail: input.note ?? "The captain denied this change.",
-        workspacePath: candidate.workspace_path,
+      const leaseHolder = yield* uuid;
+      const claimed = yield* claimForVerdict({
+        candidateId: input.candidateId,
+        fromStatus: "awaiting-approval",
+        verdict: input.decision === "approve" ? "approved" : "rejected",
+        verdictByBotId: null,
+        verdictDetail:
+          input.note ?? (input.decision === "deny" ? "The captain denied this change." : null),
+        leaseHolder,
       });
+      if (claimed === null) {
+        return yield* new AdeIntegrationBusyError({
+          projectId: project.projectId,
+          candidateId: input.candidateId,
+        });
+      }
+      const row = yield* applyVerdict({
+        claimed,
+        project,
+        leaseHolder,
+        reason: "approval-denied",
+      });
+      return yield* rowToCandidate(row);
     });
+
+    // -----------------------------------------------------------------------
+    // Explicit operations & housekeeping
+    // -----------------------------------------------------------------------
 
     const syncUpstream: AdeIntegrationServiceShape["syncUpstream"] = Effect.fn(
       "AdeIntegrationService.syncUpstream",
     )(function* (projectId: AdeProjectId) {
       const project = yield* requireRepoBoundProject(projectId);
-      const running = yield* sql<CandidateRow>`
+      // ADE never rebases canonical under a running pass *or* under a candidate
+      // parked on a gate: that candidate was rebased onto the current canonical
+      // and its approval would otherwise try to move the bookmark backwards.
+      const busyRows = yield* sql<CandidateRow>`
         SELECT * FROM ade_integration_candidates
-        WHERE project_id = ${projectId} AND status = 'running'
+        WHERE project_id = ${projectId}
+          AND status IN ('running', 'awaiting-review', 'awaiting-approval')
         LIMIT 1
-      `.pipe(Effect.mapError(mapSql("syncUpstream.running")));
-      const busy = running[0];
+      `.pipe(Effect.mapError(mapSql("syncUpstream.busy")));
+      const busy = busyRows[0];
       if (busy !== undefined) {
-        // ADE never rebases under a running pass (ADR §14.3).
         return yield* new AdeIntegrationBusyError({
           projectId,
           candidateId: busy.integration_candidate_id,
@@ -1211,6 +1615,9 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
           `.pipe(Effect.mapError(mapSql("cleanupCandidateWorkspace.project")));
           const repoPath = projectRows[0]?.repo_path;
           if (repoPath !== undefined && repoPath !== null) {
+            // `cleanupWorkspace` forgets the JJ workspace before removing the
+            // directory, so a retained forensic workspace stops holding a
+            // working-copy registration once it is reclaimed.
             yield* repo
               .cleanupWorkspace({
                 repoPath,
@@ -1238,15 +1645,52 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
         return yield* rowToCandidate(row);
       });
 
+    const sweepRetainedWorkspaces: AdeIntegrationServiceShape["sweepRetainedWorkspaces"] =
+      Effect.fn("AdeIntegrationService.sweepRetainedWorkspaces")(function* () {
+        const limits = yield* readLimits.pipe(Effect.mapError(mapSql("sweepRetainedWorkspaces")));
+        const now = yield* DateTime.now;
+        const cutoff = DateTime.formatIso(
+          DateTime.subtractDuration(now, Duration.days(limits.integrationWorkspaceRetentionDays)),
+        );
+        const stale = yield* sql<{ readonly integration_candidate_id: string }>`
+          SELECT integration_candidate_id FROM ade_integration_candidates
+          WHERE status = 'bounced'
+            AND workspace_path IS NOT NULL
+            AND updated_at <= ${cutoff}
+          ORDER BY updated_at
+          LIMIT 50
+        `.pipe(Effect.mapError(mapSql("sweepRetainedWorkspaces.select")));
+        const cleaned: Array<IntegrationCandidateId> = [];
+        for (const row of stale) {
+          const candidateId = row.integration_candidate_id as IntegrationCandidateId;
+          yield* cleanupCandidateWorkspace(candidateId).pipe(
+            Effect.catchCause((cause) =>
+              Effect.as(
+                Effect.logWarning("ADE integration retention sweep failed", { cause, candidateId }),
+                null,
+              ),
+            ),
+          );
+          cleaned.push(candidateId);
+        }
+        if (cleaned.length > 0) {
+          yield* Effect.log("ADE integration reclaimed retained workspaces", { cleaned });
+        }
+        return { cleaned };
+      });
+
     const recoverRunningCandidates: AdeIntegrationServiceShape["recoverRunningCandidates"] =
       Effect.fn("AdeIntegrationService.recoverRunningCandidates")(function* () {
         const at = yield* nowIso;
-        // No mid-pipeline resume: the head simply re-runs from scratch, with
-        // the workspace reset from canonical on the next pass (ADR §16.2).
+        // No mid-pipeline resume: the head simply re-runs from scratch, with the
+        // workspace reset from canonical on the next pass (ADR §16.2). Only
+        // expired leases are reclaimed, so a live pass in another worker is
+        // never yanked out from under itself.
         const rows = yield* sql<{ readonly integration_candidate_id: string }>`
           UPDATE ade_integration_candidates
-          SET status = 'queued', updated_at = ${at}
+          SET status = 'queued', lease_holder = NULL, lease_expires_at = NULL, updated_at = ${at}
           WHERE status = 'running'
+            AND (lease_expires_at IS NULL OR lease_expires_at <= ${at})
           RETURNING integration_candidate_id
         `.pipe(Effect.mapError(mapSql("recoverRunningCandidates")));
         const requeued = rows.map((row) => row.integration_candidate_id as IntegrationCandidateId);
@@ -1266,6 +1710,7 @@ export const make = (options: AdeIntegrationServiceOptions = {}) =>
       submitApproval,
       syncUpstream,
       cleanupCandidateWorkspace,
+      sweepRetainedWorkspaces,
       recoverRunningCandidates,
     });
   });
@@ -1291,7 +1736,7 @@ export class AdeIntegrationService extends Context.Service<
   /**
    * Background pass, mirroring the assignment sweeper: recover once at
    * activation (the restart re-run of ADR §16.2), then keep driving every
-   * project's queue head.
+   * project's queue head and reclaiming expired forensic workspaces.
    */
   static readonly sweeperLive = (
     interval: Duration.Duration = ADE_INTEGRATION_SWEEP_INTERVAL_DEFAULT,
@@ -1310,7 +1755,13 @@ export class AdeIntegrationService extends Context.Service<
           Effect.gen(function* () {
             yield* guard(service.recoverRunningCandidates(), "ADE integration recovery failed");
             yield* Effect.repeat(
-              guard(service.runOnce(), "ADE integration sweep failed"),
+              Effect.gen(function* () {
+                yield* guard(service.runOnce(), "ADE integration sweep failed");
+                yield* guard(
+                  service.sweepRetainedWorkspaces(),
+                  "ADE integration retention sweep failed",
+                );
+              }),
               Schedule.spaced(interval),
             );
           }),
@@ -1322,6 +1773,14 @@ export class AdeIntegrationService extends Context.Service<
 export interface AdeIntegrationServiceOptions {
   /** Root for per-candidate JJ workspaces; defaults to `~/.ade/workspaces`. */
   readonly workspaceRoot?: string;
+  /** How long a claim on the running slot survives without a refresh. */
+  readonly leaseTtl?: Duration.Duration;
 }
 
 export const ADE_INTEGRATION_SWEEP_INTERVAL_DEFAULT = Duration.seconds(15);
+
+/**
+ * Generous relative to the refresh cadence (every pipeline step) and short
+ * enough that a killed process's candidates return to the queue promptly.
+ */
+export const ADE_INTEGRATION_LEASE_TTL_DEFAULT = Duration.minutes(2);

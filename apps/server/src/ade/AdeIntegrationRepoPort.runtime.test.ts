@@ -137,7 +137,21 @@ runtime("prepares an isolated workspace, runs checks, and advances canonical", (
       repoPath: repo.repoPath,
       headRevision: changeId,
     });
+    assert.strictEqual(advanced._tag, "advanced");
     assert.isAbove(advanced.canonicalCommitId.length, 0);
+
+    // Idempotent: a second advancement of the same head is a no-op, which is
+    // how a pass that died after the commit point re-derives its own success.
+    const again = yield* port.advanceCanonical({
+      repoPath: repo.repoPath,
+      headRevision: changeId,
+    });
+    assert.strictEqual(again._tag, "already-integrated");
+    const state = yield* port.canonicalState({
+      repoPath: repo.repoPath,
+      headRevision: changeId,
+    });
+    assert.isTrue(state.containsHead);
     const canonicalDescription = yield* repo.jj([
       "log",
       "--no-graph",
@@ -235,5 +249,94 @@ runtime("treats a project with no remote as a documented no-op sync", () =>
     const repo = yield* makeRepo;
     const synced = yield* port.syncUpstream({ repoPath: repo.repoPath, remote: null });
     assert.deepEqual(synced, { advanced: false, conflictDetail: null });
+  }),
+);
+
+runtime("refuses to move canonical backwards onto a diverged head", () =>
+  Effect.gen(function* () {
+    const port = yield* AdeIntegrationRepoPort;
+    const repo = yield* makeRepo;
+
+    const stale = yield* makeCandidateChange(repo, "stale.txt", "stale\n");
+    const upstream = yield* makeCandidateChange(repo, "upstream.txt", "upstream\n");
+
+    // Canonical advances to `upstream`; `stale` was branched from the older
+    // canonical and is not a descendant of it.
+    const first = yield* port.advanceCanonical({
+      repoPath: repo.repoPath,
+      headRevision: upstream,
+    });
+    assert.strictEqual(first._tag, "advanced");
+
+    const state = yield* port.canonicalState({ repoPath: repo.repoPath, headRevision: stale });
+    assert.isFalse(state.containsHead);
+    assert.isFalse(state.fastForwardable);
+
+    const refused = yield* port.advanceCanonical({
+      repoPath: repo.repoPath,
+      headRevision: stale,
+    });
+    assert.strictEqual(refused._tag, "diverged");
+
+    // The upstream commit is still on canonical — nothing was dropped.
+    const description = yield* repo.jj([
+      "log",
+      "--no-graph",
+      "-r",
+      '"main"',
+      "-T",
+      'description ++ "\\n"',
+    ]);
+    assert.include(description, "candidate upstream.txt");
+  }),
+);
+
+runtime("re-preparing an already-landed candidate is a no-op, not a conflict", () =>
+  Effect.gen(function* () {
+    const port = yield* AdeIntegrationRepoPort;
+    const repo = yield* makeRepo;
+    const changeId = yield* makeCandidateChange(repo, "feature.txt", "feature\n");
+    yield* port.advanceCanonical({ repoPath: repo.repoPath, headRevision: changeId });
+
+    // Exactly the state a kill between "canonical advanced" and "status
+    // written" leaves behind: the pass re-runs and must not read the landed
+    // change as a rebase conflict.
+    const workspacePath = NodePath.join(repo.root, "work", "candidate-landed");
+    const prepared = yield* port.prepareCandidateWorkspace({
+      repoPath: repo.repoPath,
+      workspacePath,
+      workspaceName: "ade-candidate-landed",
+      changeIds: [changeId],
+    });
+    assert.strictEqual(prepared.conflictDetail, null);
+
+    yield* port.cleanupWorkspace({
+      repoPath: repo.repoPath,
+      workspacePath,
+      workspaceName: "ade-candidate-landed",
+    });
+  }),
+);
+
+runtime("refuses a change id that is a revset or a flag", () =>
+  Effect.gen(function* () {
+    const port = yield* AdeIntegrationRepoPort;
+    const repo = yield* makeRepo;
+    const before = yield* repo.jj(["log", "--no-graph", "-r", '"main"', "-T", "commit_id"]);
+
+    for (const hostile of ["all()", "--help", "root()"]) {
+      const refused = yield* port
+        .prepareCandidateWorkspace({
+          repoPath: repo.repoPath,
+          workspacePath: NodePath.join(repo.root, "work", "candidate-hostile"),
+          workspaceName: "ade-candidate-hostile",
+          changeIds: [hostile],
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(refused._tag, "AdeIntegrationRepoError");
+    }
+
+    const after = yield* repo.jj(["log", "--no-graph", "-r", '"main"', "-T", "commit_id"]);
+    assert.strictEqual(after.trim(), before.trim());
   }),
 );

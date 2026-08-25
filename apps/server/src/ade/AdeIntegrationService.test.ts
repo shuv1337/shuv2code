@@ -45,6 +45,12 @@ interface StubState {
   prepareFails: boolean;
   checkFailures: ReadonlyArray<CheckFailure>;
   advanceFails: boolean;
+  /** Yield inside the workspace step so concurrent passes actually interleave. */
+  slowPrepare: boolean;
+  /** Heads canonical already contains — the "already landed" ancestry answer. */
+  canonicalContains: ReadonlyArray<string>;
+  /** When false, canonical has moved somewhere the head does not descend from. */
+  fastForwardable: boolean;
   syncCalls: number;
   prepareCalls: number;
   checkCalls: number;
@@ -59,6 +65,9 @@ const initialStubState: StubState = {
   prepareFails: false,
   checkFailures: [],
   advanceFails: false,
+  slowPrepare: false,
+  canonicalContains: [],
+  fastForwardable: true,
   syncCalls: 0,
   prepareCalls: 0,
   checkCalls: 0,
@@ -90,6 +99,7 @@ const makeStubPort = Effect.gen(function* () {
           ...value,
           prepareCalls: value.prepareCalls + 1,
         }));
+        if (current.slowPrepare) yield* Effect.yieldNow;
         if (current.prepareFails) {
           return yield* new AdeIntegrationRepoError({
             operation: "prepareCandidateWorkspace",
@@ -113,6 +123,15 @@ const makeStubPort = Effect.gen(function* () {
           failures: current.checkFailures,
         };
       }),
+    canonicalState: (input) =>
+      Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        return {
+          containsHead: current.canonicalContains.includes(input.headRevision),
+          fastForwardable: current.fastForwardable,
+          canonicalCommitId: "canonical-commit",
+        };
+      }),
     advanceCanonical: (input) =>
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
@@ -122,11 +141,22 @@ const makeStubPort = Effect.gen(function* () {
             detail: "stubbed canonical failure",
           });
         }
+        if (current.canonicalContains.includes(input.headRevision)) {
+          return { _tag: "already-integrated", canonicalCommitId: "canonical-commit" } as const;
+        }
+        if (!current.fastForwardable) {
+          return {
+            _tag: "diverged",
+            canonicalCommitId: "canonical-commit",
+            detail: "canonical moved past this head",
+          } as const;
+        }
         yield* Ref.update(state, (value) => ({
           ...value,
           advanceCalls: [...value.advanceCalls, input.headRevision],
+          canonicalContains: [...value.canonicalContains, input.headRevision],
         }));
-        return { canonicalCommitId: `commit-for-${input.headRevision}` };
+        return { _tag: "advanced", canonicalCommitId: `commit-for-${input.headRevision}` } as const;
       }),
     cleanupWorkspace: (input) =>
       Ref.update(state, (value) => ({
@@ -645,7 +675,7 @@ scenario("enqueue is idempotent per project and refuses unbound projects", () =>
   Effect.gen(function* () {
     const fixture = yield* setup();
     const first = yield* enqueue(fixture, { key: "shared" });
-    const replay = yield* enqueue(fixture, { key: "shared", changeIds: ["different"] });
+    const replay = yield* enqueue(fixture, { key: "shared", changeIds: ["wwwwwwww"] });
     assert.isTrue(first.created);
     assert.isFalse(replay.created);
     assert.strictEqual(replay.candidate.id, first.candidate.id);
@@ -724,5 +754,375 @@ scenario("releases a bounced candidate's retained workspace on explicit cleanup"
       statuses: ["bounced"],
     });
     assert.strictEqual(listed.length, 1);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Regressions: canonical safety, crash convergence, and injection (review #187)
+// ---------------------------------------------------------------------------
+
+scenario("D1: never moves canonical backwards when it advanced under a parked gate", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup();
+    const enqueued = yield* enqueue(fixture);
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual(
+      (yield* fixture.service.getCandidate(enqueued.candidate.id))?.status,
+      "awaiting-review",
+    );
+
+    // The explicit sync operation refuses outright while a candidate is parked:
+    // that candidate was rebased onto the canonical the sync would move.
+    const refused = yield* fixture.service.syncUpstream(fixture.projectId).pipe(Effect.flip);
+    assert.strictEqual(refused._tag, "AdeIntegrationBusyError");
+
+    // Now simulate canonical having advanced anyway (a sync that slipped past,
+    // or any other advancement): the candidate's head no longer descends from
+    // canonical, so approval must NOT reset the bookmark to it.
+    yield* Ref.update(fixture.state, (value) => ({ ...value, fastForwardable: false }));
+    const approved = yield* fixture.service.submitReview({
+      candidateId: enqueued.candidate.id,
+      reviewerBotId: fixture.secondMateBotId,
+      decision: "approve",
+    });
+    assert.strictEqual(approved.status, "queued");
+    assert.strictEqual(approved.verdict, "approved");
+    const diverged = yield* Ref.get(fixture.state);
+    assert.deepEqual(diverged.advanceCalls, []);
+
+    // The re-run rebases onto the new canonical and applies the recorded
+    // verdict without re-asking the reviewer.
+    yield* Ref.update(fixture.state, (value) => ({ ...value, fastForwardable: true }));
+    yield* fixture.service.runOnce();
+    const settled = yield* fixture.service.getCandidate(enqueued.candidate.id);
+    assert.strictEqual(settled?.status, "integrated");
+    const after = yield* Ref.get(fixture.state);
+    assert.deepEqual(after.advanceCalls, ["zkmqwpxr"]);
+  }),
+);
+
+scenario("D2: a kill after canonical advanced converges without a bogus bounce", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "automatic" });
+    const enqueued = yield* enqueue(fixture, { declaredRisk: "mechanical" });
+
+    // The pass advanced canonical and died before writing the status: the row
+    // is still `running` while the repository already contains the change.
+    yield* Ref.update(fixture.state, (value) => ({
+      ...value,
+      canonicalContains: ["zkmqwpxr"],
+    }));
+    yield* fixture.sql`
+      UPDATE ade_integration_candidates
+      SET status = 'running', lease_holder = NULL, lease_expires_at = NULL
+      WHERE integration_candidate_id = ${enqueued.candidate.id}
+    `;
+
+    const outcome = yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.deepEqual(outcome, {
+      _tag: "advanced",
+      candidateId: enqueued.candidate.id,
+      status: "integrated",
+    });
+    const settled = yield* fixture.service.getCandidate(enqueued.candidate.id);
+    assert.strictEqual(settled?.status, "integrated");
+    assert.strictEqual(settled?.bounce, null);
+    assert.strictEqual(settled?.repairAssignmentId, null);
+
+    const state = yield* Ref.get(fixture.state);
+    // Re-derived from ancestry: no second advance, and no rebase that would
+    // have surfaced as "cannot rebase onto descendant" and bounced the author.
+    assert.deepEqual(state.advanceCalls, []);
+    assert.strictEqual(state.prepareCalls, 0);
+    const repairs = yield* fixture.assignments.listForBot(fixture.coderBotId);
+    assert.strictEqual(repairs.length, 0);
+  }),
+);
+
+scenario("D3: a kill inside the approval path recovers and unblocks the queue", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup();
+    const first = yield* enqueue(fixture, { key: "a" });
+    const second = yield* enqueue(fixture, { key: "b", changeIds: ["qwlnnmts"] });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+
+    // The verdict is claimed onto the row, then the process dies before
+    // canonical moves. The row is `running` with an expired lease.
+    yield* fixture.sql`
+      UPDATE ade_integration_candidates
+      SET status = 'running', verdict = 'approved', verdict_at = '2026-08-24T00:00:00.000Z',
+          lease_holder = 'dead-worker', lease_expires_at = '1969-01-01T00:00:00.000Z'
+      WHERE integration_candidate_id = ${first.candidate.id}
+    `;
+
+    const recovered = yield* fixture.service.recoverRunningCandidates();
+    assert.deepEqual(recovered.requeued, [first.candidate.id]);
+
+    yield* fixture.service.runOnce();
+    const settled = yield* fixture.service.getCandidate(first.candidate.id);
+    assert.strictEqual(settled?.status, "integrated");
+    const state = yield* Ref.get(fixture.state);
+    assert.deepEqual(state.advanceCalls, ["zkmqwpxr"]);
+
+    // The queue is unblocked: the next candidate proceeds.
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    const next = yield* fixture.service.getCandidate(second.candidate.id);
+    assert.strictEqual(next?.status, "awaiting-review");
+  }),
+);
+
+scenario("D4: two workers cannot adopt the same running candidate", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "automatic" });
+    const enqueued = yield* enqueue(fixture, { declaredRisk: "mechanical" });
+    yield* Ref.update(fixture.state, (value) => ({ ...value, slowPrepare: true }));
+    yield* fixture.sql`
+      UPDATE ade_integration_candidates
+      SET status = 'running', lease_holder = 'dead-worker',
+          lease_expires_at = '1969-01-01T00:00:00.000Z'
+      WHERE integration_candidate_id = ${enqueued.candidate.id}
+    `;
+
+    const [left, right] = yield* Effect.all(
+      [
+        fixture.service.processQueueHead(fixture.projectId),
+        fixture.service.processQueueHead(fixture.projectId),
+      ],
+      { concurrency: 2 },
+    );
+    const tags = [left._tag, right._tag].sort();
+    assert.deepEqual(tags, ["advanced", "busy"]);
+
+    const state = yield* Ref.get(fixture.state);
+    // One pass, one workspace, one advance.
+    assert.strictEqual(state.prepareCalls, 1);
+    assert.deepEqual(state.advanceCalls, ["zkmqwpxr"]);
+
+    // A live lease is respected too: nobody adopts a healthy running row.
+    yield* fixture.sql`
+      UPDATE ade_integration_candidates
+      SET status = 'running', lease_holder = 'live-worker',
+          lease_expires_at = '2999-01-01T00:00:00.000Z'
+      WHERE integration_candidate_id = ${enqueued.candidate.id}
+    `;
+    const blocked = yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.deepEqual(blocked, { _tag: "busy" });
+    const untouched = yield* fixture.service.recoverRunningCandidates();
+    assert.deepEqual(untouched.requeued, []);
+  }),
+);
+
+scenario("D5: hostile change ids are refused at enqueue and never reach the port", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "automatic" });
+    for (const hostile of ["all()", "root()", "--help", "zkmqwpxr | all()", "abc", ""]) {
+      const refused = yield* fixture.service
+        .enqueueCandidate({
+          projectId: fixture.projectId,
+          sourceAssignmentIds: [],
+          changeIds: [hostile],
+          originatingBotId: fixture.coderBotId,
+          idempotencyKey: `hostile-${hostile}`,
+        })
+        .pipe(Effect.flip);
+      assert.oneOf(refused._tag, [
+        "AdeIntegrationChangeIdInvalidError",
+        "AdeIntegrationCandidateEmptyError",
+      ]);
+    }
+    const queued = yield* fixture.service.listCandidates(fixture.projectId);
+    assert.strictEqual(queued.length, 0);
+    const state = yield* Ref.get(fixture.state);
+    assert.strictEqual(state.prepareCalls, 0);
+    assert.strictEqual(state.syncCalls, 0);
+  }),
+);
+
+scenario("D6: the designated Reviewer is matched by role-tag word, not equality", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup();
+    yield* fixture.sql`
+      INSERT INTO ade_bots (bot_id, name, structural_role, role_tag, project_id, created_at)
+      VALUES ('bot-lower', 'Rev', 'crew', '  reviewer ', ${fixture.projectId},
+              '2026-08-24T00:00:00.000Z')
+    `;
+    const first = yield* enqueue(fixture, { key: "a" });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual(
+      (yield* fixture.service.getCandidate(first.candidate.id))?.reviewerBotId,
+      "bot-lower",
+    );
+    yield* fixture.service.submitReview({
+      candidateId: first.candidate.id,
+      reviewerBotId: "bot-lower" as BotId,
+      decision: "approve",
+    });
+
+    // A suffixed tag is still the project's reviewer.
+    yield* fixture.sql`
+      UPDATE ade_bots SET archived_at = '2026-08-24T00:00:00.000Z' WHERE bot_id = 'bot-lower'
+    `;
+    yield* fixture.sql`
+      INSERT INTO ade_bots (bot_id, name, structural_role, role_tag, project_id, created_at)
+      VALUES ('bot-code-reviewer', 'Rev2', 'crew', 'Code Reviewer', ${fixture.projectId},
+              '2026-08-24T00:00:01.000Z')
+    `;
+    const second = yield* enqueue(fixture, { key: "b", changeIds: ["qwlnnmts"] });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual(
+      (yield* fixture.service.getCandidate(second.candidate.id))?.reviewerBotId,
+      "bot-code-reviewer",
+    );
+  }),
+);
+
+scenario("D7: a repair that cannot be emitted blocks the bounce until it can", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "automatic" });
+    yield* Ref.update(fixture.state, (value) => ({ ...value, prepareConflict: "conflict" }));
+
+    // Squeeze the recipient's queue so repair creation fails transiently.
+    yield* fixture.sql`
+      UPDATE ade_limits_config
+      SET config_json = '{"maxQueuedAssignmentsPerBot":1}'
+      WHERE id = 1
+    `;
+    yield* fixture.assignments.createAssignment({
+      requester: { _tag: "captain" },
+      recipientBotId: fixture.coderBotId,
+      instruction: "occupy the queue",
+      idempotencyKey: "occupier",
+    });
+
+    const enqueued = yield* enqueue(fixture, { declaredRisk: "mechanical" });
+    const deferred = yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual(deferred._tag, "deferred");
+    const notBounced = yield* fixture.service.getCandidate(enqueued.candidate.id);
+    // The candidate is NOT settled bounced without its repair.
+    assert.strictEqual(notBounced?.status, "queued");
+    assert.strictEqual(notBounced?.bounce, null);
+
+    yield* fixture.sql`
+      UPDATE ade_limits_config SET config_json = '{}' WHERE id = 1
+    `;
+    yield* fixture.service.runOnce();
+    const bounced = yield* fixture.service.getCandidate(enqueued.candidate.id);
+    assert.strictEqual(bounced?.status, "bounced");
+    assert.isNotNull(bounced?.repairAssignmentId);
+    const repairs = yield* fixture.assignments.listForBot(fixture.coderBotId);
+    // Exactly one repair, not one per attempt.
+    assert.strictEqual(
+      repairs.filter((assignment) =>
+        assignment.idempotencyKey.startsWith("ade-integration-repair:"),
+      ).length,
+      1,
+    );
+  }),
+);
+
+scenario("D7: an unroutable author raises a Needs You item instead of a log line", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "automatic" });
+    yield* Ref.update(fixture.state, (value) => ({ ...value, prepareConflict: "conflict" }));
+    const enqueued = yield* enqueue(fixture, { declaredRisk: "mechanical" });
+    yield* fixture.sql`
+      UPDATE ade_bots SET archived_at = '2026-08-24T00:00:00.000Z'
+      WHERE bot_id = ${fixture.coderBotId}
+    `;
+
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    const bounced = yield* fixture.service.getCandidate(enqueued.candidate.id);
+    assert.strictEqual(bounced?.status, "bounced");
+    assert.strictEqual(bounced?.repairAssignmentId, null);
+
+    const items = yield* fixture.sql<{
+      readonly needs_you_item_id: string;
+      readonly subject_refs_json: string;
+    }>`
+      SELECT needs_you_item_id, subject_refs_json FROM ade_needs_you_items
+      WHERE kind = 'stall' AND status = 'open'
+    `;
+    assert.strictEqual(items.length, 1);
+    assert.include(items[0]?.subject_refs_json ?? "", enqueued.candidate.id);
+  }),
+);
+
+scenario("D8: a bounced candidate does not burn its idempotency key", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "automatic" });
+    yield* Ref.update(fixture.state, (value) => ({ ...value, prepareConflict: "conflict" }));
+    const first = yield* enqueue(fixture, { declaredRisk: "mechanical", key: "toolcall-1" });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual(
+      (yield* fixture.service.getCandidate(first.candidate.id))?.status,
+      "bounced",
+    );
+
+    // The repaired change comes back under the same tool-call-derived key.
+    yield* Ref.update(fixture.state, (value) => ({ ...value, prepareConflict: null }));
+    const repaired = yield* enqueue(fixture, { declaredRisk: "mechanical", key: "toolcall-1" });
+    assert.isTrue(repaired.created);
+    assert.notStrictEqual(repaired.candidate.id, first.candidate.id);
+    assert.strictEqual(repaired.candidate.status, "queued");
+
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.strictEqual(
+      (yield* fixture.service.getCandidate(repaired.candidate.id))?.status,
+      "integrated",
+    );
+
+    // An integrated candidate frees the key too.
+    const again = yield* enqueue(fixture, { declaredRisk: "mechanical", key: "toolcall-1" });
+    assert.isTrue(again.created);
+  }),
+);
+
+scenario("minor: repeat-bounce detection ignores change-id order", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "automatic" });
+    yield* Ref.update(fixture.state, (value) => ({ ...value, prepareConflict: "conflict" }));
+
+    yield* enqueue(fixture, {
+      declaredRisk: "mechanical",
+      key: "a",
+      changeIds: ["zkmqwpxr", "qwlnnmts"],
+    });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    yield* enqueue(fixture, {
+      declaredRisk: "mechanical",
+      key: "b",
+      changeIds: ["qwlnnmts", "zkmqwpxr"],
+    });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+
+    const notices = yield* fixture.assignments.listForBot(fixture.secondMateBotId);
+    assert.strictEqual(notices.length, 1);
+    assert.include(notices[0]?.instruction ?? "", "bounced 2 times");
+  }),
+);
+
+scenario("minor: the retention sweep reclaims aged forensic workspaces", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ integrationPolicyDefault: "automatic" });
+    yield* Ref.update(fixture.state, (value) => ({ ...value, prepareConflict: "conflict" }));
+    const enqueued = yield* enqueue(fixture, { declaredRisk: "mechanical" });
+    yield* fixture.service.processQueueHead(fixture.projectId);
+    assert.isNotNull((yield* fixture.service.getCandidate(enqueued.candidate.id))?.workspacePath);
+
+    // Fresh bounces are kept for forensics.
+    const untouched = yield* fixture.service.sweepRetainedWorkspaces();
+    assert.deepEqual(untouched.cleaned, []);
+
+    yield* fixture.sql`
+      UPDATE ade_integration_candidates SET updated_at = '1960-01-01T00:00:00.000Z'
+      WHERE integration_candidate_id = ${enqueued.candidate.id}
+    `;
+    const swept = yield* fixture.service.sweepRetainedWorkspaces();
+    assert.deepEqual(swept.cleaned, [enqueued.candidate.id]);
+    const reclaimed = yield* fixture.service.getCandidate(enqueued.candidate.id);
+    assert.strictEqual(reclaimed?.workspacePath, null);
+    assert.strictEqual(reclaimed?.status, "bounced");
+    const state = yield* Ref.get(fixture.state);
+    assert.strictEqual(state.cleanupCalls.length, 1);
   }),
 );
