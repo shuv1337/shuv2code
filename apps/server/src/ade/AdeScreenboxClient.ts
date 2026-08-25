@@ -165,6 +165,16 @@ export type AdeScreenboxDesktopState =
 export interface AdeScreenboxDesktop {
   readonly desktopId: string;
   readonly state: AdeScreenboxDesktopState;
+  /**
+   * Loopback port of the desktop's **raw RFB** listener, or `null` when
+   * upstream omits it (a stopped desktop has no port bound).
+   *
+   * Upstream also reports `rdp_port` and `novnc_port`, and on a real host those
+   * two are the *same* port — which speaks RDP, not HTTP and not RFB. Only
+   * `vnc_port` is a VNC endpoint, so only `vnc_port` is read here; picking
+   * either sibling would hand the viewer a socket that never sends `RFB 003.xxx`.
+   */
+  readonly vncPort: number | null;
 }
 
 const DESKTOP_STATES: ReadonlySet<AdeScreenboxDesktopState> = new Set<AdeScreenboxDesktopState>([
@@ -203,6 +213,21 @@ const readString = (
   return null;
 };
 
+/** A TCP port upstream can actually have bound; anything else is not a port. */
+const readPort = (
+  record: Record<string, unknown>,
+  ...keys: ReadonlyArray<string>
+): number | null => {
+  for (const key of keys) {
+    const value = record[key];
+    const port = typeof value === "string" ? Number(value) : value;
+    if (typeof port !== "number") continue;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+    return port;
+  }
+  return null;
+};
+
 /**
  * Upstream returns either a bare array or `{ desktops: [...] }`, with ids under
  * `desktop_id` or `id`. Entries we cannot identify are dropped rather than
@@ -218,7 +243,11 @@ export const parseDesktopList = (body: unknown): ReadonlyArray<AdeScreenboxDeskt
     if (item === null) continue;
     const desktopId = readString(item, "desktop_id", "desktopId", "id", "name");
     if (desktopId === null) continue;
-    desktops.push({ desktopId, state: normalizeDesktopState(item["state"] ?? item["status"]) });
+    desktops.push({
+      desktopId,
+      state: normalizeDesktopState(item["state"] ?? item["status"]),
+      vncPort: readPort(item, "vnc_port", "vncPort"),
+    });
   }
   return desktops;
 };

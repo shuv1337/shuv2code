@@ -26,6 +26,11 @@ export interface AdeScreenboxMockRequest {
 
 export interface AdeScreenboxMockDesktop {
   state: "running" | "stopped";
+  /**
+   * Loopback RFB port, mirroring upstream: a port is only published while the
+   * desktop runs, and `list` omits `vnc_port` entirely once it is stopped.
+   */
+  vncPort: number;
 }
 
 export interface AdeScreenboxMockOptions {
@@ -82,6 +87,13 @@ export async function startAdeScreenboxMock(
   options: AdeScreenboxMockOptions = {},
 ): Promise<AdeScreenboxMock> {
   const desktops = new Map<string, AdeScreenboxMockDesktop>();
+  // Ports are handed out from upstream's real range so a test that asserts on
+  // one reads like the payload a captain would see.
+  let vncPortCounter = 16081;
+  const nextVncPort = (): number => {
+    vncPortCounter += 2;
+    return vncPortCounter;
+  };
   const toolCalls: Array<AdeScreenboxMockToolCall> = [];
   const requests: Array<AdeScreenboxMockRequest> = [];
   const toolDescriptors = options.tools ?? DEFAULT_TOOLS;
@@ -183,6 +195,13 @@ export async function startAdeScreenboxMock(
           desktops: [...desktops.entries()].map(([desktopId, desktop]) => ({
             desktop_id: desktopId,
             state: desktop.state,
+            // Upstream publishes ports only while the container runs; a stopped
+            // desktop carries no `vnc_port` key at all.
+            ...(desktop.state === "running" ? { vnc_port: desktop.vncPort } : {}),
+            // Present on the real payload and deliberately never read: on a
+            // real host both of these are the RDP port, not a VNC endpoint.
+            rdp_port: desktop.vncPort - 1,
+            novnc_port: desktop.vncPort - 1,
           })),
         });
       }
@@ -194,7 +213,7 @@ export async function startAdeScreenboxMock(
           mock.failCreate -= 1;
           return send(response, 500, { error: "docker create failed" });
         }
-        desktops.set(desktopId, { state: "running" });
+        desktops.set(desktopId, { state: "running", vncPort: nextVncPort() });
         return send(response, 200, { ok: true, desktop_id: desktopId, state: "running" });
       }
 

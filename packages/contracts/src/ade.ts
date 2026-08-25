@@ -515,6 +515,55 @@ export const ScreenboxProvisioning = Schema.Struct({
 });
 export type ScreenboxProvisioning = typeof ScreenboxProvisioning.Type;
 
+/**
+ * Screen tab state for one bot (spec §4.6). `"none"` means no provisioning
+ * record exists at all, which is the "not started" empty state.
+ */
+export const ScreenboxDesktopStatus = Schema.Literals([
+  "provisioning",
+  "running",
+  "stopped",
+  "failed",
+  "none",
+]);
+export type ScreenboxDesktopStatus = typeof ScreenboxDesktopStatus.Type;
+
+/**
+ * Everything the Screen tab renders from. Deliberately carries **no** host,
+ * port, or upstream token: the viewer reaches the desktop only through the
+ * ADE-terminated proxy at `viewerPath`, so the upstream dashboard and the raw
+ * VNC port stay unreachable from a browser (§4.6).
+ */
+export const AdeBotScreen = Schema.Struct({
+  botId: BotId,
+  status: ScreenboxDesktopStatus,
+  /** Per-bot computer-use toggle; off means Start is refused. */
+  computerUse: Schema.Boolean,
+  /** Attached proxy viewers, which hold the desktop against the idle stop. */
+  viewers: NonNegativeInt,
+  lastNeededAt: Schema.NullOr(IsoDateTime),
+  /**
+   * Same-origin WS path to connect noVNC to, or null when there is nothing to
+   * view. Null is the client's whole eligibility check — it must never
+   * synthesize this path, because a desktop that is not running has no port.
+   */
+  viewerPath: Schema.NullOr(TrimmedNonEmptyString),
+  /** False on a host with no Screenbox configured; Start is unavailable. */
+  screenboxConfigured: Schema.Boolean,
+});
+export type AdeBotScreen = typeof AdeBotScreen.Type;
+
+/**
+ * Result of a confirm-gated bot delete (§4.6). `desktopPurged` is false when
+ * the bot never had a desktop, so the UI can stay quiet about a purge that
+ * never needed to happen.
+ */
+export const AdeDeletedBot = Schema.Struct({
+  botId: BotId,
+  desktopPurged: Schema.Boolean,
+});
+export type AdeDeletedBot = typeof AdeDeletedBot.Type;
+
 export const NeedsYouKind = Schema.Literals([
   "approval",
   "kernel-down",
@@ -738,6 +787,11 @@ export class AdeCaptainError extends Schema.TaggedErrorClass<AdeCaptainError>()(
     "needs_you_not_actionable",
     /** The decision reached the integration service and it refused it. */
     "needs_you_decision_rejected",
+    // Screenbox viewer + delete (spec §4.6, S15).
+    /** The Firstmate cannot be archived or deleted (spec §2.2). */
+    "firstmate_permanent",
+    /** Screenbox refused or is unreachable; the desktop state is unchanged. */
+    "screenbox_unavailable",
   ]),
   message: Schema.String,
 }) {}
