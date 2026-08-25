@@ -20,7 +20,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { FetchHttpClient } from "effect/unstable/http";
 
-import type { AdeBotChatSession, AdeRoster, BotId, NeedsYouItemId } from "@shuv2code/contracts";
+import * as Schema from "effect/Schema";
+
+import { AdeRoster } from "@shuv2code/contracts";
+
+import type { AdeBotChatSession, BotId, NeedsYouItemId } from "@shuv2code/contracts";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -103,6 +107,12 @@ const say = Effect.fn("say")(function* (input: {
   readonly text: string;
   readonly at: string;
   readonly streaming?: boolean;
+  /**
+   * When the row *settled*, if that differs from when it was created. This is
+   * the whole shape of a streamed reply: inserted on its first chunk, updated
+   * when the turn finishes, and `created_at` never moves in between.
+   */
+  readonly settledAt?: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
@@ -116,7 +126,7 @@ const say = Effect.fn("say")(function* (input: {
       ${input.text},
       ${input.streaming === true ? 1 : 0},
       ${input.at},
-      ${input.at}
+      ${input.settledAt ?? input.at}
     )
   `;
 });
@@ -171,6 +181,38 @@ describe("AdeCaptainApi.getRoster liveness", () => {
     }).pipe(Effect.provide(makeLayer())),
   );
 
+  /**
+   * D2 end to end: one frame carries the whole fleet, so a single message the
+   * projection over-truncates does not degrade one row — it fails the frame and
+   * the entire rail stops updating. Decoding the real `AdeRoster` is the only
+   * assertion that covers that blast radius.
+   */
+  it.effect("produces a frame the wire contract actually accepts", () =>
+    Effect.gen(function* () {
+      const { api, bootstrap, firstmateId } = yield* setup;
+      const coder = yield* bootstrap.instantiateTemplate({ templateId: "coder", projectId: null });
+      yield* say({
+        botId: firstmateId,
+        id: "m1",
+        role: "assistant",
+        text: `Shipping ${"🚢".repeat(400)} done`,
+        at: "2026-08-24T10:00:00.000Z",
+      });
+      yield* say({
+        botId: coder.botId,
+        id: "m2",
+        role: "assistant",
+        text: "👨‍👩‍👧‍👦".repeat(200),
+        at: "2026-08-24T10:01:00.000Z",
+      });
+
+      const roster = yield* api.getRoster();
+      yield* Schema.decodeUnknownEffect(AdeRoster)(
+        yield* Schema.encodeUnknownEffect(AdeRoster)(roster),
+      );
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
   it.effect("never reads another bot's thread into this bot's row", () =>
     Effect.gen(function* () {
       const { api, bootstrap, firstmateId } = yield* setup;
@@ -211,6 +253,61 @@ describe("AdeCaptainApi.getRoster liveness", () => {
       const row = rowFor(yield* api.getRoster(), firstmateId);
       assert.equal(row?.lastMessage?.preview, "settled");
       assert.equal(row?.unreadCount, 1);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  /**
+   * D5: the runner injects assignment briefs as `role: "user"` because that is
+   * the only role a kernel takes input on. Attributing them to the captain made
+   * the rail print "You: Implement the retry budget…" — telling the captain
+   * they said something the *fleet* said on their behalf.
+   */
+  it.effect("does not put words in the captain's mouth for an injected brief", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      yield* say({
+        botId: firstmateId,
+        // Verbatim the shape `AdeAssignmentRunner.ts:142` mints.
+        id: "ade-assignment:asg_7:brief",
+        role: "user",
+        text: "Implement the retry budget and open a PR.",
+        at: "2026-08-24T10:00:00.000Z",
+      });
+
+      const row = rowFor(yield* api.getRoster(), firstmateId);
+      assert.equal(row?.lastMessage?.author, "system");
+      assert.notEqual(row?.lastMessage?.author, "captain");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("does not put words in the captain's mouth for a synthetic delivery", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      yield* say({
+        botId: firstmateId,
+        // `OpenCodeV2Adapter.ts:194` shape.
+        id: "msg_ade_5f2c9a",
+        role: "user",
+        text: "Code Monkey finished: retry budget landed.",
+        at: "2026-08-24T10:00:00.000Z",
+      });
+
+      assert.equal(rowFor(yield* api.getRoster(), firstmateId)?.lastMessage?.author, "system");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("still attributes a genuinely captain-typed message to the captain", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      yield* say({
+        botId: firstmateId,
+        id: "user:01J9",
+        role: "user",
+        text: "ship it",
+        at: "2026-08-24T10:00:00.000Z",
+      });
+
+      assert.equal(rowFor(yield* api.getRoster(), firstmateId)?.lastMessage?.author, "captain");
     }).pipe(Effect.provide(makeLayer())),
   );
 
@@ -290,6 +387,63 @@ describe("AdeCaptainApi.markBotChatRead", () => {
       const after = rowFor(yield* api.getRoster(), firstmateId);
       assert.equal(after?.unreadCount, 1);
       assert.equal(after?.lastMessage?.preview, "welcome");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  /**
+   * D6, and the nastiest of the set because it is permanent and silent.
+   *
+   * An assistant row is inserted when its first chunk arrives and keeps that
+   * `created_at` for the whole turn; only `updated_at` moves when it settles.
+   * A captain who is *watching the reply stream* and marks read mid-turn places
+   * the mark after that row's `created_at` — so a `created_at`-keyed unread
+   * predicate hides the finished message forever. The captain never sees a dot,
+   * and the message they were literally watching arrive is the one they lose.
+   */
+  it.effect("counts a reply that settled after a mid-stream read", () =>
+    Effect.gen(function* () {
+      const { api, sql, firstmateId } = yield* setup;
+      // The reply began before the captain looked...
+      yield* say({
+        botId: firstmateId,
+        id: "m1",
+        role: "assistant",
+        text: "Working on it… done, PR #12 is open.",
+        at: "2026-08-24T10:00:00.000Z",
+        // ...and settled after.
+        settledAt: "2026-08-24T10:05:00.000Z",
+      });
+
+      // The captain marked read mid-turn, at 10:02.
+      yield* sql`
+        UPDATE ade_bots SET chat_last_read_at = '2026-08-24T10:02:00.000Z'
+        WHERE bot_id = ${firstmateId}
+      `;
+
+      // Keyed on `created_at` this reads 0 — permanently. Settle time is what
+      // makes it the 1 unread message it actually is.
+      assert.equal(rowFor(yield* api.getRoster(), firstmateId)?.unreadCount, 1);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("agrees with its own receipt about what is still unread", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      yield* say({
+        botId: firstmateId,
+        id: "m1",
+        role: "assistant",
+        text: "settled long ago",
+        at: "2026-08-24T10:00:00.000Z",
+        settledAt: "2026-08-24T10:00:00.000Z",
+      });
+      yield* TestClock.setTime(Date.parse("2026-08-24T10:30:00.000Z"));
+
+      // A receipt that disagreed with the next roster frame would make the
+      // badge flicker back on by itself, which reads as a broken rail.
+      const receipt = yield* api.markBotChatRead({ botId: firstmateId });
+      assert.equal(receipt.unreadCount, 0);
+      assert.equal(rowFor(yield* api.getRoster(), firstmateId)?.unreadCount, 0);
     }).pipe(Effect.provide(makeLayer())),
   );
 

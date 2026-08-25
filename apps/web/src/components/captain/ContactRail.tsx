@@ -1,11 +1,18 @@
 import type { AdeProjectId, BotId } from "@shuv2code/contracts";
 import { Link } from "@tanstack/react-router";
-import { FolderGit2Icon, NetworkIcon, PanelLeftIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import {
+  FolderGit2Icon,
+  FunnelXIcon,
+  NetworkIcon,
+  PanelLeftIcon,
+  SearchIcon,
+  SettingsIcon,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
-import { useAdeEnvironmentId, useAdeRoster } from "../../state/ade";
+import { useAdeEnvironmentId, useAdeNeedsYouList, useAdeRoster } from "../../state/ade";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { SidebarKernelHealthPills } from "../sidebar/SidebarKernelHealthPills";
 import { Button } from "../ui/button";
@@ -16,6 +23,7 @@ import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { FirstProjectCta } from "./CaptainIndexPane";
 import { ContactGroupSection } from "./ContactGroupSection";
+import { FleetAttentionSection } from "./FleetAttentionSection";
 import { NewBotPopover } from "./NewBotPopover";
 import type { CaptainShellRegions } from "./captainShell.logic";
 import { canToggleCaptainLeftRail, captainLeftRailToggleLabel } from "./captainShell.logic";
@@ -23,6 +31,7 @@ import {
   applyContactRailFilter,
   contactRailEmptyCopy,
   filterContactRows,
+  fleetLevelNeedsYouEntries,
   getContactGroupSections,
   getContactRowViews,
   rosterNeedsFirstProject,
@@ -83,9 +92,17 @@ export function ContactRail({
       ),
     [rows, effectiveQuery, filter, roster.data?.groups],
   );
+  // Open items with no bot to sit under (D4). Read here rather than inside the
+  // section because the empty state depends on it too: "Nothing needs you" over
+  // an unreachable kernel-down item is the badge lie in a new place.
+  const needsYou = useAdeNeedsYouList();
+  const fleetAttention = useMemo(
+    () => fleetLevelNeedsYouEntries(needsYou.data?.entries),
+    [needsYou.data?.entries],
+  );
   const attentionCount = useMemo(
-    () => rows.filter((row) => row.attentionLine !== null).length,
-    [rows],
+    () => rows.filter((row) => row.attentionLine !== null).length + fleetAttention.length,
+    [rows, fleetAttention.length],
   );
 
   const loading = roster.data === null && roster.isPending;
@@ -154,6 +171,37 @@ export function ContactRail({
         </span>
       </header>
 
+      {/*
+        The 64px strip has no room for the chip row, but it must not silently
+        hide a fleet: a captain who narrows the window while the Attention view
+        is on would otherwise see most of their contacts vanish with nothing on
+        screen saying why, and no way back. One labelled control both announces
+        the filter and clears it.
+      */}
+      {collapsed && filter === "attention" && onFilterChange !== undefined ? (
+        <div className="flex shrink-0 justify-center pb-2">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  aria-label="Showing bots that need you — show all contacts"
+                  className="size-8 rounded-full text-amber-600 dark:text-amber-400"
+                  onClick={() => onFilterChange("all")}
+                  size="icon"
+                  variant="ghost"
+                />
+              }
+            >
+              <FunnelXIcon className="size-4" />
+            </TooltipTrigger>
+            <TooltipPopup side="right">
+              Showing bots that need you{attentionCount > 0 ? ` (${attentionCount})` : ""} — show
+              all
+            </TooltipPopup>
+          </Tooltip>
+        </div>
+      ) : null}
+
       {collapsed ? null : (
         <div className="flex shrink-0 flex-col gap-1.5 pb-2">
           <div className="relative">
@@ -203,6 +251,14 @@ export function ContactRail({
               {roster.error}
             </p>
           )}
+          {/*
+            Above the contacts, and only in the Attention view: these are the
+            open items that name no bot, so the rail has nowhere else to put
+            them and the sidebar badge counts them regardless (D4).
+          */}
+          {filter === "attention" && !collapsed ? (
+            <FleetAttentionSection entries={fleetAttention} />
+          ) : null}
           {loading ? (
             <div className="flex flex-col gap-1">
               <Skeleton className="h-16 w-full rounded-lg" />
@@ -210,7 +266,10 @@ export function ContactRail({
               <Skeleton className="h-16 w-full rounded-lg" />
             </div>
           ) : sections.length === 0 ? (
-            collapsed ? null : (
+            // The fleet-wide section is itself an answer, so the rail is only
+            // empty when that is empty too — otherwise "Nothing needs you"
+            // renders directly above something that does.
+            collapsed || fleetAttention.length > 0 ? null : (
               <Empty className="py-8">
                 <EmptyHeader>
                   <EmptyTitle>{emptyCopy.title}</EmptyTitle>

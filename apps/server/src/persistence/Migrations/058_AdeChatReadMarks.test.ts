@@ -26,25 +26,93 @@ layer("058_AdeChatReadMarks", (it) => {
   );
 
   /**
-   * The S12 lesson as a schema assertion. Without this index the unread count
-   * is a per-row `role` test over the whole thread, which degrades silently and
-   * only on the busiest conversation — exactly the shape that is invisible in a
-   * test fixture and expensive in a real fleet.
+   * The S12 lesson as a plan assertion, on **both** hot queries and on the
+   * exact SQL `readRosterLiveness` runs rather than a paraphrase of it. The
+   * first version of this test guarded a third shape that nothing executed,
+   * which is how two genuinely unbounded queries shipped under a green test:
+   * an `EXPLAIN QUERY PLAN` assertion is only worth the fidelity of the string
+   * it plans.
+   *
+   * These run at 250ms per subscribed rail, so a plan regression here is not a
+   * slow page — it is a background scan of every message in the database, four
+   * times a second.
    */
-  it.effect("indexes the unread count so it stays a range scan as a thread grows", () =>
+  it.effect("plans the tail read as a two-row backwards index walk", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
 
       const plan = yield* sql<{ detail: string }>`
         EXPLAIN QUERY PLAN
-        SELECT COUNT(*) FROM projection_thread_messages
-        WHERE thread_id = 'ade-bot-bot-1' AND role = 'assistant' AND created_at > '2026-01-01'
+        SELECT thread_id, message_id, role, text, created_at
+        FROM projection_thread_messages
+        WHERE thread_id = 'ade-bot-bot-1' AND is_streaming = 0
+        ORDER BY created_at DESC, message_id DESC
+        LIMIT 2
       `;
-
       const detail = plan.map((row) => row.detail).join(" ");
-      assert.include(detail, "idx_projection_thread_messages_thread_role_created");
+
+      assert.include(detail, "USING INDEX idx_projection_thread_messages_thread_created");
+      // A full scan means the per-thread bound stopped applying.
       assert.notInclude(detail, "SCAN projection_thread_messages");
+      // The ranking must come from the index walk, not from a sort. A temp
+      // b-tree here is the `ROW_NUMBER()` cost this query exists to avoid.
+      assert.notInclude(detail, "USE TEMP B-TREE");
+    }),
+  );
+
+  it.effect("plans the unread count as a single sargable range, not a scan", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+
+      // Verbatim the roster's unread read. The `COALESCE` is load-bearing: the
+      // `OR chat_last_read_at IS NULL` form it replaced is a disjunction over a
+      // column the index cannot seek on, and the planner answered it by
+      // scanning every message in the thread.
+      const plan = yield* sql<{ detail: string }>`
+        EXPLAIN QUERY PLAN
+        SELECT bot.bot_id AS bot_id, COUNT(message.message_id) AS unread
+        FROM ade_bots AS bot
+        LEFT JOIN projection_thread_messages AS message
+          ON message.thread_id = 'ade-bot-' || bot.bot_id
+         AND message.role = 'assistant'
+         AND message.is_streaming = 0
+         AND message.updated_at > COALESCE(bot.chat_last_read_at, '')
+        WHERE bot.archived_at IS NULL
+        GROUP BY bot.bot_id
+      `;
+      const detail = plan.map((row) => row.detail).join(" ");
+
+      assert.include(detail, "idx_projection_thread_messages_thread_role_updated");
+      assert.notInclude(detail, "SCAN message");
+      // The load-bearing assertion, and the one "uses the index" alone would
+      // have missed: the *timestamp* has to be part of the seek. The rejected
+      // `OR … IS NULL` form still reported this index, but only as
+      // `(thread_id=? AND role=?)` — every assistant message in the thread
+      // visited and filtered per row. The third term is the whole fix.
+      assert.include(detail, "updated_at>?");
+    }),
+  );
+
+  /**
+   * The index has to agree with the predicate's column or the range collapses.
+   * Asserted separately because "the index exists" and "the index is the one
+   * the query can use" are different facts, and D6 moved the predicate from
+   * `created_at` to `updated_at` after the index already shipped.
+   */
+  it.effect("indexes settle time, which is what unread compares", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+
+      const columns = yield* sql<{ name: string }>`
+        PRAGMA index_info('idx_projection_thread_messages_thread_role_updated')
+      `;
+      assert.deepEqual(
+        columns.map((column) => column.name),
+        ["thread_id", "role", "updated_at"],
+      );
     }),
   );
 });

@@ -113,7 +113,6 @@ import {
   type LatestThreadMessageRow,
   type OpenAttentionRow,
   ADE_BOT_THREAD_ID_PREFIX,
-  botIdFromThreadId,
 } from "./adeRosterLiveness.ts";
 import { ADE_BOT_TEMPLATES } from "./personaTemplates.ts";
 
@@ -602,16 +601,30 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
 
       /**
        * The three liveness reads behind previews, unread and attention
-       * (messenger pivot §4, M3). One bounded pass per concern, keyed by bot —
-       * never one query per row.
+       * (messenger pivot §4, M3).
        *
-       * The S12 lesson is the reason for every `WHERE` clause here. The
-       * message reads are constrained to the fleet's own deterministic threads
-       * (`ade-bot-<botId>`, `AdeShuvcodeChatSession.ts`) and ride the
-       * `(thread_id, created_at, message_id)` and `(thread_id, role,
-       * created_at)` indexes, so their cost tracks the size of the fleet and
-       * the number of *unread* messages rather than the size of the projection
-       * table. `maxBots` (§18.1, default 24) is what bounds the fleet.
+       * The S12 lesson is the reason for the shape of every query here, and
+       * two of them were rewritten under review because the first attempt got
+       * it wrong in a way `EXPLAIN QUERY PLAN` catches and reading does not:
+       *
+       * - **Tails** are one bounded `ORDER BY … LIMIT 2` *per thread*, not one
+       *   `ROW_NUMBER() OVER (PARTITION BY thread_id)` over all of them. The
+       *   window function looks like the tidier query and is the more expensive
+       *   one: SQLite materialises a temp b-tree over every message in every
+       *   fleet thread to rank them, so its cost tracks total transcript volume.
+       *   A per-thread `LIMIT 2` walks the `(thread_id, created_at, message_id)`
+       *   index backwards and stops after two rows. `maxBots` (§18.1, default
+       *   24) bounds the number of those walks.
+       *
+       * - **Unread** compares `updated_at > COALESCE(chat_last_read_at, '')`.
+       *   The `OR chat_last_read_at IS NULL` form it replaces is a disjunction
+       *   over a column the index cannot seek on, so the planner abandoned the
+       *   range and scanned. `COALESCE` to the empty string keeps it a single
+       *   sargable range — every real timestamp sorts after `''`, so a
+       *   never-opened conversation still counts everything.
+       *
+       * Both plans are asserted in `058_AdeChatReadMarks.test.ts`, against the
+       * exact SQL below rather than a paraphrase of it.
        */
       const readRosterLiveness = Effect.fn("AdeCaptainApi.readRosterLiveness")(function* (
         botRows: ReadonlyArray<BotRow>,
@@ -624,46 +637,46 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         if (botRows.length === 0) {
           return empty;
         }
-        const threadIds = botRows.map((row) => `${ADE_BOT_THREAD_ID_PREFIX}${row.bot_id}`);
-
-        // Latest settled message per thread. `is_streaming = 0` keeps a
-        // half-arrived assistant token out of the rail: a preview that grows a
-        // word at a time is motion without information, and the finished
-        // message lands one frame later anyway. The window function is
-        // evaluated over an index range per thread rather than over the table.
-        const messageRows = yield* sql<LatestThreadMessageRow>`
-            SELECT thread_id, role, text, created_at FROM (
-              SELECT
-                thread_id,
-                role,
-                text,
-                created_at,
-                ROW_NUMBER() OVER (
-                  PARTITION BY thread_id
-                  ORDER BY created_at DESC, message_id DESC
-                ) AS tail_rank
-              FROM projection_thread_messages
-              WHERE thread_id IN ${sql.in(threadIds)} AND is_streaming = 0
-            )
-            -- Two rows per thread, not one: the tail can be a captain message
-            -- and a bot message written in the same clock tick, and preview
-            -- precedence (§4) is what picks between them.
-            WHERE tail_rank <= 2
-          `;
+        // One bounded tail read per thread. Sequential rather than concurrent:
+        // each is an index seek returning at most two rows, and handing a
+        // single SQLite connection 24 simultaneous statements buys contention
+        // rather than speed.
         const latestMessages = new Map<string, Array<LatestThreadMessageRow>>();
-        for (const row of messageRows) {
-          const botId = botIdFromThreadId(row.thread_id);
-          const bucket = latestMessages.get(botId);
-          if (bucket === undefined) {
-            latestMessages.set(botId, [row]);
-          } else {
-            bucket.push(row);
-          }
-        }
+        yield* Effect.forEach(botRows, (botRow) =>
+          Effect.map(
+            // `is_streaming = 0` keeps a half-arrived assistant token out of
+            // the rail: a preview that grows a word at a time is motion
+            // without information, and the finished message lands one frame
+            // later anyway.
+            //
+            // Two rows, not one: the tail can be a captain message and a bot
+            // message written in the same clock tick, and preview precedence
+            // (§4) is what picks between them.
+            sql<LatestThreadMessageRow>`
+              SELECT thread_id, message_id, role, text, created_at
+              FROM projection_thread_messages
+              WHERE thread_id = ${`${ADE_BOT_THREAD_ID_PREFIX}${botRow.bot_id}`}
+                AND is_streaming = 0
+              ORDER BY created_at DESC, message_id DESC
+              LIMIT 2
+            `,
+            (rows) => {
+              if (rows.length > 0) {
+                latestMessages.set(botRow.bot_id, [...rows]);
+              }
+            },
+          ),
+        );
 
         // Unread is *bot* messages the captain has not seen. Their own sent
         // messages are never unread, which is why `role = 'assistant'` is part
         // of the predicate rather than a filter applied afterwards.
+        //
+        // `updated_at` rather than `created_at`: an assistant row is inserted
+        // on its first chunk and keeps that `created_at` for the whole turn, so
+        // a captain who marks read while a reply is streaming would place the
+        // mark *after* that reply's creation and never see it counted. Settle
+        // time is what "unread" means.
         const unreadRows = yield* sql<{ bot_id: string; unread: number }>`
             SELECT bot.bot_id AS bot_id, COUNT(message.message_id) AS unread
             FROM ade_bots AS bot
@@ -671,7 +684,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
               ON message.thread_id = ${ADE_BOT_THREAD_ID_PREFIX} || bot.bot_id
              AND message.role = 'assistant'
              AND message.is_streaming = 0
-             AND (bot.chat_last_read_at IS NULL OR message.created_at > bot.chat_last_read_at)
+             AND message.updated_at > COALESCE(bot.chat_last_read_at, '')
             WHERE bot.archived_at IS NULL
             GROUP BY bot.bot_id
           `;
@@ -680,10 +693,16 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         // title from `kind` plus bot/project names — never from an assignment
         // instruction or anything the captain typed — which is what lets the
         // attention line be rendered in a list without a redaction pass.
+        //
+        // Deliberately uncapped, unlike the inbox's *history* read. This drives
+        // preview suppression as well as the amber line, so a cap would mean a
+        // fleet with more than N open items silently starts quoting the threads
+        // of the ones that fell off the end — the one failure the suppression
+        // rule exists to prevent. It is bounded by how many things are actually
+        // open, which is bounded by a single captain not having answered them.
         const needsYouRows = yield* sql<NeedsYouRow>`
             SELECT * FROM ade_needs_you_items WHERE status = 'open'
             ORDER BY created_at DESC, rowid DESC
-            LIMIT ${NEEDS_YOU_HISTORY_LIMIT}
           `;
         const naming = yield* needsYouNaming;
         const attention = new Map<string, Array<OpenAttentionRow>>();
@@ -1479,12 +1498,15 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         // the bottom and this statement landing is genuinely unread, and the
         // receipt is what lets the conversation view settle on the truth rather
         // than on an optimistic clear the next roster frame would undo.
+        // Same predicate as the roster's unread read, for the same reason —
+        // settle time, not creation time. A receipt that disagreed with the
+        // next roster frame would make the badge flicker back on by itself.
         const remaining = yield* sql<{ unread: number }>`
             SELECT COUNT(*) AS unread FROM projection_thread_messages
             WHERE thread_id = ${`${ADE_BOT_THREAD_ID_PREFIX}${input.botId}`}
               AND role = 'assistant'
               AND is_streaming = 0
-              AND created_at > ${readAt}
+              AND updated_at > ${readAt}
           `;
         return {
           botId: input.botId,

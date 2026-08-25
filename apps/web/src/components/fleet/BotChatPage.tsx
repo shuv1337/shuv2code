@@ -121,11 +121,12 @@ export function BotChatPage({ botId }: { readonly botId: BotId }) {
   // on the route: a captain staring at a spinner has not read anything, and
   // marking on navigation alone would clear a count for a conversation that
   // never rendered.
+  const rosterEntry = roster.data?.entries.find((entry) => entry.bot.id === botId);
   useBotChatRead({
     botId,
     enabled: chatReady,
-    lastMessageAt:
-      roster.data?.entries.find((entry) => entry.bot.id === botId)?.lastMessage?.at ?? null,
+    unreadCount: rosterEntry?.unreadCount ?? 0,
+    lastMessageAt: rosterEntry?.lastMessage?.at ?? null,
   });
 
   const retrySync = () => {

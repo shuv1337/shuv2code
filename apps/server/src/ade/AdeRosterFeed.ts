@@ -43,8 +43,9 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 
-import type { AdeRoster } from "@shuv2code/contracts";
+import type { AdeCaptainError, AdeRoster } from "@shuv2code/contracts";
 
 import {
   subscribeBeforeSnapshotWithoutMutex,
@@ -60,10 +61,17 @@ import { AdeCaptainApi } from "./AdeCaptainApi.ts";
 export const ADE_ROSTER_FEED_INTERVAL_MS = 250;
 
 export interface AdeRosterFeedShape {
-  /** Current roster without waiting for a frame. */
-  readonly latest: Effect.Effect<AdeRoster>;
+  /**
+   * Current roster without waiting for a frame.
+   *
+   * Fails rather than substituting an empty fleet. "The database could not be
+   * read" and "you have no bots" are opposite facts, and the second one has a
+   * call to action attached — a captain shown the first-project CTA because
+   * SQLite hiccuped would go and create a project they already have.
+   */
+  readonly latest: Effect.Effect<AdeRoster, AdeCaptainError>;
   /** Current roster plus subsequent changes (race-free, subscriber-gated). */
-  readonly subscribe: Effect.Effect<SnapshotSubscription<AdeRoster>, never, Scope.Scope>;
+  readonly subscribe: Effect.Effect<SnapshotSubscription<AdeRoster>, AdeCaptainError, Scope.Scope>;
 }
 
 /**
@@ -85,46 +93,49 @@ export class AdeRosterFeed extends Context.Service<AdeRosterFeed, AdeRosterFeedS
     Effect.gen(function* () {
       const api = yield* AdeCaptainApi;
 
-      /**
-       * A failed pass is not a reason to tear the rail down. `getRoster` fails
-       * only on persistence errors, which are transient far more often than
-       * they are terminal; the subscriber keeps its last good frame and the
-       * next pass either recovers or keeps failing somewhere louder.
-       */
-      const readRoster = api
-        .getRoster()
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.as(
-              Effect.logDebug("ADE roster feed pass failed").pipe(
-                Effect.annotateLogs({ cause: String(cause) }),
-              ),
-              null,
-            ),
-          ),
-        );
+      const latest = api.getRoster();
 
       const changes = yield* Effect.acquireRelease(PubSub.sliding<AdeRoster>(4), (pubsub) =>
         PubSub.shutdown(pubsub),
       );
       const subscribers = yield* Ref.make(0);
-      const published = yield* Ref.make<string | null>(null);
 
+      /**
+       * One pass: read, publish, let each subscriber decide whether it is news.
+       *
+       * There is deliberately **no shared "last published" signature**. The
+       * first version had one, and it starved subscribers: a new subscriber
+       * seeded the shared gate with its own snapshot, so any change that landed
+       * between an existing subscriber's last frame and that subscription was
+       * marked as already-published and never reached them. The rail would
+       * simply stop updating for whoever had been watching longest, and only
+       * when a second client connected — which is exactly the bug that does not
+       * reproduce while you are testing with one tab open.
+       *
+       * De-duplication belongs per subscriber, because "have I seen this?" is a
+       * per-subscriber question. Publishing unconditionally into an in-process
+       * sliding PubSub costs nothing; the per-subscriber filter below is what
+       * keeps unchanged frames off the wire, and it runs before the RPC stream
+       * encodes anything.
+       *
+       * A failed pass is not a reason to tear the rail down: `getRoster` fails
+       * on persistence errors, which are transient far more often than terminal.
+       * Subscribers keep their last good frame and the next pass either recovers
+       * or keeps failing somewhere louder. A *subscribe-time* failure is a
+       * different matter and propagates — see `latest`.
+       */
       const pass = Effect.gen(function* () {
         if ((yield* Ref.get(subscribers)) === 0) {
           return;
         }
-        const roster = yield* readRoster;
-        if (roster === null) {
-          return;
-        }
-        const signature = rosterSignature(roster);
-        if ((yield* Ref.get(published)) === signature) {
-          return;
-        }
-        yield* Ref.set(published, signature);
-        yield* PubSub.publish(changes, roster);
-      });
+        yield* PubSub.publish(changes, yield* latest);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logDebug("ADE roster feed pass failed").pipe(
+            Effect.annotateLogs({ cause: String(cause) }),
+          ),
+        ),
+      );
 
       // Scoped to the layer: the fiber is interrupted when the layer that built
       // it is released, so a shutting-down server never leaves a pass mid-query.
@@ -134,8 +145,6 @@ export class AdeRosterFeed extends Context.Service<AdeRosterFeed, AdeRosterFeedS
         ),
       );
 
-      const latest = Effect.map(readRoster, (roster) => roster ?? EMPTY_ROSTER);
-
       return AdeRosterFeed.of({
         latest,
         /**
@@ -143,9 +152,9 @@ export class AdeRosterFeed extends Context.Service<AdeRosterFeed, AdeRosterFeedS
          * Incremented before the snapshot and released with the caller's scope,
          * so a subscriber can never observe a feed that considers itself idle.
          *
-         * The snapshot is also what seeds `published`: without it the first
-         * pass after a subscribe would republish the frame the subscriber just
-         * received as `latest`, and the rail would render twice for nothing.
+         * `seen` starts at this subscriber's own snapshot, which is what stops
+         * the rail rendering twice for nothing on connect — and, unlike the
+         * shared gate it replaces, seeding it cannot affect anybody else.
          */
         subscribe: Effect.gen(function* () {
           yield* Effect.acquireRelease(
@@ -153,13 +162,24 @@ export class AdeRosterFeed extends Context.Service<AdeRosterFeed, AdeRosterFeedS
             () => Ref.update(subscribers, (n) => Math.max(0, n - 1)),
           );
           const subscription = yield* subscribeBeforeSnapshotWithoutMutex(changes, latest);
-          yield* Ref.set(published, rosterSignature(subscription.latest));
-          return subscription;
+          const seen = yield* Ref.make(rosterSignature(subscription.latest));
+          return {
+            latest: subscription.latest,
+            changes: subscription.changes.pipe(
+              Stream.filterEffect((roster) =>
+                Effect.gen(function* () {
+                  const signature = rosterSignature(roster);
+                  if ((yield* Ref.get(seen)) === signature) {
+                    return false;
+                  }
+                  yield* Ref.set(seen, signature);
+                  return true;
+                }),
+              ),
+            ),
+          } satisfies SnapshotSubscription<AdeRoster>;
         }),
       });
     }),
   );
 }
-
-/** What the feed reports when a pass failed before it ever had a frame. */
-const EMPTY_ROSTER: AdeRoster = { entries: [], projects: [], templates: [], groups: [] };
