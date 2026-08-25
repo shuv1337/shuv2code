@@ -63,6 +63,7 @@ import {
   WsVoiceSetControllerTargetRpc,
   WsVoiceIngestRealtimeEventRpc,
   WsVoiceListVoicesRpc,
+  WsVoicePrepareThreadCallRpc,
   WsVoiceResetControllerRpc,
   WsVoiceStartRpc,
   WsVoiceStopRpc,
@@ -277,6 +278,16 @@ const makeVoiceRpcHandlers = (
       observeRpcEffect(WS_METHODS.voiceListVoices, voiceController.listVoices(input), {
         "rpc.aggregate": "voice",
       }),
+    [WS_METHODS.voicePrepareThreadCall]: (
+      input: Parameters<VoiceController.VoiceControllerService["Service"]["prepareThreadCall"]>[0],
+    ) =>
+      observeRpcEffect(
+        WS_METHODS.voicePrepareThreadCall,
+        voiceController.prepareThreadCall(input),
+        {
+          "rpc.aggregate": "voice",
+        },
+      ),
     [WS_METHODS.voiceResetController]: (
       input: Parameters<VoiceController.VoiceControllerService["Service"]["resetController"]>[0],
     ) =>
@@ -329,6 +340,7 @@ export const VoiceWsRpcGroup = RpcGroup.make(
   WsVoiceSetControllerTargetRpc,
   WsVoiceEnsureControllerRpc,
   WsVoiceListVoicesRpc,
+  WsVoicePrepareThreadCallRpc,
   WsVoiceResetControllerRpc,
   WsVoiceStartRpc,
   WsVoiceIngestRealtimeEventRpc,
