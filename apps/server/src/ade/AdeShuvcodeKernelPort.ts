@@ -29,6 +29,7 @@ import * as ProviderAdapterRegistry from "../provider/Services/ProviderAdapterRe
 import {
   AdeAssignmentKernelPort,
   AdeAssignmentKernelPortError,
+  type AdeAssignmentDeliveryBatch,
   type AdeAssignmentKernelPortShape,
 } from "./AdeAssignmentEngine.ts";
 import { AdeHealthChecker } from "./AdeHealthChecker.ts";
@@ -36,6 +37,13 @@ import { ADE_SHUVCODE_INSTANCE_ID, adeBotThreadId } from "./AdeShuvcodeChatSessi
 
 const notWired = (operation: "deliverResults" | "steerPrimary", detail: string) =>
   new AdeAssignmentKernelPortError({ operation, detail });
+
+/** Kernel-visible label for a queued delivery; voice call summaries reuse this path (§4.7). */
+const describeBatch = (batch: AdeAssignmentDeliveryBatch): string => {
+  const base =
+    batch.origin === "voice-call-summary" ? "ADE voice call summary" : "ADE assignment results";
+  return batch.redelivery ? `${base} (redelivery)` : base;
+};
 
 export class AdeShuvcodeKernelPort extends Context.Service<
   AdeShuvcodeKernelPort,
@@ -129,9 +137,7 @@ export class AdeShuvcodeKernelPort extends Context.Service<
             engine: batch.engine,
             botId: batch.targetBotId,
             text: batch.text,
-            description: batch.redelivery
-              ? "ADE assignment results (redelivery)"
-              : "ADE assignment results",
+            description: describeBatch(batch),
             delivery: "follow-up",
             dedupeKey: batch.deliveryKey,
           }),

@@ -208,6 +208,17 @@ export interface AdeAssignmentDeliveryBatch {
   readonly parentAssignmentId: AssignmentId | null;
   /** Rendered synthetic-input text; bot-authored content is fenced. */
   readonly text: string;
+  /**
+   * What produced this queued delivery. Defaults to `assignment-results`.
+   *
+   * The port's contract is "one queued (never steering) synthetic input into a
+   * bot's primary session", which is exactly what the §4.7 end-of-call voice
+   * summary needs too — so the voice channel reuses this path with an empty
+   * `items` list rather than opening a second, subtly different delivery road
+   * that could drift into `steer`. The label only selects the kernel-visible
+   * description.
+   */
+  readonly origin?: "assignment-results" | "voice-call-summary";
 }
 
 export interface AdeAssignmentKernelPortShape {
