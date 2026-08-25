@@ -501,7 +501,113 @@ runtime("detects landing by SHA, not by branch name or change id", () =>
       baseBookmark: "main",
       remote: "origin",
     });
-    assert.deepEqual(again, { rebased: false, conflictDetail: null });
+    // `resolved: false` is the signal that `--skip-emptied` abandoned this
+    // change, which is how the service knows to re-try from the surviving tail
+    // rather than concluding there is nothing left to reconcile.
+    assert.deepEqual(again, { resolved: false, rebased: false, conflictDetail: null });
+  }),
+);
+
+runtime("rebases the surviving tail when only the bottom layer has landed", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const port = yield* AdePublicationRepoPort;
+    const repo = yield* makeRepo;
+
+    // A two-layer stack: `bottom` then `top` built on it.
+    yield* repo.jj(["new", '"main"']);
+    yield* fileSystem.writeFileString(NodePath.join(repo.repoPath, "bottom.txt"), "bottom\n");
+    yield* repo.jj(["describe", "-m", "bottom layer"]);
+    const bottomChangeId = (yield* repo.jj([
+      "log",
+      "--no-graph",
+      "-r",
+      "@",
+      "-T",
+      'change_id ++ "\\n"',
+    ]))
+      .trim()
+      .split("\n")[0] as string;
+    yield* repo.jj(["new"]);
+    yield* fileSystem.writeFileString(NodePath.join(repo.repoPath, "top.txt"), "top\n");
+    yield* repo.jj(["describe", "-m", "top layer"]);
+    const topChangeId = (yield* repo.jj([
+      "log",
+      "--no-graph",
+      "-r",
+      "@",
+      "-T",
+      'change_id ++ "\\n"',
+    ]))
+      .trim()
+      .split("\n")[0] as string;
+    yield* repo.jj(["new"]);
+
+    const topBookmark = "ade/pub/deadbeef/0011";
+    yield* port.ensureBookmark({
+      repoPath: repo.repoPath,
+      bookmarkName: topBookmark,
+      changeId: topChangeId,
+    });
+
+    // GitHub squash-merges ONLY the bottom layer. The top PR stays open.
+    yield* repo.jj(["new", '"main"']);
+    yield* fileSystem.writeFileString(NodePath.join(repo.repoPath, "bottom.txt"), "bottom\n");
+    yield* repo.jj(["describe", "-m", "Squashed bottom layer (#1)"]);
+    yield* repo.jj(["bookmark", "set", "main", "--revision", "@", "--allow-backwards"]);
+    yield* repo.jj(["new"]);
+    yield* repo.jj(["git", "push", "--remote", "origin", "--bookmark", "exact:main"]);
+    yield* port.fetch({ repoPath: repo.repoPath, remote: "origin" });
+
+    // The partial-merge refresh: rebase from the bottom of the WHOLE stack so
+    // the landed layer is proven empty and abandoned, carrying the tail onto
+    // the new base.
+    const refreshed = yield* port.refreshStack({
+      repoPath: repo.repoPath,
+      bottomChangeId,
+      baseBookmark: "main",
+      remote: "origin",
+    });
+    assert.isNull(refreshed.conflictDetail);
+    assert.isTrue(refreshed.resolved);
+    assert.isTrue(refreshed.rebased);
+
+    // The landed layer is gone — proven equivalent, not merely assumed.
+    const bottomGone = yield* repo.jj([
+      "log",
+      "--no-graph",
+      "--ignore-working-copy",
+      "-r",
+      `"${bottomChangeId}"`,
+      "-T",
+      "commit_id",
+    ]);
+    assert.include(bottomGone, "doesn't exist");
+
+    // The surviving top layer now sits directly on the squashed base, so its
+    // PR shows only its own diff instead of replaying the landed one.
+    const topParent = yield* repo.jj([
+      "log",
+      "--no-graph",
+      "--ignore-working-copy",
+      "-r",
+      `"${topChangeId}"-`,
+      "-T",
+      'description ++ "\\n"',
+    ]);
+    assert.include(topParent, "Squashed bottom layer (#1)");
+
+    // And the layer bookmark followed its change through the rewrite.
+    const placed = yield* port.ensureBookmark({
+      repoPath: repo.repoPath,
+      bookmarkName: topBookmark,
+      changeId: topChangeId,
+    });
+    const topSha = yield* port.readBookmarkSha({
+      repoPath: repo.repoPath,
+      bookmarkName: topBookmark,
+    });
+    assert.strictEqual(placed.headSha, topSha);
   }),
 );
 

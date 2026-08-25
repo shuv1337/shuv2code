@@ -203,11 +203,28 @@ export interface EnsureBookmarkResult {
 }
 
 export interface RefreshStackResult {
-  /** False when the change id no longer resolves — already reconciled. */
+  /**
+   * False when the change id no longer resolves. `--skip-emptied` abandons a
+   * layer whose content has landed, so its change id stops existing; the caller
+   * distinguishes that from "nothing to do" by re-trying from the bottom of the
+   * surviving tail.
+   */
+  readonly resolved: boolean;
+  /** True when the rebase actually moved something. */
   readonly rebased: boolean;
-  /** Set when the refresh conflicted; the caller freezes rather than forcing. */
+  /** Set when the refresh conflicted; the caller blocks rather than forcing. */
   readonly conflictDetail: string | null;
 }
+
+/**
+ * `gh stack link` either linked the branches, or told us this host has no
+ * stacked-PR surface at all. The second answer is a capability fact, so it is a
+ * value rather than an error: the service downgrades the stack to the chained
+ * fallback and keeps going in the same pass.
+ */
+export type LinkStackResult =
+  | { readonly _tag: "linked" }
+  | { readonly _tag: "unsupported"; readonly detail: string };
 
 export interface WorkingCopyFingerprint {
   readonly commitId: string;
@@ -279,7 +296,7 @@ export interface AdePublicationRepoPortShape {
     readonly repoPath: string;
     readonly baseBranch: string;
     readonly bookmarkNames: ReadonlyArray<string>;
-  }) => Effect.Effect<void, AdePublicationRepoError>;
+  }) => Effect.Effect<LinkStackResult, AdePublicationRepoError>;
 
   /** Fresh read of the repository's native Stack objects. */
   readonly readNativeStacks: (input: {
@@ -391,7 +408,21 @@ const trimOutput = (value: string, limit = 4_000): string =>
 /** jj reports a rebase that would change nothing as a non-zero "nothing changed". */
 const NOOP_MARKER = /nothing changed|no changes|already in place|already matches/i;
 const MISSING_REVISION_MARKER = /revision .*(doesn't|does not) exist|no such revision/i;
-const CONFLICT_MARKER = /there are unresolved conflicts|conflict/i;
+/**
+ * jj's actual unresolved-conflict phrasing, verified against 0.40: a rebase
+ * that produces conflicts still exits 0 and prints "New conflicts appeared in
+ * N commits". A bare /conflict/i would also fire on the resolution hint text
+ * and on any commit description containing the word.
+ */
+const CONFLICT_MARKER = /there are unresolved conflicts|new conflicts appeared in/i;
+
+/**
+ * `gh` on a host without the stacked-PR surface: the subcommand is unknown, or
+ * the REST endpoint 404s. That is a capability answer, not a failure, and the
+ * caller downgrades to the chained fallback rather than retrying forever.
+ */
+const STACK_UNSUPPORTED_MARKER =
+  /unknown command|unknown subcommand|no such command|unrecognized command|HTTP 404|not found|is not a gh command/i;
 
 const RawPullRequest = Schema.Struct({
   number: Schema.Number,
@@ -703,7 +734,10 @@ export const make = Effect.gen(function* () {
     ]);
     if (input.remote === null) return;
     yield* requireRef("deleteBookmarks", input.remote);
-    yield* jj(
+    // The push is the half that actually removes the remote branch, so its exit
+    // code is load-bearing: a caller that reports "deleted" for branches which
+    // survived would hide leaked publication refs forever.
+    yield* jjOrFail(
       "deleteBookmarks.push",
       input.repoPath,
       [
@@ -724,7 +758,7 @@ export const make = Effect.gen(function* () {
   const linkStack: AdePublicationRepoPortShape["linkStack"] = Effect.fn(
     "AdePublicationRepoPort.linkStack",
   )(function* (input) {
-    if (input.bookmarkNames.length === 0) return;
+    if (input.bookmarkNames.length === 0) return { _tag: "linked" } as const;
     yield* requireRef("linkStack", input.baseBranch);
     for (const bookmarkName of input.bookmarkNames) {
       yield* requireRef("linkStack", bookmarkName);
@@ -736,11 +770,16 @@ export const make = Effect.gen(function* () {
       ADE_PUBLICATION_GH_WRITE_TIMEOUT_MS,
     );
     if (result.exitCode !== 0) {
-      return yield* new AdePublicationRepoError({
-        operation: "linkStack",
-        detail: trimOutput(`${result.stderr}\n${result.stdout}`.trim()),
-      });
+      const detail = trimOutput(`${result.stderr}\n${result.stdout}`.trim());
+      // "This host has no stacked-PR surface" is an answer, not a failure. An
+      // unrecognized failure still raises, because retrying *is* right for a
+      // rate limit or a network blip — only a capability gap never resolves.
+      if (STACK_UNSUPPORTED_MARKER.test(detail)) {
+        return { _tag: "unsupported", detail } as const;
+      }
+      return yield* new AdePublicationRepoError({ operation: "linkStack", detail });
     }
+    return { _tag: "linked" } as const;
   });
 
   const readNativeStacks: AdePublicationRepoPortShape["readNativeStacks"] = Effect.fn(
@@ -752,6 +791,10 @@ export const make = Effect.gen(function* () {
       "api",
       "repos/{owner}/{repo}/stacks",
     ]);
+    // A host without the stacked-PR surface 404s here. Reporting "no stacks" is
+    // the honest answer and lets the caller's downgrade path run; only a
+    // *successful* response that fails to parse is a real error.
+    if (result.exitCode !== 0) return [];
     const raw = result.stdout.trim();
     if (raw.length === 0) return [];
     const decoded = yield* decodeNativeStacks(raw).pipe(
@@ -771,8 +814,18 @@ export const make = Effect.gen(function* () {
   )(function* (input) {
     for (const prNumber of input.prNumbers) {
       const reference = yield* requirePrNumber("markPullRequestsReady", prNumber);
-      // Already-ready is the common case on a re-run and is not a failure.
-      yield* ghRun("markPullRequestsReady", input.repoPath, ["pr", "ready", reference]);
+      const result = yield* ghRun("markPullRequestsReady", input.repoPath, [
+        "pr",
+        "ready",
+        reference,
+      ]);
+      if (result.exitCode === 0) continue;
+      const detail = trimOutput(`${result.stderr}\n${result.stdout}`.trim());
+      // Already-ready is the common case on a re-run and is convergence.
+      // Anything else must raise: `gh stack merge` refuses drafts, so silently
+      // swallowing this failure turns into a merge that never happens.
+      if (/already (open for review|ready)|not a draft/i.test(detail)) continue;
+      return yield* new AdePublicationRepoError({ operation: "markPullRequestsReady", detail });
     }
   });
 
@@ -906,7 +959,7 @@ export const make = Effect.gen(function* () {
     // landed. Reporting a failure here would make a completed reconciliation
     // look like a broken one forever.
     const bottomSha = yield* readRevisionCommitId(input.repoPath, bottomLiteral);
-    if (bottomSha === null) return { rebased: false, conflictDetail: null };
+    if (bottomSha === null) return { resolved: false, rebased: false, conflictDetail: null };
 
     const result = yield* jj("refreshStack", input.repoPath, [
       "rebase",
@@ -918,14 +971,22 @@ export const make = Effect.gen(function* () {
     ]);
     const combined = `${result.stderr}\n${result.stdout}`.trim();
     if (result.exitCode !== 0) {
-      if (MISSING_REVISION_MARKER.test(combined)) return { rebased: false, conflictDetail: null };
-      if (NOOP_MARKER.test(combined)) return { rebased: false, conflictDetail: null };
-      return { rebased: false, conflictDetail: trimOutput(combined || "refresh failed") };
+      if (MISSING_REVISION_MARKER.test(combined)) {
+        return { resolved: false, rebased: false, conflictDetail: null };
+      }
+      if (NOOP_MARKER.test(combined)) {
+        return { resolved: true, rebased: false, conflictDetail: null };
+      }
+      return {
+        resolved: true,
+        rebased: false,
+        conflictDetail: trimOutput(combined || "refresh failed"),
+      };
     }
     if (CONFLICT_MARKER.test(combined)) {
-      return { rebased: false, conflictDetail: trimOutput(combined) };
+      return { resolved: true, rebased: false, conflictDetail: trimOutput(combined) };
     }
-    return { rebased: !NOOP_MARKER.test(combined), conflictDetail: null };
+    return { resolved: true, rebased: !NOOP_MARKER.test(combined), conflictDetail: null };
   });
 
   const workingCopyFingerprint: AdePublicationRepoPortShape["workingCopyFingerprint"] = Effect.fn(

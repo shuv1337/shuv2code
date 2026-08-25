@@ -325,6 +325,10 @@ export default Effect.gen(function* () {
       -- is what makes "one pass at a time" true rather than hoped for.
       lease_holder TEXT,
       lease_expires_at TEXT,
+      -- Set by the explicit post-reconcile cleanup pass once a stack's branches
+      -- are actually gone. Until then the stack still owns its branch names, so
+      -- a later stack cannot reuse one and adopt its ancestor's merged PR.
+      cleaned_up_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES ade_projects(project_id) ON DELETE CASCADE
