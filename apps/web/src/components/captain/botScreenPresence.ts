@@ -44,12 +44,17 @@ export function shouldAttachBotScreenViewer(input: BotScreenPresenceInput): bool
  * not say "No desktop running" at a container that is running perfectly well
  * and simply is not being watched. Nor should it look broken — nothing is
  * wrong, the rail is just being a good citizen.
+ *
+ * Both notes state where the desktop *is* rather than what this component is
+ * doing about it (#217). "Showing fullscreen." described the app's own
+ * rendering; "Paused while off-screen" explained an internal socket
+ * optimisation to someone who never asked for one.
  */
 export function botScreenDetachedNote(input: {
   readonly hasViewerPath: boolean;
   readonly fullscreenOpen: boolean;
 }): string | null {
   if (!input.hasViewerPath) return null;
-  if (input.fullscreenOpen) return "Showing fullscreen.";
-  return "Paused while off-screen. Scroll back to watch.";
+  if (input.fullscreenOpen) return "Open fullscreen";
+  return "Desktop running — scroll back to watch";
 }

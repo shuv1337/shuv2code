@@ -69,7 +69,7 @@ export const BOT_EMOJI_MAX_LENGTH = 32;
  * purpose — a reserved word the captain may not type is exactly the strictness
  * this ticket removes — so the consequence is disclosed instead of prevented.
  */
-export const ROLE_TAG_ROUTING_HINT = "Review work routes to bots whose tag contains “Reviewer”.";
+export const ROLE_TAG_ROUTING_HINT = "Tags containing “Reviewer” receive review work.";
 
 /** The editable surface of a bot, as the sheet holds it while typing. */
 export interface BotIdentityDraft {

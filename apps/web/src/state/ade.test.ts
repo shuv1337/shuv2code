@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   activePrimaryBinding,
   adeCaptainErrorMessage,
+  adeCaptainErrorParts,
   adeCaptainErrorReason,
   fleetHealthForConnectionPhase,
   openAssignments,
@@ -72,7 +73,50 @@ describe("adeCaptainErrorMessage", () => {
         { _tag: "AdeCaptainError", reason: "session_unavailable", message: "Codex is down." },
         "fallback",
       ),
-    ).toBe("No kernel session is available right now. Codex is down.");
+    ).toBe("This bot isn't connected — check its provider settings. Codex is down.");
+  });
+
+  it("splits rather than concatenates for surfaces with a disclosure", () => {
+    // #217: the concatenated form is what produced a paragraph of provider
+    // setup as primary UI copy.
+    const parts = adeCaptainErrorParts(
+      {
+        _tag: "AdeCaptainError",
+        reason: "session_unavailable",
+        message: "No 'opencode2' provider instance is configured.",
+      },
+      "fallback",
+    );
+    expect(parts.headline).toBe("This bot isn't connected — check its provider settings.");
+    expect(parts.headline).not.toContain("opencode2");
+    expect(parts.details).toBe("No 'opencode2' provider instance is configured.");
+  });
+
+  it("has no detail to disclose when the server said nothing more", () => {
+    expect(
+      adeCaptainErrorParts({ _tag: "AdeCaptainError", reason: "memory_conflict" }, "fallback")
+        .details,
+    ).toBeNull();
+  });
+
+  it("keeps an untagged Error's text as the detail, not the headline", () => {
+    const parts = adeCaptainErrorParts(
+      new Error("ECONNREFUSED 127.0.0.1:4096"),
+      "Couldn't connect.",
+    );
+    expect(parts.headline).toBe("Couldn't connect.");
+    expect(parts.details).toBe("ECONNREFUSED 127.0.0.1:4096");
+  });
+
+  it("keeps the remedy out of implementation vocabulary", () => {
+    // #217: the sentence a captain reads at a glance names what to do, not
+    // which internal subsystem refused.
+    const headline = adeCaptainErrorMessage(
+      { _tag: "AdeCaptainError", reason: "session_unavailable" },
+      "fallback",
+    );
+    expect(headline).not.toContain("kernel");
+    expect(headline).toContain("provider settings");
   });
 
   it("uses the reason alone when the server said nothing more", () => {

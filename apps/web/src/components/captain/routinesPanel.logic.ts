@@ -34,6 +34,14 @@ export interface RoutinesEmptyState {
  * substituted `"this bot's project"` by `String.replace`, which is a formatter
  * that fails silently: reword the base sentence and the project's name simply
  * stops appearing, with no test failing and nothing to notice in review.
+ *
+ * What each sentence may *say* narrowed in #217. The headline states the
+ * state; the detail is the one next action and nothing else. The domain
+ * lecture ("Routines run inside a project", "so its routines have somewhere to
+ * run") and the description of what the UI will subsequently do ("That opens
+ * its workspace, and routines can be added after") are both gone: the first is
+ * a fact the captain cannot act on, the second narrates this app to its own
+ * user.
  */
 function emptyStateFor(
   reason: Exclude<AdeBotRoutineContextReason, "ready">,
@@ -41,25 +49,22 @@ function emptyStateFor(
 ): RoutinesEmptyState {
   switch (reason) {
     case "no-project":
-      return {
-        headline: "No project yet",
-        detail: "Routines run inside a project. Create one, then this bot can hold routines.",
-      };
+      return { headline: "No project yet", detail: "Create a project for this bot." };
     case "no-repo-binding":
       return {
         headline: "No repository bound",
         detail:
           projectName === null
-            ? "Add a repository path to this bot's project so its routines have somewhere to run."
-            : `Add a repository path to "${projectName}" so its routines have somewhere to run.`,
+            ? "Add a repository path to this bot's project."
+            : `Add a repository path to "${projectName}".`,
       };
     case "no-workspace-project":
       return {
         headline: "Workspace not opened yet",
         detail:
           projectName === null
-            ? "Send this bot a message once. That opens its workspace, and routines can be added after."
-            : `Send this bot a message once. That opens "${projectName}", and routines can be added after.`,
+            ? "Send this bot a message to open its workspace."
+            : `Send this bot a message to open "${projectName}".`,
       };
   }
 }
@@ -78,8 +83,8 @@ export function routinesEmptyState(context: AdeBotRoutineContext): RoutinesEmpty
  * to fix, so it must not offer a remedy.
  */
 export const ROUTINES_PENDING_PROJECT: RoutinesEmptyState = {
-  headline: "Opening the project",
-  detail: "Loading this bot's project. Routines appear once it is available.",
+  headline: "Loading routines",
+  detail: "",
 };
 
 /**

@@ -111,24 +111,31 @@ describe("resolveCaptainDispatchValidationMessage", () => {
         turnDispatch: { _tag: "blocked", reason: "turn-steering-unsupported" },
         botName: "Code Monkey",
       }),
-    ).toBe(
-      "Code Monkey is mid-turn and this provider cannot steer it. Try again when it finishes.",
-    );
+    ).toBe("Code Monkey is still working. Send this when it finishes.");
   });
 
-  it("distinguishes a still-synchronizing thread from an unsteerable one", () => {
+  it("keeps provider internals out of the sentence (#217)", () => {
+    const message = resolveCaptainDispatchValidationMessage({
+      turnDispatch: { _tag: "blocked", reason: "turn-steering-unsupported" },
+      botName: "Code Monkey",
+    });
+    expect(message).not.toContain("provider");
+    expect(message).not.toContain("mid-turn");
+  });
+
+  it("distinguishes a not-yet-connected thread from an unsteerable one", () => {
     expect(
       resolveCaptainDispatchValidationMessage({
         turnDispatch: { _tag: "blocked", reason: "synchronizing" },
         botName: "Code Monkey",
       }),
-    ).toBe("This conversation is still synchronizing. Try again in a moment.");
+    ).toBe("Not connected yet. Try again in a moment.");
     expect(
       resolveCaptainDispatchValidationMessage({
         turnDispatch: { _tag: "blocked", reason: "missing-active-turn" },
         botName: "Code Monkey",
       }),
-    ).toBe("This conversation is still synchronizing. Try again in a moment.");
+    ).toBe("Not connected yet. Try again in a moment.");
   });
 
   it("stays silent when the turn can actually be dispatched", () => {

@@ -207,7 +207,8 @@ export function SecureInputCard({
 
       <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <ShieldCheckIcon aria-hidden className="size-3.5 shrink-0" />
-        Sent straight to the fleet. Never shown in this conversation, the contact list, or logs.
+        {/* #217: one clause, not three descriptions of this app's storage. */}
+        Never stored in this conversation.
       </p>
 
       {outcome === null ? null : (

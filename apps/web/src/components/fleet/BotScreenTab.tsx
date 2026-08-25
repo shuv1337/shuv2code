@@ -84,7 +84,10 @@ export function BotScreenTab({ botId }: { readonly botId: BotId }) {
           ) : null}
         </div>
       </div>
-      <p className="text-xs text-muted-foreground">{view.detail}</p>
+      {/* Phases whose next action is the button above say nothing here (#217). */}
+      {view.detail.length === 0 ? null : (
+        <p className="text-xs text-muted-foreground">{view.detail}</p>
+      )}
       {screen.error === null ? null : (
         <p className="text-sm text-destructive" role="alert">
           {screen.error}
@@ -96,9 +99,10 @@ export function BotScreenTab({ botId }: { readonly botId: BotId }) {
         </p>
       )}
       {view.viewerPath === null ? (
-        <div className="flex h-64 items-center justify-center rounded-lg border border-dashed border-border bg-muted/30 text-xs text-muted-foreground">
-          Nothing to show yet.
-        </div>
+        <div
+          aria-hidden
+          className="h-64 rounded-lg border border-dashed border-border bg-muted/30"
+        />
       ) : (
         <BotScreenViewer viewerPath={view.viewerPath} />
       )}

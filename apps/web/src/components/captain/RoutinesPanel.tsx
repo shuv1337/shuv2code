@@ -103,9 +103,16 @@ export function RoutinesPanel({
       {notice !== null || projectRef === null || project === null ? (
         <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border bg-muted/30 p-3">
           <p className="text-sm font-medium">{notice?.headline ?? "Routines unavailable"}</p>
-          <p className="text-xs text-muted-foreground">
-            {notice?.detail ?? "This bot's project could not be resolved."}
-          </p>
+          {/*
+           * A loading notice has a state but no next action, so its detail is
+           * empty and the line is simply not drawn — an empty `<p>` reserving
+           * space under a headline reads as copy that failed to load.
+           */}
+          {(notice?.detail ?? "Check this bot's project.").length === 0 ? null : (
+            <p className="text-xs text-muted-foreground">
+              {notice?.detail ?? "Check this bot's project."}
+            </p>
+          )}
           {/*
            * If the project vanished after Create was pressed — the shell
            * re-snapshotting under a captain mid-form — say so and offer the way

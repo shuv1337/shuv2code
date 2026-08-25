@@ -57,12 +57,23 @@ describe("botScreenDetachedNote", () => {
     const note = botScreenDetachedNote({ hasViewerPath: true, fullscreenOpen: false });
     expect(note).not.toBe(null);
     expect(note?.toLowerCase()).not.toContain("no desktop");
-    expect(note).toContain("Scroll back");
+    expect(note).toContain("scroll back");
   });
 
-  it("explains the handover while fullscreen is open", () => {
+  it("names where the desktop is while fullscreen is open", () => {
     expect(botScreenDetachedNote({ hasViewerPath: true, fullscreenOpen: true })).toBe(
-      "Showing fullscreen.",
+      "Open fullscreen",
     );
+  });
+
+  it("states the desktop's state, not this component's (#217)", () => {
+    // "Showing fullscreen." / "Paused while off-screen." both described the
+    // app's own rendering and socket handling to a captain who asked about a
+    // desktop.
+    for (const fullscreenOpen of [true, false]) {
+      const note = botScreenDetachedNote({ hasViewerPath: true, fullscreenOpen }) ?? "";
+      expect(note).not.toContain("Showing");
+      expect(note).not.toContain("Paused");
+    }
   });
 });
