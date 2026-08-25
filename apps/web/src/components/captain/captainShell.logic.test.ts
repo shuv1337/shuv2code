@@ -3,13 +3,13 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY,
   CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY,
-  CAPTAIN_SINGLE_COLUMN_MEDIA_QUERY,
   CAPTAIN_THREE_RAIL_MEDIA_QUERY,
   type CaptainLayoutMode,
   canToggleCaptainLeftRail,
   captainGridTemplateColumns,
   captainLeftRailToggleLabel,
   resolveCaptainLayoutMode,
+  resolveCaptainLayoutModeFromMediaMatches,
   resolveCaptainShellRegions,
 } from "./captainShell.logic";
 
@@ -56,14 +56,16 @@ describe("resolveCaptainLayoutMode", () => {
   });
 });
 
-describe("captain media queries", () => {
-  it("tile the width axis without a gap or an overlap", () => {
-    expect(CAPTAIN_THREE_RAIL_MEDIA_QUERY).toBe("(min-width: 1440px)");
-    expect(CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY).toBe("(min-width: 1180px) and (max-width: 1439px)");
-    expect(CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY).toBe("(min-width: 900px) and (max-width: 1179px)");
-    expect(CAPTAIN_SINGLE_COLUMN_MEDIA_QUERY).toBe("(max-width: 899px)");
-  });
+/** Evaluate a `(min-width: Npx)` query the way a browser would. */
+function matchesMinWidth(query: string, viewportWidth: number): boolean {
+  const match = /^\(min-width: ([\d.]+)px\)$/u.exec(query);
+  if (match === null) {
+    throw new Error(`not a bare min-width query: ${query}`);
+  }
+  return viewportWidth >= Number(match[1]);
+}
 
+describe("captain media queries", () => {
   it("is not the workspace right-panel query", () => {
     // §2 resolved flaw #2: sharing `(max-width: 980px)` with workspace mode is
     // what hid the third rail at laptop widths.
@@ -71,10 +73,68 @@ describe("captain media queries", () => {
       CAPTAIN_THREE_RAIL_MEDIA_QUERY,
       CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY,
       CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY,
-      CAPTAIN_SINGLE_COLUMN_MEDIA_QUERY,
     ]) {
       expect(query).not.toBe("(max-width: 980px)");
     }
+  });
+
+  it("carries no upper bound, so no width can fall between two bands", () => {
+    // Pairing each lower bound with `max-width: n - 1px` leaves 899.0…900.0
+    // uncovered. A boundary is one number, named once, as a lower bound only.
+    for (const query of [
+      CAPTAIN_THREE_RAIL_MEDIA_QUERY,
+      CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY,
+      CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY,
+    ]) {
+      expect(query).not.toContain("max-width");
+      expect(() => matchesMinWidth(query, 1000)).not.toThrow();
+    }
+  });
+
+  it("resolves the same band as the numeric function at every width, fractions included", () => {
+    // The fractional widths are the regression: a fractional-DPR display or a
+    // zoomed window reports 899.5px, and the previous query set matched none of
+    // them, so the shell fell through to the three-rail layout inside 900px.
+    const widths = [
+      320, 599.5, 899, 899.01, 899.5, 899.99, 900, 900.5, 1179, 1179.5, 1179.99, 1180, 1180.5, 1439,
+      1439.5, 1439.99, 1440, 1440.5, 2560, 3839.5,
+    ];
+    for (const width of widths) {
+      const fromQueries = resolveCaptainLayoutModeFromMediaMatches({
+        hasMediaSupport: true,
+        threeRails: matchesMinWidth(CAPTAIN_THREE_RAIL_MEDIA_QUERY, width),
+        rightOverlay: matchesMinWidth(CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY, width),
+        iconLeftRail: matchesMinWidth(CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY, width),
+      });
+      expect({ width, mode: fromQueries }).toEqual({
+        width,
+        mode: resolveCaptainLayoutMode(width),
+      });
+    }
+  });
+});
+
+describe("resolveCaptainLayoutModeFromMediaMatches", () => {
+  it("falls back to the reference layout when nothing can be measured", () => {
+    expect(
+      resolveCaptainLayoutModeFromMediaMatches({
+        hasMediaSupport: false,
+        threeRails: false,
+        rightOverlay: false,
+        iconLeftRail: false,
+      }),
+    ).toBe("three-rails");
+  });
+
+  it("reads no match as genuinely narrow once media queries do work", () => {
+    expect(
+      resolveCaptainLayoutModeFromMediaMatches({
+        hasMediaSupport: true,
+        threeRails: false,
+        rightOverlay: false,
+        iconLeftRail: false,
+      }),
+    ).toBe("single-column");
   });
 });
 
@@ -169,12 +229,17 @@ describe("captainGridTemplateColumns", () => {
   });
 
   it("gives the single visible column the whole width below 900", () => {
-    expect(
-      captainGridTemplateColumns(regions({ mode: "single-column", hasConversation: false })),
-    ).toBe("380px");
-    expect(
-      captainGridTemplateColumns(regions({ mode: "single-column", hasConversation: true })),
-    ).toBe("minmax(0, 1fr)");
+    // Full-bleed both ways. A fixed 380px rail on a 375px phone is a
+    // horizontal scrollbar, not a layout.
+    for (const hasConversation of [true, false]) {
+      for (const leftRailCollapsed of [true, false]) {
+        expect(
+          captainGridTemplateColumns(
+            regions({ mode: "single-column", hasConversation, leftRailCollapsed }),
+          ),
+        ).toBe("minmax(0, 1fr)");
+      }
+    }
   });
 });
 

@@ -3,6 +3,7 @@ import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtim
 import { PlusIcon } from "lucide-react";
 import { useState } from "react";
 
+import { cn } from "../../lib/utils";
 import { adeEnvironment, useAdeEnvironmentId, useAdeRoster } from "../../state/ade";
 import { adeCaptainErrorMessage } from "../../state/ade.logic";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -47,7 +48,13 @@ export function CaptainIndexPane() {
  * no ADE projects at all: the Project combobox stayed permanently empty, every
  * bot was fleet-wide, and the auto-Second-Mate hook was unreachable.
  */
-function FirstProjectCta({ environmentId }: { readonly environmentId: EnvironmentId | null }) {
+export function FirstProjectCta({
+  className,
+  environmentId,
+}: {
+  readonly className?: string;
+  readonly environmentId: EnvironmentId | null;
+}) {
   const createProject = useAtomCommand(adeEnvironment.createProject, { reportFailure: false });
   const [name, setName] = useState("");
   const [repoPath, setRepoPath] = useState("");
@@ -80,7 +87,7 @@ function FirstProjectCta({ environmentId }: { readonly environmentId: Environmen
   };
 
   return (
-    <Empty className="rounded-lg border border-border">
+    <Empty className={cn("rounded-lg border border-border", className)}>
       <EmptyHeader>
         <EmptyTitle>Create your first project</EmptyTitle>
         <EmptyDescription>

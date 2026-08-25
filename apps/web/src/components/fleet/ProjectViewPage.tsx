@@ -182,7 +182,7 @@ function CrewPanel({ projectId }: { readonly projectId: AdeProjectId }) {
                 size="sm"
                 variant="outline"
                 render={
-                  <Link to="/fleet/$botId/chat" params={{ botId: row.botId }}>
+                  <Link to="/fleet/$botId" params={{ botId: row.botId }}>
                     <MessageSquareIcon aria-hidden />
                     {row.chatLabel}
                   </Link>

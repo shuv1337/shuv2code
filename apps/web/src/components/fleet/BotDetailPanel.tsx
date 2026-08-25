@@ -279,7 +279,7 @@ function BotHeader({ botId, detail }: { readonly botId: BotId; readonly detail: 
         <span className="truncate text-xs text-muted-foreground">{view.projectLabel}</span>
         <Button
           className="ml-auto shrink-0"
-          render={<Link params={{ botId }} to="/fleet/$botId/chat" />}
+          render={<Link params={{ botId }} to="/fleet/$botId" />}
           size="sm"
           variant="outline"
         >

@@ -31,7 +31,7 @@ export function ContactRow({
             render={
               <Link
                 aria-current={isActive ? "page" : undefined}
-                aria-label={row.name}
+                aria-label={`${row.name} — ${row.presenceLabel}`}
                 className={cn(
                   "flex h-12 items-center justify-center rounded-lg outline-hidden transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring",
                   isActive && "bg-sidebar-row-hover",
@@ -41,9 +41,14 @@ export function ContactRow({
               />
             }
           >
-            <BotAvatar avatar={row.avatar} size="md" />
+            <span className="relative flex">
+              <BotAvatar avatar={row.avatar} size="md" />
+              <PresenceDot isOnline={row.isOnline} />
+            </span>
           </TooltipTrigger>
-          <TooltipPopup side="right">{row.name}</TooltipPopup>
+          <TooltipPopup side="right">
+            {row.name} — {row.presenceLabel}
+          </TooltipPopup>
         </Tooltip>
       </li>
     );
@@ -61,7 +66,10 @@ export function ContactRow({
         title={row.chatLabel}
         to="/fleet/$botId"
       >
-        <BotAvatar avatar={row.avatar} size="lg" />
+        <span className="relative flex shrink-0">
+          <BotAvatar avatar={row.avatar} size="lg" />
+          <PresenceDot isOnline={row.isOnline} />
+        </span>
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
             {row.isFirstmate ? (
@@ -81,5 +89,23 @@ export function ContactRow({
         </span>
       </Link>
     </li>
+  );
+}
+
+/**
+ * Warm-session presence. A hollow ring rather than nothing for an idle bot, so
+ * "no session" reads as a state the row is reporting rather than as a dot that
+ * failed to render. Labelled by the row, not by itself.
+ */
+function PresenceDot({ isOnline }: { readonly isOnline: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "size-2.5 rounded-full border-2 border-sidebar",
+        "absolute end-0 bottom-0",
+        isOnline ? "bg-emerald-500" : "bg-sidebar-muted-foreground/40",
+      )}
+    />
   );
 }

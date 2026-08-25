@@ -2,11 +2,13 @@ import type { BotId } from "@shuv2code/contracts";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeftIcon, PanelRightIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
 import { useUiStateStore } from "../../uiStateStore";
+import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
 import { ContactRail } from "./ContactRail";
@@ -14,10 +16,10 @@ import {
   CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY,
   CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY,
   CAPTAIN_RIGHT_RAIL_WIDTH_PX,
-  CAPTAIN_SINGLE_COLUMN_MEDIA_QUERY,
   CAPTAIN_THREE_RAIL_MEDIA_QUERY,
   type CaptainLayoutMode,
   captainGridTemplateColumns,
+  resolveCaptainLayoutModeFromMediaMatches,
   resolveCaptainShellRegions,
 } from "./captainShell.logic";
 
@@ -39,15 +41,19 @@ import {
  *   `RoutinesPanel`; until then the prop is absent and the region — and its
  *   header toggle — do not render at all, rather than reserving 470px of
  *   nothing.
+ * - `conversationHeaderActions` is where M2's identity gear and inline rename
+ *   mount, so the conversation header does not have to be re-cut for them.
  */
 export function CaptainShell({
   activeBotId,
   children,
+  conversationHeaderActions,
   rightRail,
 }: {
   /** Null at the `/fleet` index, set at `/fleet/$botId`. */
   readonly activeBotId: BotId | null;
   readonly children: ReactNode;
+  readonly conversationHeaderActions?: ReactNode;
   readonly rightRail?: ReactNode;
 }) {
   const mode = useCaptainLayoutMode();
@@ -62,16 +68,62 @@ export function CaptainShell({
     hasConversation: activeBotId !== null,
   });
 
+  const hasRightRail = rightRail !== undefined && rightRail !== null;
+  const rightRailInline = hasRightRail && regions.rightRailInline;
+
+  /**
+   * The overlay's openness is *ephemeral*, not the persisted collapse flag.
+   * Those are different questions: the flag says whether the captain wants the
+   * panel docked when there is room to dock it, and an overlay that inherited
+   * it would slide over the conversation unbidden the moment the window
+   * narrowed. An overlay opens because someone asked for it, and it starts
+   * closed every time.
+   */
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const rightRailToggleRef = useRef<HTMLButtonElement | null>(null);
+  const rightRailOverlayOpen = hasRightRail && !regions.rightRailInline && overlayOpen;
+
+  // Leaving overlay territory (or losing the rail entirely) must not leave a
+  // latched "open" behind to spring back on the next resize.
+  useEffect(() => {
+    if (!hasRightRail || regions.rightRailInline) {
+      setOverlayOpen(false);
+    }
+  }, [hasRightRail, regions.rightRailInline]);
+
+  const closeRightRailOverlay = useCallback(() => {
+    setOverlayOpen(false);
+    // Focus came from the toggle; it goes back there rather than to the top of
+    // the document, which is where a dismissed overlay usually strands it.
+    rightRailToggleRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!rightRailOverlayOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      closeRightRailOverlay();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [closeRightRailOverlay, rightRailOverlayOpen]);
+
   const toggleLeftRail = useCallback(() => {
     setCaptainRailCollapsed("left", !leftRailCollapsed);
   }, [leftRailCollapsed, setCaptainRailCollapsed]);
-  const toggleRightRail = useCallback(() => {
-    setCaptainRailCollapsed("right", !rightRailCollapsed);
-  }, [rightRailCollapsed, setCaptainRailCollapsed]);
 
-  const hasRightRail = rightRail !== undefined && rightRail !== null;
-  const rightRailInline = hasRightRail && regions.rightRailInline;
-  const rightRailOverlayOpen = hasRightRail && !regions.rightRailInline && !rightRailCollapsed;
+  const toggleRightRail = useCallback(() => {
+    if (mode === "three-rails") {
+      // Only here is there room to dock, so only here does the toggle mean
+      // "dock/undock" — and that choice is the one worth persisting.
+      setCaptainRailCollapsed("right", !rightRailCollapsed);
+      return;
+    }
+    setOverlayOpen((open) => !open);
+  }, [mode, rightRailCollapsed, setCaptainRailCollapsed]);
+
+  const rightRailShown = rightRailInline || rightRailOverlayOpen;
 
   return (
     <SidebarInset className="isolate h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -91,34 +143,25 @@ export function CaptainShell({
 
         {regions.showCenter ? (
           <div className="flex min-h-0 min-w-0 flex-col">
-            {regions.showBackChevron || (hasRightRail && regions.showRightRailToggle) ? (
-              <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border px-2">
-                {regions.showBackChevron ? (
-                  <Button
-                    aria-label="Back to contacts"
-                    render={<Link to="/fleet" />}
-                    size="icon-sm"
-                    variant="ghost"
-                  >
-                    <ChevronLeftIcon />
-                  </Button>
-                ) : (
-                  <span />
-                )}
-                {hasRightRail && regions.showRightRailToggle ? (
-                  <Button
-                    aria-label={
-                      rightRailInline || rightRailOverlayOpen ? "Hide bot panel" : "Show bot panel"
-                    }
-                    aria-pressed={rightRailInline || rightRailOverlayOpen}
-                    onClick={toggleRightRail}
-                    size="icon-sm"
-                    variant="ghost"
-                  >
-                    <PanelRightIcon />
-                  </Button>
-                ) : null}
-              </div>
+            {regions.showBackChevron ||
+            conversationHeaderActions !== undefined ||
+            (hasRightRail && regions.showRightRailToggle) ? (
+              <ConversationHeader
+                actions={conversationHeaderActions}
+                /*
+                 * The app sidebar's own collapse trigger is `fixed` at z-50
+                 * over the top-left corner. When the left rail is hidden this
+                 * header is what sits under it, so it takes the same titlebar
+                 * inset every other full-page surface uses. (When the rail is
+                 * visible the rail's own header takes it instead.)
+                 */
+                insetForTitlebar={regions.leftRail === "hidden"}
+                onToggleRightRail={toggleRightRail}
+                rightRailShown={rightRailShown}
+                rightRailToggleRef={rightRailToggleRef}
+                showBackChevron={regions.showBackChevron}
+                showRightRailToggle={hasRightRail && regions.showRightRailToggle}
+              />
             ) : null}
             {/*
              * `BotChatPage` still renders its own `h-dvh` `SidebarInset` (§5
@@ -146,7 +189,7 @@ export function CaptainShell({
             <button
               aria-label="Close bot panel"
               className="absolute inset-0 z-10 bg-black/30"
-              onClick={toggleRightRail}
+              onClick={closeRightRailOverlay}
               type="button"
             />
             <aside
@@ -171,6 +214,66 @@ export function CaptainShell({
 }
 
 /**
+ * The conversation region's own strip: back chevron when the list is gone,
+ * M2's identity controls in the middle, right-rail toggle at the end. It always
+ * renders, because it is also what clears the app's fixed sidebar trigger.
+ */
+function ConversationHeader({
+  actions,
+  insetForTitlebar,
+  onToggleRightRail,
+  rightRailShown,
+  rightRailToggleRef,
+  showBackChevron,
+  showRightRailToggle,
+}: {
+  readonly actions: ReactNode;
+  readonly insetForTitlebar: boolean;
+  readonly onToggleRightRail: () => void;
+  readonly rightRailShown: boolean;
+  readonly rightRailToggleRef: React.RefObject<HTMLButtonElement | null>;
+  readonly showBackChevron: boolean;
+  readonly showRightRailToggle: boolean;
+}) {
+  return (
+    <header
+      className={cn(
+        "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center justify-between gap-2 border-b border-border px-2 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
+        isElectron && "drag-region",
+        insetForTitlebar && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+      )}
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        {showBackChevron ? (
+          <Button
+            aria-label="Back to contacts"
+            render={<Link to="/fleet" />}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <ChevronLeftIcon />
+          </Button>
+        ) : null}
+        {actions}
+      </span>
+      {showRightRailToggle ? (
+        <Button
+          aria-label={rightRailShown ? "Hide bot panel" : "Show bot panel"}
+          aria-pressed={rightRailShown}
+          className="wco:me-[var(--workspace-native-controls-inset)]"
+          onClick={onToggleRightRail}
+          ref={rightRailToggleRef}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <PanelRightIcon />
+        </Button>
+      ) : null}
+    </header>
+  );
+}
+
+/**
  * The active band, read from the same media queries the logic module defines
  * so a band cannot drift between the tested function and the DOM.
  */
@@ -178,13 +281,10 @@ function useCaptainLayoutMode(): CaptainLayoutMode {
   const threeRails = useMediaQuery(CAPTAIN_THREE_RAIL_MEDIA_QUERY);
   const rightOverlay = useMediaQuery(CAPTAIN_RIGHT_OVERLAY_MEDIA_QUERY);
   const iconLeftRail = useMediaQuery(CAPTAIN_ICON_LEFT_RAIL_MEDIA_QUERY);
-  const singleColumn = useMediaQuery(CAPTAIN_SINGLE_COLUMN_MEDIA_QUERY);
-  if (singleColumn) return "single-column";
-  if (iconLeftRail) return "icon-left-rail";
-  if (rightOverlay) return "right-overlay";
-  if (threeRails) return "three-rails";
-  // No query matched, which means no `matchMedia` (SSR, a test renderer). The
-  // logic module's rule applies: fall back to the reference layout, never to
-  // the most degraded one.
-  return "three-rails";
+  return resolveCaptainLayoutModeFromMediaMatches({
+    hasMediaSupport: typeof window !== "undefined" && typeof window.matchMedia === "function",
+    threeRails,
+    rightOverlay,
+    iconLeftRail,
+  });
 }
