@@ -33,6 +33,12 @@ import { AdeAssignmentInlineChecks, AdeAssignmentToolHandlers } from "./ade/AdeA
 import { AdeBootstrap } from "./ade/AdeBootstrap.ts";
 import { AdeApprovalPortLayerLive } from "./ade/AdeApprovalPortLive.ts";
 import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
+import { AdeVoiceChannel, AdeVoicePrimaryTranscript } from "./ade/AdeVoiceChannel.ts";
+import {
+  AdeVoiceApprovalPortLayerLive,
+  AdeVoiceSummaryEscalationPortLayerLive,
+  AdeVoiceToolPlaneLayerLive,
+} from "./ade/AdeVoiceChannelPortsLive.ts";
 import { AdeHealthChecker } from "./ade/AdeHealthChecker.ts";
 import { layer as AdeIntegrationRepoPortLayer } from "./ade/AdeIntegrationRepoPort.ts";
 import { AdeIntegrationService } from "./ade/AdeIntegrationService.ts";
@@ -426,8 +432,24 @@ const AdeCaptainLayerLive = Layer.mergeAll(
   AdeAssignmentRunner.sweeperLive(),
   AdeIntegrationService.sweeperLive(),
   AdePublicationService.sweeperLive(),
+  AdeVoiceChannel.sweeperLive(),
   AdeShuvcodeDispatchLoop.live,
 ).pipe(
+  // ADE voice (spec §4.7, S16). It sits above the captain API because verbal
+  // approvals deliberately route through `submitNeedsYouDecision` rather than
+  // owning any Needs You writes of their own, and it exports the tool plane
+  // the controller MCP surface consults on every invocation.
+  Layer.provideMerge(AdeVoiceToolPlaneLayerLive),
+  Layer.provideMerge(
+    AdeVoiceChannel.layer.pipe(
+      Layer.provide(AdeVoiceApprovalPortLayerLive),
+      Layer.provide(AdeVoiceSummaryEscalationPortLayerLive),
+      // The bounded recent-messages window is not wired in V1: the ADE chat
+      // session owns that history and reading it here would mean a second
+      // path into the kernel. Persona + memory + assignments still ride in.
+      Layer.provide(AdeVoicePrimaryTranscript.layerEmpty),
+    ),
+  ),
   Layer.provideMerge(AdeCaptainApi.layer),
   // The captain's approval verdict reaches the integration service through
   // this port (spec §7 slice 5); it sits between the two so the captain API

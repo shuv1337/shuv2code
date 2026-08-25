@@ -10,6 +10,7 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas.ts";
+import { BotId } from "./ade.ts";
 import { ModelSelection, RuntimeMode } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -308,6 +309,14 @@ export const VoiceSessionStartInput = Schema.Struct({
    */
   transportModelSelection: Schema.optionalKey(ModelSelection),
   purpose: Schema.optionalKey(Schema.Literals(["conversation", "transcription"])),
+  /**
+   * Open this controller session as an ADE bot's voice call (§4.7): the call
+   * runs on that bot's `purpose: "voice"` binding, is seeded with its persona
+   * projection, and reaches the ADE tool catalog instead of the thread
+   * toolkit. Absent — the overwhelmingly common case — starts an ordinary
+   * controller session with nothing changed.
+   */
+  adeBotId: Schema.optionalKey(BotId),
   /** @deprecated Prefer `transport: { type: "webrtc", offerSdp }`. */
   offerSdp: Schema.optionalKey(SessionDescriptionSdp),
   transport: Schema.optionalKey(VoiceSessionStartTransport),

@@ -13,6 +13,7 @@ import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
+  AuthAdeApproveScope,
   type AuthEnvironmentScope,
   AuthSessionId,
   CommandId,
@@ -301,9 +302,20 @@ const makeVoiceRpcHandlers = (
     [WS_METHODS.voiceStart]: (
       input: Parameters<VoiceController.VoiceControllerService["Service"]["start"]>[0],
     ) =>
-      observeRpcEffect(WS_METHODS.voiceStart, voiceController.start(input), {
-        "rpc.aggregate": "voice",
-      }),
+      observeRpcEffect(
+        WS_METHODS.voiceStart,
+        // Additive read, not a new gate: `voice.start` keeps its own required
+        // scope, and this only decides whether an ADE call additionally gets
+        // the two captain approval tools (§4.7). A connection without
+        // `ade:approve` starts exactly the session it always did.
+        voiceController.start({
+          ...input,
+          captainChannel: currentSession.scopes.includes(AuthAdeApproveScope),
+        }),
+        {
+          "rpc.aggregate": "voice",
+        },
+      ),
     [WS_METHODS.voiceIngestRealtimeEvent]: (
       input: Parameters<
         VoiceController.VoiceControllerService["Service"]["ingestRealtimeEvent"]

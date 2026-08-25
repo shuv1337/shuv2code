@@ -460,7 +460,14 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
     const startTransport: VoiceTransportCoordinatorShape["startTransport"] = Effect.fn(
       "VoiceTransportCoordinator.startTransport",
     )(function* (input) {
-      const { start: startInput, binding, controllerRuntime, environmentId, workspaceRoot } = input;
+      const {
+        start: startInput,
+        binding,
+        controllerRuntime,
+        environmentId,
+        workspaceRoot,
+        adeInitialItems,
+      } = input;
       const purpose = startInput.purpose ?? "conversation";
       const owner =
         startInput.owner ??
@@ -604,6 +611,9 @@ export const makeVoiceTransportCoordinator = Effect.fn("VoiceTransportCoordinato
               : {}),
             ...(startInput.voiceId !== undefined ? { voiceId: startInput.voiceId } : {}),
             clientManagedHandoffs: true,
+            // §4.7 digest-in. Absent for every ordinary controller session, so
+            // this path is byte-identical to before for non-ADE voice.
+            ...(adeInitialItems === undefined ? {} : { initialItems: adeInitialItems }),
           })
           .pipe(
             Effect.mapError(

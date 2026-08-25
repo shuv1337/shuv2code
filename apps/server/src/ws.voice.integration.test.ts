@@ -49,6 +49,7 @@ import { VoiceTransportSessionRepository } from "./persistence/Services/VoiceTra
 import * as ServerSettings from "./serverSettings.ts";
 import { makeVoiceControllerActionRunner } from "./voice/Layers/VoiceControllerActionRunner.ts";
 import { makeVoiceCallBridge } from "./voice/Layers/VoiceCallBridge.ts";
+import { AdeVoiceChannel } from "./ade/AdeVoiceChannel.ts";
 import { makeVoiceControllerService } from "./voice/Layers/VoiceControllerService.ts";
 import { makeVoiceTargetMonitor } from "./voice/Layers/VoiceTargetMonitor.ts";
 import { makeVoiceSpeechArbiter } from "./voice/Layers/VoiceSpeechArbiter.ts";
@@ -387,6 +388,22 @@ describe("authenticated voice RPC vertical integration", () => {
           Effect.provide(NodeServices.layer),
         );
         const voiceController = yield* makeVoiceControllerService().pipe(
+          // No ADE call is ever opened in this test: `adeBotId` is absent from
+          // every start, so this stub must never be touched. It dies rather
+          // than returning something plausible, which is what makes the
+          // "non-ADE voice is unchanged" claim in this file load-bearing.
+          Effect.provideService(AdeVoiceChannel, {
+            openCall: () => Effect.die("no ADE call in this test"),
+            redial: () => Effect.die("no ADE call in this test"),
+            activeCall: () => Effect.succeed(null),
+            callByControllerThread: () => Effect.succeed(null),
+            dispatchTool: () => Effect.die("no ADE call in this test"),
+            prepareApproval: () => Effect.die("no ADE call in this test"),
+            commitApproval: () => Effect.die("no ADE call in this test"),
+            endCall: () => Effect.die("no ADE call in this test"),
+            sweepPendingSummaries: () =>
+              Effect.succeed({ delivered: 0, retrying: 0, escalated: 0 }),
+          } as unknown as AdeVoiceChannel["Service"]),
           Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
           Effect.provideService(ProjectionSnapshotQuery, projection),
           Effect.provideService(OrchestrationEngineService, engine),

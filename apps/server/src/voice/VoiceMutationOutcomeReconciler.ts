@@ -73,6 +73,34 @@ function userMessageClientId(item: unknown): string | undefined {
     : undefined;
 }
 
+/**
+ * The ADE voice catalog (spec §4.7, S16). These names can appear as the
+ * `toolName` of a recovered controller mutation once a controller thread has
+ * run as an ADE call, and they are **not** thread mutations: they do not go
+ * through `ThreadControlExecutionCoordinator`, leave no `userMessage`
+ * `clientId` in a provider turn, and mostly name no thread at all
+ * (`fleet_read`, `update_memory`, the approval pair).
+ *
+ * Reconciling them against a provider thread snapshot is therefore not merely
+ * unimplemented, it is meaningless — there is no provider-side evidence to
+ * read. They are named here so that outcome is *stated* rather than falling
+ * out of the generic "unsupported operation" path, which reads like a gap in
+ * this reconciler when it is actually a different durability model: ADE tool
+ * idempotency lives in the ADE engine (assignment `idempotencyKey`,
+ * last-write-wins memory, and the single-use approval token).
+ */
+const ADE_VOICE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "fleet_read",
+  "create_assignment",
+  "steer_primary",
+  "report_assignment_result",
+  "update_memory",
+  "prepare_approval",
+  "commit_approval",
+]);
+
+export const isAdeVoiceToolName = (toolName: string): boolean => ADE_VOICE_TOOL_NAMES.has(toolName);
+
 function mutationOperation(
   mutation: Pick<VoiceControllerMutation, "operationId" | "toolName">,
   persistedOutcome: ProviderEffectOutcome | undefined,
@@ -132,6 +160,12 @@ export function classifyAuthoritativeVoiceMutation(input: {
   readonly persistedOutcome?: ProviderEffectOutcome;
   readonly snapshot: ProviderThreadSnapshot;
 }): AuthoritativeDecision {
+  if (isAdeVoiceToolName(input.mutation.toolName)) {
+    return {
+      outcome: "indeterminate",
+      sanitizedCode: "provider_reconciliation_ade_tool_not_thread_mutation",
+    };
+  }
   const operation = mutationOperation(input.mutation, input.persistedOutcome);
   if (operation === undefined) {
     return {
