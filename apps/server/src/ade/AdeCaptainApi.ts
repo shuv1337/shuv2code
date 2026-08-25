@@ -23,6 +23,9 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  ASSIGNMENT_GRAPH_DEFAULT_LIMIT,
+  ASSIGNMENT_GRAPH_LINE_MAX_LENGTH,
+  ASSIGNMENT_GRAPH_MAX_LIMIT,
   type AdeAssignmentGraph,
   type AdeAssignmentGraphInput,
   type AdeAssignmentGraphNode,
@@ -33,7 +36,6 @@ import {
   type AdeCreateProjectInput,
   type AdeCreatedProject,
   type AdeEditPersonaInput,
-  type AdeListProjectCandidatesInput,
   type AdeNeedsYouCount,
   type AdeProject,
   type AdeProjectCandidates,
@@ -46,6 +48,7 @@ import {
   type AdeSetComputerUseInput,
   type AdeWriteMemoryInput,
   AdeCaptainError,
+  type Assignment,
   type Bot,
   type BotDisplayMeta,
   type BotId,
@@ -249,7 +252,7 @@ export const compareCrewMembers = (
  * panel prefers a live stack; a project whose last stack merged still shows it
  * rather than going blank, because "merged" is the answer the captain wants.
  */
-const LIVE_STACK_STATUSES: ReadonlyArray<PublicationStack["status"]> = new Set([
+const LIVE_STACK_STATUSES: ReadonlySet<PublicationStack["status"]> = new Set([
   "building",
   "review-frozen",
   "merging",
@@ -320,6 +323,33 @@ export const rowToLayer = (row: LayerRow): PublicationLayer => ({
 export const selectStackRow = (rows: ReadonlyArray<StackRow>): StackRow | null =>
   rows.find((row) => LIVE_STACK_STATUSES.has(row.status)) ?? rows[0] ?? null;
 
+/**
+ * Read-path decode that tolerates a corrupt row. The write-path mapper throws
+ * on bad JSON — correct there, wrong here: the work graph is polled, so one
+ * unparseable blob would otherwise blank it on every refresh forever.
+ */
+export const safeRowToAssignment = (row: AssignmentRow): Assignment | null => {
+  try {
+    return rowToAssignment(row);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * One bounded line for the graph. Instructions run to 120KB (spec §2.2) and
+ * the graph carries hundreds of nodes on a timer, so it ships a title, not a
+ * body.
+ */
+export const firstLine = (text: string): string => {
+  const line = text.split("\n", 1)[0]?.trim() ?? "";
+  return line.length <= ASSIGNMENT_GRAPH_LINE_MAX_LENGTH
+    ? line
+    : `${line.slice(0, ASSIGNMENT_GRAPH_LINE_MAX_LENGTH - 1).trimEnd()}…`;
+};
+
+const nullIfBlank = (value: string): string | null => (value.length === 0 ? null : value);
+
 const TEMPLATE_SUMMARIES: ReadonlyArray<AdeBotTemplateSummary> = Object.entries(
   ADE_BOT_TEMPLATES,
 ).map(([templateId, template]) => ({
@@ -355,9 +385,9 @@ export interface AdeCaptainApiShape {
   readonly getProject: (
     projectId: AdeProjectId,
   ) => Effect.Effect<AdeProjectDetail, AdeCaptainError>;
-  readonly listProjectCandidates: (
-    input: AdeListProjectCandidatesInput,
-  ) => Effect.Effect<AdeProjectCandidates, AdeCaptainError>;
+  readonly listProjectCandidates: (input: {
+    readonly projectId: AdeProjectId;
+  }) => Effect.Effect<AdeProjectCandidates, AdeCaptainError>;
   readonly getProjectPublicationStack: (
     projectId: AdeProjectId,
   ) => Effect.Effect<AdePublicationStackView | null, AdeCaptainError>;
@@ -696,22 +726,29 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
 
       const listProjectCandidates: AdeCaptainApiShape["listProjectCandidates"] = Effect.fn(
         "AdeCaptainApi.listProjectCandidates",
-      )(function* (input: AdeListProjectCandidatesInput) {
+      )(function* (input: { readonly projectId: AdeProjectId }) {
         yield* readProjectRow(input.projectId);
         // Queue order, oldest first — the same order the integration service
-        // itself walks (ADR §7.2), so the panel's top row is the head.
+        // itself walks (ADR §7.2), so the panel's top row is the head. No
+        // status filter: the panel's chips need counts for every status, so it
+        // takes the whole queue and narrows client-side.
         const rows = yield* sql<CandidateRow>`
           SELECT * FROM ade_integration_candidates
           WHERE project_id = ${input.projectId}
           ORDER BY created_at ASC, rowid ASC
         `;
-        const statuses = input.statuses;
-        const filtered =
-          statuses === undefined || statuses.length === 0
-            ? rows
-            : rows.filter((row) => statuses.includes(row.status as (typeof statuses)[number]));
-        const candidates = yield* Effect.forEach(filtered, rowToCandidate);
-        return { candidates } satisfies AdeProjectCandidates;
+        // `rowToCandidate` dies on an undecodable blob — correct for the write
+        // path, fatal here: this read is polled every few seconds, so one
+        // corrupt `bounce_json` would blank the panel forever. Skip the row,
+        // count it, and let the panel say so.
+        const decoded = yield* Effect.forEach(rows, (row) =>
+          rowToCandidate(row).pipe(Effect.catchCause(() => Effect.succeed(null))),
+        );
+        const candidates = decoded.filter((candidate) => candidate !== null);
+        return {
+          candidates,
+          unreadableRows: decoded.length - candidates.length,
+        } satisfies AdeProjectCandidates;
       }, captainize);
 
       const getProjectPublicationStack: AdeCaptainApiShape["getProjectPublicationStack"] =
@@ -743,51 +780,92 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         // Scope narrows on project only. Bot and status filtering stays on the
         // client (spec §7 slice 4) precisely so narrowing the list cannot cut
         // the lineage chain the tree is drawing.
-        const rows =
+        //
+        // The window is the other half of that bargain: `ade_assignments` only
+        // grows, and this is polled on a timer, so the read takes the most
+        // recent N and admits to the rest through `truncated`. One extra row is
+        // fetched purely to detect that there is a rest.
+        const limit = Math.min(
+          input.limit ?? ASSIGNMENT_GRAPH_DEFAULT_LIMIT,
+          ASSIGNMENT_GRAPH_MAX_LIMIT,
+        );
+        const windowed = limit + 1;
+        const recent =
           projectId === null
             ? yield* sql<AssignmentRow>`
-                SELECT * FROM ade_assignments ORDER BY created_at ASC, rowid ASC
+                SELECT * FROM ade_assignments
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ${windowed}
               `
             : yield* sql<AssignmentRow>`
                 SELECT * FROM ade_assignments
                 WHERE project_id = ${projectId}
-                ORDER BY created_at ASC, rowid ASC
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ${windowed}
               `;
-        // Counted across the whole table, not just this scope: a child may be
-        // addressed to a bot on another project, and the node has to admit to
-        // descendants the graph is not showing.
-        const childRows = yield* sql<{ parent_assignment_id: string; child_count: number }>`
-          SELECT parent_assignment_id, COUNT(*) AS child_count FROM ade_assignments
-          WHERE parent_assignment_id IS NOT NULL
-          GROUP BY parent_assignment_id
-        `;
-        const childCounts = new Map(
-          childRows.map((child) => [child.parent_assignment_id, child.child_count] as const),
-        );
+        const truncated = recent.length > limit;
+        // Back to oldest-first: the tree assembles parents before children, and
+        // the contract promises creation order.
+        const rows = recent.slice(0, limit).toReversed();
+
         const botRows = yield* sql<{ bot_id: string; name: string }>`
           SELECT bot_id, name FROM ade_bots
         `;
         const botNames = new Map(botRows.map((bot) => [bot.bot_id, bot.name] as const));
         const projects = yield* projectNames;
 
-        const nodes = rows.map((row) => {
-          const assignment = rowToAssignment(row);
-          return {
-            assignment,
-            // A deleted bot leaves forensic rows behind (055's delete graph);
-            // the graph names it rather than dropping the lineage.
-            botName: botNames.get(assignment.recipientBotId) ?? assignment.recipientBotId,
-            projectName:
-              assignment.projectId === null ? null : (projects.get(assignment.projectId) ?? null),
-            childCount: childCounts.get(assignment.id) ?? 0,
-          } satisfies AdeAssignmentGraphNode;
-        });
+        // `rowToAssignment` parses JSON and throws on a corrupt blob. Same
+        // reasoning as the queue: skip the row rather than fail a polled read.
+        const decoded = rows.map(safeRowToAssignment);
+        const assignments = decoded.filter((assignment) => assignment !== null);
 
-        const bots = [...new Map(nodes.map((node) => [node.assignment.recipientBotId, node]))]
+        // Children are counted *within this response* — scoped, not a
+        // table-wide GROUP BY. A child beyond the window or outside the project
+        // is simply not counted, which is what keeps this read bounded.
+        const childCounts = new Map<string, number>();
+        for (const assignment of assignments) {
+          const parentId = assignment.parentAssignmentId;
+          if (parentId === null) continue;
+          childCounts.set(parentId, (childCounts.get(parentId) ?? 0) + 1);
+        }
+
+        const nodes = assignments.map(
+          (assignment) =>
+            ({
+              id: assignment.id,
+              parentAssignmentId: assignment.parentAssignmentId,
+              recipientBotId: assignment.recipientBotId,
+              // A bot deleted mid-flight takes its assignments with it (055
+              // cascades on recipient), but a rename race can still miss; name
+              // the id rather than dropping the lineage.
+              botName: botNames.get(assignment.recipientBotId) ?? assignment.recipientBotId,
+              projectId: assignment.projectId,
+              projectName:
+                assignment.projectId === null ? null : (projects.get(assignment.projectId) ?? null),
+              status: assignment.status,
+              blockedReason: assignment.blockedReason,
+              declaredRisk: assignment.declaredRisk,
+              title: firstLine(assignment.instruction),
+              resultLine:
+                assignment.result === null
+                  ? null
+                  : nullIfBlank(firstLine(assignment.result.summary)),
+              resultStatus: assignment.result === null ? null : assignment.result.status,
+              childCount: childCounts.get(assignment.id) ?? 0,
+              createdAt: assignment.createdAt,
+            }) satisfies AdeAssignmentGraphNode,
+        );
+
+        const bots = [...new Map(nodes.map((node) => [node.recipientBotId, node]))]
           .map(([id, node]) => ({ id, name: node.botName }))
           .sort((left, right) => left.name.localeCompare(right.name));
 
-        return { nodes, bots } satisfies AdeAssignmentGraph;
+        return {
+          nodes,
+          bots,
+          truncated,
+          unreadableRows: decoded.length - assignments.length,
+        } satisfies AdeAssignmentGraph;
       }, captainize);
 
       return AdeCaptainApi.of({

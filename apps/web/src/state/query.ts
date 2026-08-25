@@ -10,6 +10,13 @@ const EMPTY_ASYNC_RESULT_ATOM = Atom.make(AsyncResult.initial<never, never>(fals
 export interface EnvironmentQueryView<A> {
   readonly data: A | null;
   readonly error: string | null;
+  /**
+   * The squashed failure itself, not its message. `error` flattens a tagged
+   * error to prose, which is fine for display and useless for branching — a
+   * surface that has to tell "this project is gone" from "the socket dropped"
+   * needs the tag (see `adeCaptainErrorReason`).
+   */
+  readonly failure: unknown;
   readonly isPending: boolean;
   readonly refresh: () => void;
 }
@@ -30,6 +37,7 @@ export function useEnvironmentQuery<A, E>(
   return {
     data: Option.getOrNull(AsyncResult.value(result)),
     error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
+    failure: result._tag === "Failure" ? Cause.squash(result.cause) : null,
     isPending: atom !== null && result.waiting,
     refresh,
   };

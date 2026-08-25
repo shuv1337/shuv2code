@@ -23,7 +23,28 @@ import type {
   PublicationStackId,
 } from "@shuv2code/contracts";
 
-import { structuralRoleLabel } from "../../state/ade.logic";
+import { adeCaptainErrorReason, structuralRoleLabel } from "../../state/ade.logic";
+
+/**
+ * Whether the project the route names is gone. Distinguished from every other
+ * failure because the recovery differs and because the alternative is worse
+ * than useless: with no branch, a deleted project renders as a healthy empty
+ * one — no crew, no queue, no stack — while four pollers retry a 404 forever.
+ */
+export function isProjectNotFound(failure: unknown): boolean {
+  return adeCaptainErrorReason(failure) === "project_not_found";
+}
+
+/**
+ * One line for rows a projection had to skip. Returning null for zero keeps the
+ * caller from rendering an empty warning chip in the common case.
+ */
+export function unreadableRowsLabel(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1
+    ? "1 row could not be read and is not shown"
+    : `${count} rows could not be read and are not shown`;
+}
 
 /** Semantic `Badge` tones, kept as a closed union so components stay thin. */
 export type PanelTone =
@@ -186,7 +207,7 @@ export interface CandidateRowView {
  * next: the running one if a pass is live, otherwise the oldest unsettled row.
  * Only one candidate per project can run (ADR §16.2), so this never ties.
  */
-const SETTLED: ReadonlyArray<IntegrationCandidateStatus> = new Set(["integrated", "bounced"]);
+const SETTLED: ReadonlySet<IntegrationCandidateStatus> = new Set(["integrated", "bounced"]);
 
 export function queueHeadId(
   candidates: ReadonlyArray<IntegrationCandidate>,

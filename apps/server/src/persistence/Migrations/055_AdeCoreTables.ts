@@ -219,6 +219,14 @@ export default Effect.gen(function* () {
     CREATE INDEX idx_ade_assignments_parent
     ON ade_assignments(parent_assignment_id)
   `;
+  // The captain's work graph (spec §7 slice 4) reads a project's assignments
+  // newest-first on a polling timer. Without this the graph degenerates to a
+  // full scan plus sort of a table that only ever grows.
+  // (Pre-release in-place edit on ade-v1.)
+  yield* sql`
+    CREATE INDEX idx_ade_assignments_project_recent
+    ON ade_assignments(project_id, created_at)
+  `;
 
   // Spec §2.3 / ADR §7.2, §16.2 — serialized integration queue. One running
   // candidate per project, enforced with a partial unique index; restart

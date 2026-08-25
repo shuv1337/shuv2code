@@ -70,7 +70,6 @@ import {
   type AdeCreateBotFromTemplateInput,
   type AdeCreateProjectInput,
   type AdeEditPersonaInput,
-  type AdeListProjectCandidatesInput,
   type AdeProjectId,
   type AdeSetComputerUseInput,
   type AdeWriteMemoryInput,
@@ -361,7 +360,7 @@ const makeAdeRpcHandlers = (
       observeRpcEffect(WS_METHODS.adeGetBot, adeCaptainApi.getBot(input.botId), ade),
     [WS_METHODS.adeGetProject]: (input: { readonly projectId: AdeProjectId }) =>
       observeRpcEffect(WS_METHODS.adeGetProject, adeCaptainApi.getProject(input.projectId), ade),
-    [WS_METHODS.adeListProjectCandidates]: (input: AdeListProjectCandidatesInput) =>
+    [WS_METHODS.adeListProjectCandidates]: (input: { readonly projectId: AdeProjectId }) =>
       observeRpcEffect(
         WS_METHODS.adeListProjectCandidates,
         adeCaptainApi.listProjectCandidates(input),

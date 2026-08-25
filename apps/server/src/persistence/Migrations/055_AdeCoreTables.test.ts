@@ -20,6 +20,26 @@ layer("055_AdeCoreTables", (it) => {
     }),
   );
 
+  it.effect("indexes a project's assignments by recency for the work graph", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+
+      // The graph reads a project's assignments newest-first on a timer; a
+      // plain scan of an ever-growing table is the failure this index prevents.
+      const plan = yield* sql<{ detail: string }>`
+        EXPLAIN QUERY PLAN
+        SELECT * FROM ade_assignments
+        WHERE project_id = 'project-1'
+        ORDER BY created_at DESC
+        LIMIT 10
+      `;
+      const detail = plan.map((row) => row.detail).join(" ");
+      assert.include(detail, "idx_ade_assignments_project_recent");
+      assert.notInclude(detail, "SCAN ade_assignments");
+    }),
+  );
+
   it.effect("persists one row per ADE entity across the table graph", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

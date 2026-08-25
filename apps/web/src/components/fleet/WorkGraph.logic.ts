@@ -77,7 +77,8 @@ export interface WorkGraphRow {
   readonly botId: BotId;
   readonly botName: string;
   readonly projectName: string | null;
-  readonly instruction: string;
+  /** One bounded line of the instruction; the full text lives on the assignment. */
+  readonly title: string;
   readonly statusLabel: string;
   readonly statusTone: PanelTone;
   readonly blockedLabel: string | null;
@@ -89,18 +90,18 @@ export interface WorkGraphRow {
    */
   readonly isContext: boolean;
   /**
-   * Children the tree is not drawing — either filtered out, or living outside
-   * this graph's project scope (a child may be addressed to a bot on another
-   * project, spec §2.2). Zero when everything is on screen.
+   * Children present in the response that the tree is not drawing because the
+   * filter pruned them. Children beyond the window or outside the project
+   * scope are not counted at all — `childCount` is scoped to the response.
    */
   readonly hiddenChildCount: number;
 }
 
 const matchesFilter = (node: AdeAssignmentGraphNode, filter: WorkGraphFilter): boolean =>
-  (filter.botId === null || node.assignment.recipientBotId === filter.botId) &&
-  (filter.status === null || node.assignment.status === filter.status);
+  (filter.botId === null || node.recipientBotId === filter.botId) &&
+  (filter.status === null || node.status === filter.status);
 
-const declaredRiskLabel = (risk: AdeAssignmentGraphNode["assignment"]["declaredRisk"]) =>
+const declaredRiskLabel = (risk: AdeAssignmentGraphNode["declaredRisk"]) =>
   risk === "normal" ? null : risk === "mechanical" ? "Mechanical" : "Protected";
 
 const toRow = (
@@ -109,24 +110,18 @@ const toRow = (
   isContext: boolean,
   hiddenChildCount: number,
 ): WorkGraphRow => ({
-  assignmentId: node.assignment.id,
-  parentAssignmentId: node.assignment.parentAssignmentId,
+  assignmentId: node.id,
+  parentAssignmentId: node.parentAssignmentId,
   depth,
-  botId: node.assignment.recipientBotId,
+  botId: node.recipientBotId,
   botName: node.botName,
   projectName: node.projectName,
-  instruction: node.assignment.instruction,
-  statusLabel: STATUS_LABELS[node.assignment.status],
-  statusTone: STATUS_TONES[node.assignment.status],
-  blockedLabel:
-    node.assignment.blockedReason === null
-      ? null
-      : BLOCKED_REASON_LABELS[node.assignment.blockedReason],
-  riskLabel: declaredRiskLabel(node.assignment.declaredRisk),
-  resultSummary:
-    node.assignment.result === null || node.assignment.result.summary.trim().length === 0
-      ? null
-      : node.assignment.result.summary.trim(),
+  title: node.title,
+  statusLabel: STATUS_LABELS[node.status],
+  statusTone: STATUS_TONES[node.status],
+  blockedLabel: node.blockedReason === null ? null : BLOCKED_REASON_LABELS[node.blockedReason],
+  riskLabel: declaredRiskLabel(node.declaredRisk),
+  resultSummary: node.resultLine,
   isContext,
   hiddenChildCount,
 });
@@ -144,9 +139,20 @@ export function getWorkGraphListRows(
 
 /**
  * Depth-first pre-order rows with indentation depth. A node whose parent is
- * absent from `graph.nodes` is a root *of this scope* — the project-scoped
- * graph is full of them (the captain-requested parent may live elsewhere), and
- * dropping them would empty the tree.
+ * absent from `graph.nodes` is a root *of this window* — both the project
+ * scope and the most-recent-N window produce them routinely (the parent may
+ * live on another project, or simply be older than the window), and dropping
+ * them would empty the tree.
+ *
+ * Two guards matter here and are both load-bearing:
+ *
+ * - **Memoization.** `shouldKeep` is asked for the same node once per parent
+ *   edge; without the `keep` map a wide fan-out re-walks whole subtrees.
+ * - **Cycle safety.** `parentAssignmentId` is not schema-constrained to be
+ *   acyclic, and a corrupt or hand-edited row could close a loop. `visiting`
+ *   makes that terminate (the cycle is reported as "keeps nothing") instead of
+ *   recursing until the tab dies — a pure view function must never be able to
+ *   hang the page on data it did not write.
  */
 export function getWorkGraphTreeRows(
   graph: AdeAssignmentGraph | null,
@@ -154,11 +160,11 @@ export function getWorkGraphTreeRows(
 ): ReadonlyArray<WorkGraphRow> {
   if (graph === null) return [];
 
-  const byId = new Map(graph.nodes.map((node) => [node.assignment.id, node] as const));
+  const byId = new Map(graph.nodes.map((node) => [node.id, node] as const));
   const childrenOf = new Map<AssignmentId, ReadonlyArray<AdeAssignmentGraphNode>>();
   const roots: AdeAssignmentGraphNode[] = [];
   for (const node of graph.nodes) {
-    const parentId = node.assignment.parentAssignmentId;
+    const parentId = node.parentAssignmentId;
     if (parentId === null || !byId.has(parentId)) {
       roots.push(node);
       continue;
@@ -172,7 +178,7 @@ export function getWorkGraphTreeRows(
   const keep = new Map<AssignmentId, boolean>();
   const visiting = new Set<AssignmentId>();
   const shouldKeep = (node: AdeAssignmentGraphNode): boolean => {
-    const id = node.assignment.id;
+    const id = node.id;
     const memo = keep.get(id);
     if (memo !== undefined) return memo;
     if (visiting.has(id)) return false;
@@ -187,7 +193,7 @@ export function getWorkGraphTreeRows(
   const rows: WorkGraphRow[] = [];
   const emitted = new Set<AssignmentId>();
   const walk = (node: AdeAssignmentGraphNode, depth: number): void => {
-    const id = node.assignment.id;
+    const id = node.id;
     if (emitted.has(id) || !shouldKeep(node)) return;
     emitted.add(id);
     const visibleChildren = (childrenOf.get(id) ?? []).filter((child) => shouldKeep(child));
@@ -214,8 +220,19 @@ export function workGraphStatusCounts(
     number
   >;
   if (graph === null) return counts;
-  for (const node of graph.nodes) counts[node.assignment.status] += 1;
+  for (const node of graph.nodes) counts[node.status] += 1;
   return counts;
+}
+
+/**
+ * What the panel says when the window cut off older work. The graph reads the
+ * most recent N assignments, so a long-lived project's tree is a recent slice
+ * and the UI has to admit it rather than implying it is the whole history.
+ */
+export function workGraphTruncationLabel(graph: AdeAssignmentGraph | null): string | null {
+  return graph === null || !graph.truncated
+    ? null
+    : `Showing the ${graph.nodes.length} most recent assignments; older work is not loaded.`;
 }
 
 /**

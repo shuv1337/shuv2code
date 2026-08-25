@@ -106,9 +106,11 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
         },
         crew: [],
       } as unknown as never),
-    listProjectCandidates: () => note("listProjectCandidates", { candidates: [] }),
+    listProjectCandidates: () =>
+      note("listProjectCandidates", { candidates: [], unreadableRows: 0 }),
     getProjectPublicationStack: () => note("getProjectPublicationStack", null),
-    getAssignmentGraph: () => note("getAssignmentGraph", { nodes: [], bots: [] }),
+    getAssignmentGraph: () =>
+      note("getAssignmentGraph", { nodes: [], bots: [], truncated: false, unreadableRows: 0 }),
     startBotChat: () =>
       note("startBotChat", {
         botId: BOT_ID,
@@ -148,7 +150,7 @@ describe("authenticated ADE captain RPCs", () => {
       );
       assert.deepStrictEqual(
         yield* readClient[WS_METHODS.adeListProjectCandidates]({ projectId: PROJECT_ID }),
-        { candidates: [] },
+        { candidates: [], unreadableRows: 0 },
       );
       assert.strictEqual(
         yield* readClient[WS_METHODS.adeGetProjectPublicationStack]({ projectId: PROJECT_ID }),
@@ -156,7 +158,7 @@ describe("authenticated ADE captain RPCs", () => {
       );
       assert.deepStrictEqual(
         yield* readClient[WS_METHODS.adeGetAssignmentGraph]({ projectId: null }),
-        { nodes: [], bots: [] },
+        { nodes: [], bots: [], truncated: false, unreadableRows: 0 },
       );
 
       const denials = [
