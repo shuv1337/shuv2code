@@ -4,7 +4,9 @@ import * as Schema from "effect/Schema";
 import {
   AdeBotChatSession,
   AdeCaptainError,
+  ADE_CREATE_BOT_TOOL_NAME_MAX_LENGTH,
   AdeCreateBotFromTemplateInput,
+  AdeCreateBotToolInput,
   AdeListNeedsYouInput,
   AdeProject,
   AdeRoster,
@@ -576,6 +578,36 @@ it("offers only the one-click crew templates, never a coordinator", () => {
   assert.throws(() =>
     decodeAdeCreateBotFromTemplateInput({ templateId: "second-mate", projectId: null }),
   );
+});
+
+it("decodes the create_bot tool input a coordinator writes", () => {
+  const decode = Schema.decodeUnknownSync(AdeCreateBotToolInput);
+
+  // Everything optional omitted: the template alone is a valid call.
+  const minimal = decode({ templateId: "researcher" });
+  assert.strictEqual(minimal.templateId, "researcher");
+  assert.isUndefined(minimal.name);
+  assert.isUndefined(minimal.projectId);
+
+  // Omitted and explicit-null projectId are different requests, so the
+  // decoded shape has to keep them apart.
+  assert.strictEqual(decode({ templateId: "coder", projectId: null }).projectId, null);
+  assert.strictEqual(
+    decode({ templateId: "coder", projectId: "project-1" }).projectId,
+    "project-1",
+  );
+
+  const named = decode({ templateId: "reviewer", name: "  Release Reviewer  " });
+  assert.strictEqual(named.name, "Release Reviewer");
+
+  // Reserved coordinator templates never reach a handler.
+  assert.throws(() => decode({ templateId: "firstmate" }));
+  assert.throws(() => decode({ templateId: "second-mate" }));
+  // Bounded name, non-empty name.
+  assert.throws(() =>
+    decode({ templateId: "coder", name: "x".repeat(ADE_CREATE_BOT_TOOL_NAME_MAX_LENGTH + 1) }),
+  );
+  assert.throws(() => decode({ templateId: "coder", name: "   " }));
 });
 
 it("carries a closed reason union on the captain error", () => {

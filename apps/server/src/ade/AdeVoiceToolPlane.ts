@@ -2,7 +2,7 @@
  * The controller MCP surface's view of an ADE voice call (spec §4.7, S16).
  *
  * The voice controller reaches its tools over MCP, so retargeting §4.7 means
- * retargeting *that* catalog — a controller on an ADE call must see the five
+ * retargeting *that* catalog — a controller on an ADE call must see the six
  * ADE tools instead of `thread_list`/`thread_get`/`thread_create`/
  * `thread_send`/`thread_interrupt`, and its invocations must run under the
  * call's bot authority.

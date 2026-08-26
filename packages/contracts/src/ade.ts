@@ -1060,6 +1060,45 @@ export const AdeCreateBotFromTemplateInput = Schema.Struct({
 export type AdeCreateBotFromTemplateInput = typeof AdeCreateBotFromTemplateInput.Type;
 
 /**
+ * Display-name bound for the `create_bot` fleet tool. Tighter than `BotName`
+ * (160) because a model writes this one: the rail truncates a long contact
+ * name anyway, and the de-duplicating suffix has to fit under `BotName`.
+ */
+export const ADE_CREATE_BOT_TOOL_NAME_MAX_LENGTH = 80;
+
+/**
+ * `create_bot` fleet-tool input (spec §3.1–3.2, issue #223).
+ *
+ * Distinct from {@link AdeCreateBotFromTemplateInput}, which is the captain's
+ * RPC: this one is decoded at the tool gate from model-authored JSON, so
+ * `projectId` is *optional* (omitted means "resolve from the caller") where
+ * the captain's RPC always states it, and `name` carries the tighter bound.
+ *
+ * Reserved templates are refused here rather than downstream: `AdeBotTemplateId`
+ * admits only the three specialist templates, so `firstmate` / `second-mate`
+ * fail to decode and come back as an ordinary invalid-input denial.
+ */
+export const AdeCreateBotToolInput = Schema.Struct({
+  templateId: AdeBotTemplateId,
+  name: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(ADE_CREATE_BOT_TOOL_NAME_MAX_LENGTH)),
+  ),
+  /** Omitted → the caller's own project; explicit null → fleet-shared. */
+  projectId: Schema.optional(Schema.NullOr(AdeProjectId)),
+});
+export type AdeCreateBotToolInput = typeof AdeCreateBotToolInput.Type;
+
+/** What `create_bot` reports back to the model (plus a one-line `summary`). */
+export const AdeCreatedBotToolResult = Schema.Struct({
+  botId: BotId,
+  name: BotName,
+  roleTag: BotRoleTag,
+  projectId: Schema.NullOr(AdeProjectId),
+  summary: Schema.String,
+});
+export type AdeCreatedBotToolResult = typeof AdeCreatedBotToolResult.Type;
+
+/**
  * Create an ADE project (spec §2.3, §4.1). Distinct from a shuv2code
  * workspace project: this is the organizational unit that owns a crew and
  * auto-creates its Second Mate. `repoPath` optionally binds it to a
