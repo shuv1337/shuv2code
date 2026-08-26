@@ -71,6 +71,8 @@ interface BotRow {
   readonly role_tag: string;
   readonly project_id: string | null;
   readonly archived_at: string | null;
+  /** Null for captain-created and boot-created bots (migration 061). */
+  readonly created_by_bot_id: string | null;
 }
 
 /**
@@ -139,7 +141,8 @@ export interface AdeRoutingGrants extends Pick<
 export const makeAdeRoutingGrants = (sql: SqlClient.SqlClient): AdeRoutingGrants => {
   const readBot = Effect.fn("AdeRoutingGrants.readBot")(function* (botId: string) {
     const rows = yield* sql<BotRow>`
-      SELECT bot_id, name, structural_role, role_tag, project_id, archived_at
+      SELECT bot_id, name, structural_role, role_tag, project_id, archived_at,
+             created_by_bot_id
       FROM ade_bots WHERE bot_id = ${botId}
     `;
     return rows[0] ?? null;
@@ -217,7 +220,8 @@ export const makeAdeRoutingGrants = (sql: SqlClient.SqlClient): AdeRoutingGrants
   const visibleBots: AdeRoutingGrants["visibleBots"] = Effect.fn("AdeRoutingGrants.visibleBots")(
     function* (callerBotId: BotId) {
       const bots = yield* sql<BotRow>`
-        SELECT bot_id, name, structural_role, role_tag, project_id, archived_at
+        SELECT bot_id, name, structural_role, role_tag, project_id, archived_at,
+               created_by_bot_id
         FROM ade_bots WHERE archived_at IS NULL
         ORDER BY created_at ASC, rowid ASC
       `;
@@ -270,6 +274,14 @@ interface FleetBotView {
   readonly structuralRole: BotStructuralRole;
   readonly roleTag: string;
   readonly projectId: string | null;
+  /**
+   * The project's display name. Ids are the only project handle the tool
+   * plane otherwise prints, and a model cannot turn one into the name the
+   * captain used — which is what made `create_bot`'s "for Harbor" unusable.
+   */
+  readonly projectName: string | null;
+  /** Which bot provisioned this one; null for captain/boot-created bots. */
+  readonly createdByBotId: string | null;
   readonly assignments: ReadonlyArray<{
     readonly assignmentId: string;
     readonly status: string;
@@ -316,6 +328,10 @@ export class AdeAssignmentToolHandlers extends Context.Service<
             input.projectId === undefined
               ? bots
               : bots.filter((bot) => bot.project_id === input.projectId);
+          const projectRows = yield* sql<{ project_id: string; name: string }>`
+            SELECT project_id, name FROM ade_projects
+          `;
+          const projectNames = new Map(projectRows.map((row) => [row.project_id, row.name]));
           const views: Array<FleetBotView> = [];
           for (const bot of narrowed) {
             const assignments = yield* engine.listForBot(bot.bot_id as BotId, {
@@ -327,6 +343,9 @@ export class AdeAssignmentToolHandlers extends Context.Service<
               structuralRole: bot.structural_role,
               roleTag: bot.role_tag,
               projectId: bot.project_id,
+              projectName:
+                bot.project_id === null ? null : (projectNames.get(bot.project_id) ?? null),
+              createdByBotId: bot.created_by_bot_id,
               assignments: assignments.map((assignment) => ({
                 assignmentId: assignment.id,
                 status: assignment.status,
@@ -340,6 +359,7 @@ export class AdeAssignmentToolHandlers extends Context.Service<
         },
         Effect.catchTags({
           PersistenceSqlError: (error) => executionError("fleet_read", error.message),
+          SqlError: (error) => executionError("fleet_read", error.message),
         }),
       );
 

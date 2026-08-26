@@ -722,4 +722,30 @@ layer("VoiceMutationOutcomeReconciler", (it) => {
         );
       }),
   );
+
+  /**
+   * `create_bot` is an ADE fleet tool, not a thread mutation, so there is no
+   * provider-side turn to read as evidence. It must say so explicitly rather
+   * than fall through to `unsupported_operation`, which would read like a gap
+   * in this reconciler instead of the different durability model it is: the
+   * replay key in migration 061 is what makes a recovered call safe.
+   */
+  it.effect("reports create_bot as an ADE tool rather than a thread mutation", () =>
+    Effect.sync(() => {
+      assert.deepStrictEqual(
+        classifyAuthoritativeVoiceMutation({
+          mutation: {
+            operationId: "voice:action-9:create_bot",
+            toolName: "create_bot",
+            semanticSlot: "create_bot:reviewer",
+          },
+          snapshot: { threadId: targetThreadId, turns: [] },
+        }),
+        {
+          outcome: "indeterminate",
+          sanitizedCode: "provider_reconciliation_ade_tool_not_thread_mutation",
+        },
+      );
+    }),
+  );
 });

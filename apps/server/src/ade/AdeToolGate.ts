@@ -598,10 +598,14 @@ const ADE_BASE_TOOLS: ReadonlyArray<AdeBaseToolSpec<unknown>> = [
       description:
         "Provision a new crew bot from a shipped template (coordinators only — the Firstmate and a project's Second Mate). " +
         "Templates: 'researcher' investigates and reports without shipping code, 'coder' implements scoped changes, " +
-        "'reviewer' reviews candidates before integration. Omit 'name' to take the template's default name; a name already " +
-        "used in the fleet gets a numeric suffix (\"Coder 2\"). Omit 'projectId' to create the bot in your own project; the " +
-        "Firstmate may name any existing project, or pass null for a fleet-shared specialist. The new bot is immediately " +
-        "assignable with create_assignment.",
+        "'reviewer' reviews candidates before integration. Coordinators are never instantiable: the Firstmate exists once " +
+        "from the boot check and a Second Mate only from project creation, so 'firstmate' and 'second-mate' are not valid " +
+        "templates and their names are reserved. Omit 'name' to take the template's default name; a name already used in " +
+        "the fleet gets a numeric suffix (\"Coder 2\"). 'projectId' accepts either a project id or a project's exact name " +
+        "(case-insensitive) — an ambiguous name is refused, so pass the id when two projects share a name. Omit it to " +
+        "create the bot in your own project; the Firstmate may name any existing project, or pass null for a fleet-shared " +
+        "specialist. Calling twice with the same template, name and project returns the bot the first call created rather " +
+        "than a second one. The new bot is immediately assignable with create_assignment.",
       parameters: {
         type: "object",
         properties: {
