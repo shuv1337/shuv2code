@@ -1,7 +1,12 @@
 import { expect, it } from "@effect/vitest";
 import { describe } from "vite-plus/test";
 
-import { assetResponseHeaders, isLoopbackHostname, resolveDevRedirectUrl } from "./http.ts";
+import {
+  assetResponseHeaders,
+  isLoopbackHostname,
+  parseAssetByteRange,
+  resolveDevRedirectUrl,
+} from "./http.ts";
 
 describe("http dev routing", () => {
   it("treats localhost and loopback addresses as local", () => {
@@ -40,8 +45,26 @@ describe("assetResponseHeaders", () => {
 
   it("does not apply document policy to raster images", () => {
     expect(assetResponseHeaders("/attachments/user-image.png")).toEqual({
+      "Accept-Ranges": "bytes",
       "Cache-Control": "private, max-age=3600",
       "X-Content-Type-Options": "nosniff",
     });
+  });
+});
+
+describe("parseAssetByteRange", () => {
+  it("parses bounded, open-ended, and suffix ranges", () => {
+    expect(parseAssetByteRange("bytes=10-19", 100)).toEqual({ start: 10, end: 19 });
+    expect(parseAssetByteRange("bytes=90-", 100)).toEqual({ start: 90, end: 99 });
+    expect(parseAssetByteRange("bytes=-10", 100)).toEqual({ start: 90, end: 99 });
+    expect(parseAssetByteRange("bytes=95-200", 100)).toEqual({ start: 95, end: 99 });
+  });
+
+  it("rejects unsupported syntax and identifies unsatisfiable ranges", () => {
+    expect(parseAssetByteRange("items=0-1", 100)).toBeUndefined();
+    expect(parseAssetByteRange("bytes=0-1,4-5", 100)).toBeUndefined();
+    expect(parseAssetByteRange("bytes=0-1-2", 100)).toBeUndefined();
+    expect(parseAssetByteRange("bytes=100-", 100)).toBe("unsatisfiable");
+    expect(parseAssetByteRange("bytes=20-10", 100)).toBe("unsatisfiable");
   });
 });

@@ -4,6 +4,7 @@ import {
   isWorkspaceBrowserPreviewPath,
   isWorkspaceImagePreviewPath,
   isWorkspacePreviewEntryPath,
+  isWorkspaceVideoPreviewPath,
 } from "./filePreview.ts";
 
 describe("workspace file previews", () => {
@@ -27,7 +28,15 @@ describe("workspace file previews", () => {
     expect(isWorkspacePreviewEntryPath(path)).toBe(true);
   });
 
-  it.each(["README.md", "src/index.ts", "image.png.ts", "png"])(
+  it.each(["clip.mp4", "capture.WEBM", "demo.mov?download=1", "movie.m4v", "film.ogv"])(
+    "recognizes video preview path %s",
+    (path) => {
+      expect(isWorkspaceVideoPreviewPath(path)).toBe(true);
+      expect(isWorkspacePreviewEntryPath(path)).toBe(true);
+    },
+  );
+
+  it.each(["README.md", "src/index.ts", "image.png.ts", "video.mp4.ts", "png"])(
     "rejects non-preview path %s",
     (path) => {
       expect(isWorkspacePreviewEntryPath(path)).toBe(false);

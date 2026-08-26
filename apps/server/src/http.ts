@@ -50,12 +50,42 @@ const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inlin
 
 export function assetResponseHeaders(filePath: string): Record<string, string> {
   return {
+    "Accept-Ranges": "bytes",
     "Cache-Control": "private, max-age=3600",
     "X-Content-Type-Options": "nosniff",
     ...(filePath.toLowerCase().endsWith(".svg")
       ? { "Content-Security-Policy": SVG_CONTENT_SECURITY_POLICY }
       : {}),
   };
+}
+
+export type AssetByteRange = { readonly start: number; readonly end: number };
+
+export function parseAssetByteRange(
+  header: string,
+  fileSize: number,
+): AssetByteRange | "unsatisfiable" | undefined {
+  const match = /^bytes\s*=\s*(\d*)\s*-\s*(\d*)$/i.exec(header.trim());
+  if (!match || !Number.isSafeInteger(fileSize) || fileSize < 0) {
+    return undefined;
+  }
+  const [, startPart = "", endPart = ""] = match;
+  if (startPart === "" && endPart === "") {
+    return undefined;
+  }
+
+  if (startPart === "") {
+    const suffixLength = Number(endPart);
+    if (!Number.isSafeInteger(suffixLength)) return undefined;
+    if (suffixLength === 0 || fileSize === 0) return "unsatisfiable";
+    return { start: Math.max(fileSize - suffixLength, 0), end: fileSize - 1 };
+  }
+
+  const start = Number(startPart);
+  const end = endPart === "" ? fileSize - 1 : Number(endPart);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return undefined;
+  if (start > end || start >= fileSize) return "unsatisfiable";
+  return { start, end: Math.min(end, fileSize - 1) };
 }
 
 export const httpCompressionLayer = HttpRouter.middleware(HttpMiddleware.compression(), {
@@ -296,6 +326,41 @@ export const assetRouteLayer = HttpRouter.add(
     );
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    const rangeHeader = request.headers["range"];
+    if (rangeHeader !== undefined) {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const info = yield* fileSystem.stat(asset.path).pipe(Effect.orElseSucceed(() => null));
+      if (!info || info.type !== "File") {
+        return HttpServerResponse.text("Not Found", { status: 404 });
+      }
+      const fileSize = Number(info.size);
+      const range = parseAssetByteRange(rangeHeader, fileSize);
+      if (range === "unsatisfiable") {
+        return HttpServerResponse.empty({
+          status: 416,
+          headers: {
+            ...assetResponseHeaders(asset.path),
+            "Content-Range": `bytes */${fileSize}`,
+          },
+        });
+      }
+      if (range !== undefined) {
+        return yield* HttpServerResponse.file(asset.path, {
+          status: 206,
+          offset: range.start,
+          bytesToRead: range.end - range.start + 1,
+          headers: {
+            ...assetResponseHeaders(asset.path),
+            "Content-Range": `bytes ${range.start}-${range.end}/${fileSize}`,
+          },
+        }).pipe(
+          Effect.orElseSucceed(() =>
+            HttpServerResponse.text("Internal Server Error", { status: 500 }),
+          ),
+        );
+      }
     }
     return yield* HttpServerResponse.file(asset.path, {
       status: 200,
