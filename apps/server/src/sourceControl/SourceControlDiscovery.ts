@@ -57,17 +57,6 @@ const VCS_PROBES: ReadonlyArray<VcsProbe> = [
   },
 ];
 
-const COMPANION_PROBES = [
-  {
-    kind: "juzu" as const,
-    label: "Juzu",
-    executable: "juzu",
-    versionArgs: ["--version"] as const,
-    implemented: true,
-    installHint: "Install Juzu to open Jujutsu workspaces in the integrated terminal.",
-  },
-];
-
 export class SourceControlDiscovery extends Context.Service<
   SourceControlDiscovery,
   {
@@ -144,12 +133,6 @@ export const make = Effect.gen(function* () {
       versionControlSystems: Effect.all(
         VCS_PROBES.map((entry) => probe(entry)) as ReadonlyArray<Effect.Effect<VcsDiscoveryItem>>,
         { concurrency: "unbounded" },
-      ),
-      companionTools: Effect.all(
-        COMPANION_PROBES.map((entry) => probe(entry)),
-        {
-          concurrency: "unbounded",
-        },
       ),
       sourceControlProviders: sourceControlProviders.discover,
     }),

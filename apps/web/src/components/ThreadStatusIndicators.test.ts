@@ -39,7 +39,6 @@ function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
       supportsFetch: true,
       supportsPush: true,
       supportsChangeRequests: true,
-      supportsJuzu: false,
       ignoreClassifier: "native",
     },
     isRepo: true,

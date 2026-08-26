@@ -344,7 +344,6 @@ export const GIT_VCS_CAPABILITIES = {
   supportsFetch: true,
   supportsPush: true,
   supportsChangeRequests: true,
-  supportsJuzu: false,
   ignoreClassifier: "native" as const,
 };
 

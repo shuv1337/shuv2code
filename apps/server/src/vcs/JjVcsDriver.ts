@@ -165,7 +165,6 @@ export const makeVcsDriver = Effect.gen(function* () {
     supportsFetch: true,
     supportsPush: true,
     supportsChangeRequests: true,
-    supportsJuzu: false,
     ignoreClassifier: "git-compatible-fallback" as const,
   };
 
@@ -809,33 +808,21 @@ export const makeVcsDriver = Effect.gen(function* () {
   const status: NonNullable<VcsDriver.VcsDriver["Service"]["status"]> = Effect.fn(
     "JjVcsDriver.status",
   )(function* (input) {
-    const [workingCopy, diffEntries, bookmarks, remotes, workspaces, juzuProbe, rootPath] =
-      yield* Effect.all(
-        [
-          readWorkingCopyCommit(input.cwd),
-          readDiffEntries(input.cwd),
-          readBookmarks(input.cwd),
-          listRemotes(input.cwd),
-          readWorkspaces(input.cwd),
-          process
-            .run({
-              operation: "JjVcsDriver.status.juzu",
-              command: "juzu",
-              args: ["--version"],
-              cwd: input.cwd,
-              allowNonZeroExit: true,
-              timeoutMs: 5_000,
-              maxOutputBytes: 8_192,
-            })
-            .pipe(Effect.orElseSucceed(() => null)),
-          runJj("JjVcsDriver.status.root", input.cwd, ["root"], {
-            timeoutMs: 5_000,
-            maxOutputBytes: 8_192,
-            ignoreWorkingCopy: true,
-          }).pipe(Effect.map((result) => result.stdout.trim())),
-        ],
-        { concurrency: "unbounded" },
-      );
+    const [workingCopy, diffEntries, bookmarks, remotes, workspaces, rootPath] = yield* Effect.all(
+      [
+        readWorkingCopyCommit(input.cwd),
+        readDiffEntries(input.cwd),
+        readBookmarks(input.cwd),
+        listRemotes(input.cwd),
+        readWorkspaces(input.cwd),
+        runJj("JjVcsDriver.status.root", input.cwd, ["root"], {
+          timeoutMs: 5_000,
+          maxOutputBytes: 8_192,
+          ignoreWorkingCopy: true,
+        }).pipe(Effect.map((result) => result.stdout.trim())),
+      ],
+      { concurrency: "unbounded" },
+    );
     const userBookmarks = bookmarks.filter((bookmark) => bookmark.remote !== "git");
     const defaultBookmarkName = yield* readDefaultLocalBookmarkName(input.cwd, userBookmarks);
     const remoteByName = new Map<string, RawJjBookmark[]>();
@@ -883,7 +870,6 @@ export const makeVcsDriver = Effect.gen(function* () {
         : path.basename(rootPath);
     const capabilities = {
       ...staticCapabilities,
-      supportsJuzu: juzuProbe !== null && juzuProbe.exitCode === 0,
       supportsChangeRequests:
         sourceControlProvider !== null && sourceControlProvider.kind !== "unknown",
     };

@@ -23,7 +23,6 @@ const UNKNOWN_CAPABILITIES = {
   supportsFetch: false,
   supportsPush: false,
   supportsChangeRequests: false,
-  supportsJuzu: false,
   ignoreClassifier: "native" as const,
 };
 

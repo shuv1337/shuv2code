@@ -1,4 +1,4 @@
-import { ChevronDownIcon, GitPullRequestIcon, InfoIcon, RefreshCwIcon } from "lucide-react";
+import { ChevronDownIcon, GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
@@ -77,7 +77,6 @@ import {
 
 const EMPTY_DISCOVERY_RESULT: SourceControlDiscoveryResult = {
   versionControlSystems: [],
-  companionTools: [],
   sourceControlProviders: [],
 };
 
@@ -623,10 +622,7 @@ export function SourceControlSettingsPanel() {
   );
   const result = discovery.data ?? EMPTY_DISCOVERY_RESULT;
   const hasVersionControlSystems = result.versionControlSystems.length > 0;
-  const hasDiscoveryItems =
-    hasVersionControlSystems ||
-    result.companionTools.length > 0 ||
-    result.sourceControlProviders.length > 0;
+  const hasDiscoveryItems = hasVersionControlSystems || result.sourceControlProviders.length > 0;
   const isInitialScanPending = discovery.isPending && discovery.data === null;
   const handleScan = () => {
     discovery.refresh();
@@ -671,16 +667,7 @@ export function SourceControlSettingsPanel() {
               />
               {result.versionControlSystems.map((item) => (
                 <DiscoveryItemRow key={`vcs:${item.kind}`} item={item}>
-                  {item.kind === "git" ? (
-                    <GitFetchIntervalSettings />
-                  ) : item.kind === "jj" ? (
-                    <div className="text-xs text-muted-foreground">
-                      {result.companionTools.find((tool) => tool.kind === "juzu")?.status ===
-                      "available"
-                        ? "Juzu terminal integration is available."
-                        : "Juzu is not installed; normal terminals remain available."}
-                    </div>
-                  ) : undefined}
+                  {item.kind === "git" ? <GitFetchIntervalSettings /> : undefined}
                 </DiscoveryItemRow>
               ))}
             </SettingsSection>

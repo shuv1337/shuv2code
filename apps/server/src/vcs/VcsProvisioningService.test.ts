@@ -27,7 +27,6 @@ function makeDriver(calls: string[]): VcsDriver.VcsDriver["Service"] {
       supportsFetch: true,
       supportsPush: true,
       supportsChangeRequests: true,
-      supportsJuzu: false,
       ignoreClassifier: "native",
     },
     execute: () =>

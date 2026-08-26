@@ -182,7 +182,6 @@ describe("applyGitStatusStreamEvent", () => {
         supportsFetch: false,
         supportsPush: false,
         supportsChangeRequests: false,
-        supportsJuzu: false,
         ignoreClassifier: "native",
       },
       isRepo: true,
@@ -216,7 +215,6 @@ describe("applyGitStatusStreamEvent", () => {
         supportsFetch: true,
         supportsPush: true,
         supportsChangeRequests: true,
-        supportsJuzu: false,
         ignoreClassifier: "native",
       },
       selection: {

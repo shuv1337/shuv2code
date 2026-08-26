@@ -490,7 +490,6 @@ const buildAppUnderTest = (options?: {
         supportsFetch: true,
         supportsPush: true,
         supportsChangeRequests: true,
-        supportsJuzu: false,
         ignoreClassifier: "native",
       },
       execute: () =>
@@ -7679,7 +7678,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               supportsFetch: true,
               supportsPush: true,
               supportsChangeRequests: true,
-              supportsJuzu: false,
               ignoreClassifier: "git-compatible-fallback",
             },
             detectRepository: (cwd) =>
@@ -7718,7 +7716,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   supportsFetch: true,
                   supportsPush: true,
                   supportsChangeRequests: true,
-                  supportsJuzu: false,
                   ignoreClassifier: "git-compatible-fallback",
                 },
                 isRepo: true,

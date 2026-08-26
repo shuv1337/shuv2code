@@ -1,4 +1,3 @@
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { VcsDriverKind } from "./vcs.ts";
@@ -138,13 +137,6 @@ export const VcsDiscoveryItem = Schema.Struct({
 });
 export type VcsDiscoveryItem = typeof VcsDiscoveryItem.Type;
 
-export const VcsCompanionDiscoveryItem = Schema.Struct({
-  kind: Schema.Literal("juzu"),
-  implemented: Schema.Boolean,
-  ...SourceControlDiscoverySharedFields,
-});
-export type VcsCompanionDiscoveryItem = typeof VcsCompanionDiscoveryItem.Type;
-
 export const SourceControlProviderDiscoveryItem = Schema.Struct({
   kind: SourceControlProviderKind,
   ...SourceControlDiscoverySharedFields,
@@ -154,9 +146,6 @@ export type SourceControlProviderDiscoveryItem = typeof SourceControlProviderDis
 
 export const SourceControlDiscoveryResult = Schema.Struct({
   versionControlSystems: Schema.Array(VcsDiscoveryItem),
-  companionTools: Schema.Array(VcsCompanionDiscoveryItem).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
   sourceControlProviders: Schema.Array(SourceControlProviderDiscoveryItem),
 });
 export type SourceControlDiscoveryResult = typeof SourceControlDiscoveryResult.Type;

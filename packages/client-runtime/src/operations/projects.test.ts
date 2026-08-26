@@ -136,7 +136,6 @@ describe("add project shared logic", () => {
   it("marks authenticated source control providers as ready", () => {
     const discovery: SourceControlDiscoveryResult = {
       versionControlSystems: [],
-      companionTools: [],
       sourceControlProviders: [
         {
           kind: "github",
