@@ -78,6 +78,8 @@ export async function pickComposerImages(input: { readonly existingCount: number
       selectionLimit: remainingSlots,
       base64: true,
       quality: 1,
+      preferredAssetRepresentationMode:
+        imagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
     });
   } finally {
     endHandoff();
@@ -94,13 +96,9 @@ export async function pickComposerImages(input: { readonly existingCount: number
   let error: string | null = null;
 
   for (const asset of result.assets) {
-    const mimeType = asset.mimeType?.toLowerCase();
-    if (!mimeType?.startsWith("image/")) {
+    const reportedMimeType = asset.mimeType?.toLowerCase();
+    if (!reportedMimeType?.startsWith("image/")) {
       error = `Unsupported file type for '${asset.fileName ?? "image"}'.`;
-      continue;
-    }
-    if (!isProviderSendTurnSupportedImageMimeType(mimeType)) {
-      error = `'${asset.fileName ?? "image"}' is not a supported image type. Attach GIF, JPEG, PNG, or WebP images.`;
       continue;
     }
 
@@ -110,7 +108,15 @@ export async function pickComposerImages(input: { readonly existingCount: number
       continue;
     }
 
-    const sizeBytes = asset.fileSize ?? estimateBase64ByteSize(base64);
+    // Expo can report the source asset as HEIC while returning JPEG base64,
+    // especially when iOS supplies a compatible representation.
+    const mimeType = base64.startsWith("/9j/") ? "image/jpeg" : reportedMimeType;
+    if (!isProviderSendTurnSupportedImageMimeType(mimeType)) {
+      error = `'${asset.fileName ?? "image"}' is not a supported image type. Attach GIF, JPEG, PNG, or WebP images.`;
+      continue;
+    }
+
+    const sizeBytes = estimateBase64ByteSize(base64);
     if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
       error = `'${asset.fileName ?? "image"}' exceeds the 10 MB attachment limit.`;
       continue;

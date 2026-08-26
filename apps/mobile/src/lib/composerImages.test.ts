@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@shuv2code/contracts";
 
 const files = new Map<string, { base64: string; deleted: boolean }>();
+const launchImageLibraryAsync = vi.hoisted(() => vi.fn());
+
+vi.mock("expo-image-picker", () => ({
+  launchImageLibraryAsync,
+  UIImagePickerPreferredAssetRepresentationMode: {
+    Compatible: "compatible",
+  },
+}));
 
 vi.mock("expo-file-system", () => ({
   File: class {
@@ -39,8 +47,65 @@ vi.mock("./uuid", () => ({
 import {
   convertPastedImagesToAttachments,
   isOwnedPastedImageUri,
+  pickComposerImages,
   toUploadChatImageAttachments,
 } from "./composerImages";
+
+describe("pickComposerImages", () => {
+  beforeEach(() => {
+    launchImageLibraryAsync.mockReset();
+  });
+
+  it("accepts an iPhone HEIC asset when Expo returns JPEG base64", async () => {
+    launchImageLibraryAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        {
+          uri: "file:///photos/IMG_0001.HEIC",
+          fileName: "IMG_0001.HEIC",
+          mimeType: "image/heic",
+          fileSize: 20,
+          base64: "/9j/2Q==",
+        },
+      ],
+    });
+
+    const result = await pickComposerImages({ existingCount: 0 });
+
+    expect(launchImageLibraryAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ preferredAssetRepresentationMode: "compatible" }),
+    );
+    expect(result).toEqual({
+      images: [
+        expect.objectContaining({
+          mimeType: "image/jpeg",
+          sizeBytes: 4,
+          dataUrl: "data:image/jpeg;base64,/9j/2Q==",
+        }),
+      ],
+      error: null,
+    });
+  });
+
+  it("still rejects unsupported image bytes", async () => {
+    launchImageLibraryAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        {
+          uri: "file:///photos/IMG_0001.HEIC",
+          fileName: "IMG_0001.HEIC",
+          mimeType: "image/heic",
+          base64: "AAAAHGZ0eXBoZWlj",
+        },
+      ],
+    });
+
+    const result = await pickComposerImages({ existingCount: 0 });
+
+    expect(result.images).toEqual([]);
+    expect(result.error).toContain("not a supported image type");
+  });
+});
 
 describe("toUploadChatImageAttachments", () => {
   it("strips client draft id and previewUri for the startTurn wire shape", () => {
