@@ -208,6 +208,7 @@ import {
   type LucideIcon,
   LockIcon,
   LockOpenIcon,
+  PaperclipIcon,
   PenLineIcon,
   SparklesIcon,
   XIcon,
@@ -1038,6 +1039,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const providerInputRejectedRef = useRef(false);
   const composerSelectLockRef = useRef(false);
   const composerMenuOpenRef = useRef(false);
@@ -2548,7 +2550,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         error = `'${file.name}' exceeds the ${FILE_SIZE_LIMIT_LABEL} attachment limit.`;
         continue;
       }
-      if (!isProviderSendTurnSupportedImageMimeType(file.type)) {
+      if (isImage && !isProviderSendTurnSupportedImageMimeType(file.type)) {
         error = `'${file.name}' is not a supported image type. Attach GIF, JPEG, PNG, or WebP images.`;
         continue;
       }
@@ -3414,6 +3416,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               )}
             >
               <div className="-m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <input
+                  ref={attachmentInputRef}
+                  type="file"
+                  accept="image/gif,image/jpeg,image/png,image/webp,application/pdf,.pdf"
+                  multiple
+                  className="sr-only"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  onChange={(event) => {
+                    const files = Array.from(event.currentTarget.files ?? []);
+                    event.currentTarget.value = "";
+                    void addComposerImages(files);
+                  }}
+                />
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  className="shrink-0"
+                  aria-label="Attach images or PDFs"
+                  disabled={pendingUserInputs.length > 0 || projectSelectionRequired}
+                  onClick={() => attachmentInputRef.current?.click()}
+                >
+                  <PaperclipIcon />
+                </Button>
                 {noProviderAvailable ? (
                   <Button
                     type="button"

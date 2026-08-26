@@ -614,6 +614,9 @@ export function NewTaskDraftScreen(props: {
     if (result.images.length > 0) {
       flow.appendAttachments(result.images);
     }
+    if (result.error) {
+      Alert.alert("Couldn't add image", result.error);
+    }
   }
 
   const handleNativePasteImages = useCallback(
