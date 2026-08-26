@@ -64,7 +64,6 @@ export const VcsDriverCapabilities = Schema.Struct({
   supportsFetch: Schema.Boolean,
   supportsPush: Schema.Boolean,
   supportsChangeRequests: Schema.Boolean,
-  supportsJuzu: Schema.Boolean,
   ignoreClassifier: Schema.Literals(["native", "git-compatible-fallback"]),
 });
 export type VcsDriverCapabilities = typeof VcsDriverCapabilities.Type;

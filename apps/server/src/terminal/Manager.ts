@@ -30,7 +30,6 @@ import {
   type TerminalSessionSnapshot,
   type TerminalSessionStatus,
   type TerminalSummary,
-  type TerminalTool,
   type TerminalWriteInput,
 } from "@shuv2code/contracts";
 import { makeKeyedCoalescingWorker } from "@shuv2code/shared/KeyedCoalescingWorker";
@@ -267,7 +266,6 @@ export interface TerminalSessionState {
   /** Normalized child command name when `hasRunningSubprocess`; cleared when idle. */
   childCommandLabel: string | null;
   runtimeEnv: Record<string, string> | null;
-  tool: TerminalTool | null;
 }
 
 interface PersistHistoryRequest {
@@ -371,7 +369,6 @@ function snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
     label: terminalWireLabel(session),
     updatedAt: session.updatedAt,
     sequence: session.eventSequence,
-    ...(session.tool ? { tool: session.tool } : {}),
   };
 }
 
@@ -388,7 +385,6 @@ function summary(session: TerminalSessionState): TerminalSummary {
     hasRunningSubprocess: session.hasRunningSubprocess,
     label: terminalWireLabel(session),
     updatedAt: session.updatedAt,
-    ...(session.tool ? { tool: session.tool } : {}),
   };
 }
 
@@ -2087,7 +2083,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       session.status = "starting";
       session.cwd = input.cwd;
       session.worktreePath = input.worktreePath ?? null;
-      session.tool = input.tool ?? session.tool;
       session.cols = input.cols;
       session.rows = input.rows;
       session.exitCode = null;
@@ -2108,10 +2103,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       increment(terminalSessionsTotal, { lifecycle: eventType }).pipe(
         Effect.andThen(
           Effect.gen(function* () {
-            const shellCandidates =
-              input.tool === "juzu"
-                ? [{ shell: "juzu", args: ["--path", input.cwd] }]
-                : resolveShellCandidates(shellResolver, platform, baseEnv);
+            const shellCandidates = resolveShellCandidates(shellResolver, platform, baseEnv);
             const terminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv);
             const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
             ptyProcess = spawnResult.process;
@@ -2421,7 +2413,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         hasRunningSubprocess: false,
         childCommandLabel: null,
         runtimeEnv: normalizedRuntimeEnv(input.env),
-        tool: input.tool ?? null,
       };
 
       const createdSession = session;
@@ -2442,7 +2433,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           cols,
           rows,
           ...(input.env ? { env: input.env } : {}),
-          ...(input.tool ? { tool: input.tool } : {}),
         },
         "started",
       );
@@ -2451,7 +2441,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     const liveSession = existing.value;
     const nextRuntimeEnv = normalizedRuntimeEnv(input.env);
-    const nextTool = input.tool ?? liveSession.tool;
     const currentRuntimeEnv = liveSession.runtimeEnv;
     const targetCols = input.cols ?? liveSession.cols;
     const targetRows = input.rows ?? liveSession.rows;
@@ -2461,15 +2450,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const launchContextChanged =
       liveSession.cwd !== input.cwd ||
       runtimeEnvChanged ||
-      liveSession.worktreePath !== nextWorktreePath ||
-      liveSession.tool !== nextTool;
+      liveSession.worktreePath !== nextWorktreePath;
 
     if (launchContextChanged) {
       yield* stopProcess(liveSession);
       liveSession.cwd = input.cwd;
       liveSession.worktreePath = nextWorktreePath;
       liveSession.runtimeEnv = nextRuntimeEnv;
-      liveSession.tool = nextTool;
       liveSession.history = "";
       liveSession.pendingHistoryControlSequence = emptyPendingHistoryControlSequence;
       liveSession.pendingProcessEvents = [];
@@ -2478,7 +2465,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       yield* persistHistory(liveSession.threadId, liveSession.terminalId, liveSession.history);
     } else if (liveSession.status === "exited" || liveSession.status === "error") {
       liveSession.runtimeEnv = nextRuntimeEnv;
-      liveSession.tool = nextTool;
       liveSession.worktreePath = nextWorktreePath;
       liveSession.history = "";
       liveSession.pendingHistoryControlSequence = emptyPendingHistoryControlSequence;
@@ -2499,7 +2485,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           cols: targetCols,
           rows: targetRows,
           ...(input.env ? { env: input.env } : {}),
-          ...(liveSession.tool ? { tool: liveSession.tool } : {}),
         },
         "started",
       );
@@ -2840,7 +2825,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             hasRunningSubprocess: false,
             childCommandLabel: null,
             runtimeEnv: normalizedRuntimeEnv(input.env),
-            tool: input.tool ?? null,
           };
           const createdSession = session;
           yield* modifyManagerState((state) => {
@@ -2855,7 +2839,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           session.cwd = input.cwd;
           session.worktreePath = input.worktreePath ?? null;
           session.runtimeEnv = normalizedRuntimeEnv(input.env);
-          session.tool = input.tool ?? session.tool;
         }
 
         const cols = input.cols ?? session.cols;
@@ -2877,7 +2860,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             cols,
             rows,
             ...(input.env ? { env: input.env } : {}),
-            ...(session.tool ? { tool: session.tool } : {}),
           },
           "restarted",
         );

@@ -31,7 +31,6 @@ function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
       supportsFetch: true,
       supportsPush: true,
       supportsChangeRequests: true,
-      supportsJuzu: false,
       ignoreClassifier: "native",
     },
     isRepo: true,
@@ -63,7 +62,6 @@ function jjStatus(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
       supportsPushDefaultRemote: false,
       supportsDescribeChange: true,
       supportsStartChange: true,
-      supportsJuzu: true,
     },
     refName: "feature/default",
     workingCopy: {

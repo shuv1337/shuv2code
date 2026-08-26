@@ -350,7 +350,6 @@ export function applyGitStatusStreamEvent(
               supportsFetch: false,
               supportsPush: false,
               supportsChangeRequests: false,
-              supportsJuzu: false,
               ignoreClassifier: "native",
             },
             isRepo: true,

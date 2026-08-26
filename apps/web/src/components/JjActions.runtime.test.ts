@@ -27,7 +27,6 @@ function jjStatus(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
       supportsFetch: true,
       supportsPush: true,
       supportsChangeRequests: true,
-      supportsJuzu: true,
       ignoreClassifier: "git-compatible-fallback",
     },
     isRepo: true,

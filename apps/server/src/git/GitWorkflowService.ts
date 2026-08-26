@@ -135,7 +135,6 @@ function nonRepositoryLocalStatus(selection?: VcsRepositorySelection): VcsStatus
       supportsFetch: false,
       supportsPush: false,
       supportsChangeRequests: false,
-      supportsJuzu: false,
       ignoreClassifier: "native",
     },
     ...(selection ? { selection } : {}),
