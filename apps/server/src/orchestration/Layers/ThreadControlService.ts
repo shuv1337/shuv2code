@@ -62,8 +62,7 @@ const clampLimit = (value: number, ceiling: number): number =>
 export function resolveUntrustedContextLimits(
   request: ThreadControlUntrustedContextRequest | undefined,
 ): UntrustedContextLimits {
-  const defaults =
-    request?.mode === "full" ? FULL_CONTEXT_CEILINGS : BOUNDED_CONTEXT_DEFAULTS;
+  const defaults = request?.mode === "full" ? FULL_CONTEXT_CEILINGS : BOUNDED_CONTEXT_DEFAULTS;
   const anchor = request?.anchor ?? "recent";
   if (request?.maxMessages === undefined && request?.maxTotalChars === undefined) {
     return {
@@ -106,10 +105,7 @@ export function untrustedThreadContext(
 ): ReadonlyArray<{ readonly role: "user" | "assistant"; readonly text: string }> {
   const selected: Array<{ readonly role: "user" | "assistant"; readonly text: string }> = [];
   let remaining = limits.maxTotalChars;
-  const ordered =
-    limits.anchor === "oldest"
-      ? messages
-      : [...messages].reverse();
+  const ordered = limits.anchor === "oldest" ? messages : [...messages].reverse();
   for (const message of ordered) {
     if (selected.length >= limits.maxMessages || remaining <= 0) break;
     if (
@@ -121,10 +117,7 @@ export function untrustedThreadContext(
     }
     const text = message.text.trim();
     if (text.length === 0) continue;
-    const bounded = text.slice(
-      0,
-      Math.min(limits.maxMessageChars, remaining),
-    );
+    const bounded = text.slice(0, Math.min(limits.maxMessageChars, remaining));
     if (bounded.length === 0) continue;
     if (limits.anchor === "oldest") {
       selected.push({ role: message.role, text: bounded });

@@ -82,8 +82,7 @@ export const ThreadGetInput = Schema.Struct({
         "When true, include the target conversation as explicitly untrusted target data. Bounded by default; set contextMode to 'full' for the complete transcript.",
     }),
   ).annotate({
-    description:
-      "Include the target conversation (bounded by default) as untrusted target data.",
+    description: "Include the target conversation (bounded by default) as untrusted target data.",
   }),
   context: Schema.optional(
     Schema.Struct({

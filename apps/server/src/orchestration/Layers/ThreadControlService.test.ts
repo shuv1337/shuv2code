@@ -17,6 +17,8 @@ import {
 import { completeClaimedMutationDispatch } from "../Services/ThreadControlExecutionCoordinator.ts";
 import { ThreadControlError } from "../Services/ThreadControlService.ts";
 
+const decodeModelSelection = Schema.decodeUnknownSync(ModelSelection);
+
 const failureCode = <A>(effect: Effect.Effect<A, { readonly code: string }>) =>
   effect.pipe(
     Effect.exit,
@@ -258,13 +260,10 @@ describe("ThreadControlService local mutation outbox", () => {
   );
 });
 
-
 describe("resolveControllerCreateModelSelection", () => {
   const instanceIdOf = (value: string) => value as ProviderInstanceId;
   const makeModel = (instanceId: string, model: string) =>
-    Effect.runSync(
-      Schema.decodeUnknownEffect(ModelSelection)({ instanceId, model }),
-    );
+    decodeModelSelection({ instanceId, model });
   const invalidModelCode = (run: () => unknown): string | null => {
     try {
       run();
@@ -368,7 +367,6 @@ describe("resolveControllerCreateModelSelection", () => {
   });
 });
 
-
 describe("untrustedThreadContext limits", () => {
   const longText = "x".repeat(50_000);
   const messages = [
@@ -392,7 +390,10 @@ describe("untrustedThreadContext limits", () => {
       messages,
       resolveUntrustedContextLimits({ mode: "full" }),
     );
-    assert.deepStrictEqual(context.map((m) => m.role), ["user", "assistant", "assistant"]);
+    assert.deepStrictEqual(
+      context.map((m) => m.role),
+      ["user", "assistant", "assistant"],
+    );
     assert.strictEqual(context[1]?.text.length, 50_000);
   });
 
@@ -419,9 +420,9 @@ describe("untrustedThreadContext limits", () => {
       messages,
       resolveUntrustedContextLimits({ maxMessages: 2, maxTotalChars: 100, anchor: "oldest" }),
     );
-    assert.deepStrictEqual(context.map((m) => m.text), [
-      "q1",
-      "x".repeat(98),
-    ]);
+    assert.deepStrictEqual(
+      context.map((m) => m.text),
+      ["q1", "x".repeat(98)],
+    );
   });
 });
