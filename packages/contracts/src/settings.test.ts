@@ -310,6 +310,12 @@ describe("ServerSettings voice control policy", () => {
     expect(settings.enableVoiceThreadRead).toBe(true);
     expect(settings.enableVoiceThreadControl).toBe(true);
     expect(settings.voiceNarrationLevel).toBe("balanced");
+    expect(settings.voiceControllerModelSelection).toEqual({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.6-luna",
+      options: [{ id: "reasoningEffort", value: "low" }],
+    });
+    expect(settings.voiceRealtimeModel).toBe("gpt-live-1-codex");
   });
 
   it("accepts independent voice capability patches", () => {
@@ -319,12 +325,22 @@ describe("ServerSettings voice control policy", () => {
         enableVoiceThreadRead: true,
         enableVoiceThreadControl: true,
         voiceNarrationLevel: "conversational",
+        voiceControllerModelSelection: {
+          instanceId: ProviderInstanceId.make("codex-work"),
+          model: "gpt-5.4",
+        },
+        voiceRealtimeModel: "gpt-live-next",
       }),
     ).toMatchObject({
       enableRealtimeVoice: true,
       enableVoiceThreadRead: true,
       enableVoiceThreadControl: true,
       voiceNarrationLevel: "conversational",
+      voiceControllerModelSelection: {
+        instanceId: ProviderInstanceId.make("codex-work"),
+        model: "gpt-5.4",
+      },
+      voiceRealtimeModel: "gpt-live-next",
     });
   });
 

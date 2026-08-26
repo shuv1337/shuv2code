@@ -97,6 +97,12 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     (_turnId?: TurnId): Promise<void> => Promise.resolve(undefined),
   );
 
+  public readonly startRealtimeImpl = vi.fn(
+    (_input: CodexSessionRuntimeRealtimeStartInput): void => undefined,
+  );
+
+  public readonly compactThreadImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+
   public readonly readThreadImpl = vi.fn(
     (): Promise<CodexThreadSnapshot> =>
       Promise.resolve({
@@ -163,8 +169,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     });
   }
 
-  startRealtime(_input: CodexSessionRuntimeRealtimeStartInput) {
-    return Effect.void;
+  startRealtime(input: CodexSessionRuntimeRealtimeStartInput) {
+    return Effect.sync(() => this.startRealtimeImpl(input));
   }
 
   appendRealtimeAudio(_input: CodexSessionRuntimeRealtimeAudioInput) {
@@ -207,6 +213,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   interruptTurn(turnId?: TurnId) {
     return Effect.promise(() => this.interruptTurnImpl(turnId));
   }
+
+  compactThread = Effect.promise(() => this.compactThreadImpl());
 
   readThread = Effect.promise(() => this.readThreadImpl());
 
@@ -393,6 +401,48 @@ validationLayer("CodexAdapterLive validation", (it) => {
         enableRealtimeConversation: true,
         runtimeMode: "approval-required",
       });
+    }),
+  );
+
+  it.effect("pins the compatible realtime model when the caller omits one", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("voice-transport-default-realtime-model");
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        threadPurpose: "voice-transport",
+        enableRealtimeConversation: true,
+        runtimeMode: "approval-required",
+      });
+      NodeAssert.ok(adapter.startRealtime);
+      yield* adapter.startRealtime({
+        threadId,
+        generation: 1,
+        realtimeSessionId: "realtime-default-model",
+        offerSdp: "offer-sdp",
+        transportType: "webrtc",
+        clientManagedHandoffs: true,
+      });
+
+      NodeAssert.deepStrictEqual(
+        validationRuntimeFactory.lastRuntime?.startRealtimeImpl.mock.calls,
+        [
+          [
+            {
+              generation: 1,
+              realtimeSessionId: "realtime-default-model",
+              version: "v3",
+              model: "gpt-live-1-codex",
+              outputModality: "audio",
+              clientManagedHandoffs: true,
+              transport: { type: "webrtc", sdp: "offer-sdp" },
+            },
+          ],
+        ],
+      );
     }),
   );
 

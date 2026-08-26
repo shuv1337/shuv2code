@@ -88,11 +88,13 @@ const withAdapterCapabilities = (
   snapshot: ServerProvider,
 ): ServerProvider => {
   const turnSteering = instance.adapter.capabilities.turnSteering;
+  const manualCompaction = instance.adapter.capabilities.manualCompaction;
   return {
     ...snapshot,
     capabilities: {
       ...snapshot.capabilities,
       ...(turnSteering === undefined ? {} : { turnSteering }),
+      ...(manualCompaction === undefined ? {} : { manualCompaction }),
     },
   };
 };

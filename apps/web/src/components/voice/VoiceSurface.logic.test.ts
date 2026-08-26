@@ -9,10 +9,11 @@ import {
   VoiceClientSessionId,
   VoiceGeneration,
 } from "@shuv2code/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   isVoiceCallContextAvailable,
+  prepareVoiceCallThread,
   resolveVoiceCallContext,
   resolveVoiceCallPresentation,
   resolveVoicePresencePhase,
@@ -112,6 +113,51 @@ describe("draft Call context", () => {
     await expect(resolveVoiceCallContext(draftContext, async () => materialized)).resolves.toEqual(
       materialized,
     );
+  });
+});
+
+describe("prepareVoiceCallThread", () => {
+  it("accepts provider-neutral ready threads without migration", async () => {
+    const prepare = vi.fn(async () => ({
+      state: "ready" as const,
+      threadId: callThreadId,
+      historyMode: "not-applicable" as const,
+    }));
+    const confirmMigration = vi.fn(async () => true);
+
+    await expect(prepareVoiceCallThread(prepare, confirmMigration)).resolves.toBe(true);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledWith("none");
+    expect(confirmMigration).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit approval before migrating Codex history", async () => {
+    const prepare = vi
+      .fn()
+      .mockResolvedValueOnce({
+        state: "migration-required" as const,
+        threadId: callThreadId,
+        bytesToProcess: 1024,
+      })
+      .mockResolvedValueOnce({
+        state: "ready" as const,
+        threadId: callThreadId,
+        historyMode: "paginated" as const,
+      });
+
+    await expect(prepareVoiceCallThread(prepare, async () => true)).resolves.toBe(true);
+    expect(prepare.mock.calls).toEqual([["none"], ["approved"]]);
+  });
+
+  it("stops before migration when approval is declined", async () => {
+    const prepare = vi.fn(async () => ({
+      state: "migration-required" as const,
+      threadId: callThreadId,
+      bytesToProcess: 1024,
+    }));
+
+    await expect(prepareVoiceCallThread(prepare, async () => false)).resolves.toBe(false);
+    expect(prepare).toHaveBeenCalledOnce();
   });
 });
 

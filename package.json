@@ -21,6 +21,7 @@
     "brand:check": "node scripts/check-brand-identity.ts",
     "schema:export": "node scripts/export-project-schema.ts",
     "schema:check": "node scripts/export-project-schema.ts --check",
+    "probe:codex-realtime": "node scripts/probe-codex-realtime.ts",
     "build": "vp run --filter './apps/*' --filter './packages/*' --filter './oxlint-plugin-shuv2code' --filter './scripts' build",
     "build:marketing": "vp run --filter @shuv2code/marketing build",
     "build:desktop": "vp run --filter @shuv2code/desktop --filter shuv2code build",

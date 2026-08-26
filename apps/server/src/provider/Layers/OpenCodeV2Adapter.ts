@@ -31,6 +31,7 @@ import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   latestOpenCodeV2ProjectedAssistantUsage,
+  openCodeUsageFromTokenCounters,
   openCodeV2ModelContextLimits,
 } from "../openCodeTokenUsage.ts";
 import {
@@ -167,6 +168,7 @@ interface OpenCodeV2SessionContext {
   readonly emittedTextByItemId: Map<string, string>;
   readonly modelContextLimits: ReadonlyMap<string, number>;
   activeTurnId: TurnId | undefined;
+  usageUpdatedDuringExecution: boolean;
   missingTerminalRecoveryAttempts: number;
   readonly stopped: Ref.Ref<boolean>;
   readonly sessionScope: Scope.Closeable;
@@ -743,6 +745,20 @@ export function makeOpenCodeV2Adapter(
       const turnId = context.activeTurnId;
 
       switch (event.type) {
+        case "session.compacted":
+        case "session.compaction.ended": {
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              createdAt,
+              raw: event,
+            })),
+            type: "thread.state.changed",
+            payload: { state: "compacted", detail: event },
+          });
+          break;
+        }
+
         case "session.renamed": {
           const title = asString(data.title);
           if (!title) break;
@@ -760,6 +776,7 @@ export function makeOpenCodeV2Adapter(
         case "session.execution.started": {
           const nextTurnId = turnId ?? TurnId.make(`opencode2-turn-${yield* randomUUIDv4}`);
           context.activeTurnId = nextTurnId;
+          context.usageUpdatedDuringExecution = false;
           context.session = { ...context.session, status: "running", activeTurnId: nextTurnId };
           writeResume(context);
           yield* emit({
@@ -774,17 +791,40 @@ export function makeOpenCodeV2Adapter(
           });
           break;
         }
+        case "session.usage.updated": {
+          const usage = openCodeUsageFromTokenCounters(
+            data.tokens,
+            context.session.model
+              ? context.modelContextLimits.get(context.session.model)
+              : undefined,
+          );
+          if (!usage) break;
+          context.usageUpdatedDuringExecution = true;
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId: context.activeTurnId,
+              createdAt,
+              raw: event,
+            })),
+            type: "thread.token-usage.updated",
+            payload: { usage },
+          });
+          break;
+        }
         case "session.execution.succeeded": {
           const completedTurnId = context.activeTurnId;
-          const tokenUsage = yield* Effect.tryPromise(() =>
-            context.client.session.messages(context.openCodeSessionId),
-          ).pipe(
-            Effect.timeout("2 seconds"),
-            Effect.map((messages) =>
-              latestOpenCodeV2ProjectedAssistantUsage(messages, context.modelContextLimits),
-            ),
-            Effect.orElseSucceed(() => undefined),
-          );
+          const tokenUsage = context.usageUpdatedDuringExecution
+            ? undefined
+            : yield* Effect.tryPromise(() =>
+                context.client.session.messages(context.openCodeSessionId),
+              ).pipe(
+                Effect.timeout("2 seconds"),
+                Effect.map((messages) =>
+                  latestOpenCodeV2ProjectedAssistantUsage(messages, context.modelContextLimits),
+                ),
+                Effect.orElseSucceed(() => undefined),
+              );
           if (tokenUsage) {
             yield* emit({
               ...(yield* buildEventBase({
@@ -797,6 +837,7 @@ export function makeOpenCodeV2Adapter(
               payload: { usage: tokenUsage.usage },
             });
           }
+          context.usageUpdatedDuringExecution = false;
           context.missingTerminalRecoveryAttempts = 0;
           context.activeTurnId = undefined;
           const { activeTurnId: _activeTurnId, ...settledSession } = context.session;
@@ -1607,6 +1648,7 @@ export function makeOpenCodeV2Adapter(
         emittedTextByItemId: new Map(),
         modelContextLimits: startedExit.value.modelContextLimits,
         activeTurnId: adoptedTurnId,
+        usageUpdatedDuringExecution: false,
         missingTerminalRecoveryAttempts: 0,
         stopped: yield* Ref.make(false),
         sessionScope,
@@ -1894,11 +1936,25 @@ export function makeOpenCodeV2Adapter(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
+        manualCompaction: true,
         hasDurableSessionRecovery: (resumeCursor) =>
           Effect.succeed(parseResumeCursor(resumeCursor) !== undefined),
       },
       startSession,
       sendTurn,
+      compactThread: Effect.fn("compactThread")(function* ({ threadId }) {
+        const context = yield* ensureSession(threadId);
+        yield* Effect.tryPromise({
+          try: () => context.client.session.compact(context.openCodeSessionId),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session.compact",
+              detail: cause instanceof Error ? cause.message : String(cause),
+              cause,
+            }),
+        });
+      }),
       interruptTurn: Effect.fn("interruptTurn")(function* (threadId, turnId) {
         const context = yield* ensureSession(threadId);
         const interruptedTurnId = turnId ?? context.activeTurnId;

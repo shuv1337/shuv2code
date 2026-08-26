@@ -23,6 +23,7 @@ import {
   type GitActionProgressEvent,
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
+  ProviderCompactThreadError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
@@ -183,6 +184,7 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import * as VoiceController from "./voice/Services/VoiceControllerService.ts";
+import * as ProviderService from "./provider/Services/ProviderService.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@shuv2code/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -859,6 +861,7 @@ export const makeWsRpcLayer = (
       const automationService = yield* AutomationService.AutomationService;
       const voiceController = yield* VoiceController.VoiceControllerService;
       const usage = yield* UsageService.UsageService;
+      const providerService = yield* ProviderService.ProviderService;
       const relayClient = yield* RelayClient.RelayClient;
       const { observeRpcEffect, observeRpcStream, observeRpcStreamEffect } =
         makeAuthorizedRpcObservers(currentSession);
@@ -1876,6 +1879,22 @@ export const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.serverProbe, Effect.succeed({}), {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.threadCompact]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.threadCompact,
+            providerService.compactThread(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderCompactThreadError({
+                    message:
+                      cause instanceof Error && cause.message.trim().length > 0
+                        ? cause.message
+                        : "Failed to compact the thread context.",
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "thread" },
+          ),
         [WS_METHODS.serverGetConfig]: (_input) =>
           observeRpcEffect(WS_METHODS.serverGetConfig, loadServerConfig, {
             "rpc.aggregate": "server",

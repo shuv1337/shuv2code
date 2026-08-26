@@ -1,3 +1,5 @@
+import { Minimize2Icon } from "lucide-react";
+
 import { Button } from "../ui/button";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -16,8 +18,13 @@ function formatPercentage(value: number | null): string | null {
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot;
   modelDisplayName?: string | null;
+  compactAction?: {
+    pending: boolean;
+    disabled: boolean;
+    run: () => void;
+  } | null;
 }) {
-  const { usage, modelDisplayName } = props;
+  const { usage, modelDisplayName, compactAction } = props;
   const usedPercentage = formatPercentage(usage.usedPercentage);
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0));
   const radius = 9.75;
@@ -126,9 +133,23 @@ export function ContextWindowMeter(props: {
               </span>
             </div>
           ) : null}
-          {usage.compactsAutomatically ? (
+          {usage.compactsAutomatically && !compactAction ? (
             <div className="mt-1 text-pretty text-secondary-label text-[11px] font-medium">
               {formatContextWindowCompactionMessage(modelDisplayName)}
+            </div>
+          ) : null}
+          {compactAction ? (
+            <div className="border-border/50 border-t pt-1.5">
+              <Button
+                size="compact"
+                variant="ghost-muted"
+                className="-mx-1 h-6 justify-start px-1.5 text-[11px]"
+                disabled={compactAction.disabled || compactAction.pending}
+                onClick={compactAction.run}
+              >
+                <Minimize2Icon aria-hidden="true" />
+                {compactAction.pending ? "Compacting..." : "Compact"}
+              </Button>
             </div>
           ) : null}
         </div>

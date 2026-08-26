@@ -359,6 +359,7 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
+      compactThread: () => unsupported(),
       steerTurn: steerTurn as ProviderServiceShape["steerTurn"],
       startRealtime: () => unsupported(),
       appendRealtimeText: () => unsupported(),

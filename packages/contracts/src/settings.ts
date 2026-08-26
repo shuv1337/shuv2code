@@ -451,6 +451,7 @@ export type TextToSpeechSettings = typeof TextToSpeechSettings.Type;
 export const VoiceNarrationLevel = Schema.Literals(["quiet", "balanced", "conversational"]);
 export type VoiceNarrationLevel = typeof VoiceNarrationLevel.Type;
 export const DEFAULT_VOICE_NARRATION_LEVEL: VoiceNarrationLevel = "balanced";
+export const DEFAULT_VOICE_REALTIME_MODEL = "gpt-live-1-codex";
 
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(30);
 export const DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL = Duration.minutes(5);
@@ -507,6 +508,23 @@ export const ServerSettings = Schema.Struct({
   enableVoiceThreadControl: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   voiceNarrationLevel: VoiceNarrationLevel.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_VOICE_NARRATION_LEVEL)),
+  ),
+  voiceControllerModelSelection: ModelSelection.pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed({
+        instanceId: ProviderInstanceId.make("codex"),
+        model: DEFAULT_TEXT_GENERATION_MODEL,
+        options: [
+          {
+            id: "reasoningEffort",
+            value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
+          },
+        ],
+      }),
+    ),
+  ),
+  voiceRealtimeModel: TrimmedNonEmptyString.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_VOICE_REALTIME_MODEL)),
   ),
   /**
    * Codex app-server process topology. `per-session` spawns one child per
@@ -664,6 +682,8 @@ export const ServerSettingsPatch = Schema.Struct({
   enableVoiceThreadRead: Schema.optionalKey(Schema.Boolean),
   enableVoiceThreadControl: Schema.optionalKey(Schema.Boolean),
   voiceNarrationLevel: Schema.optionalKey(VoiceNarrationLevel),
+  voiceControllerModelSelection: Schema.optionalKey(ModelSelection),
+  voiceRealtimeModel: Schema.optionalKey(TrimmedNonEmptyString),
   codexAppServerTopology: Schema.optionalKey(Schema.Literals(["per-session", "shared"])),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({

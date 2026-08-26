@@ -15,6 +15,7 @@ import {
   ThreadId,
   VoiceRuntimeInstanceId,
   ProviderDriverKind,
+  ProviderCompactThreadInput,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -1537,6 +1538,40 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const compactThread: ProviderServiceMethod<"compactThread"> = Effect.fn("compactThread")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.compactThread",
+        schema: ProviderCompactThreadInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.compactThread",
+        allowRecovery: true,
+      });
+      if (routed.adapter.capabilities.manualCompaction !== true || !routed.adapter.compactThread) {
+        return yield* toValidationError(
+          "ProviderService.compactThread",
+          `Provider '${routed.adapter.provider}' does not support manual compaction.`,
+        );
+      }
+      const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+      if (binding && readPersistedActiveTurnId(binding.runtimePayload) !== undefined) {
+        return yield* toValidationError(
+          "ProviderService.compactThread",
+          `Cannot compact thread '${input.threadId}' while a turn is active.`,
+        );
+      }
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "compact-thread",
+        "provider.kind": routed.adapter.provider,
+        "provider.thread_id": input.threadId,
+      });
+      yield* routed.adapter.compactThread(input);
+    },
+  );
+
   const respondToRequest: ProviderServiceMethod<"respondToRequest"> = Effect.fn("respondToRequest")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1988,6 +2023,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     stopRealtime,
     listRealtimeVoices,
     interruptTurn,
+    compactThread,
     respondToRequest,
     respondToUserInput,
     stopSession,

@@ -9,6 +9,7 @@ import type {
   VoiceCallPresence,
   VoiceControllerHistoryMessage,
   VoiceControllerIdentity,
+  VoicePrepareThreadCallResult,
 } from "@shuv2code/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -108,6 +109,11 @@ interface VoiceSessionContextValue {
     environmentId: EnvironmentId,
     controllerThreadId: ThreadId,
   ) => Promise<boolean>;
+  readonly prepareThreadCall: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    migrationApproval: "none" | "approved",
+  ) => Promise<VoicePrepareThreadCallResult>;
   readonly start: (input: StartVoiceSessionInput) => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly reconnect: () => Promise<void>;
@@ -191,6 +197,18 @@ export function VoiceSessionProvider({
       ).targetThreadId,
     [],
   );
+  const prepareThreadCall = useCallback(
+    async (
+      environmentId: EnvironmentId,
+      threadId: ThreadId,
+      migrationApproval: "none" | "approved",
+    ) =>
+      runVoiceCommand(realtimeVoiceEnvironment.prepareThreadCall, environmentId, {
+        threadId,
+        migrationApproval,
+      }),
+    [],
+  );
   const start = useCallback(
     (input: StartVoiceSessionInput) =>
       controller.start({
@@ -216,6 +234,7 @@ export function VoiceSessionProvider({
       getControllerHistory,
       setControllerTarget,
       resetController,
+      prepareThreadCall,
       start,
       stop: () => controller.stop(),
       reconnect: () => controller.reconnect(),
@@ -228,6 +247,7 @@ export function VoiceSessionProvider({
       getController,
       getControllerHistory,
       mediaActivity,
+      prepareThreadCall,
       resetController,
       setControllerTarget,
       start,

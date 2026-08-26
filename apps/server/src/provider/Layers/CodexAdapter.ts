@@ -8,6 +8,7 @@
  * @module CodexAdapterLive
  */
 import {
+  DEFAULT_VOICE_REALTIME_MODEL,
   type CanonicalItemType,
   type CanonicalRequestType,
   type CodexSettings,
@@ -2236,6 +2237,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           generation: input.generation,
           realtimeSessionId: input.realtimeSessionId,
           version: "v3",
+          model: input.model ?? DEFAULT_VOICE_REALTIME_MODEL,
           outputModality: "audio",
           clientManagedHandoffs: input.clientManagedHandoffs,
           ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
@@ -2407,6 +2409,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
+  const compactThread: CodexAdapterShape["compactThread"] = ({ threadId }) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => session.runtime.compactThread),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/compact/start", cause),
+      ),
+    );
+
   const readThread: CodexAdapterShape["readThread"] = (threadId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.readThread),
@@ -2535,6 +2547,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     capabilities: {
       sessionModelSwitch: "in-session",
       turnSteering: "same-turn",
+      manualCompaction: true,
     },
     startSession,
     recoverSessionByThreadSource,
@@ -2547,6 +2560,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     stopRealtime,
     listRealtimeVoices,
     interruptTurn,
+    compactThread,
     readThread,
     rollbackThread,
     respondToRequest,
