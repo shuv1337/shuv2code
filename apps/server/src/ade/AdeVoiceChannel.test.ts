@@ -617,6 +617,7 @@ describe("AdeVoiceChannel call surface", () => {
           "steer_primary",
           "report_assignment_result",
           "update_memory",
+          "create_bot",
           ADE_VOICE_PREPARE_APPROVAL_TOOL,
           ADE_VOICE_COMMIT_APPROVAL_TOOL,
         ],

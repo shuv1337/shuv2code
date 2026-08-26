@@ -59,6 +59,7 @@ const ctxFor = (
 const allowAllChecks: AdeToolInlineChecksShape = {
   isRoutingTargetAllowed: () => Effect.succeed({ allowed: true } as const),
   isAssignmentOwnedBy: () => Effect.succeed({ allowed: true } as const),
+  isBotProvisioningAllowed: () => Effect.succeed({ allowed: true } as const),
 };
 
 const denyAllChecks: AdeToolInlineChecksShape = {
@@ -66,6 +67,8 @@ const denyAllChecks: AdeToolInlineChecksShape = {
     Effect.succeed({ allowed: false, reason: "routing rules not built" } as const),
   isAssignmentOwnedBy: () =>
     Effect.succeed({ allowed: false, reason: "ownership unknown" } as const),
+  isBotProvisioningAllowed: () =>
+    Effect.succeed({ allowed: false, reason: "not a coordinator" } as const),
 };
 
 const noScreenbox: AdeScreenboxToolPlaneShape = {
@@ -803,6 +806,50 @@ describe("AdeToolGate approval boundary", () => {
         });
       }
       NodeAssert.deepEqual(forwarded, []);
+    }),
+  );
+
+  it.effect("denies create_bot with a rule-naming denial when the check refuses", () =>
+    Effect.gen(function* () {
+      const gate = makeAdeToolGate({
+        handlers: echoHandlers,
+        checks: denyAllChecks,
+        screenbox: noScreenbox,
+      });
+      const outcome = yield* gate.dispatch(ctxFor(principalA, "create_bot"), {
+        templateId: "reviewer",
+      });
+      NodeAssert.equal(outcome._tag, "denied");
+      if (outcome._tag !== "denied") return;
+      NodeAssert.equal(outcome.denial._tag, "bot-provisioning-not-allowed");
+      NodeAssert.equal(
+        renderAdeToolDenial(outcome.denial),
+        "[ade:bot-provisioning-not-allowed] 'create_bot' refused: not a coordinator",
+      );
+    }),
+  );
+
+  it.effect("refuses a reserved template before any check or handler runs", () =>
+    Effect.gen(function* () {
+      let checked = false;
+      const gate = makeAdeToolGate({
+        handlers: echoHandlers,
+        checks: {
+          ...allowAllChecks,
+          isBotProvisioningAllowed: () =>
+            Effect.sync(() => {
+              checked = true;
+              return { allowed: true } as const;
+            }),
+        },
+        screenbox: noScreenbox,
+      });
+      const outcome = yield* gate.dispatch(ctxFor(principalA, "create_bot"), {
+        templateId: "firstmate",
+      });
+      NodeAssert.equal(outcome._tag, "denied");
+      NodeAssert.equal(outcome._tag === "denied" ? outcome.denial._tag : "", "invalid-input");
+      NodeAssert.equal(checked, false);
     }),
   );
 

@@ -46,6 +46,7 @@ import {
   type AdeAssignmentEngineShape,
 } from "./AdeAssignmentEngine.ts";
 import {
+  adeToolInlineChecksFailClosed,
   AdeToolExecutionError,
   AdeToolHandlers,
   AdeToolInlineChecks,
@@ -122,7 +123,10 @@ const denied = (reason: string): AdeInlineCheckDecision => ({ allowed: false, re
  * - nobody routes at themselves, at an archived bot, or at a bot that does
  *   not exist.
  */
-export interface AdeRoutingGrants extends AdeToolInlineChecksShape {
+export interface AdeRoutingGrants extends Pick<
+  AdeToolInlineChecksShape,
+  "isRoutingTargetAllowed" | "isAssignmentOwnedBy"
+> {
   /**
    * The bots this caller may see — the same grant table as routing, plus the
    * caller itself. `fleet_read` uses it so visibility and authority cannot
@@ -245,6 +249,10 @@ export class AdeAssignmentInlineChecks extends Context.Service<
         const sql = yield* SqlClient.SqlClient;
         const grants = makeAdeRoutingGrants(sql);
         return AdeToolInlineChecks.of({
+          // The provisioning check is not this slice's (M9 owns it): keep the
+          // gate's fail-closed default so a graph that forgets to stack
+          // `AdeFleetProvisioningInlineChecks` refuses rather than allows.
+          ...adeToolInlineChecksFailClosed,
           isRoutingTargetAllowed: grants.isRoutingTargetAllowed,
           isAssignmentOwnedBy: grants.isAssignmentOwnedBy,
         });

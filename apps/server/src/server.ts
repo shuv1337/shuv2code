@@ -31,6 +31,10 @@ import { AdeAssignmentEngine } from "./ade/AdeAssignmentEngine.ts";
 import { AdeAssignmentRunner } from "./ade/AdeAssignmentRunner.ts";
 import { AdeAssignmentInlineChecks, AdeAssignmentToolHandlers } from "./ade/AdeAssignmentTools.ts";
 import { AdeBootstrap } from "./ade/AdeBootstrap.ts";
+import {
+  AdeFleetProvisioningInlineChecks,
+  AdeFleetProvisioningToolHandlers,
+} from "./ade/AdeFleetProvisioningTools.ts";
 import { AdeApprovalPortLayerLive } from "./ade/AdeApprovalPortLive.ts";
 import { AdeCaptainApi } from "./ade/AdeCaptainApi.ts";
 import { AdeRosterFeed } from "./ade/AdeRosterFeed.ts";
@@ -396,14 +400,17 @@ const AdeHealthCheckerLayerLive = AdeHealthChecker.tickerLive().pipe(
  * - the three `Layer<never, …>` activations (delivery sweep, assignment sweep,
  *   dispatch loop) sit outermost, like the health ticker.
  */
-const AdeToolHandlersLayerLive = AdeMemoryToolHandlers.layer.pipe(
+const AdeToolHandlersLayerLive = AdeFleetProvisioningToolHandlers.layer.pipe(
+  Layer.provide(AdeMemoryToolHandlers.layer),
   Layer.provide(AdeAssignmentToolHandlers.layer),
   Layer.provide(AdeToolHandlers.layerUnavailable),
 );
 
 const AdeToolGateLayerLive = AdeToolGate.layer.pipe(
   Layer.provide(AdeToolHandlersLayerLive),
-  Layer.provide(AdeAssignmentInlineChecks.layer),
+  Layer.provide(
+    AdeFleetProvisioningInlineChecks.layer.pipe(Layer.provide(AdeAssignmentInlineChecks.layer)),
+  ),
   Layer.provide(AdeScreenboxToolPlaneLive),
 );
 

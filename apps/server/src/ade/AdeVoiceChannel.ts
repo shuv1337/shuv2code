@@ -18,7 +18,7 @@
  *   Firstmate's binding. The `BotExecutionBindingId` is therefore also the
  *   call id: one live voice binding per bot, by construction.
  * - **One shared catalog** (§4.7): the model-visible tool list is
- *   {@link AdeToolGate.catalogFor} for the `voice` principal — the same five
+ *   {@link AdeToolGate.catalogFor} for the `voice` principal — the same six
  *   base tools the text side gets, from the same definitions. No forked
  *   schemas, no voice-only copy that can drift. These replace the controller's
  *   `thread_list`/`thread_get`/`thread_create`/`thread_send`/`thread_interrupt`

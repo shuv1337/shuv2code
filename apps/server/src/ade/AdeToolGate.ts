@@ -28,12 +28,15 @@
  * (`ADE_APPROVAL_NAME_PATTERN`). Captain approvals live only on the client
  * surface (WS + `ade:approve` scope, ADR §10.4).
  *
- * Tool behavior itself belongs to later tickets: S7 (assignments/fleet) and
- * S8 (memory) plug real implementations in via `AdeToolHandlers.layer*`
+ * Tool behavior itself belongs to later tickets: S7 (assignments/fleet), S8
+ * (memory) and M9 (`create_bot`, `AdeFleetProvisioningTools.ts`) plug real
+ * implementations in via `AdeToolHandlers.layer*` / `AdeToolInlineChecks.layer*`
  * without touching this gate; until then every handler returns a typed
  * `AdeToolNotYetAvailableError`.
  */
 import {
+  AdeCreateBotToolInput,
+  ADE_CREATE_BOT_TOOL_NAME_MAX_LENGTH,
   AdeProjectId,
   AssignmentId,
   AssignmentTerminalStatus,
@@ -125,6 +128,11 @@ export type AdeToolDenial =
       readonly assignmentId: AssignmentId;
       readonly reason: string;
     }
+  | {
+      readonly _tag: "bot-provisioning-not-allowed";
+      readonly tool: string;
+      readonly reason: string;
+    }
   | { readonly _tag: "screenbox-not-eligible"; readonly tool: string; readonly reason: string }
   | { readonly _tag: "not-yet-available"; readonly tool: string };
 
@@ -149,6 +157,8 @@ export const renderAdeToolDenial = (denial: AdeToolDenial): string => {
       return `[ade:routing-target-not-allowed] '${denial.tool}' may not target bot '${denial.targetBotId}': ${denial.reason}`;
     case "assignment-not-owned":
       return `[ade:assignment-not-owned] '${denial.tool}' refused for assignment '${denial.assignmentId}': ${denial.reason}`;
+    case "bot-provisioning-not-allowed":
+      return `[ade:bot-provisioning-not-allowed] '${denial.tool}' refused: ${denial.reason}`;
     case "screenbox-not-eligible":
       return `[ade:screenbox-not-eligible] '${denial.tool}' refused: ${denial.reason}`;
     case "not-yet-available":
@@ -259,6 +269,15 @@ export const UpdateMemoryInput = Schema.Struct({
 });
 export type UpdateMemoryInput = typeof UpdateMemoryInput.Type;
 
+/**
+ * `create_bot` input (issue #223). The schema lives in `@shuv2code/contracts`
+ * because the reserved-template refusal *is* the schema — `AdeBotTemplateId`
+ * admits only the three specialist templates, so a coordinator template never
+ * reaches a handler.
+ */
+export const CreateBotInput = AdeCreateBotToolInput;
+export type CreateBotInput = typeof CreateBotInput.Type;
+
 // ---------------------------------------------------------------------------
 // Handler seam (S7 assignments/fleet, S8 memory plug in here)
 // ---------------------------------------------------------------------------
@@ -269,6 +288,7 @@ export interface AdeToolHandlersShape {
   readonly steerPrimary: AdeToolHandler<SteerPrimaryInput>;
   readonly reportAssignmentResult: AdeToolHandler<ReportAssignmentResultInput>;
   readonly updateMemory: AdeToolHandler<UpdateMemoryInput>;
+  readonly createBot: AdeToolHandler<CreateBotInput>;
 }
 
 const unavailableHandler =
@@ -283,6 +303,7 @@ export const adeToolHandlersUnavailable: AdeToolHandlersShape = {
   steerPrimary: unavailableHandler(),
   reportAssignmentResult: unavailableHandler(),
   updateMemory: unavailableHandler(),
+  createBot: unavailableHandler(),
 };
 
 /**
@@ -336,25 +357,64 @@ export interface AdeToolInlineChecksShape {
     readonly caller: AdeToolCallContext;
     readonly assignmentId: AssignmentId;
   }) => Effect.Effect<AdeInlineCheckDecision>;
+  /**
+   * May `caller` provision this crew bot? One decision covers the whole rule
+   * set — coordinator-only eligibility, the Second Mate's project scope, the
+   * target project's existence, and the fleet/project caps — so every refusal
+   * reaches the model as one typed denial that names the rule it broke,
+   * rather than half as denials and half as handler failures.
+   */
+  readonly isBotProvisioningAllowed: (input: {
+    readonly caller: AdeToolCallContext;
+    readonly request: CreateBotInput;
+  }) => Effect.Effect<AdeInlineCheckDecision>;
 }
+
+/** Deny-by-default checks; the base every real check layer patches over. */
+export const adeToolInlineChecksFailClosed: AdeToolInlineChecksShape = {
+  isRoutingTargetAllowed: () =>
+    Effect.succeed({
+      allowed: false,
+      reason: "routing rules are not available yet (assignment engine not built)",
+    } as const),
+  isAssignmentOwnedBy: () =>
+    Effect.succeed({
+      allowed: false,
+      reason: "assignment ownership is not available yet (assignment engine not built)",
+    } as const),
+  isBotProvisioningAllowed: () =>
+    Effect.succeed({
+      allowed: false,
+      reason: "crew provisioning is not available in this build",
+    } as const),
+};
 
 export class AdeToolInlineChecks extends Context.Service<
   AdeToolInlineChecks,
   AdeToolInlineChecksShape
 >()("shuv2code/ade/AdeToolGate/AdeToolInlineChecks") {
   /** Fail-closed defaults until the S7 assignment engine provides real data. */
-  static readonly layerFailClosed = Layer.succeed(AdeToolInlineChecks, {
-    isRoutingTargetAllowed: () =>
-      Effect.succeed({
-        allowed: false,
-        reason: "routing rules are not available yet (assignment engine not built)",
-      } as const),
-    isAssignmentOwnedBy: () =>
-      Effect.succeed({
-        allowed: false,
-        reason: "assignment ownership is not available yet (assignment engine not built)",
-      } as const),
-  });
+  static readonly layerFailClosed = Layer.succeed(
+    AdeToolInlineChecks,
+    adeToolInlineChecksFailClosed,
+  );
+
+  /**
+   * Patch-style partial override, mirroring {@link AdeToolHandlers.layerPartial}:
+   * the M9 provisioning checks stack over the S7 routing/ownership checks
+   * without either slice having to know the other's fields.
+   */
+  static layerPartial(
+    overrides: Partial<AdeToolInlineChecksShape>,
+  ): Layer.Layer<AdeToolInlineChecks, never, AdeToolInlineChecks> {
+    return Layer.effect(
+      AdeToolInlineChecks,
+      Effect.gen(function* () {
+        const base = yield* AdeToolInlineChecks;
+        return { ...base, ...overrides };
+      }),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -412,7 +472,8 @@ export class AdeScreenboxToolPlane extends Context.Service<
 type AdeInlineCheckSpec =
   | { readonly kind: "none" }
   | { readonly kind: "routing-target"; readonly target: (input: never) => BotId }
-  | { readonly kind: "assignment-ownership"; readonly assignment: (input: never) => AssignmentId };
+  | { readonly kind: "assignment-ownership"; readonly assignment: (input: never) => AssignmentId }
+  | { readonly kind: "bot-provisioning" };
 
 interface AdeBaseToolSpec<I> {
   readonly definition: AdeToolDefinition;
@@ -530,6 +591,35 @@ const ADE_BASE_TOOLS: ReadonlyArray<AdeBaseToolSpec<unknown>> = [
     decode: Schema.decodeUnknownEffect(UpdateMemoryInput),
     check: { kind: "none" },
     run: (handlers) => handlers.updateMemory,
+  }),
+  baseTool({
+    definition: {
+      name: "create_bot",
+      description:
+        "Provision a new crew bot from a shipped template (coordinators only — the Firstmate and a project's Second Mate). " +
+        "Templates: 'researcher' investigates and reports without shipping code, 'coder' implements scoped changes, " +
+        "'reviewer' reviews candidates before integration. Omit 'name' to take the template's default name; a name already " +
+        "used in the fleet gets a numeric suffix (\"Coder 2\"). Omit 'projectId' to create the bot in your own project; the " +
+        "Firstmate may name any existing project, or pass null for a fleet-shared specialist. The new bot is immediately " +
+        "assignable with create_assignment.",
+      parameters: {
+        type: "object",
+        properties: {
+          templateId: { type: "string", enum: ["researcher", "coder", "reviewer"] },
+          name: {
+            type: "string",
+            minLength: 1,
+            maxLength: ADE_CREATE_BOT_TOOL_NAME_MAX_LENGTH,
+          },
+          projectId: { type: ["string", "null"], minLength: 1 },
+        },
+        required: ["templateId"],
+        additionalProperties: false,
+      },
+    },
+    decode: Schema.decodeUnknownEffect(CreateBotInput),
+    check: { kind: "bot-provisioning" },
+    run: (handlers) => handlers.createBot,
   }),
 ];
 
@@ -794,6 +884,20 @@ export const makeAdeToolGate = (options: MakeAdeToolGateOptions): AdeToolGateSha
           ),
         );
       }
+      case "bot-provisioning":
+        return checks
+          .isBotProvisioningAllowed({ caller: ctx, request: input as CreateBotInput })
+          .pipe(
+            Effect.map((decision) =>
+              decision.allowed
+                ? null
+                : ({
+                    _tag: "bot-provisioning-not-allowed",
+                    tool: ctx.tool,
+                    reason: decision.reason,
+                  } as const),
+            ),
+          );
       case "assignment-ownership": {
         const assignmentId = check.assignment(input as never);
         return checks.isAssignmentOwnedBy({ caller: ctx, assignmentId }).pipe(

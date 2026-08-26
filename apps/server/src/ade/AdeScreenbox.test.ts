@@ -837,6 +837,7 @@ describe("AdeScreenbox through the tool gate", () => {
       checks: {
         isRoutingTargetAllowed: () => Effect.succeed({ allowed: false, reason: "n/a" } as const),
         isAssignmentOwnedBy: () => Effect.succeed({ allowed: false, reason: "n/a" } as const),
+        isBotProvisioningAllowed: () => Effect.succeed({ allowed: false, reason: "n/a" } as const),
       },
       screenbox: plane,
     });
