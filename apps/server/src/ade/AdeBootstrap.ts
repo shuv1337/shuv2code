@@ -87,6 +87,26 @@ export class AdeTemplateNotInstantiableError extends Schema.TaggedErrorClass<Ade
   }
 }
 
+/**
+ * A cap refused the create (issue #223). Raised from *inside* the insert
+ * transaction, so it is the authority on the fleet's size rather than a
+ * pre-flight guess: a tool-plane pre-check keeps the model's refusal fast and
+ * well-worded, and this keeps two concurrent coordinators from both passing
+ * that pre-check and landing bot 9.
+ */
+export class AdeBotCapExceededError extends Schema.TaggedErrorClass<AdeBotCapExceededError>()(
+  "AdeBotCapExceededError",
+  {
+    scope: Schema.Literals(["fleet", "project"]),
+    cap: Schema.Number,
+    count: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `ADE ${this.scope} is at its cap of ${this.cap} bots (${this.count} active).`;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Service shape
 // ---------------------------------------------------------------------------
@@ -99,17 +119,40 @@ export interface EnsureSeededResult {
   readonly limitsSeeded: boolean;
 }
 
+/** Per-scope bot caps enforced inside the insert transaction (issue #223). */
+export interface InstantiateTemplateCaps {
+  readonly maxFleetBots: number;
+  readonly maxBotsPerProject: number;
+}
+
 export interface InstantiateTemplateInput {
   readonly templateId: AdeBotTemplateId;
   /** Crew/coordinator home project; null for fleet-shared specialists. */
   readonly projectId: AdeProjectId | null;
   /** Optional display-name override; defaults to the template's name. */
   readonly name?: string;
+  /**
+   * The bot that provisioned this one (spec §3.2 attribution). Null — the
+   * default — means the captain's RPC or the boot check created it.
+   */
+  readonly createdByBotId?: BotId | null;
+  /**
+   * Durable replay key. A second call carrying a key that a *live* bot already
+   * holds returns that bot with `created: false` instead of minting a twin.
+   */
+  readonly provisionIdempotencyKey?: string | null;
+  /** Omitted → uncapped, which is what the captain's own RPC path wants. */
+  readonly caps?: InstantiateTemplateCaps;
 }
 
 export interface InstantiatedBot {
   readonly botId: BotId;
   readonly personaVersionId: PersonaVersionId;
+  /** False when `provisionIdempotencyKey` matched a live bot (replay). */
+  readonly created: boolean;
+  readonly name: string;
+  readonly roleTag: string;
+  readonly projectId: AdeProjectId | null;
 }
 
 export interface CreateProjectInput {
@@ -127,7 +170,10 @@ export interface AdeBootstrapShape {
   readonly ensureSeeded: () => Effect.Effect<EnsureSeededResult, PersistenceSqlError>;
   readonly instantiateTemplate: (
     input: InstantiateTemplateInput,
-  ) => Effect.Effect<InstantiatedBot, AdeTemplateNotInstantiableError | PersistenceSqlError>;
+  ) => Effect.Effect<
+    InstantiatedBot,
+    AdeTemplateNotInstantiableError | AdeBotCapExceededError | PersistenceSqlError
+  >;
   readonly createProject: (
     input: CreateProjectInput,
   ) => Effect.Effect<CreatedProject, PersistenceSqlError>;
@@ -160,6 +206,8 @@ export class AdeBootstrap extends Context.Service<AdeBootstrap, AdeBootstrapShap
         readonly personaContent: string;
         /** Pre-minted id when another row must name this bot first. */
         readonly botId?: string;
+        readonly createdByBotId?: string | null;
+        readonly provisionIdempotencyKey?: string | null;
       }) {
         const botId = input.botId ?? (yield* uuid);
         const personaVersionId = yield* uuid;
@@ -168,10 +216,12 @@ export class AdeBootstrap extends Context.Service<AdeBootstrap, AdeBootstrapShap
         const inserted = yield* sql`
           INSERT INTO ade_bots (
             bot_id, name, display_meta_json, structural_role, role_tag,
-            project_id, active_persona_version_id, computer_use, created_at, archived_at
+            project_id, active_persona_version_id, computer_use, created_at, archived_at,
+            created_by_bot_id, provision_idempotency_key
           ) VALUES (
             ${botId}, ${input.name}, NULL, ${input.structuralRole}, ${input.roleTag},
-            ${input.projectId}, NULL, 0, ${at}, NULL
+            ${input.projectId}, NULL, 0, ${at}, NULL,
+            ${input.createdByBotId ?? null}, ${input.provisionIdempotencyKey ?? null}
           )
           ON CONFLICT DO NOTHING
           RETURNING bot_id
@@ -195,7 +245,11 @@ export class AdeBootstrap extends Context.Service<AdeBootstrap, AdeBootstrapShap
         return {
           botId: botId as BotId,
           personaVersionId: personaVersionId as PersonaVersionId,
-        };
+          created: true,
+          name: input.name,
+          roleTag: input.roleTag,
+          projectId: input.projectId as AdeProjectId | null,
+        } satisfies InstantiatedBot;
       });
 
       const ensureFirstmate = Effect.gen(function* () {
@@ -263,26 +317,96 @@ export class AdeBootstrap extends Context.Service<AdeBootstrap, AdeBootstrapShap
         if (template === undefined || template.structuralRole !== "crew") {
           return yield* new AdeTemplateNotInstantiableError({ templateId: input.templateId });
         }
-        const created = yield* sql
+        const key = input.provisionIdempotencyKey ?? null;
+        const caps = input.caps;
+
+        // Read-check-insert in ONE transaction. The replay lookup and the cap
+        // counts are only trustworthy if nothing can insert between them and
+        // the insert they gate — a pre-flight check outside the transaction
+        // lets two concurrent coordinators both observe 7 bots and both land.
+        const outcome = yield* sql
           .withTransaction(
-            insertBotGraph({
-              name: input.name ?? template.defaultName,
-              structuralRole: template.structuralRole,
-              roleTag: template.roleTag,
-              projectId: input.projectId,
-              personaContent: template.personaContent,
+            Effect.gen(function* () {
+              if (key !== null) {
+                const replays = yield* sql<{
+                  bot_id: string;
+                  name: string;
+                  role_tag: string;
+                  project_id: string | null;
+                  active_persona_version_id: string | null;
+                }>`
+                  SELECT bot_id, name, role_tag, project_id, active_persona_version_id
+                  FROM ade_bots
+                  WHERE provision_idempotency_key = ${key} AND archived_at IS NULL
+                `;
+                const replay = replays[0];
+                if (replay !== undefined) {
+                  return {
+                    botId: replay.bot_id as BotId,
+                    personaVersionId: (replay.active_persona_version_id ?? "") as PersonaVersionId,
+                    created: false,
+                    name: replay.name,
+                    roleTag: replay.role_tag,
+                    projectId: replay.project_id as AdeProjectId | null,
+                  } satisfies InstantiatedBot;
+                }
+              }
+
+              if (caps !== undefined) {
+                const fleetRows = yield* sql<{ n: number }>`
+                  SELECT COUNT(*) AS n FROM ade_bots WHERE archived_at IS NULL
+                `;
+                const fleetCount = fleetRows[0]?.n ?? 0;
+                if (fleetCount >= caps.maxFleetBots) {
+                  return yield* new AdeBotCapExceededError({
+                    scope: "fleet",
+                    cap: caps.maxFleetBots,
+                    count: fleetCount,
+                  });
+                }
+                if (input.projectId !== null) {
+                  const projectRows = yield* sql<{ n: number }>`
+                    SELECT COUNT(*) AS n FROM ade_bots
+                    WHERE archived_at IS NULL AND project_id = ${input.projectId}
+                  `;
+                  const projectCount = projectRows[0]?.n ?? 0;
+                  if (projectCount >= caps.maxBotsPerProject) {
+                    return yield* new AdeBotCapExceededError({
+                      scope: "project",
+                      cap: caps.maxBotsPerProject,
+                      count: projectCount,
+                    });
+                  }
+                }
+              }
+
+              return yield* insertBotGraph({
+                name: input.name ?? template.defaultName,
+                structuralRole: template.structuralRole,
+                roleTag: template.roleTag,
+                projectId: input.projectId,
+                personaContent: template.personaContent,
+                createdByBotId: input.createdByBotId ?? null,
+                provisionIdempotencyKey: key,
+              });
             }),
           )
-          .pipe(Effect.mapError(toPersistenceSqlError("AdeBootstrap.instantiateTemplate")));
+          .pipe(
+            // Only the SQL failure is reshaped; the cap refusal is a domain
+            // answer and travels untouched.
+            Effect.catchTag("SqlError", (error) =>
+              Effect.fail(toPersistenceSqlError("AdeBootstrap.instantiateTemplate")(error)),
+            ),
+          );
         // Crew templates never carry the firstmate role, so the
         // single-firstmate index cannot reject them and insertBotGraph
         // always returns ids.
-        if (created === null) {
+        if (outcome === null) {
           return yield* Effect.die(
             new Error("template bot insert reported an impossible conflict"),
           );
         }
-        return created;
+        return outcome;
       });
 
       const createProject: AdeBootstrapShape["createProject"] = Effect.fn(

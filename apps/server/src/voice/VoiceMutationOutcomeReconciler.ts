@@ -95,6 +95,10 @@ const ADE_VOICE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "steer_primary",
   "report_assignment_result",
   "update_memory",
+  // `create_bot` carries its own durable replay key (migration 061), which is
+  // exactly the durability model this set exists to name: a re-run resolves to
+  // the bot the first call created rather than minting a twin.
+  "create_bot",
   "prepare_approval",
   "commit_approval",
 ]);
