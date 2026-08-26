@@ -73,6 +73,7 @@ export const threadGetHandler = Effect.fn("ThreadToolkit.thread_get")(function* 
     ...(input.includeUntrustedContext === undefined
       ? {}
       : { includeUntrustedContext: input.includeUntrustedContext }),
+    ...(input.context === undefined ? {} : { untrustedContextRequest: input.context }),
   });
 });
 

@@ -77,8 +77,12 @@ Controller tools never answer approvals or user-input requests. Humans respond t
 | Voice presentation   | realtime, speech, narration, barge-in              | Voice adapter                                        |
 | Tool exposure        | MCP schemas, turn-metadata proofs                  | Agent/provider adapter                               |
 
-`thread_create` today copies the live controller's bound provider instance and model. Cross-provider
-spawn is #70, not a Controller identity change.
+`thread_create` copies the live controller's bound provider instance and model when the caller omits
+`model` or requests that same model. An explicit different model may intentionally resolve to any
+enabled, available provider instance that advertises it in the live provider snapshots. Requests
+that no available instance advertises fail with `invalid_model`; they never silently fall back.
+This cross-provider selection is part of the Controller create capability. The broader
+provider-agnostic agent-tree facade remains #70.
 
 ## Identity and attach
 

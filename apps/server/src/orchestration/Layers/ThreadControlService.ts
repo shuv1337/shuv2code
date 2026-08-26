@@ -3,6 +3,7 @@ import {
   MessageId,
   ModelSelection,
   type OrchestrationThread,
+  type ProviderInstanceId,
   ThreadId,
   type OrchestrationThreadShell,
   type RuntimeMode,
@@ -14,8 +15,13 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import type {
+  ThreadControlContextAnchor,
+  ThreadControlUntrustedContextRequest,
+} from "../Services/ThreadControlService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
 import type { ThreadControlGrant } from "../Services/ThreadControlInvocationResolver.ts";
 import {
   ThreadControlError,
@@ -30,6 +36,98 @@ import {
 const TARGET_CONTEXT_MAX_MESSAGES = 12;
 const TARGET_CONTEXT_MAX_CHARS = 12_000;
 const TARGET_CONTEXT_MAX_MESSAGE_CHARS = 4_000;
+
+export interface UntrustedContextLimits {
+  readonly maxMessages: number;
+  readonly maxTotalChars: number;
+  readonly maxMessageChars: number;
+  readonly anchor: ThreadControlContextAnchor;
+}
+
+const BOUNDED_CONTEXT_DEFAULTS: Omit<UntrustedContextLimits, "anchor"> = {
+  maxMessages: 12,
+  maxTotalChars: 12_000,
+  maxMessageChars: 4_000,
+};
+
+const FULL_CONTEXT_CEILINGS: Omit<UntrustedContextLimits, "anchor"> = {
+  maxMessages: 10_000,
+  maxTotalChars: 1_000_000,
+  maxMessageChars: 100_000,
+};
+
+const clampLimit = (value: number, ceiling: number): number =>
+  Math.min(Math.max(Math.floor(value), 1), ceiling);
+
+export function resolveUntrustedContextLimits(
+  request: ThreadControlUntrustedContextRequest | undefined,
+): UntrustedContextLimits {
+  const defaults = request?.mode === "full" ? FULL_CONTEXT_CEILINGS : BOUNDED_CONTEXT_DEFAULTS;
+  const anchor = request?.anchor ?? "recent";
+  if (request?.maxMessages === undefined && request?.maxTotalChars === undefined) {
+    return {
+      maxMessages:
+        request?.maxMessages === undefined
+          ? defaults.maxMessages
+          : clampLimit(request.maxMessages, FULL_CONTEXT_CEILINGS.maxMessages),
+      maxTotalChars: defaults.maxTotalChars,
+      maxMessageChars:
+        request?.maxMessageChars === undefined
+          ? defaults.maxMessageChars
+          : clampLimit(request.maxMessageChars, FULL_CONTEXT_CEILINGS.maxMessageChars),
+      anchor,
+    };
+  }
+  return {
+    maxMessages:
+      request.maxMessages === undefined
+        ? defaults.maxMessages
+        : clampLimit(request.maxMessages, FULL_CONTEXT_CEILINGS.maxMessages),
+    maxTotalChars:
+      request.maxTotalChars === undefined
+        ? defaults.maxTotalChars
+        : clampLimit(request.maxTotalChars, FULL_CONTEXT_CEILINGS.maxTotalChars),
+    maxMessageChars:
+      request.maxMessageChars === undefined
+        ? defaults.maxMessageChars
+        : clampLimit(request.maxMessageChars, FULL_CONTEXT_CEILINGS.maxMessageChars),
+    anchor,
+  };
+}
+
+export function untrustedThreadContext(
+  messages: ReadonlyArray<{
+    readonly role: string;
+    readonly text: string;
+    readonly streaming?: boolean;
+  }>,
+  limits: UntrustedContextLimits,
+): ReadonlyArray<{ readonly role: "user" | "assistant"; readonly text: string }> {
+  const selected: Array<{ readonly role: "user" | "assistant"; readonly text: string }> = [];
+  let remaining = limits.maxTotalChars;
+  const ordered = limits.anchor === "oldest" ? messages : [...messages].reverse();
+  for (const message of ordered) {
+    if (selected.length >= limits.maxMessages || remaining <= 0) break;
+    if (
+      !message ||
+      (message.role !== "user" && message.role !== "assistant") ||
+      message.streaming === true
+    ) {
+      continue;
+    }
+    const text = message.text.trim();
+    if (text.length === 0) continue;
+    const bounded = text.slice(0, Math.min(limits.maxMessageChars, remaining));
+    if (bounded.length === 0) continue;
+    if (limits.anchor === "oldest") {
+      selected.push({ role: message.role, text: bounded });
+    } else {
+      selected.unshift({ role: message.role, text: bounded });
+    }
+    remaining -= bounded.length;
+  }
+  return selected;
+}
 
 export function boundedUntrustedThreadContext(
   messages: ReadonlyArray<{
@@ -75,6 +173,40 @@ export function isAvailableThreadControlSource(
   return (
     thread.purpose !== "voice-transport" && thread.deletedAt === null && thread.archivedAt === null
   );
+}
+
+export interface ControllerCreateModelCandidate {
+  readonly instanceId: ProviderInstanceId;
+  readonly snapshot: {
+    readonly enabled: boolean;
+    readonly availability?: "available" | "unavailable" | undefined;
+    readonly models: ReadonlyArray<{ readonly slug: string }>;
+  };
+}
+
+export function resolveControllerCreateModelSelection(input: {
+  readonly requestedModel: string | undefined;
+  readonly controllerModel: ModelSelection;
+  readonly candidates: ReadonlyArray<ControllerCreateModelCandidate>;
+}): ModelSelection {
+  if (input.requestedModel === undefined || input.requestedModel === input.controllerModel.model) {
+    return input.controllerModel;
+  }
+  const match = input.candidates.find((candidate) => {
+    if (!candidate.snapshot.enabled) return false;
+    if (candidate.snapshot.availability === "unavailable") return false;
+    return candidate.snapshot.models.some((model) => model.slug === input.requestedModel);
+  });
+  if (match === undefined) {
+    throw new ThreadControlError({
+      code: "invalid_model",
+      message: `No available provider instance advertises model "${input.requestedModel}".`,
+    });
+  }
+  return ModelSelection.make({
+    instanceId: match.instanceId,
+    model: input.requestedModel,
+  });
 }
 
 function shellPhaseOf(thread: OrchestrationThreadShell): ThreadControlPhase {
@@ -213,6 +345,7 @@ export const validateInterruptTargetPrecondition = (input: {
 export const makeThreadControlService = Effect.fn("ThreadControlService.make")(function* () {
   const projection = yield* ProjectionSnapshotQuery;
   const engine = yield* OrchestrationEngineService;
+  const providerInstances = yield* ProviderInstanceRegistry;
 
   const getManagedThread = Effect.fn("ThreadControlService.getManagedThread")(function* (
     grant: ThreadControlGrant,
@@ -421,7 +554,8 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
       const latestAssistant = thread.messages.findLast(
         (candidate) => candidate.role === "assistant" && !candidate.streaming,
       );
-      const recentContext = boundedUntrustedThreadContext(thread.messages);
+      const contextLimits = resolveUntrustedContextLimits(input.untrustedContextRequest);
+      const recentContext = untrustedThreadContext(thread.messages, contextLimits);
       return {
         snapshotSequence: snapshot.snapshotSequence,
         snapshotTimestamp: thread.updatedAt,
@@ -434,7 +568,7 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
           ? {
               untrustedTargetContent: {
                 marker: "untrusted-target-content" as const,
-                text: latestAssistant.text.slice(0, 2_048),
+                text: latestAssistant.text.slice(0, contextLimits.maxMessageChars),
               },
             }
           : {}),
@@ -494,16 +628,29 @@ export const makeThreadControlService = Effect.fn("ThreadControlService.make")(f
         message: "The controller model is not on its bound provider instance.",
       });
     }
-    if (input.model !== undefined && input.model !== baseModel.model) {
-      return yield* new ThreadControlError({
-        code: "invalid_model",
-        message: "Controller-created threads must use the source thread model.",
+    const registryInstances = yield* providerInstances.listInstances;
+    const candidates: ControllerCreateModelCandidate[] = [];
+    for (const instance of registryInstances) {
+      if (!instance.enabled) continue;
+      candidates.push({
+        instanceId: instance.instanceId,
+        snapshot: yield* instance.snapshot.getSnapshot,
       });
     }
-    const modelSelection = ModelSelection.make({
-      instanceId: authorization.providerInstanceId,
-      model: baseModel.model,
-      ...(baseModel.options !== undefined ? { options: baseModel.options } : {}),
+    const modelSelection = yield* Effect.try({
+      try: () =>
+        resolveControllerCreateModelSelection({
+          requestedModel: input.model,
+          controllerModel: baseModel,
+          candidates,
+        }),
+      catch: (error) =>
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as ThreadControlError)
+          : new ThreadControlError({
+              code: "dispatch_failed",
+              message: "The requested model could not be resolved.",
+            }),
     });
     const createdAt = DateTime.formatIso(yield* DateTime.now);
     const threadId = input.action.createdThreadId;
