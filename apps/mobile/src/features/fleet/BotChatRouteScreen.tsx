@@ -23,6 +23,7 @@ import {
   BOT_CHAT_TOOLS_MISSING_NOTICE,
   canAutoConnect,
   getBotChatBody,
+  KERNEL_HEALTH_WAIT_TIMEOUT_MS,
   getBotChatHeaderView,
   resolveBotChatConnectState,
   resolveChatSyncOutcome,
@@ -31,7 +32,7 @@ import {
   type BotChatConnectNotice,
 } from "@shuv2code/client-runtime/ade/bot-chat";
 import { BotId, EnvironmentId, type ScopedThreadRef, type ThreadId } from "@shuv2code/contracts";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
@@ -44,6 +45,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { ThreadRouteScreen } from "../threads/ThreadRouteScreen";
 import { BotAvatar } from "./BotAvatar";
 import { useBotChatRead } from "./useBotChatRead";
+import { useFleetNavigation } from "./fleetNavigation";
 import { getBotAvatarView } from "@shuv2code/client-runtime/ade/contact-rail";
 
 type BotChatRouteProps = StaticScreenProps<{
@@ -62,7 +64,7 @@ type BotChatRouteProps = StaticScreenProps<{
 }>;
 
 export function BotChatRouteScreen(props: BotChatRouteProps) {
-  const navigation = useNavigation();
+  const navigation = useFleetNavigation();
   const environmentId = EnvironmentId.make(props.route.params.environmentId);
   const botId = BotId.make(props.route.params.botId);
   const routeThreadId = props.route.params.threadId ?? null;
@@ -78,6 +80,13 @@ export function BotChatRouteScreen(props: BotChatRouteProps) {
   const [startError, setStartError] = useState<BotChatConnectNotice | null>(null);
   const [toolsMissing, setToolsMissing] = useState(false);
   const [modelNotice, setModelNotice] = useState<BotChatConnectNotice | null>(null);
+  /**
+   * The feed's live-follow latch, reported up by the embedded thread surface.
+   * Starts `true` because a freshly mounted feed is pinned to its tail.
+   */
+  const [conversationAtEnd, setConversationAtEnd] = useState(true);
+  /** Whether the wait for a first health snapshot has run out of patience. */
+  const [healthWaitExpired, setHealthWaitExpired] = useState(false);
 
   const body = getBotChatBody({
     detail: detail.data,
@@ -100,6 +109,22 @@ export function BotChatRouteScreen(props: BotChatRouteProps) {
     const timer = setInterval(() => setSyncElapsedMs(Date.now() - startedAt), 1_000);
     return () => clearInterval(timer);
   }, [startedAt, threadShell]);
+
+  /*
+   * The bounded wait for a first health snapshot. Without it a feed that never
+   * reports leaves this screen in `connecting` forever: `canAutoConnect(null)`
+   * refuses to start, `autoConnectBlocked` is false for `null` by design, and
+   * the phone has no rail beside the conversation to escape to.
+   */
+  const healthUnresolved = kernelHealth === null && startedThreadId === null;
+  useEffect(() => {
+    if (!healthUnresolved) {
+      setHealthWaitExpired(false);
+      return;
+    }
+    const timer = setTimeout(() => setHealthWaitExpired(true), KERNEL_HEALTH_WAIT_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [healthUnresolved]);
 
   const syncOutcome =
     threadRef === null
@@ -133,6 +158,7 @@ export function BotChatRouteScreen(props: BotChatRouteProps) {
     environmentId,
     botId,
     chatReady,
+    conversationAtEnd,
     unreadCount: rosterEntry?.unreadCount ?? 0,
     lastMessageAt: rosterEntry?.lastMessage?.at ?? null,
   });
@@ -149,6 +175,7 @@ export function BotChatRouteScreen(props: BotChatRouteProps) {
      */
     autoConnectBlocked:
       kernelHealth !== null && !canAutoConnect(kernelHealth) && startedThreadId === null,
+    healthUnresolved: healthUnresolved && healthWaitExpired,
   });
 
   const handleStart = useCallback(async () => {
@@ -190,6 +217,7 @@ export function BotChatRouteScreen(props: BotChatRouteProps) {
     setStartedAt(null);
     setSyncElapsedMs(0);
     setStartError(null);
+    setHealthWaitExpired(false);
     autoStartedFor.current = botId;
     // The notice also covers a failed `ade.getBot` / roster read, which
     // restarting a session does nothing for — so both queries are re-asked.
@@ -241,6 +269,7 @@ export function BotChatRouteScreen(props: BotChatRouteProps) {
        * back above rather than kept in state.
        */}
       <ThreadRouteScreen
+        onEndFollowEnabledChange={setConversationAtEnd}
         route={{
           params: {
             environmentId: String(environmentId),

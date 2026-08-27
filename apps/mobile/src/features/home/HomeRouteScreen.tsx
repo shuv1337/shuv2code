@@ -8,6 +8,7 @@ import { useProjects, useThreadShells } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
+import { useFleetNavigation } from "../fleet/fleetNavigation";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { WorkspaceEmptyDetail } from "../layout/WorkspaceEmptyDetail";
 import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
@@ -30,6 +31,13 @@ export function HomeRouteScreen() {
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const navigation = useNavigation();
+  /*
+   * The fleet routes navigate through their own typed handle. The bare
+   * `useNavigation()` above collapses every `navigate` argument to `never` in
+   * this app (see `features/fleet/fleetNavigation.ts`); the fleet entry points
+   * are new, so they take the typed path rather than adding to that pile.
+   */
+  const fleetNavigation = useFleetNavigation();
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
@@ -114,7 +122,7 @@ export function HomeRouteScreen() {
               <NativeHeaderToolbar.Button
                 accessibilityLabel="Open fleet"
                 icon="person.2"
-                onPress={() => navigation.navigate("Fleet")}
+                onPress={() => fleetNavigation.navigate("Fleet")}
               />
               <NativeHeaderToolbar.Button
                 accessibilityLabel="New task"
@@ -165,7 +173,7 @@ export function HomeRouteScreen() {
               params: { screen: "SettingsEnvironments" },
             })
           }
-          onOpenFleet={() => navigation.navigate("Fleet")}
+          onOpenFleet={() => fleetNavigation.navigate("Fleet")}
           onOpenSettings={() =>
             navigation.navigate("SettingsSheet", {
               screen: "SettingsContent",

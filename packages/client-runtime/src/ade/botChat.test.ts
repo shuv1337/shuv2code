@@ -11,6 +11,7 @@ import {
   getBotChatBody,
   getBotChatHeaderView,
   isBotChatComposerDisabled,
+  BOT_CHAT_HEALTH_UNKNOWN_NOTICE,
   resolveBotChatConnectState,
   resolveChatSyncOutcome,
   shouldAutoStartChat,
@@ -310,6 +311,55 @@ describe("resolveBotChatConnectState", () => {
       autoConnectBlocked: false,
     });
     expect(state.kind).toBe("connecting");
+  });
+
+  it("stops waiting for a health snapshot that never arrives", () => {
+    /*
+     * The unbounded arm of the case above. A client whose conversation is the
+     * whole screen has nothing to escape to, so "no snapshot yet" cannot be a
+     * permanent state: it resolves to a notice that claims ignorance rather
+     * than a down kernel, and carries the ungated Retry.
+     */
+    const state = resolveBotChatConnectState({
+      body: connecting,
+      syncOutcome: waiting,
+      startError: null,
+      chatReady: false,
+      autoConnectBlocked: false,
+      healthUnresolved: true,
+    });
+    expect(state.kind).toBe("failed");
+    if (state.kind !== "failed") return;
+    expect(state.notice).toBe(BOT_CHAT_HEALTH_UNKNOWN_NOTICE);
+    expect(state.notice.details).toContain("Retry");
+    // It must not claim the kernel is down — nothing has said that.
+    expect(state.notice.message).not.toContain("kernel");
+  });
+
+  it("keeps a live conversation even after the health wait ran out", () => {
+    const state = resolveBotChatConnectState({
+      body: { kind: "chat", threadId: "thr_1" as ThreadId },
+      syncOutcome: { kind: "ready" },
+      startError: null,
+      chatReady: true,
+      autoConnectBlocked: false,
+      healthUnresolved: true,
+    });
+    expect(state.kind).toBe("ready");
+  });
+
+  it("prefers a real kernel-down snapshot over the ignorance notice", () => {
+    const state = resolveBotChatConnectState({
+      body: connecting,
+      syncOutcome: waiting,
+      startError: null,
+      chatReady: false,
+      autoConnectBlocked: true,
+      healthUnresolved: true,
+    });
+    expect(state.kind).toBe("failed");
+    if (state.kind !== "failed") return;
+    expect(state.notice).toBe(BOT_CHAT_KERNEL_DOWN_NOTICE);
   });
 
   it("never throws a live conversation away over a health snapshot", () => {

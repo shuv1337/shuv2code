@@ -166,4 +166,21 @@ describe("isBotChatReadable", () => {
     expect(isBotChatReadable({ ...base, appState: "background" })).toBe(false);
     expect(isBotChatReadable({ ...base, appState: "inactive" })).toBe(false);
   });
+
+  it("is not readable once the captain scrolls up out of the tail", () => {
+    /*
+     * The dangerous direction: the server's read mark is monotonic, so
+     * clearing an unread dot while the captain is reading history is
+     * irreversible. Web gates this with `conversationAtEnd`; the phone takes
+     * the same term from the feed's live-follow latch.
+     */
+    expect(isBotChatReadable({ ...base, conversationAtEnd: false })).toBe(false);
+  });
+
+  it("still reads a tail-pinned feed, and one that has not reported yet", () => {
+    // `undefined` is the mount state — a fresh feed is pinned to the end — so
+    // it must not withhold the mark. Same permissive default as web.
+    expect(isBotChatReadable({ ...base, conversationAtEnd: true })).toBe(true);
+    expect(isBotChatReadable({ ...base, conversationAtEnd: undefined })).toBe(true);
+  });
 });

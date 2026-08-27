@@ -192,6 +192,22 @@ export function isBotChatReadable(input: {
   readonly screenFocused: boolean;
   /** React Native's `AppStateStatus`, kept structural to stay test-cheap. */
   readonly appState: string;
+  /**
+   * Is the feed still pinned to its tail?
+   *
+   * A captain scrolled up a long thread is reading history, not the newest
+   * message, and the server's read mark is monotonic — clearing the dot for a
+   * message they scrolled past would be irreversible. `undefined` means the
+   * feed has not reported yet (it mounts pinned), which is why the test is
+   * `!== false` rather than a truthiness check; the same permissive default web
+   * uses for `conversationAtEnd` in `BotChatPage`.
+   */
+  readonly conversationAtEnd?: boolean;
 }): boolean {
-  return input.chatReady && input.screenFocused && input.appState === "active";
+  return (
+    input.chatReady &&
+    input.screenFocused &&
+    input.appState === "active" &&
+    input.conversationAtEnd !== false
+  );
 }

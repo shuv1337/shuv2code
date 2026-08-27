@@ -6,7 +6,10 @@
  * to stay before one counts — is `@shuv2code/client-runtime/ade/bot-chat-read`,
  * shared verbatim with web. Only the presence signal differs: a phone has no
  * `document.hasFocus()`, so "the captain is reading this" is the conjunction of
- * a focused screen and a foregrounded app (`isBotChatReadable`).
+ * a focused screen, a foregrounded app, and a feed still pinned to its tail
+ * (`isBotChatReadable`). The tail term is the same one web spells
+ * `conversationAtEnd`; on the phone it comes from the thread feed's live-follow
+ * latch rather than a scroll listener.
  *
  * The dwell gate matters *more* here than on web. A flick down a contact list
  * is cheaper than an arrow key, and the server's mark is monotonic — a sweep
@@ -40,6 +43,14 @@ export function useBotChatRead(input: {
   readonly botId: BotId;
   /** The thread is mounted and the conversation is actually readable. */
   readonly chatReady: boolean;
+  /**
+   * The feed's live-follow latch. `undefined` while the feed has not reported
+   * (it mounts pinned to the tail); `false` once the captain has scrolled up
+   * into history, which stops and resets the dwell exactly as leaving the
+   * screen does — see `hasDwelledOnBotChat`, whose contract requires the caller
+   * to reset "whenever the captain scrolls away from the tail".
+   */
+  readonly conversationAtEnd?: boolean;
   /** The rail's current unread count — the primary re-fire trigger. */
   readonly unreadCount: number;
   /** The tail the roster last reported; moves when the captain's own send lands. */
@@ -54,6 +65,7 @@ export function useBotChatRead(input: {
     chatReady: input.chatReady,
     screenFocused,
     appState,
+    conversationAtEnd: input.conversationAtEnd,
   });
 
   /**
