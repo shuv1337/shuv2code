@@ -715,6 +715,20 @@ export interface AdeShuvcodeLoopOptions {
    * treated as a failure. Defaults to `status === 409` on the error object.
    */
   readonly isBenignReplyConflict?: (error: unknown) => boolean;
+
+  /**
+   * The seam saw a tool call the provider refused because its arguments were
+   * not valid JSON. Nothing was dispatched, so the gate has nothing to settle;
+   * it hands the fact to whoever forked the loop.
+   *
+   * A hook rather than a dependency on purpose: the gate is constructed from
+   * `AdeToolHandlers | AdeToolInlineChecks | AdeScreenboxToolPlane` and must
+   * not grow a path into orchestration to report this.
+   */
+  readonly onMalformedToolInput?: (input: {
+    readonly threadId: ThreadId;
+    readonly tool: string;
+  }) => Effect.Effect<void>;
 }
 
 export interface AdeToolGateShape {
@@ -1270,6 +1284,13 @@ export const makeAdeToolGate = (options: MakeAdeToolGateOptions): AdeToolGateSha
       const signal = yield* seam.takeSignal;
       if (signal.kind === "cancelled") {
         yield* interruptInFlightForked(inFlightKey(signal.threadId, signal.callId));
+        return;
+      }
+      if (signal.kind === "input-malformed") {
+        const notify = options.onMalformedToolInput;
+        if (notify !== undefined) {
+          yield* notify({ threadId: signal.threadId, tool: signal.tool });
+        }
         return;
       }
       const call = signal.call;

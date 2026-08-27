@@ -69,6 +69,9 @@ const CAPTAIN_ERROR_TEXT: Record<AdeCaptainErrorReason, string> = {
    * disclosure.
    */
   session_unavailable: "This bot isn't connected.",
+  // The kernel is up; its catalog is the problem. The `opencode.json` remedy
+  // rides the detail half, like every other technical remediation here.
+  model_not_agent_capable: "No model on this kernel can run this bot.",
   project_invalid: "That project could not be created.",
   project_not_found: "That project no longer exists.",
   persistence_failed: "The change could not be saved.",

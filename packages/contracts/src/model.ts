@@ -124,6 +124,15 @@ function canonicalSelectionsToLegacyObject(
 
 export const ModelCapabilities = Schema.Struct({
   optionDescriptors: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
+  /**
+   * Provider-reported tool-calling support. Absent means *unreported*, not
+   * "no": only the shuvcode kernel publishes this today, and reading silence
+   * as incapable would make every Codex, Cursor and hand-typed custom model
+   * instantly unselectable.
+   */
+  toolCalling: Schema.optional(Schema.Boolean),
+  /** Provider-reported text output. Absent = unreported, not "no". */
+  textOutput: Schema.optional(Schema.Boolean),
 });
 export type ModelCapabilities = typeof ModelCapabilities.Type;
 

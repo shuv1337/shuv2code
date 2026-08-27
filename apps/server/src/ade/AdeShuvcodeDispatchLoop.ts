@@ -19,6 +19,7 @@ import * as Stream from "effect/Stream";
 
 import * as ProviderAdapterRegistry from "../provider/Services/ProviderAdapterRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
+import { adeModelHealthTracker } from "./adeModelHealth.ts";
 import { ADE_SHUVCODE_INSTANCE_ID } from "./AdeShuvcodeChatSession.ts";
 import { AdeToolGate } from "./AdeToolGate.ts";
 
@@ -75,7 +76,24 @@ export class AdeShuvcodeDispatchLoop {
               yield* Effect.logInfo("ADE tool dispatch loop started");
               // The loop never returns on its own; it ends only when the
               // instance changes underneath it.
-              return yield* Effect.race(gate.runShuvcodeDispatchLoop(seam), nextChange);
+              return yield* Effect.race(
+                gate.runShuvcodeDispatchLoop(seam, {
+                  /*
+                   * The loop is the only place that sees every refused tool
+                   * call, so it is where the count lives. It is deliberately
+                   * not the gate's own state: the gate knows about tools, not
+                   * about whether a model is capable of using them.
+                   */
+                  onMalformedToolInput: ({ threadId, tool }) =>
+                    adeModelHealthTracker.noteMalformedToolInput(threadId)
+                      ? Effect.logWarning(
+                          "ADE bot model returned malformed tool-call arguments repeatedly; the fleet tools were never run",
+                          { threadId, tool },
+                        )
+                      : Effect.void,
+                }),
+                nextChange,
+              );
             }),
           );
         }).pipe(

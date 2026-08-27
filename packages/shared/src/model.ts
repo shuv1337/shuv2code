@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
+  type ServerProviderModel,
 } from "@shuv2code/contracts";
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -19,10 +20,28 @@ export interface SelectableModelOption {
 
 export function createModelCapabilities(input: {
   optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
+  toolCalling?: boolean;
+  textOutput?: boolean;
 }): ModelCapabilities {
   return {
     optionDescriptors: input.optionDescriptors.map(cloneDescriptor),
+    ...(input.toolCalling === undefined ? {} : { toolCalling: input.toolCalling }),
+    ...(input.textOutput === undefined ? {} : { textOutput: input.textOutput }),
   };
+}
+
+/**
+ * Can this model plausibly drive an agent — call tools and answer in text?
+ *
+ * Only `false` excludes. Absent capability data means the provider never
+ * reported, and the failure modes are asymmetric: a false negative bricks
+ * providers that never had this bug (Codex, custom slugs), while a false
+ * positive degrades to the status quo plus a visible warning.
+ */
+export function isAgentCapableModel(model: ServerProviderModel): boolean {
+  const capabilities = model.capabilities;
+  if (capabilities === null || capabilities === undefined) return true;
+  return capabilities.toolCalling !== false && capabilities.textOutput !== false;
 }
 
 function getRawSelectionValueById(

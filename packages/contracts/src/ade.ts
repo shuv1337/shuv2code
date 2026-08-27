@@ -890,6 +890,16 @@ export type AdeBotDetail = typeof AdeBotDetail.Type;
 export const AdeToolProbe = Schema.Literals(["attached", "missing", "unknown"]);
 export type AdeToolProbe = typeof AdeToolProbe.Type;
 
+/**
+ * What this session knows about its model's fitness to drive a bot.
+ *
+ * `unreported-tools` is a *prediction* from provider-reported capabilities;
+ * `malformed-tool-input` is a *observation* that the model already emitted
+ * unusable tool calls, so it outranks the prediction.
+ */
+export const AdeModelHealth = Schema.Literals(["ok", "unreported-tools", "malformed-tool-input"]);
+export type AdeModelHealth = typeof AdeModelHealth.Type;
+
 const AdeBotChatSessionFields = {
   botId: BotId,
   threadId: ThreadId,
@@ -909,6 +919,14 @@ const AdeBotChatSessionFields = {
 const AdeBotChatSessionWire = Schema.Struct({
   ...AdeBotChatSessionFields,
   toolsProbe: AdeToolProbe,
+  modelHealth: AdeModelHealth,
+  /**
+   * The shuvcode model this session runs on, when the server resolved one on
+   * this start. Present so a model notice can *name* the model rather than
+   * saying "this bot's model" — the whole point is that the captain can act on
+   * it. Null when a surviving session was adopted without re-resolving.
+   */
+  modelSlug: Schema.NullOr(TrimmedNonEmptyString),
   /**
    * @deprecated Use `toolsProbe`. Kept so an older peer keeps decoding; it is
    * `false` only for `missing`, never for `unknown`, because a client that
@@ -926,6 +944,9 @@ const AdeBotChatSessionSource = Schema.Struct({
   ...AdeBotChatSessionFields,
   toolsProbe: Schema.optional(AdeToolProbe),
   toolsAttached: Schema.optional(Schema.Boolean),
+  /** Optional so payloads minted before model health existed still decode. */
+  modelHealth: Schema.optional(AdeModelHealth),
+  modelSlug: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
 });
 
 /**
@@ -951,6 +972,10 @@ export const AdeBotChatSession = AdeBotChatSessionSource.pipe(
           ...raw,
           toolsProbe: raw.toolsProbe ?? (raw.toolsAttached === false ? "missing" : "attached"),
           toolsAttached: raw.toolsAttached ?? raw.toolsProbe !== "missing",
+          // Silence is not a complaint: a server that predates model health
+          // says nothing about the model, which is the `ok` case.
+          modelHealth: raw.modelHealth ?? "ok",
+          modelSlug: raw.modelSlug ?? null,
         } satisfies typeof AdeBotChatSessionWire.Encoded),
       // Both tool fields are always written back, so an older peer that only
       // reads the boolean still sees the same verdict. The cast only restores
@@ -982,6 +1007,13 @@ export class AdeCaptainError extends Schema.TaggedErrorClass<AdeCaptainError>()(
     "persona_invalid",
     "session_unavailable",
     "project_invalid",
+    /**
+     * The shuvcode kernel offered a catalog, but nothing in it reports both
+     * tool calling and text output. Distinct from `session_unavailable`: the
+     * kernel is healthy and reachable, and the fix is a configuration change
+     * rather than patience.
+     */
+    "model_not_agent_capable",
     "project_not_found",
     "persistence_failed",
     // Needs You inbox (spec §7 slice 5, S13).

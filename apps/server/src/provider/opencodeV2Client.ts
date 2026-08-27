@@ -582,6 +582,16 @@ export function createOpenCodeV2Client(input: OpenCodeV2ClientInput) {
         request<{ data: ReadonlyArray<unknown> }>("GET", "/api/model", {
           query: { location },
         }),
+      /**
+       * The operator's `model:` setting from `opencode.json`, resolved by the
+       * kernel. Advisory rather than authoritative: when nothing is configured
+       * the kernel answers with its newest available model, so the result still
+       * has to clear the capability filter like any other candidate.
+       */
+      default: () =>
+        request<{ data: unknown }>("GET", "/api/model/default", {
+          query: { location },
+        }),
     },
     agent: {
       list: () =>

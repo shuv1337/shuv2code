@@ -47,6 +47,7 @@ import type { OrchestrationShellSnapshot, ServerProvider } from "@shuv2code/cont
 import {
   AdeCaptainError,
   type AdeBotChatSession,
+  type AdeModelHealth,
   type AdeToolProbe,
   type BotExecutionBindingId,
   type BotId,
@@ -56,6 +57,7 @@ import {
   type ModelSelection,
   ProjectId,
   ProviderInstanceId,
+  type ServerProviderModel,
   ThreadId,
 } from "@shuv2code/contracts";
 
@@ -66,8 +68,11 @@ import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import { isOpenCodeV2SessionNotFound } from "../provider/opencodeV2Client.ts";
 import * as ProviderService from "../provider/Services/ProviderService.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
+import { isAgentCapableModel } from "@shuv2code/shared/model";
+
 import { AdeChatSessionPort, type AdeChatSessionPortShape } from "./AdeChatSessionPort.ts";
 import { AdeSessionRollover, renderSessionProjection } from "./AdeSessionRollover.ts";
+import { adeModelHealthTracker } from "./adeModelHealth.ts";
 import { AdeToolGate } from "./AdeToolGate.ts";
 
 /** The shuvcode driver instance ADE binds text work to (spec §1). */
@@ -81,6 +86,97 @@ type ShellProject = OrchestrationShellSnapshot["projects"][number];
 
 const unavailable = (message: string) =>
   new AdeCaptainError({ reason: "session_unavailable", message });
+
+/**
+ * The kernel answered with a catalog and nothing in it can run a bot. Not
+ * `session_unavailable`: nothing is down, the configuration is wrong.
+ */
+const modelNotCapable = (message: string) =>
+  new AdeCaptainError({ reason: "model_not_agent_capable", message });
+
+/** Which rung of the ladder produced a bot's model. */
+export type AdeModelSource = "pinned" | "project-default" | "kernel-default" | "first-capable";
+
+export type AdeModelResolution =
+  | {
+      readonly kind: "resolved";
+      readonly slug: string;
+      readonly source: AdeModelSource;
+      /**
+       * False only when the catalog entry actively reports that it cannot do
+       * this. A slug the catalog does not know at all is `true` — unreported.
+       */
+      readonly agentCapable: boolean;
+    }
+  | { readonly kind: "none-capable" };
+
+const shuvcodeSlug = (selection: ModelSelection | null | undefined): string | null =>
+  selection?.instanceId === ADE_SHUVCODE_INSTANCE_ID ? selection.model : null;
+
+/**
+ * Which shuvcode model should this bot run on? Pure, because the ordering is
+ * the whole fix and it must be readable and testable without a provider.
+ *
+ * The rungs, first hit wins:
+ *
+ * 1. **The captain's explicit pin.** Never vetoed on capabilities: the data is
+ *    provider-reported and can be stale or absent for a model the captain
+ *    knows works, and refusing would turn a deliberate choice into a dead end
+ *    with no override anywhere in the product. It is flagged instead.
+ * 2. **The project default**, only when it already points at shuvcode *and*
+ *    resolves to a capable catalog entry. It is a default, not a choice, and
+ *    the rows that produced this bug were exactly a default naming a model
+ *    that cannot call tools.
+ * 3. **The kernel's own `model:`**, which arrives as `isDefault`. Also
+ *    advisory — when the operator configured nothing the kernel answers with
+ *    its newest model, which is how an *image* model became a bot's brain.
+ * 4. **The first capable model.** A filtered first, never `models[0]`.
+ *
+ * There is no fifth rung. Picking something arbitrary is what this replaces.
+ */
+export function resolveAdeModelSelection(input: {
+  readonly pinned: ModelSelection | null | undefined;
+  readonly projectDefault: ModelSelection | null | undefined;
+  readonly models: ReadonlyArray<ServerProviderModel>;
+}): AdeModelResolution {
+  const capable = (slug: string): boolean => {
+    const model = input.models.find((candidate) => candidate.slug === slug);
+    return model === undefined || isAgentCapableModel(model);
+  };
+  const known = (slug: string): boolean =>
+    input.models.some((candidate) => candidate.slug === slug);
+
+  const pinned = shuvcodeSlug(input.pinned);
+  if (pinned !== null) {
+    return { kind: "resolved", slug: pinned, source: "pinned", agentCapable: capable(pinned) };
+  }
+
+  const projectDefault = shuvcodeSlug(input.projectDefault);
+  if (projectDefault !== null && known(projectDefault) && capable(projectDefault)) {
+    return {
+      kind: "resolved",
+      slug: projectDefault,
+      source: "project-default",
+      agentCapable: true,
+    };
+  }
+
+  const kernelDefault = input.models.find((model) => model.isDefault === true);
+  if (kernelDefault !== undefined && isAgentCapableModel(kernelDefault)) {
+    return {
+      kind: "resolved",
+      slug: kernelDefault.slug,
+      source: "kernel-default",
+      agentCapable: true,
+    };
+  }
+
+  const first = input.models.find(isAgentCapableModel);
+  if (first !== undefined) {
+    return { kind: "resolved", slug: first.slug, source: "first-capable", agentCapable: true };
+  }
+  return { kind: "none-capable" };
+}
 
 /**
  * Did this call fail *inside the adapter*, before any kernel round-trip?
@@ -165,8 +261,8 @@ export class AdeShuvcodeChatSession extends Context.Service<
 
       /**
        * shuvcode's model catalog is provider-authoritative and instance-scoped;
-       * the project's default only applies when it already points at shuvcode
-       * (a Codex default must not leak into an ADE session, spec §1).
+       * a project's or a bot's selection only applies when it already points at
+       * shuvcode (a Codex default must not leak into an ADE session, spec §1).
        *
        * The snapshot is a *cache*, filled by the provider status probe. On a
        * cold boot — or right after the captain adds the instance — it is
@@ -175,11 +271,16 @@ export class AdeShuvcodeChatSession extends Context.Service<
        * empty afterwards the provider's own probe message is what the captain
        * needs (e.g. "Failed to execute 'opencode --version'"), not a generic
        * "no models" that names the wrong problem.
+       *
+       * The ordering itself lives in {@link resolveAdeModelSelection}; this
+       * wrapper only supplies the catalog and turns the two ways it can end
+       * badly into the error that names the right problem.
        */
       const resolveModelSelection = Effect.fn("AdeShuvcodeChatSession.resolveModelSelection")(
-        function* (projectDefault: ModelSelection | null | undefined) {
-          if (projectDefault?.instanceId === ADE_SHUVCODE_INSTANCE_ID) return projectDefault;
-
+        function* (input: {
+          readonly pinned: ModelSelection | null | undefined;
+          readonly projectDefault: ModelSelection | null | undefined;
+        }) {
           const findInstance = (snapshot: ReadonlyArray<ServerProvider>) =>
             snapshot.find((provider) => provider.instanceId === ADE_SHUVCODE_INSTANCE_ID);
 
@@ -188,23 +289,45 @@ export class AdeShuvcodeChatSession extends Context.Service<
             instance = findInstance(yield* providers.refreshInstance(ADE_SHUVCODE_INSTANCE_ID));
           }
 
+          const models = instance?.models ?? [];
+          const resolution = resolveAdeModelSelection({ ...input, models });
+          if (resolution.kind === "resolved") {
+            const modelHealth: AdeModelHealth = resolution.agentCapable ? "ok" : "unreported-tools";
+            if (!resolution.agentCapable) {
+              yield* Effect.logWarning(
+                "ADE bot is pinned to a model that does not report tool calling; starting it anyway",
+                { slug: resolution.slug, reason: "pinned-model-not-agent-capable" },
+              );
+            }
+            return {
+              modelSelection: {
+                instanceId: ADE_SHUVCODE_INSTANCE_ID,
+                model: resolution.slug,
+              } satisfies ModelSelection,
+              modelHealth,
+            };
+          }
+
           if (instance === undefined) {
             return yield* unavailable(
               "No 'opencode2' provider instance is configured. Add one in Settings → Providers, then start the chat again.",
             );
           }
-          const model = instance.models[0];
-          if (model === undefined) {
+          if (models.length === 0) {
             const detail = instance.message ?? instance.unavailableReason ?? null;
             return yield* unavailable(
               `The opencode2 provider reports no models${detail === null ? "" : ` (${detail})`}. ` +
                 "Check Settings → Providers — the binary path must point at your shuvcode CLI and `shuvcode service start` must be running.",
             );
           }
-          return {
-            instanceId: ADE_SHUVCODE_INSTANCE_ID,
-            model: model.slug,
-          } satisfies ModelSelection;
+          // A catalog full of models none of which can call tools and answer in
+          // text. Silently taking the first one is what put an image model on a
+          // bot and produced turns that failed with nothing to read.
+          return yield* modelNotCapable(
+            `The shuvcode kernel offers ${models.length} model${models.length === 1 ? "" : "s"} and none of them report tool calling and text output. ` +
+              'Set "model" in your opencode.json to a tool-capable model (for example an openai/gpt-* or anthropic/claude-* entry), ' +
+              "restart `shuvcode service`, then reopen this conversation.",
+          );
         },
       );
 
@@ -302,7 +425,10 @@ export class AdeShuvcodeChatSession extends Context.Service<
           `ade-project-${NodeCrypto.createHash("sha256").update(normalizedRepoPath).digest("hex").slice(0, 32)}`,
         );
         const createdAt = DateTime.formatIso(yield* DateTime.now);
-        const modelSelection = yield* resolveModelSelection(null);
+        const { modelSelection } = yield* resolveModelSelection({
+          pinned: null,
+          projectDefault: null,
+        });
         const created = yield* Effect.exit(
           engine.dispatch({
             type: "project.create",
@@ -441,13 +567,21 @@ export class AdeShuvcodeChatSession extends Context.Service<
            */
           const prepareThread = Effect.fn("AdeShuvcodeChatSession.prepareThread")(function* () {
             const project = yield* resolveProject(botId);
-            const modelSelection = yield* resolveModelSelection(project.defaultModelSelection);
+
+            // The shell read moved above the model resolution because the bot's
+            // *own* pin lives on its thread: `thread.meta.update` writes it, and
+            // the shell snapshot is already the read this path performs. No new
+            // table, no new projection — a `.find` on data in hand.
+            const shell = yield* orUnavailable("read threads", snapshots.getShellSnapshot());
+            const existingThread = shell.threads.find((thread) => thread.id === threadId);
+            const { modelSelection, modelHealth } = yield* resolveModelSelection({
+              pinned: existingThread?.modelSelection ?? null,
+              projectDefault: project.defaultModelSelection,
+            });
             const botName = yield* orUnavailable("read bot", readBotName(botId));
 
             // Create the thread only once; a bot's chat is a durable place.
-            const shell = yield* orUnavailable("read threads", snapshots.getShellSnapshot());
-            const threadExists = shell.threads.some((thread) => thread.id === threadId);
-            if (!threadExists) {
+            if (existingThread === undefined) {
               const createdAt = DateTime.formatIso(yield* DateTime.now);
               // Deterministic: thread creation for a bot is a once-ever act, and
               // orchestration dedupes by command receipt, so a racing retry is a
@@ -470,7 +604,7 @@ export class AdeShuvcodeChatSession extends Context.Service<
                 }),
               );
             }
-            return { project, modelSelection, botName };
+            return { project, modelSelection, botName, modelHealth };
           });
 
           /**
@@ -531,9 +665,41 @@ export class AdeShuvcodeChatSession extends Context.Service<
                 "rebind tool gate",
                 gate.rebindShuvcodeSession({ threadId, sessionId, principal }),
               );
+              yield* bindModelHealth(sessionId);
               return sessionId;
             },
           );
+
+          /**
+           * Bind the malformed-tool-call count to the kernel session it belongs
+           * to. A *new* session starts over; re-opening the same one keeps the
+           * verdict, which is how a captain who reconnects to a looping bot
+           * finally gets told why.
+           */
+          const bindModelHealth = (sessionId: KernelSessionId) =>
+            Effect.sync(() => {
+              adeModelHealthTracker.bindSession({ threadId, sessionId });
+            });
+
+          /**
+           * The model the thread already records. Used on the resume path,
+           * where a live adapter session means nothing was re-resolved: the
+           * reported model must still be the same fact either way, or two
+           * concurrent starts describe the same session differently.
+           */
+          const readThreadModelSlug = Effect.fn("AdeShuvcodeChatSession.readThreadModelSlug")(
+            function* () {
+              const shell = yield* Effect.orElseSucceed(snapshots.getShellSnapshot(), () => null);
+              const selection = shell?.threads.find(
+                (thread) => thread.id === threadId,
+              )?.modelSelection;
+              return selection?.instanceId === ADE_SHUVCODE_INSTANCE_ID ? selection.model : null;
+            },
+          );
+
+          /** Observation outranks prediction: the model already misbehaved. */
+          const modelHealthFor = (predicted: AdeModelHealth): AdeModelHealth =>
+            adeModelHealthTracker.isMalformed(threadId) ? "malformed-tool-input" : predicted;
 
           const existing = yield* orUnavailable("read bindings", readActiveBinding(botId));
           if (existing !== null) {
@@ -547,6 +713,7 @@ export class AdeShuvcodeChatSession extends Context.Service<
               "rebind tool gate",
               gate.rebindShuvcodeSession({ threadId, sessionId, principal }),
             );
+            yield* bindModelHealth(sessionId);
 
             const refreshed = yield* Effect.exit(attachGate(sessionId));
             if (refreshed._tag === "Failure" && sessionGone(Cause.squash(refreshed.cause))) {
@@ -558,6 +725,7 @@ export class AdeShuvcodeChatSession extends Context.Service<
                 { botId, sessionId },
               );
               yield* Effect.ignore(rollover.closeBinding({ bindingId, status: "lost" }));
+              adeModelHealthTracker.clearThread(threadId);
             } else {
               // The binding is durable; the adapter's session map is not. After a
               // restart the gate is rebound and the catalog is stored locally,
@@ -582,7 +750,14 @@ export class AdeShuvcodeChatSession extends Context.Service<
               const live = yield* adapter.hasSession(threadId);
               const started = live
                 ? null
-                : yield* Effect.exit(Effect.flatMap(prepareThread(), startAdapterSession));
+                : yield* Effect.exit(
+                    Effect.flatMap(prepareThread(), (prepared) =>
+                      Effect.map(startAdapterSession(prepared), (session) => ({
+                        session,
+                        prepared,
+                      })),
+                    ),
+                  );
 
               let liveSessionId = sessionId;
               // A start that failed for any reason other than "this process
@@ -599,14 +774,14 @@ export class AdeShuvcodeChatSession extends Context.Service<
                 );
               } else if (
                 started !== null &&
-                started.value.providerThreadId !== undefined &&
-                started.value.providerThreadId !== sessionId
+                started.value.session.providerThreadId !== undefined &&
+                started.value.session.providerThreadId !== sessionId
               ) {
                 // The adapter re-minted rather than adopted (the kernel had
                 // forgotten this session). The binding follows it.
                 liveSessionId = yield* reconcileKernelSession({
                   bindingId,
-                  kernelSessionId: started.value.providerThreadId as KernelSessionId,
+                  kernelSessionId: started.value.session.providerThreadId as KernelSessionId,
                   fallbackSessionId: sessionId,
                 });
               }
@@ -628,6 +803,13 @@ export class AdeShuvcodeChatSession extends Context.Service<
                 startedNow: false,
                 toolsProbe,
                 toolsAttached: toolsProbe !== "missing",
+                modelHealth: modelHealthFor(
+                  started?._tag === "Success" ? started.value.prepared.modelHealth : "ok",
+                ),
+                modelSlug:
+                  started?._tag === "Success"
+                    ? started.value.prepared.modelSelection.model
+                    : yield* readThreadModelSlug(),
               } satisfies AdeBotChatSession;
             }
           }
@@ -674,6 +856,7 @@ export class AdeShuvcodeChatSession extends Context.Service<
               principal,
             }),
           );
+          yield* bindModelHealth(kernelSessionId as KernelSessionId);
 
           // Did the catalog actually take? Tools ride `session.create`, but a
           // kernel build without the dynamic-tool routes accepts the create and
@@ -719,6 +902,8 @@ export class AdeShuvcodeChatSession extends Context.Service<
               startedNow: false,
               toolsProbe,
               toolsAttached,
+              modelHealth: modelHealthFor(prepared.modelHealth),
+              modelSlug: prepared.modelSelection.model,
             } satisfies AdeBotChatSession;
           }
 
@@ -760,6 +945,8 @@ export class AdeShuvcodeChatSession extends Context.Service<
             startedNow: true,
             toolsProbe,
             toolsAttached,
+            modelHealth: modelHealthFor(prepared.modelHealth),
+            modelSlug: prepared.modelSelection.model,
           } satisfies AdeBotChatSession;
         },
       );

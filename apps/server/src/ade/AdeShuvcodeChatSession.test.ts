@@ -42,6 +42,13 @@ const sessionNotFoundError = () => ({
   body: { _tag: "SessionNotFoundError" },
 });
 
+/** Only the fields the resolution ladder reads. */
+interface CatalogModel {
+  readonly slug: string;
+  readonly isDefault?: boolean;
+  readonly capabilities?: { readonly toolCalling?: boolean; readonly textOutput?: boolean };
+}
+
 interface Spy {
   /** Every `attachShuvcodeThread` call, as `threadId|sessionId|botId`. */
   readonly attaches: Ref.Ref<ReadonlyArray<string>>;
@@ -57,8 +64,15 @@ interface Spy {
   readonly dispatches: Ref.Ref<ReadonlyArray<string>>;
   /** Workspace projects the fake shell reports. */
   readonly shellProjects: Ref.Ref<ReadonlyArray<{ id: string; workspaceRoot: string }>>;
-  /** Threads the fake shell reports. */
-  readonly shellThreads: Ref.Ref<ReadonlyArray<{ id: string }>>;
+  /**
+   * Threads the fake shell reports. `modelSelection` is required on a real
+   * `OrchestrationThreadShell`, and it is where a bot's pinned model lives.
+   */
+  readonly shellThreads: Ref.Ref<
+    ReadonlyArray<{ id: string; modelSelection: { instanceId: string; model: string } }>
+  >;
+  /** What the shuvcode instance reports as its model catalog. */
+  readonly catalogModels: Ref.Ref<ReadonlyArray<CatalogModel>>;
   /** Make `project.create` fail, standing in for a rejected command receipt. */
   readonly rejectProjectCreate: Ref.Ref<boolean>;
   /**
@@ -150,17 +164,17 @@ const makeLayer = (spy: Spy) =>
               // live one (tearing down its pump and cancelling in-flight tool
               // calls) rather than create the missing one.
               hasSession: () => Ref.get(spy.adapterSessionLive),
-              syntheticInput: { isLive: () => Effect.succeed(true) },
+              syntheticInput: { isLive: () => Effect.succeed(true), inject: () => Effect.void },
             }),
           streamChanges: Stream.empty,
         } as unknown as ProviderAdapterRegistry.ProviderAdapterRegistry["Service"]),
         Layer.succeed(ProviderRegistry.ProviderRegistry, {
-          getProviders: Effect.succeed([
-            { instanceId: "opencodeV2", models: [{ slug: "test/model" }], message: undefined },
+          getProviders: Effect.map(Ref.get(spy.catalogModels), (models) => [
+            { instanceId: "opencodeV2", models, message: undefined },
           ]),
           refreshInstance: () =>
-            Effect.succeed([
-              { instanceId: "opencodeV2", models: [{ slug: "test/model" }], message: undefined },
+            Effect.map(Ref.get(spy.catalogModels), (models) => [
+              { instanceId: "opencodeV2", models, message: undefined },
             ]),
         } as unknown as ProviderRegistry.ProviderRegistry["Service"]),
         Layer.succeed(ProviderService.ProviderService, {
@@ -198,7 +212,14 @@ const makeLayer = (spy: Spy) =>
               if (command.type === "thread.create") {
                 yield* Ref.update(spy.shellThreads, (threads) => [
                   ...threads,
-                  { id: String((command as { threadId?: string }).threadId) },
+                  {
+                    id: String((command as { threadId?: string }).threadId),
+                    modelSelection: (
+                      command as unknown as {
+                        modelSelection: { instanceId: string; model: string };
+                      }
+                    ).modelSelection,
+                  },
                 ]);
               }
               if (command.type === "project.create" && (yield* Ref.get(spy.rejectProjectCreate))) {
@@ -247,7 +268,10 @@ const withChat = <A, E>(body: (spy: Spy) => Effect.Effect<A, E, ChatEnv>) =>
       sessionGone: yield* Ref.make(false),
       dispatches: yield* Ref.make<ReadonlyArray<string>>([]),
       shellProjects: yield* Ref.make<ReadonlyArray<{ id: string; workspaceRoot: string }>>([]),
-      shellThreads: yield* Ref.make<ReadonlyArray<{ id: string }>>([]),
+      shellThreads: yield* Ref.make<
+        ReadonlyArray<{ id: string; modelSelection: { instanceId: string; model: string } }>
+      >([]),
+      catalogModels: yield* Ref.make<ReadonlyArray<CatalogModel>>([{ slug: "test/model" }]),
       rejectProjectCreate: yield* Ref.make(false),
       adapterSessionLive: yield* Ref.make(true),
       probeSessionGone: yield* Ref.make(false),
@@ -554,6 +578,96 @@ describe("AdeShuvcodeChatSession.startPrimaryChat", () => {
         // to this bot.
         assert.include(yield* Ref.get(spy.rebinds), `ade-bot-${botId}|oc-new|${botId}`);
         assert.equal(resolved.toolsProbe, "attached");
+      }),
+    ),
+  );
+
+  it.effect("takes the kernel's configured default rather than the catalog order", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { sql, chat, botId } = yield* setup;
+        yield* seedProject(sql);
+        yield* Ref.set(spy.shellProjects, [
+          { id: "p-demo", workspaceRoot: "/home/captain/repos/demo" },
+        ]);
+        yield* Ref.set(spy.mintedSessionId, "oc-new");
+        // The catalog as observed on the VM: the free liar sorts first.
+        yield* Ref.set(spy.catalogModels, [
+          { slug: "opencode/big-pickle", capabilities: { toolCalling: false, textOutput: true } },
+          {
+            slug: "openai/gpt-5.6-sol",
+            isDefault: true,
+            capabilities: { toolCalling: true, textOutput: true },
+          },
+        ]);
+
+        const resolved = yield* chat.startPrimaryChat(botId);
+
+        assert.equal(resolved.modelSlug, "openai/gpt-5.6-sol");
+        assert.equal(resolved.modelHealth, "ok");
+      }),
+    ),
+  );
+
+  it.effect("names the failure when no model on the kernel can run a bot", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { sql, chat, botId } = yield* setup;
+        yield* seedProject(sql);
+        yield* Ref.set(spy.shellProjects, [
+          { id: "p-demo", workspaceRoot: "/home/captain/repos/demo" },
+        ]);
+        yield* Ref.set(spy.mintedSessionId, "oc-new");
+        // An image model and a model that cannot call tools. Taking the first
+        // one is what produced turns that failed with nothing to read.
+        yield* Ref.set(spy.catalogModels, [
+          {
+            slug: "openai/chatgpt-image-latest",
+            capabilities: { toolCalling: true, textOutput: false },
+          },
+          { slug: "opencode/big-pickle", capabilities: { toolCalling: false, textOutput: true } },
+        ]);
+
+        const failure = yield* Effect.flip(chat.startPrimaryChat(botId));
+
+        assert.equal(failure.reason, "model_not_agent_capable");
+        assert.include(failure.message, "opencode.json");
+        // Nothing was stood up: the refusal happens before the kernel is asked.
+        assert.deepEqual(yield* Ref.get(spy.startedSessions), []);
+      }),
+    ),
+  );
+
+  it.effect("honours a pinned model the kernel says cannot call tools, and flags it", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { sql, chat, botId } = yield* setup;
+        yield* seedProject(sql);
+        yield* Ref.set(spy.shellProjects, [
+          { id: "p-demo", workspaceRoot: "/home/captain/repos/demo" },
+        ]);
+        yield* Ref.set(spy.mintedSessionId, "oc-new");
+        yield* Ref.set(spy.catalogModels, [
+          { slug: "opencode/big-pickle", capabilities: { toolCalling: false, textOutput: true } },
+          {
+            slug: "openai/gpt-5.6-sol",
+            isDefault: true,
+            capabilities: { toolCalling: true, textOutput: true },
+          },
+        ]);
+        // The captain already chose. Capability data is provider-reported and
+        // can be wrong, and refusing here would leave no override anywhere.
+        yield* Ref.set(spy.shellThreads, [
+          {
+            id: `ade-bot-${botId}`,
+            modelSelection: { instanceId: "opencodeV2", model: "opencode/big-pickle" },
+          },
+        ]);
+
+        const resolved = yield* chat.startPrimaryChat(botId);
+
+        assert.equal(resolved.modelSlug, "opencode/big-pickle");
+        assert.equal(resolved.modelHealth, "unreported-tools");
       }),
     ),
   );

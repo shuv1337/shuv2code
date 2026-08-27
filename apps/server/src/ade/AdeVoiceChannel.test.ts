@@ -102,6 +102,8 @@ const chatPortOk = Layer.succeed(AdeChatSessionPort, {
       startedNow: true,
       toolsProbe: "attached",
       toolsAttached: true,
+      modelHealth: "ok" as const,
+      modelSlug: null,
     } satisfies AdeBotChatSession),
 });
 

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   BOT_CHAT_KERNEL_DOWN_NOTICE,
   BOT_CHAT_TOOLS_MISSING_NOTICE,
+  botChatModelNotice,
   botChatStartNotice,
   canAutoConnect,
   CHAT_SYNC_TIMEOUT_MS,
@@ -18,7 +19,13 @@ import {
   type ChatSyncOutcome,
 } from "./BotChatPage.logic";
 
-const chatSession = (toolsProbe: AdeBotChatSession["toolsProbe"]): AdeBotChatSession => ({
+const chatSession = (
+  toolsProbe: AdeBotChatSession["toolsProbe"],
+  model: {
+    health?: AdeBotChatSession["modelHealth"];
+    slug?: string | null;
+  } = {},
+): AdeBotChatSession => ({
   botId: "bot_1" as AdeBotChatSession["botId"],
   threadId: "ade-bot-bot_1" as ThreadId,
   engine: "shuvcode",
@@ -27,6 +34,38 @@ const chatSession = (toolsProbe: AdeBotChatSession["toolsProbe"]): AdeBotChatSes
   startedNow: false,
   toolsProbe,
   toolsAttached: toolsProbe !== "missing",
+  modelHealth: model.health ?? "ok",
+  modelSlug: model.slug ?? null,
+});
+
+describe("botChatModelNotice", () => {
+  it("says nothing when the model looks fine", () => {
+    expect(botChatModelNotice(chatSession("attached"))).toBeNull();
+  });
+
+  it("names the model that reported no tool calling", () => {
+    const notice = botChatModelNotice(
+      chatSession("attached", { health: "unreported-tools", slug: "opencode/big-pickle" }),
+    );
+    expect(notice?.message).toBe("This bot's model may not be able to use tools.");
+    expect(notice?.details).toContain("opencode/big-pickle");
+  });
+
+  it("states the observed loop plainly, and where the remedy applies", () => {
+    const notice = botChatModelNotice(
+      chatSession("attached", { health: "malformed-tool-input", slug: "opencode/big-pickle" }),
+    );
+    expect(notice?.message).toBe("This bot's model isn't calling tools correctly.");
+    expect(notice?.details).toContain("opencode/big-pickle");
+    // A model change does not reach a live kernel session, and a notice that
+    // does not say so reads as "changing it did nothing".
+    expect(notice?.details).toContain("restarted");
+  });
+
+  it("falls back to a generic subject when the slug is unknown", () => {
+    const notice = botChatModelNotice(chatSession("attached", { health: "unreported-tools" }));
+    expect(notice?.details?.startsWith("This bot's model")).toBe(true);
+  });
 });
 
 describe("shouldWarnToolsMissing", () => {

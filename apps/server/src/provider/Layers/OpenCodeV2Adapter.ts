@@ -1109,6 +1109,23 @@ export function makeOpenCodeV2Adapter(
               },
             },
           });
+          /*
+           * A model that answers a tool call with pseudo-XML or truncated JSON
+           * lands here: upstream refuses the call, tells the model to retry,
+           * and the model does the same thing again. As a timeline item nobody
+           * inspects that loop is silent, so the fact is also published on the
+           * dispatch feed where a consumer can count it.
+           */
+          if (
+            event.type === "session.tool.failed" &&
+            asRecord(data.error)?.type === "tool.input-json"
+          ) {
+            yield* Queue.offer(dynamicToolSignals, {
+              kind: "input-malformed",
+              threadId: context.session.threadId,
+              tool: name,
+            });
+          }
           break;
         }
         /**
