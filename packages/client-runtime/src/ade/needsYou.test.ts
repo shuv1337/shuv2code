@@ -4,11 +4,12 @@ import type { AdeNeedsYouEntry, NeedsYouItemId } from "@shuv2code/contracts";
 
 import {
   canApproveWithSession,
+  NEEDS_YOU_UNSCOPED_REASON,
   describeDecisionOutcome,
   entriesForSubject,
   getNeedsYouDecisionView,
   selectNeedsYouEntry,
-} from "./NeedsYouInbox.logic";
+} from "./needsYou.ts";
 
 const entry = (overrides: {
   readonly id: string;
@@ -219,5 +220,56 @@ describe("describeDecisionOutcome", () => {
         fallback: "The candidate moved on.",
       }),
     ).toEqual({ tone: "error", message: "The candidate moved on." });
+  });
+});
+
+describe("getNeedsYouDecisionView unscoped copy", () => {
+  const entry = {
+    item: {
+      id: "ny-1" as NeedsYouItemId,
+      kind: "approval",
+      subjectRefs: [],
+      status: "open",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+      resolvedAt: null,
+    },
+    title: "Approve the change",
+    detail: "A delivery is waiting.",
+    actionable: true,
+    action: "approve-deny",
+    botId: null,
+    projectId: null,
+    assignmentId: null,
+    integrationCandidateId: null,
+    kernelEngine: null,
+  } as unknown as AdeNeedsYouEntry;
+
+  it("defaults to the sentence that names the server's startup link", () => {
+    const view = getNeedsYouDecisionView({ entry, canApprove: false, busy: false });
+    expect(view.canDecide).toBe(false);
+    expect(view.unavailableReason).toBe(NEEDS_YOU_UNSCOPED_REASON);
+  });
+
+  it("lets a client that cannot open that link say something it can act on", () => {
+    const view = getNeedsYouDecisionView({
+      entry,
+      canApprove: false,
+      busy: false,
+      unscopedReason: "Approve this on your captain machine.",
+    });
+    expect(view.action).toBe("approve-deny");
+    expect(view.unavailableReason).toBe("Approve this on your captain machine.");
+  });
+
+  it("ignores the override entirely once the client can approve", () => {
+    const view = getNeedsYouDecisionView({
+      entry,
+      canApprove: true,
+      busy: false,
+      unscopedReason: "Approve this on your captain machine.",
+    });
+    expect(view.canDecide).toBe(true);
+    expect(view.unavailableReason).toBeNull();
   });
 });

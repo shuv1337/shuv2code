@@ -76,122 +76,17 @@ export function viewerSocketUrl(input: {
   return url.toString();
 }
 
-export type BotScreenPhase =
-  /** No Screenbox on this host at all. */
-  | "unavailable"
-  /** Computer use is off, so this bot may not have a desktop. */
-  | "disabled"
-  /** Eligible, but nothing has ever been provisioned. */
-  | "not-started"
-  /** Upstream is bringing a container up. */
-  | "starting"
-  /** Running and viewable. */
-  | "live"
-  /** Provisioned once, currently stopped; its data is still on disk. */
-  | "stopped"
-  /** The last provision attempt failed. */
-  | "failed";
-
-export interface BotScreenView {
-  readonly phase: BotScreenPhase;
-  readonly headline: string;
-  readonly detail: string;
-  /**
-   * Non-null only when a viewer should connect. The client never builds this
-   * path itself — a desktop that is not running has no port behind it.
-   */
-  readonly viewerPath: string | null;
-  readonly canStart: boolean;
-  readonly canStop: boolean;
-  readonly viewers: number;
-}
-
-/**
- * Poster copy for every phase the panel and the full Screen tab share.
- *
- * De-narrated in #217. The headline states the state; the detail is the one
- * next action, or empty when the affordance beside it already is the action.
- * Three rules the earlier copy broke:
- *
- *  - Never describe this UI's own behaviour. "Opening this tab never starts
- *    one" and "You are watching this bot's live desktop" both told a captain
- *    what the screen they are looking at is doing.
- *  - Never restate the headline. "The desktop is stopped." under "Desktop
- *    stopped" is the same fact with more words.
- *  - Keep system vocabulary out of primary copy. "Waiting for Screenbox to
- *    bring the container up" names a container runtime at a captain who wants
- *    to know whether to keep waiting.
- *
- * `detail: ""` is a deliberate value, not a gap: the phases whose next action
- * is the Start/Resume button beside them say nothing rather than narrating it.
+/*
+ * The phase machine moved to `@shuv2code/client-runtime/ade/bot-screen` so the
+ * mobile fleet surface reads the same phases and the same poster copy. Only the
+ * browser half — the RFB interop shim and the WebSocket URL noVNC opens — stays
+ * here, because only a browser has a canvas to draw into.
  */
-const PHASE_COPY: Record<BotScreenPhase, { headline: string; detail: string }> = {
-  unavailable: {
-    headline: "Screenbox is not configured",
-    detail: "Configure a Screenbox host to give bots desktops.",
-  },
-  disabled: {
-    headline: "Computer use is off",
-    detail: "Turn on computer use for this bot.",
-  },
-  "not-started": {
-    headline: "No desktop running",
-    detail: "",
-  },
-  starting: {
-    headline: "Starting a desktop",
-    detail: "",
-  },
-  live: {
-    headline: "Desktop running",
-    detail: "",
-  },
-  stopped: {
-    headline: "Desktop stopped",
-    detail: "Files are kept — resuming picks up where it left off.",
-  },
-  failed: {
-    headline: "Desktop failed to start",
-    detail: "Check Needs You for the reason.",
-  },
-};
-
-const phaseOf = (screen: AdeBotScreen): BotScreenPhase => {
-  if (!screen.screenboxConfigured) return "unavailable";
-  // Computer use gates whether this bot may have a desktop at all — but only
-  // when there is no desktop yet. Turning the toggle off with a container still
-  // running must keep Stop reachable, or the captain would have no way to shut
-  // down the desktop they just orphaned.
-  if (!screen.computerUse && (screen.status === "none" || screen.status === "failed")) {
-    return "disabled";
-  }
-  switch (screen.status) {
-    case "provisioning":
-      return "starting";
-    case "running":
-      return "live";
-    case "stopped":
-      return "stopped";
-    case "failed":
-      return "failed";
-    default:
-      return "not-started";
-  }
-};
-
-export function getBotScreenView(screen: AdeBotScreen): BotScreenView {
-  const phase = phaseOf(screen);
-  const copy = PHASE_COPY[phase];
-  return {
-    phase,
-    headline: copy.headline,
-    detail: copy.detail,
-    // Even in the `live` phase the server has the last word: if it declined to
-    // hand back a path (upstream lost the desktop between the two reads) the
-    // viewer must not try to connect anyway.
-    viewerPath: phase === "live" ? screen.viewerPath : null,
-    canStart: phase === "not-started" || phase === "stopped" || phase === "failed",
-    canStop: phase === "live" || phase === "starting",
-    viewers: screen.viewers,
-  };
-}
+export {
+  botScreenPanelTitle,
+  getBotScreenPanelView,
+  getBotScreenView,
+  type BotScreenPanelView,
+  type BotScreenPhase,
+  type BotScreenView,
+} from "@shuv2code/client-runtime/ade/bot-screen";

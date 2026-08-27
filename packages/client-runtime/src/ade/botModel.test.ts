@@ -17,7 +17,7 @@ import {
   getBotModelSavedMessage,
   isFlaggedBotModel,
   shouldSubmitBotModel,
-} from "./botModel.logic";
+} from "./botModel.ts";
 
 const model = (slug: string, overrides: Partial<ServerProviderModel> = {}): ServerProviderModel =>
   ({

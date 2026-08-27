@@ -12,7 +12,7 @@ import {
   getBotHeaderView,
   getPersonaVersionViews,
   PERSONA_EDIT_NOTE,
-} from "./BotDetailPanel.logic";
+} from "./botDetail.ts";
 
 function binding(overrides: Record<string, unknown>): BotExecutionBinding {
   return {

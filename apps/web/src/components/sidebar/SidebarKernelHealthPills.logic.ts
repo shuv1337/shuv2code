@@ -1,8 +1,15 @@
 /**
  * Pure view mapping for the sidebar kernel health pills (spec §4.8, §7.8):
  * one pill per monitored target, fed by the server's health checker over WS.
+ *
+ * The vocabulary — order, labels, the sentence each state turns into — is
+ * `@shuv2code/client-runtime/ade/kernel-health`, shared with the mobile fleet
+ * surface. What stays here is the paint: these are Tailwind classes for a
+ * browser stylesheet, and React Native resolves neither `bg-muted-foreground/40`
+ * nor the ping animation they drive.
  */
 import type { FleetHealthSnapshot, HealthState, HealthTargetId } from "@shuv2code/contracts";
+import { getKernelHealthTargetViews } from "@shuv2code/client-runtime/ade/kernel-health";
 
 export interface KernelHealthPillView {
   readonly target: HealthTargetId;
@@ -12,27 +19,6 @@ export interface KernelHealthPillView {
   readonly pingClassName: string | null;
   readonly tooltip: string;
 }
-
-const TARGET_ORDER: ReadonlyArray<HealthTargetId> = ["shuvcode", "codex", "screenbox"];
-
-const TARGET_LABELS: Record<HealthTargetId, string> = {
-  shuvcode: "shuvcode",
-  codex: "Codex",
-  screenbox: "Screen",
-};
-
-const TARGET_TITLES: Record<HealthTargetId, string> = {
-  shuvcode: "shuvcode kernel",
-  codex: "Codex kernel",
-  screenbox: "Screenbox runtime",
-};
-
-const STATE_TEXT: Record<HealthState, string> = {
-  healthy: "healthy",
-  down: "down",
-  "not-provisioned": "not provisioned",
-  unknown: "checking…",
-};
 
 const STATE_DOT_CLASS: Record<HealthState, string> = {
   healthy: "bg-success",
@@ -49,18 +35,6 @@ const STATE_PING_CLASS: Record<HealthState, string | null> = {
   unknown: null,
 };
 
-function pillView(target: HealthTargetId, state: HealthState, detail: string | null) {
-  const summary = `${TARGET_TITLES[target]}: ${STATE_TEXT[state]}`;
-  return {
-    target,
-    label: TARGET_LABELS[target],
-    state,
-    dotClassName: STATE_DOT_CLASS[state],
-    pingClassName: STATE_PING_CLASS[state],
-    tooltip: detail === null || detail.length === 0 ? summary : `${summary}\n${detail}`,
-  } satisfies KernelHealthPillView;
-}
-
 /**
  * All three pills in fixed order. A missing snapshot (not yet received or
  * disconnected) renders every target as `unknown` — the app never gates on
@@ -69,10 +43,14 @@ function pillView(target: HealthTargetId, state: HealthState, detail: string | n
 export function getKernelHealthPillViews(
   snapshot: FleetHealthSnapshot | null,
 ): ReadonlyArray<KernelHealthPillView> {
-  return TARGET_ORDER.map((target) => {
-    const entry = snapshot?.targets.find((candidate) => candidate.target === target);
-    return entry === undefined
-      ? pillView(target, "unknown", null)
-      : pillView(target, entry.state, entry.detail);
-  });
+  return getKernelHealthTargetViews(snapshot).map(
+    (view): KernelHealthPillView => ({
+      target: view.target,
+      label: view.label,
+      state: view.state,
+      dotClassName: STATE_DOT_CLASS[view.state],
+      pingClassName: STATE_PING_CLASS[view.state],
+      tooltip: view.detail === null ? view.summary : `${view.summary}\n${view.detail}`,
+    }),
+  );
 }
