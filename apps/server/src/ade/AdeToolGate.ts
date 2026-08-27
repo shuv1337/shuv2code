@@ -802,6 +802,22 @@ export interface AdeToolGateShape {
   ) => Effect.Effect<void, E>;
 
   /**
+   * Is a dispatched fleet tool still running on this thread?
+   *
+   * Asked by callers that are about to drop the thread's provider session for
+   * a reason of their own (a model change, say). Interrupting a dispatch that
+   * has already had its side effect but has not yet replied leaves the kernel
+   * call pending, and the next attach's drain re-requests it under a new
+   * generation and runs the handler again — a second bot, a second assignment.
+   * A caller that can wait must wait.
+   *
+   * Deliberately a snapshot, not a lock: it answers "is now a bad moment",
+   * which is all a deferrable act needs, and a gate-held lock over an
+   * arbitrary caller's work is a far worse trade than one deferred restart.
+   */
+  readonly hasInFlightToolCalls: (threadId: ThreadId) => Effect.Effect<boolean>;
+
+  /**
    * Own the seam's single-consumer `takeSignal` loop: dispatch `requested`
    * signals (concurrently, one fiber per call), reply through the seam, and
    * interrupt in-flight dispatches on `cancelled` (interruption is forked so
@@ -1191,6 +1207,13 @@ export const makeAdeToolGate = (options: MakeAdeToolGateOptions): AdeToolGateSha
       yield* seam.clearThread(threadId);
     });
 
+  const hasInFlightToolCalls: AdeToolGateShape["hasInFlightToolCalls"] = (threadId) =>
+    Effect.sync(() => {
+      const prefix = `${threadId}\n`;
+      for (const key of inFlight.keys()) if (key.startsWith(prefix)) return true;
+      return false;
+    });
+
   const replyShuvcode = <E>(
     seam: ProviderDynamicToolsShape<E>,
     call: ProviderDynamicToolCall,
@@ -1322,6 +1345,7 @@ export const makeAdeToolGate = (options: MakeAdeToolGateOptions): AdeToolGateSha
     attachShuvcodeThread,
     rebindShuvcodeSession,
     detachShuvcodeThread,
+    hasInFlightToolCalls,
     runShuvcodeDispatchLoop,
   } satisfies AdeToolGateShape;
 };

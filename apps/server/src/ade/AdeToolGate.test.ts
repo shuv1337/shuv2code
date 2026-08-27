@@ -967,6 +967,55 @@ describe("AdeToolGate shuvcode loop", () => {
     }),
   );
 
+  it.effect("reports a dispatched call as in flight until it settles", () =>
+    Effect.gen(function* () {
+      const running = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const gate = makeAdeToolGate({
+        handlers: {
+          ...adeToolHandlersUnavailable,
+          updateMemory: () =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(running, undefined);
+              yield* Deferred.await(release);
+              return "done";
+            }),
+        },
+        checks: allowAllChecks,
+        screenbox: noScreenbox,
+      });
+      const fake = yield* makeFakeSeam;
+      const threadId = ThreadId.make("thread-a");
+      const idle = ThreadId.make("thread-idle");
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
+
+      NodeAssert.equal(yield* gate.hasInFlightToolCalls(threadId), false);
+      yield* fake.request({
+        threadId,
+        callId: "call-running",
+        tool: "update_memory",
+        input: { content: "a" },
+      });
+      yield* Deferred.await(running);
+
+      // This is what a model change must never interrupt: the side effect has
+      // happened and the kernel call has not been replied to, so an interrupt
+      // leaves it pending for the next attach's drain to run a second time.
+      NodeAssert.equal(yield* gate.hasInFlightToolCalls(threadId), true);
+      // Per thread, not per process — another bot's chat is not blocked.
+      NodeAssert.equal(yield* gate.hasInFlightToolCalls(idle), false);
+
+      yield* Deferred.succeed(release, undefined);
+      yield* Queue.take(fake.replies);
+      NodeAssert.equal(yield* gate.hasInFlightToolCalls(threadId), false);
+    }),
+  );
+
   it.effect("treats the structured already-settled reply conflict (409) as benign", () =>
     Effect.gen(function* () {
       const gate = makeEchoGate();

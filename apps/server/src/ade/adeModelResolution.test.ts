@@ -69,11 +69,31 @@ describe("resolveAdeModelSelection", () => {
     });
   });
 
-  it("treats a pin the catalog has never heard of as unreported, not incapable", () => {
+  it("keeps a pin the catalog no longer offers, but flags it", () => {
+    // The captain's choice still wins the rung — there is no override anywhere
+    // else — but a model the kernel has dropped fails every turn, so it must
+    // not come back reported as healthy. That silence is the whole bug.
     const resolved = resolveAdeModelSelection({
       pinned: shuvcode("local/homegrown"),
       projectDefault: null,
       models: CATALOG,
+    });
+    NodeAssert.deepEqual(resolved, {
+      kind: "resolved",
+      slug: "local/homegrown",
+      source: "pinned",
+      agentCapable: false,
+    });
+  });
+
+  it("does not judge a pin against an empty catalog", () => {
+    // Nothing to compare against is not evidence of anything. The caller
+    // refuses on an empty catalog before this ever runs; this only guarantees
+    // the pure function never invents a verdict from silence.
+    const resolved = resolveAdeModelSelection({
+      pinned: shuvcode("openai/gpt-5.6-sol"),
+      projectDefault: null,
+      models: [],
     });
     NodeAssert.equal(resolved.kind === "resolved" && resolved.agentCapable, true);
   });

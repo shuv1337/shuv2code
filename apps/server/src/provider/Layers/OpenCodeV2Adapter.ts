@@ -1115,10 +1115,18 @@ export function makeOpenCodeV2Adapter(
            * and the model does the same thing again. As a timeline item nobody
            * inspects that loop is silent, so the fact is also published on the
            * dispatch feed where a consumer can count it.
+           *
+           * Gated on the thread having a dynamic-tool catalog, exactly like the
+           * `requested`/`cancelled` signals beside it. The feed has a single
+           * consumer bound to one instance, so an offer for a thread nobody
+           * dispatches for either sits in an unbounded queue forever (a second
+           * opencodeV2 instance) or teaches the ADE health tracker about an
+           * ordinary chat thread it will never clear.
            */
           if (
             event.type === "session.tool.failed" &&
-            asRecord(data.error)?.type === "tool.input-json"
+            asRecord(data.error)?.type === "tool.input-json" &&
+            dynamicToolConfigByThread.has(context.session.threadId)
           ) {
             yield* Queue.offer(dynamicToolSignals, {
               kind: "input-malformed",

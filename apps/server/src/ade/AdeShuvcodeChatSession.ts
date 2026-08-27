@@ -105,12 +105,29 @@ export type AdeModelResolution =
       readonly slug: string;
       readonly source: AdeModelSource;
       /**
-       * False only when the catalog entry actively reports that it cannot do
-       * this. A slug the catalog does not know at all is `true` — unreported.
+       * False when the catalog entry reports that it cannot do this — and also
+       * when a non-empty catalog does not contain the slug at all, because a
+       * model the kernel no longer offers fails every turn with nothing to
+       * read, which is the exact silence this change exists to end. Only an
+       * *empty* catalog (nothing to judge against) leaves this `true`.
        */
       readonly agentCapable: boolean;
     }
   | { readonly kind: "none-capable" };
+
+/**
+ * The kernel answered, and answered with nothing. The instance's own probe
+ * text is what names the real problem ("Failed to execute 'opencode
+ * --version'", a stopped service), so it is quoted rather than replaced with a
+ * generic "no models" that sends the captain to edit the wrong file.
+ */
+const noModelsMessage = (instance: ServerProvider): string => {
+  const detail = instance.message ?? instance.unavailableReason ?? null;
+  return (
+    `The opencode2 provider reports no models${detail === null ? "" : ` (${detail})`}. ` +
+    "Check Settings → Providers — the binary path must point at your shuvcode CLI and `shuvcode service start` must be running."
+  );
+};
 
 const shuvcodeSlug = (selection: ModelSelection | null | undefined): string | null =>
   selection?.instanceId === ADE_SHUVCODE_INSTANCE_ID ? selection.model : null;
@@ -121,10 +138,12 @@ const shuvcodeSlug = (selection: ModelSelection | null | undefined): string | nu
  *
  * The rungs, first hit wins:
  *
- * 1. **The captain's explicit pin.** Never vetoed on capabilities: the data is
- *    provider-reported and can be stale or absent for a model the captain
- *    knows works, and refusing would turn a deliberate choice into a dead end
- *    with no override anywhere in the product. It is flagged instead.
+ * 1. **The captain's explicit pin**, and only that — never the selection the
+ *    ladder itself wrote onto the thread last time. Never vetoed on
+ *    capabilities either: the data is provider-reported and can be stale or
+ *    absent for a model the captain knows works, and refusing would turn a
+ *    deliberate choice into a dead end with no override anywhere in the
+ *    product. It is flagged instead.
  * 2. **The project default**, only when it already points at shuvcode *and*
  *    resolves to a capable catalog entry. It is a default, not a choice, and
  *    the rows that produced this bug were exactly a default naming a model
@@ -142,11 +161,13 @@ export function resolveAdeModelSelection(input: {
   readonly models: ReadonlyArray<ServerProviderModel>;
 }): AdeModelResolution {
   const capable = (slug: string): boolean => {
+    // An empty catalog is not evidence: the kernel answered with nothing, and
+    // judging a slug against nothing would report every model as broken. The
+    // caller refuses on an empty catalog before it ever gets here.
+    if (input.models.length === 0) return true;
     const model = input.models.find((candidate) => candidate.slug === slug);
-    return model === undefined || isAgentCapableModel(model);
+    return model !== undefined && isAgentCapableModel(model);
   };
-  const known = (slug: string): boolean =>
-    input.models.some((candidate) => candidate.slug === slug);
 
   const pinned = shuvcodeSlug(input.pinned);
   if (pinned !== null) {
@@ -154,7 +175,9 @@ export function resolveAdeModelSelection(input: {
   }
 
   const projectDefault = shuvcodeSlug(input.projectDefault);
-  if (projectDefault !== null && known(projectDefault) && capable(projectDefault)) {
+  // `capable` already requires the slug to be in the catalog, so a default
+  // naming a model the kernel dropped falls through with it.
+  if (projectDefault !== null && capable(projectDefault)) {
     return {
       kind: "resolved",
       slug: projectDefault,
@@ -255,6 +278,29 @@ export class AdeShuvcodeChatSession extends Context.Service<
           (rows) => rows[0] ?? null,
         );
 
+      /**
+       * The captain's pin — the *only* rung-1 input.
+       *
+       * Deliberately not the bot thread's `modelSelection`: every ADE thread
+       * is created with a machine-resolved selection, so reading that back as
+       * a pin would freeze each bot on whatever the ladder picked the first
+       * time it ever chatted (and freeze every bot created before this fix on
+       * the model that motivated it). `ade_bots.pinned_model_slug` is written
+       * by `setBotModel` and by nothing else, so it carries provenance.
+       */
+      const readPinnedModel = (botId: BotId) =>
+        Effect.map(
+          sql<{
+            pinned_model_slug: string | null;
+          }>`SELECT pinned_model_slug FROM ade_bots WHERE bot_id = ${botId}`,
+          (rows): ModelSelection | null => {
+            const slug = rows[0]?.pinned_model_slug ?? null;
+            return slug === null || slug.length === 0
+              ? null
+              : { instanceId: ADE_SHUVCODE_INSTANCE_ID, model: slug };
+          },
+        );
+
       const readBotName = (botId: BotId) =>
         Effect.map(
           sql<{ name: string }>`SELECT name FROM ade_bots WHERE bot_id = ${botId}`,
@@ -291,13 +337,27 @@ export class AdeShuvcodeChatSession extends Context.Service<
             instance = findInstance(yield* providers.refreshInstance(ADE_SHUVCODE_INSTANCE_ID));
           }
 
-          const models = instance?.models ?? [];
+          // The two "nothing to resolve against" cases are answered *before*
+          // the ladder, not after it. A pin resolves without consulting the
+          // catalog, so running the ladder first would let a bot with any pin
+          // sail past a missing instance and an empty catalog and fail later,
+          // downstream, with a message that names the wrong problem.
+          if (instance === undefined) {
+            return yield* unavailable(
+              "No 'opencode2' provider instance is configured. Add one in Settings → Providers, then start the chat again.",
+            );
+          }
+          const models = instance.models;
+          if (models.length === 0) {
+            return yield* unavailable(noModelsMessage(instance));
+          }
+
           const resolution = resolveAdeModelSelection({ ...input, models });
           if (resolution.kind === "resolved") {
             const modelHealth: AdeModelHealth = resolution.agentCapable ? "ok" : "unreported-tools";
             if (!resolution.agentCapable) {
               yield* Effect.logWarning(
-                "ADE bot is pinned to a model that does not report tool calling; starting it anyway",
+                "ADE bot is pinned to a model the kernel does not report as able to call tools and answer in text (or no longer offers at all); starting it anyway",
                 { slug: resolution.slug, reason: "pinned-model-not-agent-capable" },
               );
             }
@@ -310,18 +370,6 @@ export class AdeShuvcodeChatSession extends Context.Service<
             };
           }
 
-          if (instance === undefined) {
-            return yield* unavailable(
-              "No 'opencode2' provider instance is configured. Add one in Settings → Providers, then start the chat again.",
-            );
-          }
-          if (models.length === 0) {
-            const detail = instance.message ?? instance.unavailableReason ?? null;
-            return yield* unavailable(
-              `The opencode2 provider reports no models${detail === null ? "" : ` (${detail})`}. ` +
-                "Check Settings → Providers — the binary path must point at your shuvcode CLI and `shuvcode service start` must be running.",
-            );
-          }
           // A catalog full of models none of which can call tools and answer in
           // text. Silently taking the first one is what put an image model on a
           // bot and produced turns that failed with nothing to read.
@@ -570,14 +618,10 @@ export class AdeShuvcodeChatSession extends Context.Service<
           const prepareThread = Effect.fn("AdeShuvcodeChatSession.prepareThread")(function* () {
             const project = yield* resolveProject(botId);
 
-            // The shell read moved above the model resolution because the bot's
-            // *own* pin lives on its thread: `thread.meta.update` writes it, and
-            // the shell snapshot is already the read this path performs. No new
-            // table, no new projection — a `.find` on data in hand.
             const shell = yield* orUnavailable("read threads", snapshots.getShellSnapshot());
             const existingThread = shell.threads.find((thread) => thread.id === threadId);
             const { modelSelection, modelHealth } = yield* resolveModelSelection({
-              pinned: existingThread?.modelSelection ?? null,
+              pinned: yield* orUnavailable("read bot model pin", readPinnedModel(botId)),
               projectDefault: project.defaultModelSelection,
             });
             const botName = yield* orUnavailable("read bot", readBotName(botId));
@@ -605,6 +649,37 @@ export class AdeShuvcodeChatSession extends Context.Service<
                   createdAt,
                 }),
               );
+            } else if (shuvcodeSlug(existingThread.modelSelection) !== modelSelection.model) {
+              /*
+               * The thread records the *effective* model, so it follows the
+               * ladder rather than pinning it. This is what heals a bot whose
+               * thread was stamped by the old `models[0]` code, and what makes
+               * a later change to the kernel's `model:` or to the project
+               * default actually reach an unpinned bot.
+               *
+               * Best effort: the session below is created with `modelSelection`
+               * directly, so a refused projection write leaves the record stale
+               * rather than the bot unopenable.
+               */
+              const refreshed = yield* Effect.exit(
+                engine.dispatch({
+                  type: "thread.meta.update",
+                  // Random rather than derived: the receipt hash covers the
+                  // payload, so a deterministic id would reject a bot that
+                  // moves A → B → A across kernel restarts.
+                  commandId: CommandId.make(
+                    `ade-bot-model-resolved:${botId}:${NodeCrypto.randomUUID()}`,
+                  ),
+                  threadId,
+                  modelSelection,
+                }),
+              );
+              if (refreshed._tag === "Failure") {
+                yield* Effect.logWarning(
+                  "ADE could not record the resolved model on the bot's thread; the session still starts on it",
+                  { botId, threadId, slug: modelSelection.model },
+                );
+              }
             }
             return { project, modelSelection, botName, modelHealth };
           });
@@ -957,23 +1032,23 @@ export class AdeShuvcodeChatSession extends Context.Service<
         startLockFor(adeBotThreadId(botId)).withPermits(1)(startPrimaryChatUnlocked(botId));
 
       /**
-       * The shuvcode catalog, refreshed once when the cached snapshot is empty.
+       * The shuvcode instance, refreshed once when its cached catalog is empty.
        *
-       * Deliberately not shared with `resolveModelSelection`'s own read: that
-       * one keeps the whole `ServerProvider` because its two failure messages
-       * quote the instance's probe text, while validating a captain's choice
-       * only needs the model list.
+       * The whole `ServerProvider` rather than just the model list, because an
+       * empty catalog is a *kernel* diagnosis and the instance's own probe text
+       * is the only thing that names it.
        */
-      const readShuvcodeModels = Effect.fn("AdeShuvcodeChatSession.readShuvcodeModels")(
+      const readShuvcodeInstance = Effect.fn("AdeShuvcodeChatSession.readShuvcodeInstance")(
         function* () {
           const findInstance = (snapshot: ReadonlyArray<ServerProvider>) =>
             snapshot.find((provider) => provider.instanceId === ADE_SHUVCODE_INSTANCE_ID);
           const cached = findInstance(yield* providers.getProviders);
-          if (cached !== undefined && cached.models.length > 0) return cached.models;
-          const refreshed = findInstance(
-            yield* providers.refreshInstance(ADE_SHUVCODE_INSTANCE_ID),
+          if (cached !== undefined && cached.models.length > 0) return cached;
+          return (
+            findInstance(yield* providers.refreshInstance(ADE_SHUVCODE_INSTANCE_ID)) ??
+            cached ??
+            null
           );
-          return refreshed?.models ?? [];
         },
       );
 
@@ -1003,9 +1078,9 @@ export class AdeShuvcodeChatSession extends Context.Service<
        * anywhere in the product. The choice comes back flagged instead, as
        * `modelHealth: "unreported-tools"` on the next session.
        */
-      const setBotModel: AdeChatSessionPortShape["setBotModel"] = Effect.fn(
-        "AdeShuvcodeChatSession.setBotModel",
-      )(function* (input: AdeSetBotModelInput) {
+      const setBotModelUnlocked = Effect.fn("AdeShuvcodeChatSession.setBotModel")(function* (
+        input: AdeSetBotModelInput,
+      ) {
         const threadId = adeBotThreadId(input.botId);
         const slug = input.modelSelection.model;
         if (input.modelSelection.instanceId !== ADE_SHUVCODE_INSTANCE_ID) {
@@ -1014,7 +1089,18 @@ export class AdeShuvcodeChatSession extends Context.Service<
           );
         }
 
-        const models = yield* readShuvcodeModels();
+        const instance = yield* readShuvcodeInstance();
+        const models = instance?.models ?? [];
+        // An empty catalog is a kernel outage, not a typo. Refusing the slug
+        // here would tell a captain to fix their opencode.json when what they
+        // actually have to do is start the service.
+        if (models.length === 0) {
+          return yield* unavailable(
+            instance === null
+              ? "No 'opencode2' provider instance is configured. Add one in Settings → Providers, then choose a model."
+              : noModelsMessage(instance),
+          );
+        }
         if (!models.some((model) => model.slug === slug)) {
           return yield* modelNotCapable(
             `The shuvcode kernel does not offer a model called '${slug}'. ` +
@@ -1033,6 +1119,15 @@ export class AdeShuvcodeChatSession extends Context.Service<
             "This bot has no conversation yet, so there is nothing to set a model on. Open its chat once, then choose a model.",
           );
         }
+
+        // The pin's own home, written first. This is the durable record that
+        // the captain — not the ladder — chose, and it is what rung 1 reads;
+        // the thread's `modelSelection` below is the *effective* model, which
+        // the ladder rewrites freely and therefore cannot carry provenance.
+        yield* orUnavailable(
+          "record model pin",
+          sql`UPDATE ade_bots SET pinned_model_slug = ${slug} WHERE bot_id = ${input.botId}`,
+        );
 
         yield* orUnavailable(
           "set thread model",
@@ -1066,6 +1161,21 @@ export class AdeShuvcodeChatSession extends Context.Service<
         } satisfies AdeBotModelSetting;
         if (input.restartSession !== true) return dormant;
 
+        // Never mid tool call. Dropping the session interrupts an in-flight
+        // dispatch *after* its side effect and before its reply settles the
+        // kernel call, so the call stays pending and the next attach's drain
+        // re-requests it and runs the handler a second time — a duplicate bot,
+        // a duplicate assignment. The same hazard is why the resume path above
+        // refuses to replace a live adapter session. The pin is already
+        // durable, so deferring costs the captain one restart, not the choice.
+        if (yield* gate.hasInFlightToolCalls(threadId)) {
+          yield* Effect.logInfo(
+            "ADE model change was saved but the restart was deferred: the bot is running a fleet tool",
+            { botId: input.botId, threadId, slug },
+          );
+          return dormant;
+        }
+
         // A live provider session keeps the model it was created with, so the
         // only way to make the pin take now is to drop that session. The
         // durable binding and the kernel session behind it are left alone:
@@ -1088,6 +1198,15 @@ export class AdeShuvcodeChatSession extends Context.Service<
           appliesToLiveSession: true,
         } satisfies AdeBotModelSetting;
       });
+
+      /**
+       * Shares `startPrimaryChat`'s per-thread lock. Without it a save that
+       * lands while a start is between "read the pin" and "create the session"
+       * reports `appliesToLiveSession` against a binding that does not exist
+       * yet, and the start then stands the session up on the old model.
+       */
+      const setBotModel: AdeChatSessionPortShape["setBotModel"] = (input: AdeSetBotModelInput) =>
+        startLockFor(adeBotThreadId(input.botId)).withPermits(1)(setBotModelUnlocked(input));
 
       return AdeChatSessionPort.of({ startPrimaryChat, setBotModel, readBotModelSlug });
     }),

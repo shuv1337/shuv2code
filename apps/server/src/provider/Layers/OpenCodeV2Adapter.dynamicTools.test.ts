@@ -181,6 +181,37 @@ describe("OpenCodeV2Adapter dynamic tools", () => {
     }).pipe(Effect.provide(TestLayer)),
   );
 
+  it.effect("says nothing about a thread that has no dynamic-tool catalog", () =>
+    Effect.gen(function* () {
+      const { mock, seam, startThread, takeSignal } = yield* makeMockedAdapter;
+      // An ordinary chat: no ADE gate, so nothing consumes this feed for this
+      // thread. An offer here either sits in an unbounded queue forever or
+      // teaches the ADE health tracker about a thread it will never clear.
+      const plain = ThreadId.make("thread-plain");
+      const session = yield* startThread(plain);
+      mock.triggerMalformedToolInput(session.providerThreadId ?? "", {
+        callID: "call_bad_plain",
+        tool: "some_builtin",
+      });
+
+      // Configured threads still report, so this is a gate and not a silencer.
+      const configured = ThreadId.make("thread-dyn-configured");
+      yield* seam.configureThread({ threadId: configured, tools: ADE_TOOLS });
+      const other = yield* startThread(configured);
+      mock.triggerMalformedToolInput(other.providerThreadId ?? "", {
+        callID: "call_bad_2",
+        tool: "create_bot",
+      });
+
+      const signal = yield* takeSignal;
+      NodeAssert.deepEqual(signal, {
+        kind: "input-malformed",
+        threadId: configured,
+        tool: "create_bot",
+      });
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
   it.effect("dispatches invocations to the seam and settles replies", () =>
     Effect.gen(function* () {
       const { mock, seam, startThread, takeSignal } = yield* makeMockedAdapter;
