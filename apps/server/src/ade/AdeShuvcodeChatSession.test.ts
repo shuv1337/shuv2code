@@ -96,6 +96,8 @@ interface Spy {
   readonly stoppedSessions: Ref.Ref<ReadonlyArray<string>>;
   /** Make `stopSession` fail, standing in for a session that will not drop. */
   readonly stopSessionFails: Ref.Ref<boolean>;
+  /** Is a dispatched fleet tool still running on the bot's thread? */
+  readonly toolCallInFlight: Ref.Ref<boolean>;
 }
 
 /**
@@ -141,6 +143,7 @@ const makeLayer = (spy: Spy) =>
                 (options.principal as { botId: string }).botId,
               )}`,
             ]),
+          hasInFlightToolCalls: () => Ref.get(spy.toolCallInFlight),
         } as unknown as AdeToolGate["Service"]),
         Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, {
           // A seam is present, so "no dynamic-tool seam" is never the reason a
@@ -304,6 +307,7 @@ const withChat = <A, E>(body: (spy: Spy) => Effect.Effect<A, E, ChatEnv>) =>
       startedSessions: yield* Ref.make<ReadonlyArray<string>>([]),
       stoppedSessions: yield* Ref.make<ReadonlyArray<string>>([]),
       stopSessionFails: yield* Ref.make(false),
+      toolCallInFlight: yield* Ref.make(false),
     };
     return yield* Effect.provide(body(spy), makeLayer(spy));
   });
@@ -321,6 +325,13 @@ const setup = Effect.gen(function* () {
     botId: seeded.firstmateBotId,
   };
 });
+
+/**
+ * What `setBotModel` writes: the captain's pin, in its own column. Rung 1
+ * reads only this, never the thread's (machine-written) `modelSelection`.
+ */
+const pinModel = (sql: SqlClient.SqlClient, botId: string, slug: string) =>
+  sql`UPDATE ade_bots SET pinned_model_slug = ${slug} WHERE bot_id = ${botId}`;
 
 /**
  * An ADE project with a tilde repo path. The workspace project stores the
@@ -684,6 +695,66 @@ describe("AdeShuvcodeChatSession.startPrimaryChat", () => {
         ]);
         // The captain already chose. Capability data is provider-reported and
         // can be wrong, and refusing here would leave no override anywhere.
+        yield* pinModel(sql, botId, "opencode/big-pickle");
+
+        const resolved = yield* chat.startPrimaryChat(botId);
+
+        assert.equal(resolved.modelSlug, "opencode/big-pickle");
+        assert.equal(resolved.modelHealth, "unreported-tools");
+      }),
+    ),
+  );
+
+  it.effect("flags a pin the kernel no longer offers rather than reporting it healthy", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { sql, chat, botId } = yield* setup;
+        yield* seedProject(sql);
+        yield* Ref.set(spy.shellProjects, [
+          { id: "p-demo", workspaceRoot: "/home/captain/repos/demo" },
+        ]);
+        yield* Ref.set(spy.mintedSessionId, "oc-new");
+        // Pinned when the kernel offered it; the operator has since dropped
+        // the provider entry. Every turn now fails, so "ok" would be a lie of
+        // exactly the kind this change exists to end.
+        yield* Ref.set(spy.catalogModels, [
+          {
+            slug: "openai/gpt-5.6-sol",
+            isDefault: true,
+            capabilities: { toolCalling: true, textOutput: true },
+          },
+        ]);
+        yield* pinModel(sql, botId, "openai/retired");
+
+        const resolved = yield* chat.startPrimaryChat(botId);
+
+        assert.equal(resolved.modelSlug, "openai/retired");
+        assert.equal(resolved.modelHealth, "unreported-tools");
+      }),
+    ),
+  );
+
+  it.effect("re-resolves a thread the old first-entry code stamped instead of pinning it", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { sql, chat, botId } = yield* setup;
+        yield* seedProject(sql);
+        yield* Ref.set(spy.shellProjects, [
+          { id: "p-demo", workspaceRoot: "/home/captain/repos/demo" },
+        ]);
+        yield* Ref.set(spy.mintedSessionId, "oc-new");
+        yield* Ref.set(spy.catalogModels, [
+          { slug: "opencode/big-pickle", capabilities: { toolCalling: false, textOutput: true } },
+          {
+            slug: "openai/gpt-5.6-sol",
+            isDefault: true,
+            capabilities: { toolCalling: true, textOutput: true },
+          },
+        ]);
+        // The live VM after an upgrade: the thread carries the model the old
+        // `models[0]` path wrote, and no captain ever chose it. Reading that
+        // back as a pin is what would leave every existing bot on the broken
+        // model forever.
         yield* Ref.set(spy.shellThreads, [
           {
             id: `ade-bot-${botId}`,
@@ -693,8 +764,35 @@ describe("AdeShuvcodeChatSession.startPrimaryChat", () => {
 
         const resolved = yield* chat.startPrimaryChat(botId);
 
-        assert.equal(resolved.modelSlug, "opencode/big-pickle");
-        assert.equal(resolved.modelHealth, "unreported-tools");
+        assert.equal(resolved.modelSlug, "openai/gpt-5.6-sol");
+        assert.equal(resolved.modelHealth, "ok");
+        // The record follows the ladder, so the picker and the next start
+        // agree with the session that just started.
+        assert.include(yield* Ref.get(spy.dispatches), "thread.meta.update");
+        assert.equal(yield* chat.readBotModelSlug(botId), "openai/gpt-5.6-sol");
+      }),
+    ),
+  );
+
+  it.effect("names the empty catalog rather than resolving a pin against nothing", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { sql, chat, botId } = yield* setup;
+        yield* seedProject(sql);
+        yield* Ref.set(spy.shellProjects, [
+          { id: "p-demo", workspaceRoot: "/home/captain/repos/demo" },
+        ]);
+        // Kernel down. A pin resolves without consulting the catalog, so
+        // running the ladder first would sail past this and fail downstream
+        // with a message that names the wrong problem.
+        yield* Ref.set(spy.catalogModels, []);
+        yield* pinModel(sql, botId, "openai/gpt-5.6-sol");
+
+        const failure = yield* Effect.flip(chat.startPrimaryChat(botId));
+
+        assert.equal(failure.reason, "session_unavailable");
+        assert.include(failure.message, "reports no models");
+        assert.deepEqual(yield* Ref.get(spy.startedSessions), []);
       }),
     ),
   );
@@ -843,10 +941,10 @@ const pinnedThread = (botId: string, model = "openai/gpt-5.6-sol") => ({
 });
 
 describe("AdeShuvcodeChatSession.setBotModel", () => {
-  it.effect("writes the pin to the bot's own thread", () =>
+  it.effect("records the pin and the effective model, in their own homes", () =>
     withChat((spy) =>
       Effect.gen(function* () {
-        const { chat, botId } = yield* setup;
+        const { sql, chat, botId } = yield* setup;
         yield* Ref.set(spy.shellThreads, [pinnedThread(botId, "openai/old")]);
         yield* Ref.set(spy.catalogModels, [
           { slug: "openai/old" },
@@ -861,6 +959,62 @@ describe("AdeShuvcodeChatSession.setBotModel", () => {
         assert.equal(setting.modelSelection.model, "openai/gpt-5.6-sol");
         assert.include(yield* Ref.get(spy.dispatches), "thread.meta.update");
         assert.equal(yield* chat.readBotModelSlug(botId), "openai/gpt-5.6-sol");
+        // Provenance: the pin column is what rung 1 reads, and only this path
+        // writes it.
+        const rows = yield* sql<{
+          pinned_model_slug: string | null;
+        }>`SELECT pinned_model_slug FROM ade_bots WHERE bot_id = ${botId}`;
+        assert.equal(rows[0]?.pinned_model_slug, "openai/gpt-5.6-sol");
+      }),
+    ),
+  );
+
+  it.effect("outranks the kernel default on the next start", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { sql, chat, botId } = yield* setup;
+        yield* seedProject(sql);
+        yield* Ref.set(spy.shellProjects, [
+          { id: "p-demo", workspaceRoot: "/home/captain/repos/demo" },
+        ]);
+        yield* Ref.set(spy.mintedSessionId, "oc-new");
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId, "openai/old")]);
+        yield* Ref.set(spy.catalogModels, [
+          { slug: "openai/old", capabilities: { toolCalling: true, textOutput: true } },
+          {
+            slug: "openai/gpt-5.6-sol",
+            isDefault: true,
+            capabilities: { toolCalling: true, textOutput: true },
+          },
+        ]);
+
+        yield* chat.setBotModel({ botId, modelSelection: shuvcodeSelection("openai/old") });
+        const resolved = yield* chat.startPrimaryChat(botId);
+
+        // The kernel default is the capable, newer entry — the pin still wins,
+        // which is the rung the ladder promises and the one that used to die
+        // after a bot's first start.
+        assert.equal(resolved.modelSlug, "openai/old");
+      }),
+    ),
+  );
+
+  it.effect("blames the kernel, not the slug, when the catalog is empty", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { chat, botId } = yield* setup;
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId)]);
+        // `shuvcode service` is stopped. Telling the captain their perfectly
+        // valid model does not exist sends them to edit opencode.json.
+        yield* Ref.set(spy.catalogModels, []);
+
+        const failure = yield* Effect.flip(
+          chat.setBotModel({ botId, modelSelection: shuvcodeSelection("openai/gpt-5.6-sol") }),
+        );
+
+        assert.equal(failure.reason, "session_unavailable");
+        assert.include(failure.message, "reports no models");
+        assert.notInclude(failure.message, "does not offer a model called");
       }),
     ),
   );
@@ -988,6 +1142,36 @@ describe("AdeShuvcodeChatSession.setBotModel", () => {
 
         assert.isTrue(setting.appliesToLiveSession);
         assert.deepEqual(yield* Ref.get(spy.stoppedSessions), [`ade-bot-${botId}`]);
+      }),
+    ),
+  );
+
+  it.effect("defers the restart while the bot is running a fleet tool", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { rollover, chat, botId } = yield* setup;
+        yield* rollover.startPrimarySession({
+          botId,
+          engine: "shuvcode",
+          sessionId: "oc-live" as KernelSessionId,
+        });
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId, "openai/old")]);
+        yield* Ref.set(spy.catalogModels, [{ slug: "openai/old" }, { slug: "openai/gpt-5.6-sol" }]);
+        // Mid `create_bot`: dropping the session interrupts the dispatch after
+        // its side effect, and the next attach's drain re-requests the still
+        // pending call and creates a second bot.
+        yield* Ref.set(spy.toolCallInFlight, true);
+
+        const setting = yield* chat.setBotModel({
+          botId,
+          modelSelection: shuvcodeSelection("openai/gpt-5.6-sol"),
+          restartSession: true,
+        });
+
+        assert.isFalse(setting.appliesToLiveSession);
+        assert.deepEqual(yield* Ref.get(spy.stoppedSessions), []);
+        // The choice is durable either way; only the restart waits.
+        assert.equal(yield* chat.readBotModelSlug(botId), "openai/gpt-5.6-sol");
       }),
     ),
   );

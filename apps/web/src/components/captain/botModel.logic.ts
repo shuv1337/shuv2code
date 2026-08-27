@@ -39,9 +39,14 @@ export const BOT_MODEL_UNSUPPORTED_HINT = "May not support tools";
 /** Under the picker, always — the default path is the dormant one. */
 export const BOT_MODEL_NEXT_SESSION_NOTE = "Applies the next time this conversation is restarted.";
 
-/** On the opt-in restart control. */
+/**
+ * On the opt-in restart control. The deferral is named because it is a real
+ * outcome the captain can hit: a restart while the bot is running a fleet tool
+ * would leave that call to be re-requested and run a second time, so the
+ * server declines it and the saved message says the bot kept its model.
+ */
 export const BOT_MODEL_RESTART_NOTE =
-  "Restarts this bot's session so the new model takes effect now. A reply in flight is interrupted.";
+  "Restarts this bot's session so the new model takes effect now. A reply in flight is interrupted, and a restart is deferred while the bot is running a fleet tool.";
 
 export interface BotModelOption {
   readonly slug: string;
