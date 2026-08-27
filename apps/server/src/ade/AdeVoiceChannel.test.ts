@@ -29,7 +29,7 @@ import {
 } from "./AdeAssignmentEngine.ts";
 import { AdeBootstrap } from "./AdeBootstrap.ts";
 import { AdeCaptainApi } from "./AdeCaptainApi.ts";
-import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
+import { adeChatSessionPortUnavailable, AdeChatSessionPort } from "./AdeChatSessionPort.ts";
 import { AdePersonaMemory } from "./AdePersonaMemory.ts";
 import { AdeScreenboxRuntime } from "./AdeScreenbox.ts";
 import { AdeScreenboxClient, AdeScreenboxConfig } from "./AdeScreenboxClient.ts";
@@ -92,6 +92,7 @@ class StubWorkspacePathError extends Schema.TaggedErrorClass<StubWorkspacePathEr
 ) {}
 
 const chatPortOk = Layer.succeed(AdeChatSessionPort, {
+  ...adeChatSessionPortUnavailable,
   startPrimaryChat: (botId: BotId) =>
     Effect.succeed({
       botId,

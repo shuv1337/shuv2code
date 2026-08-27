@@ -47,7 +47,9 @@ import type { OrchestrationShellSnapshot, ServerProvider } from "@shuv2code/cont
 import {
   AdeCaptainError,
   type AdeBotChatSession,
+  type AdeBotModelSetting,
   type AdeModelHealth,
+  type AdeSetBotModelInput,
   type AdeToolProbe,
   type BotExecutionBindingId,
   type BotId,
@@ -954,7 +956,140 @@ export class AdeShuvcodeChatSession extends Context.Service<
       const startPrimaryChat: AdeChatSessionPortShape["startPrimaryChat"] = (botId: BotId) =>
         startLockFor(adeBotThreadId(botId)).withPermits(1)(startPrimaryChatUnlocked(botId));
 
-      return AdeChatSessionPort.of({ startPrimaryChat });
+      /**
+       * The shuvcode catalog, refreshed once when the cached snapshot is empty.
+       *
+       * Deliberately not shared with `resolveModelSelection`'s own read: that
+       * one keeps the whole `ServerProvider` because its two failure messages
+       * quote the instance's probe text, while validating a captain's choice
+       * only needs the model list.
+       */
+      const readShuvcodeModels = Effect.fn("AdeShuvcodeChatSession.readShuvcodeModels")(
+        function* () {
+          const findInstance = (snapshot: ReadonlyArray<ServerProvider>) =>
+            snapshot.find((provider) => provider.instanceId === ADE_SHUVCODE_INSTANCE_ID);
+          const cached = findInstance(yield* providers.getProviders);
+          if (cached !== undefined && cached.models.length > 0) return cached.models;
+          const refreshed = findInstance(
+            yield* providers.refreshInstance(ADE_SHUVCODE_INSTANCE_ID),
+          );
+          return refreshed?.models ?? [];
+        },
+      );
+
+      const readBotModelSlug: AdeChatSessionPortShape["readBotModelSlug"] = (botId: BotId) =>
+        Effect.map(
+          Effect.orElseSucceed(snapshots.getShellSnapshot(), () => null),
+          (shell) => {
+            const selection = shell?.threads.find(
+              (thread) => thread.id === adeBotThreadId(botId),
+            )?.modelSelection;
+            return selection?.instanceId === ADE_SHUVCODE_INSTANCE_ID ? selection.model : null;
+          },
+        );
+
+      /**
+       * Pin one bot to one shuvcode model.
+       *
+       * The pin is written to the bot's own chat thread rather than to the
+       * project default, because a project is one repo and a repo holds many
+       * bots — a project-scoped write would silently re-model the whole crew.
+       *
+       * Validation is deliberately asymmetric: a slug the kernel does not
+       * offer at all is refused (it can only ever fail at turn time), while a
+       * slug the kernel offers but reports as tool-incapable is **accepted**.
+       * Capability data is provider-reported and can be stale or absent for a
+       * model the captain knows works, and refusing would leave no override
+       * anywhere in the product. The choice comes back flagged instead, as
+       * `modelHealth: "unreported-tools"` on the next session.
+       */
+      const setBotModel: AdeChatSessionPortShape["setBotModel"] = Effect.fn(
+        "AdeShuvcodeChatSession.setBotModel",
+      )(function* (input: AdeSetBotModelInput) {
+        const threadId = adeBotThreadId(input.botId);
+        const slug = input.modelSelection.model;
+        if (input.modelSelection.instanceId !== ADE_SHUVCODE_INSTANCE_ID) {
+          return yield* modelNotCapable(
+            `ADE bots run on the shuvcode kernel, and '${input.modelSelection.instanceId}' is a different provider instance.`,
+          );
+        }
+
+        const models = yield* readShuvcodeModels();
+        if (!models.some((model) => model.slug === slug)) {
+          return yield* modelNotCapable(
+            `The shuvcode kernel does not offer a model called '${slug}'. ` +
+              "Pick one from the list, or add it to your opencode.json and restart `shuvcode service`.",
+          );
+        }
+
+        // The pin has exactly one home — `OrchestrationThreadShell.modelSelection`
+        // — and `thread.meta.update` refuses a thread that does not exist yet.
+        // Creating one here would mean minting a workspace project as a side
+        // effect of a settings write, so the honest answer is to say which act
+        // comes first.
+        const shell = yield* orUnavailable("read threads", snapshots.getShellSnapshot());
+        if (!shell.threads.some((thread) => thread.id === threadId)) {
+          return yield* unavailable(
+            "This bot has no conversation yet, so there is nothing to set a model on. Open its chat once, then choose a model.",
+          );
+        }
+
+        yield* orUnavailable(
+          "set thread model",
+          engine.dispatch({
+            type: "thread.meta.update",
+            // Random rather than derived: the receipt hash covers the payload,
+            // so a deterministic id would reject a captain who switched to a
+            // second model and back.
+            commandId: CommandId.make(`ade-bot-model:${input.botId}:${NodeCrypto.randomUUID()}`),
+            threadId,
+            modelSelection: input.modelSelection,
+          }),
+        );
+
+        const binding = yield* orUnavailable("read bindings", readActiveBinding(input.botId));
+        // Nothing live is running the previous model, so the next start — which
+        // resolves the pin first — is already the new one.
+        if (binding === null) {
+          adeModelHealthTracker.clearThread(threadId);
+          return {
+            botId: input.botId,
+            modelSelection: input.modelSelection,
+            appliesToLiveSession: true,
+          } satisfies AdeBotModelSetting;
+        }
+
+        const dormant = {
+          botId: input.botId,
+          modelSelection: input.modelSelection,
+          appliesToLiveSession: false,
+        } satisfies AdeBotModelSetting;
+        if (input.restartSession !== true) return dormant;
+
+        // A live provider session keeps the model it was created with, so the
+        // only way to make the pin take now is to drop that session. The
+        // durable binding and the kernel session behind it are left alone:
+        // the next start re-adopts the same kernel conversation and re-stamps
+        // it with the new model, so the bot keeps its history instead of
+        // paying a rollover for a settings change.
+        const stopped = yield* Effect.exit(sessions.stopSession({ threadId }));
+        if (stopped._tag === "Failure") {
+          yield* Effect.logWarning(
+            "ADE model change was saved but the live session could not be stopped; it keeps its current model",
+            { botId: input.botId, threadId, slug },
+          );
+          return dormant;
+        }
+        // The malformed-tool-call verdict belonged to the previous model.
+        adeModelHealthTracker.clearThread(threadId);
+        return {
+          botId: input.botId,
+          modelSelection: input.modelSelection,
+          appliesToLiveSession: true,
+        } satisfies AdeBotModelSetting;
+      });
+
+      return AdeChatSessionPort.of({ startPrimaryChat, setBotModel, readBotModelSlug });
     }),
   );
 }

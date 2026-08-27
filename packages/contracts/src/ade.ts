@@ -15,6 +15,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { ModelSelection } from "./orchestration.ts";
 
 const entityId = <Brand extends string>(brand: Brand) =>
   TrimmedNonEmptyString.pipe(Schema.brand(brand));
@@ -873,6 +874,14 @@ export const AdeBotDetail = Schema.Struct({
   bindings: Schema.Array(BotExecutionBinding),
   /** Open work addressed to this bot, in queue order. */
   assignments: Schema.Array(Assignment),
+  /**
+   * The shuvcode model this bot is set to run on, as its chat thread records
+   * it. Optional rather than defaulted: a build with no kernel wired — and any
+   * server minted before the setting existed — has nothing to say here, and
+   * `null` would claim it does. Absent and null both render as "kernel
+   * default".
+   */
+  modelSlug: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
 });
 export type AdeBotDetail = typeof AdeBotDetail.Type;
 
@@ -1206,6 +1215,42 @@ export const AdeUpdateBotIdentityInput = Schema.Struct({
   groupId: Schema.optional(Schema.NullOr(AdeBotGroupId)),
 });
 export type AdeUpdateBotIdentityInput = typeof AdeUpdateBotIdentityInput.Type;
+
+/**
+ * Set the model one bot runs on.
+ *
+ * Deliberately its own RPC rather than a field on
+ * {@link AdeUpdateBotIdentityInput}: the label is one `UPDATE ade_bots`, while
+ * the model is written to the bot's chat thread through an orchestration
+ * command and can additionally restart a live kernel session. Folding them
+ * together would give one call two storage backends and two failure modes.
+ *
+ * `restartSession` is opt-in because a live kernel session keeps the model it
+ * was created with. Without it the setting is real but dormant, which is
+ * exactly what the caller is told through
+ * {@link AdeBotModelSetting.appliesToLiveSession}.
+ */
+export const AdeSetBotModelInput = Schema.Struct({
+  botId: BotId,
+  modelSelection: ModelSelection,
+  restartSession: Schema.optional(Schema.Boolean),
+});
+export type AdeSetBotModelInput = typeof AdeSetBotModelInput.Type;
+
+/** What setting a bot's model actually did. */
+export const AdeBotModelSetting = Schema.Struct({
+  botId: BotId,
+  modelSelection: ModelSelection,
+  /**
+   * True when nothing is still running the previous model — either no session
+   * was live, or the live one was stopped so the next turn stands a fresh one
+   * up. False means the setting landed but the bot keeps its current model
+   * until this conversation is restarted, and the surface must say so rather
+   * than implying the change took effect.
+   */
+  appliesToLiveSession: Schema.Boolean,
+});
+export type AdeBotModelSetting = typeof AdeBotModelSetting.Type;
 
 /**
  * Create or rename/reorder a group. Omitting `groupId` creates; supplying one

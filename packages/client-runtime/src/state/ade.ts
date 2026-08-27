@@ -365,6 +365,24 @@ export function createAdeEnvironmentAtoms<R, E>(
         refreshBot(target, registry).pipe(Effect.andThen(refreshRoster(target, registry))),
     }),
     /**
+     * Pin one bot to one shuvcode model.
+     *
+     * `serial` rather than `latest`: the payload can ask for a session restart,
+     * and dropping a superseded call would drop that side effect while
+     * reporting success. The bot detail carries the slug the picker renders, so
+     * it is the read that has to move.
+     */
+    setBotModel: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:ade:set-bot-model",
+      tag: WS_METHODS.adeSetBotModel,
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => `${environmentId}:${input.botId}`,
+      },
+      onSettled: (target, registry) => refreshBot(target, registry),
+    }),
+    /**
      * Create or rename/reorder a contact group. The roster carries the group
      * list, so it is the one read that has to move.
      */

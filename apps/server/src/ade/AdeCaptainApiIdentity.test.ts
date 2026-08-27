@@ -31,7 +31,7 @@ import { AdeApprovalPort } from "./AdeApprovalPort.ts";
 import { AdeAssignmentEngine, AdeAssignmentKernelPort } from "./AdeAssignmentEngine.ts";
 import { AdeBootstrap } from "./AdeBootstrap.ts";
 import { AdeCaptainApi } from "./AdeCaptainApi.ts";
-import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
+import { adeChatSessionPortUnavailable, AdeChatSessionPort } from "./AdeChatSessionPort.ts";
 import { AdePersonaMemory } from "./AdePersonaMemory.ts";
 import { AdeScreenboxRuntime } from "./AdeScreenbox.ts";
 import { AdeScreenboxClient, AdeScreenboxConfig } from "./AdeScreenboxClient.ts";
@@ -76,6 +76,7 @@ const makeLayer = () =>
           Layer.provide(FetchHttpClient.layer),
         ),
         Layer.succeed(AdeChatSessionPort, {
+          ...adeChatSessionPortUnavailable,
           startPrimaryChat: (botId: BotId) => Effect.succeed({ ...chatSession, botId }),
         }),
         Layer.succeed(AdeApprovalPort, {

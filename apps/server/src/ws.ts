@@ -80,6 +80,7 @@ import {
   type AdeSetComputerUseInput,
   type AdeSubmitNeedsYouDecisionInput,
   type AdeMarkBotChatReadInput,
+  type AdeSetBotModelInput,
   type AdeUpdateBotIdentityInput,
   type AdeUpsertBotGroupInput,
   type AdeWriteMemoryInput,
@@ -100,6 +101,7 @@ import {
   WsAdeSubmitNeedsYouDecisionRpc,
   WsAdeSetBotComputerUseRpc,
   WsAdeUpdateBotIdentityRpc,
+  WsAdeSetBotModelRpc,
   WsAdeUpsertBotGroupRpc,
   WsAdeDeleteBotGroupRpc,
   WsAdeGetBotScreenRpc,
@@ -456,6 +458,10 @@ const makeAdeRpcHandlers = (
         adeCaptainApi.updateBotIdentity(input),
         ade,
       ),
+    // The model is not part of the identity patch: it is written to the bot's
+    // chat thread and can restart a session, so it gets its own method.
+    [WS_METHODS.adeSetBotModel]: (input: AdeSetBotModelInput) =>
+      observeRpcEffect(WS_METHODS.adeSetBotModel, adeCaptainApi.setBotModel(input), ade),
     [WS_METHODS.adeUpsertBotGroup]: (input: AdeUpsertBotGroupInput) =>
       observeRpcEffect(WS_METHODS.adeUpsertBotGroup, adeCaptainApi.upsertBotGroup(input), ade),
     [WS_METHODS.adeDeleteBotGroup]: (input: AdeDeleteBotGroupInput) =>
@@ -526,6 +532,7 @@ export const AdeWsRpcGroup = RpcGroup.make(
   WsAdeEditBotPersonaRpc,
   WsAdeSetBotComputerUseRpc,
   WsAdeUpdateBotIdentityRpc,
+  WsAdeSetBotModelRpc,
   WsAdeUpsertBotGroupRpc,
   WsAdeDeleteBotGroupRpc,
   WsAdeGetNeedsYouCountRpc,

@@ -43,7 +43,12 @@ import {
   type BotIdentityDraft,
 } from "./botIdentity.logic";
 import { BotColorSwatches } from "./BotColorSwatches";
-import { BotComputerUseToggle, BotMemoryEditor, BotPersonaEditor } from "./BotIdentityForms";
+import {
+  BotComputerUseToggle,
+  BotMemoryEditor,
+  BotModelPicker,
+  BotPersonaEditor,
+} from "./BotIdentityForms";
 import { GroupAssignMenu } from "./GroupAssignMenu";
 import { useBotIdentityUpdate } from "./useBotIdentity";
 
@@ -201,6 +206,7 @@ export function BotIdentitySheet({
             </Button>
           </section>
 
+          <BotModelPicker botId={bot.id} detail={detail} />
           <BotComputerUseToggle botId={bot.id} detail={detail} />
           <BotPersonaEditor botId={bot.id} detail={detail} />
           <BotMemoryEditor botId={bot.id} detail={detail} />

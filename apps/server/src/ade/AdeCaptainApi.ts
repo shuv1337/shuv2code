@@ -63,6 +63,8 @@ import {
   type AdePublicationStackView,
   type AdeRoster,
   type AdeRosterEntry,
+  type AdeBotModelSetting,
+  type AdeSetBotModelInput,
   type AdeSetComputerUseInput,
   type AdeUpdateBotIdentityInput,
   type AdeUpsertBotGroupInput,
@@ -504,6 +506,16 @@ export interface AdeCaptainApiShape {
   readonly updateBotIdentity: (
     input: AdeUpdateBotIdentityInput,
   ) => Effect.Effect<Bot, AdeCaptainError>;
+  /**
+   * Pin one bot to one shuvcode model (issue #223 follow-up).
+   *
+   * Separate from {@link updateBotIdentity} because the model is not a bot
+   * column: it is written to the bot's chat thread and validated against the
+   * kernel's live catalog, both of which live behind `AdeChatSessionPort`.
+   */
+  readonly setBotModel: (
+    input: AdeSetBotModelInput,
+  ) => Effect.Effect<AdeBotModelSetting, AdeCaptainError>;
   /** Create or rename/reorder one captain-defined contact group. */
   readonly upsertBotGroup: (
     input: AdeUpsertBotGroupInput,
@@ -837,6 +849,10 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
           })),
           bindings,
           assignments: open,
+          // Read through the port: the model lives on the bot's chat thread,
+          // which this service cannot reach. Never fails — a kernel-less build
+          // reports null and the rest of the detail still renders.
+          modelSlug: yield* chat.readBotModelSlug(botId),
         } satisfies AdeBotDetail;
       }, captainize);
 
@@ -1055,6 +1071,26 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         // and is correct immediately.
         return rowToBot(next);
       }, captainize);
+
+      /**
+       * Set the model one bot runs on.
+       *
+       * The existence check happens here, before the port is touched, for the
+       * same reason `startBotChat` does it: a typo'd bot id must read as
+       * `bot_not_found` rather than as a kernel problem.
+       */
+      const setBotModel: AdeCaptainApiShape["setBotModel"] = Effect.fn("AdeCaptainApi.setBotModel")(
+        function* (input: AdeSetBotModelInput) {
+          const rows = yield* captainize(readBotRow(input.botId));
+          if (rows[0] === undefined) {
+            return yield* new AdeCaptainError({
+              reason: "bot_not_found",
+              message: `ADE bot '${input.botId}' does not exist.`,
+            });
+          }
+          return yield* chat.setBotModel(input);
+        },
+      );
 
       /**
        * Create or edit one contact group.
@@ -1895,6 +1931,7 @@ export class AdeCaptainApi extends Context.Service<AdeCaptainApi, AdeCaptainApiS
         listNeedsYou,
         getNeedsYouItem,
         submitNeedsYouDecision,
+        setBotModel,
         startBotChat,
         markBotChatRead,
         getBotRoutineContext,

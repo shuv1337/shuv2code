@@ -148,6 +148,7 @@ export const RPC_REQUIRED_SCOPES = {
   // paired device may tidy the roster without being able to decide anything
   // on the captain's behalf.
   [WS_METHODS.adeUpdateBotIdentity]: AuthOrchestrationOperateScope,
+  [WS_METHODS.adeSetBotModel]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeUpsertBotGroup]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeDeleteBotGroup]: AuthOrchestrationOperateScope,
   [WS_METHODS.adeGetBotScreen]: AuthOrchestrationReadScope,
