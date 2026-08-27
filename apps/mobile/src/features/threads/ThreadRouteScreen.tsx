@@ -108,6 +108,13 @@ type ThreadRouteScreenRouteProps = StaticScreenProps<{
 interface ThreadRouteScreenProps extends ThreadRouteScreenRouteProps {
   readonly onReturnToThread?: () => void;
   readonly renderInspector?: (headerInset: number) => ReactNode;
+  /**
+   * The feed's live-follow latch, forwarded from `ThreadDetailScreen`. Only a
+   * host that embeds this screen needs it — `BotChatRouteScreen` uses it to
+   * tell "the conversation is on screen" from "the captain is looking at the
+   * newest message", which is what read-marking is allowed to act on.
+   */
+  readonly onEndFollowEnabledChange?: (enabled: boolean) => void;
 }
 
 function ThreadUnavailableScreen() {
@@ -791,6 +798,7 @@ function ThreadRouteContent(
           selectedThreadQueueCount={composer.selectedThreadQueueCount}
           layoutVariant={layout.variant}
           usesAutomaticContentInsets={usesNativeHeaderGlass}
+          onEndFollowEnabledChange={props.onEndFollowEnabledChange}
           onOpenConnectionEditor={handleOpenConnectionEditor}
           onChangeDraftMessage={composer.onChangeDraftMessage}
           onPickDraftImages={composer.onPickDraftImages}

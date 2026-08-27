@@ -213,6 +213,25 @@ export const BOT_CHAT_KERNEL_DOWN_NOTICE: BotChatConnectNotice = {
 };
 
 /**
+ * How long to wait for a *first* kernel-health snapshot before offering the
+ * captain a manual way in.
+ *
+ * `canAutoConnect(null)` is false on purpose — a missing snapshot is not
+ * evidence the kernel is up, and guessing wrong writes durable threads. But
+ * "wait" has to be bounded like every other waiting state on this surface: if
+ * the health feed never delivers (the subscription drops, or the connection
+ * flaps while otherwise reporting as up), nothing ever starts, no error is ever
+ * raised, and a client with no rail beside the conversation — a phone — has a
+ * spinner with no exit. After this long the surface stops waiting and says so,
+ * with the Retry that is deliberately *not* gated on health.
+ *
+ * Shorter than `CHAT_SYNC_TIMEOUT_MS`: that one is waiting on a thread the
+ * server has already promised, this one is waiting on a snapshot that may
+ * simply never come.
+ */
+export const KERNEL_HEALTH_WAIT_TIMEOUT_MS = 10_000;
+
+/**
  * The compact inline notice shown *over the conversation shell* when connecting
  * failed (#217). Never a landing page.
  */
@@ -226,6 +245,18 @@ export interface BotChatConnectNotice {
    */
   readonly details: string | null;
 }
+
+/**
+ * The notice shown when no health snapshot ever arrived. Distinct from
+ * `BOT_CHAT_KERNEL_DOWN_NOTICE`: this claims ignorance, not a down kernel,
+ * because "the snapshot has not arrived" is not evidence about the kernel.
+ */
+export const BOT_CHAT_HEALTH_UNKNOWN_NOTICE: BotChatConnectNotice = {
+  message: "This bot hasn't connected yet.",
+  details:
+    "The fleet hasn't reported whether the shuvcode kernel is running, so no session was " +
+    "started automatically. Press Retry to connect anyway.",
+};
 
 /**
  * The three states the conversation region can be in once M8 removed the
@@ -251,6 +282,16 @@ export function resolveBotChatConnectState(input: {
    * from `startError`: nothing failed, because nothing was asked.
    */
   readonly autoConnectBlocked: boolean;
+  /**
+   * No health snapshot has arrived within `KERNEL_HEALTH_WAIT_TIMEOUT_MS` and
+   * nothing has been started, so waiting further would be waiting forever.
+   *
+   * Optional because it is only load-bearing where the conversation is the
+   * *whole* screen. The web captain surface renders its rail and a shimmer
+   * beside this state, so a captain is never trapped there and does not need
+   * the interruption; a phone pushes the conversation full-screen, so it does.
+   */
+  readonly healthUnresolved?: boolean;
 }): BotChatConnectState {
   // A failed read of the bot itself outranks everything: there is no session to
   // wait for.
@@ -271,6 +312,12 @@ export function resolveBotChatConnectState(input: {
    */
   if (input.autoConnectBlocked && !input.chatReady) {
     return { kind: "failed", notice: BOT_CHAT_KERNEL_DOWN_NOTICE };
+  }
+  // Ranked below the kernel-down claim: once a snapshot exists, it is the
+  // better answer. Above the sync states, because with no start attempted
+  // there is no session for those to be waiting on.
+  if (input.healthUnresolved === true && !input.chatReady) {
+    return { kind: "failed", notice: BOT_CHAT_HEALTH_UNKNOWN_NOTICE };
   }
   if (input.syncOutcome.kind === "retry") {
     return {

@@ -14,7 +14,7 @@
  */
 import { getBindingRowViews, getBotHeaderView } from "@shuv2code/client-runtime/ade/bot-detail";
 import { getBotAvatarView } from "@shuv2code/client-runtime/ade/contact-rail";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { type StaticScreenProps } from "@react-navigation/native";
 import { BotId, EnvironmentId } from "@shuv2code/contracts";
 import { useMemo } from "react";
 import { Platform, ScrollView, View } from "react-native";
@@ -41,6 +41,7 @@ import {
 } from "./botProfile.logic";
 import { getKernelHealthPillViews } from "./kernelHealth.logic";
 import { KernelHealthPills } from "./KernelHealthPills";
+import { useFleetNavigation } from "./fleetNavigation";
 
 type BotProfileRouteProps = StaticScreenProps<{
   readonly environmentId: string;
@@ -48,7 +49,7 @@ type BotProfileRouteProps = StaticScreenProps<{
 }>;
 
 export function BotProfileRouteScreen(props: BotProfileRouteProps) {
-  const navigation = useNavigation();
+  const navigation = useFleetNavigation();
   const insets = useSafeAreaInsets();
   const environmentId = EnvironmentId.make(props.route.params.environmentId);
   const botId = BotId.make(props.route.params.botId);

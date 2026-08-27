@@ -3,7 +3,6 @@
  * changes, and the fleet is reached from the Home toolbar rather than by
  * restructuring anything.
  */
-import { useNavigation } from "@react-navigation/native";
 import type { ContactRailFilter } from "@shuv2code/client-runtime/ade/contact-rail";
 import {
   applyContactRailFilter,
@@ -18,9 +17,10 @@ import { FleetFilterBar, FleetScreen } from "./FleetScreen";
 import { getKernelHealthAlertViews, kernelHealthAlertLine } from "./kernelHealth.logic";
 import { KernelHealthAlertStrip } from "./KernelHealthPills";
 import { useAdeEnvironmentId } from "./useAdeEnvironmentId";
+import { useFleetNavigation } from "./fleetNavigation";
 
 export function FleetRouteScreen() {
-  const navigation = useNavigation();
+  const navigation = useFleetNavigation();
   const environmentId = useAdeEnvironmentId();
   const roster = useAdeRoster(environmentId);
   const needsYou = useAdeNeedsYouCount(environmentId);

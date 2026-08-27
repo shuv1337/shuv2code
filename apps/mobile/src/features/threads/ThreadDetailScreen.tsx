@@ -109,6 +109,13 @@ export interface ThreadDetailScreenProps {
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
+  /**
+   * The feed's live-follow latch — true while the conversation is pinned to
+   * its tail, false once the reader has scrolled up into history. Reported
+   * so a host can tell "on screen" from "actually looking at the newest
+   * message"; `BotChatRouteScreen` gates read-marking on it.
+   */
+  readonly onEndFollowEnabledChange?: (enabled: boolean) => void;
   readonly onOpenConnectionEditor: () => void;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onPickDraftImages: () => Promise<void>;
@@ -462,6 +469,14 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     setEndFollowEnabled(true);
     freeze.set(false);
   }, [freeze, selectedThreadKey]);
+
+  // Mirrored out rather than pushed from the setter, so the thread-switch reset
+  // above is reported too: a host gating on "is at the tail" must see the feed
+  // re-pin when the captain changes conversation.
+  const notifyEndFollowEnabledChange = props.onEndFollowEnabledChange;
+  useEffect(() => {
+    notifyEndFollowEnabledChange?.(endFollowEnabled);
+  }, [endFollowEnabled, notifyEndFollowEnabledChange]);
 
   useEffect(() => {
     if (
