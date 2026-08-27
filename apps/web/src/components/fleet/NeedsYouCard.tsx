@@ -15,15 +15,8 @@ import {
   canApproveWithSession,
   describeDecisionOutcome,
   getNeedsYouDecisionView,
+  needsYouKindLabel,
 } from "./NeedsYouInbox.logic";
-
-const KIND_LABELS: Readonly<Record<AdeNeedsYouEntry["item"]["kind"], string>> = {
-  approval: "Approval",
-  "kernel-down": "Kernel",
-  stall: "Stalled",
-  "provision-failure": "Desktop",
-  form: "Question",
-};
 
 /**
  * The one rendering of a Needs You item (spec §7 slice 5).
@@ -113,7 +106,7 @@ function NeedsYouDecisionCard({
     >
       <div className="flex items-start gap-2">
         <Badge size="sm" variant={entry.actionable ? "destructive" : "secondary"}>
-          {KIND_LABELS[entry.item.kind]}
+          {needsYouKindLabel(entry.item.kind)}
         </Badge>
         <h3 className="min-w-0 flex-1 text-sm font-medium">{entry.title}</h3>
         {entry.item.status === "open" ? null : (

@@ -21,7 +21,11 @@ import { useAgentNotificationNavigation } from "./features/agent-awareness/notif
 import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboardingRouteScreen";
 import { useConnectOnboardingNavigation } from "./features/cloud/connectOnboardingNavigation";
 import { BotChatRouteScreen } from "./features/fleet/BotChatRouteScreen";
+import { BotIdentitySheetRouteScreen } from "./features/fleet/BotIdentitySheet";
+import { BotModelSheetRouteScreen } from "./features/fleet/BotModelSheet";
+import { BotProfileRouteScreen } from "./features/fleet/BotProfileRouteScreen";
 import { FleetRouteScreen } from "./features/fleet/FleetRouteScreen";
+import { NeedsYouRouteScreen } from "./features/fleet/NeedsYouRouteScreen";
 import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import { HardwareKeyboardCommandProvider } from "./features/keyboard/HardwareKeyboardCommandProvider";
@@ -337,6 +341,8 @@ const NewTaskSheetStack = createNativeStackNavigator({
 // influence the adaptive workspace layout: opening Settings over Home should
 // not flip the sidebar in or change the active thread.
 const WORKSPACE_OVERLAY_ROUTES = new Set([
+  "BotIdentitySheet",
+  "BotModelSheet",
   "ConnectOnboarding",
   "Connections",
   "ConnectionsNew",
@@ -493,6 +499,53 @@ export const RootStack = createNativeStackNavigator({
       // `setParams`, so it is not part of the link.
       linking: "fleet/:environmentId/:botId",
       options: GLASS_HEADER_OPTIONS,
+    }),
+    // Two segments, so it cannot collide with the three-segment bot routes.
+    NeedsYou: createNativeStackScreen({
+      screen: NeedsYouRouteScreen,
+      linking: "fleet/needs-you",
+      options: {
+        ...GLASS_HEADER_OPTIONS,
+        title: "Needs You",
+      },
+    }),
+    BotProfile: createNativeStackScreen({
+      screen: BotProfileRouteScreen,
+      linking: "fleet/:environmentId/:botId/profile",
+      options: {
+        ...GLASS_HEADER_OPTIONS,
+        contentStyle: NATIVE_SHEET_SURFACE_CONTENT_STYLE,
+      },
+    }),
+    // Both edits are saves the captain should be able to abandon, so they are
+    // detented form sheets on iOS. Android has no form sheet worth the name and
+    // draws its own in-flow header, so it pushes them as ordinary cards — the
+    // same split Settings already makes.
+    BotIdentitySheet: createNativeStackScreen({
+      screen: BotIdentitySheetRouteScreen,
+      options: {
+        gestureEnabled: true,
+        ...(Platform.OS === "android"
+          ? { headerShown: false, presentation: "card" as const }
+          : {
+              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              sheetAllowedDetents: [1],
+              sheetGrabberVisible: true,
+            }),
+      },
+    }),
+    BotModelSheet: createNativeStackScreen({
+      screen: BotModelSheetRouteScreen,
+      options: {
+        gestureEnabled: true,
+        ...(Platform.OS === "android"
+          ? { headerShown: false, presentation: "card" as const }
+          : {
+              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              sheetAllowedDetents: [0.7, 1],
+              sheetGrabberVisible: true,
+            }),
+      },
     }),
     Thread: createNativeStackScreen({
       screen: ThreadRouteScreen,

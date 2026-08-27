@@ -55,17 +55,37 @@
       "types": "./src/ade/botChatRead.ts",
       "default": "./src/ade/botChatRead.ts"
     },
+    "./ade/bot-detail": {
+      "types": "./src/ade/botDetail.ts",
+      "default": "./src/ade/botDetail.ts"
+    },
     "./ade/bot-identity": {
       "types": "./src/ade/botIdentity.ts",
       "default": "./src/ade/botIdentity.ts"
+    },
+    "./ade/bot-model": {
+      "types": "./src/ade/botModel.ts",
+      "default": "./src/ade/botModel.ts"
+    },
+    "./ade/bot-screen": {
+      "types": "./src/ade/botScreen.ts",
+      "default": "./src/ade/botScreen.ts"
     },
     "./ade/contact-rail": {
       "types": "./src/ade/contactRail.ts",
       "default": "./src/ade/contactRail.ts"
     },
+    "./ade/kernel-health": {
+      "types": "./src/ade/kernelHealth.ts",
+      "default": "./src/ade/kernelHealth.ts"
+    },
     "./ade/logic": {
       "types": "./src/ade/logic.ts",
       "default": "./src/ade/logic.ts"
+    },
+    "./ade/needs-you": {
+      "types": "./src/ade/needsYou.ts",
+      "default": "./src/ade/needsYou.ts"
     },
     "./ade/relative-time": {
       "types": "./src/ade/relativeTime.ts",

@@ -13,15 +13,27 @@ import type { BotId } from "@shuv2code/contracts";
 import { useMemo, useState } from "react";
 
 import { NativeStackScreenOptions } from "../../native/StackHeader";
-import { useAdeRoster } from "../../state/ade";
+import { useAdeFleetHealth, useAdeNeedsYouCount, useAdeRoster } from "../../state/ade";
 import { FleetFilterBar, FleetScreen } from "./FleetScreen";
+import { getKernelHealthAlertViews, kernelHealthAlertLine } from "./kernelHealth.logic";
+import { KernelHealthAlertStrip } from "./KernelHealthPills";
 import { useAdeEnvironmentId } from "./useAdeEnvironmentId";
 
 export function FleetRouteScreen() {
   const navigation = useNavigation();
   const environmentId = useAdeEnvironmentId();
   const roster = useAdeRoster(environmentId);
+  const needsYou = useAdeNeedsYouCount(environmentId);
+  const fleetHealth = useAdeFleetHealth(environmentId);
   const [filter, setFilter] = useState<ContactRailFilter>("all");
+
+  /*
+   * Health interrupts the list only while something is actually down.
+   * `not-provisioned` and `unknown` are dormancy and a probe that has not come
+   * back — neither is news, and a strip that is present-but-fine on every
+   * launch is a strip the captain learns to stop reading.
+   */
+  const healthAlerts = useMemo(() => getKernelHealthAlertViews(fleetHealth), [fleetHealth]);
 
   /*
    * The Attention count is derived from the same rows the filter applies to,
@@ -37,11 +49,28 @@ export function FleetRouteScreen() {
   return (
     <>
       <NativeStackScreenOptions options={{ title: "Fleet" }} />
-      <FleetFilterBar attentionCount={attentionCount} filter={filter} onFilterChange={setFilter} />
+      <KernelHealthAlertStrip
+        detail={healthAlerts[0]?.detail ?? null}
+        line={kernelHealthAlertLine(healthAlerts)}
+      />
+      <FleetFilterBar
+        attentionCount={attentionCount}
+        filter={filter}
+        needsYouCount={needsYou.data?.open ?? 0}
+        onFilterChange={setFilter}
+        onOpenNeedsYou={() => navigation.navigate("NeedsYou")}
+      />
       <FleetScreen
         error={roster.error}
         filter={filter}
         isPending={roster.isPending}
+        onOpenBotProfile={(botId: BotId) => {
+          if (environmentId === null) return;
+          navigation.navigate("BotProfile", {
+            environmentId: String(environmentId),
+            botId: String(botId),
+          });
+        }}
         onRefresh={roster.refresh}
         onSelectBot={(botId: BotId) => {
           if (environmentId === null) return;

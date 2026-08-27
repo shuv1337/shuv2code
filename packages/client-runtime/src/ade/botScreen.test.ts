@@ -1,7 +1,7 @@
 import type { AdeBotScreen } from "@shuv2code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { botScreenPanelTitle, getBotScreenPanelView } from "./botScreenPanel.logic";
+import { botScreenPanelTitle, getBotScreenPanelView } from "./botScreen.ts";
 
 const screen = (overrides: Partial<AdeBotScreen> = {}): AdeBotScreen =>
   ({

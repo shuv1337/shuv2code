@@ -1,0 +1,194 @@
+/**
+ * Pure view logic for the Needs You surface (spec §7 slice 5, UI slice 5).
+ *
+ * The inbox and the inline rendering are two components over *one* list. That
+ * only stays true if selection, filtering, and the approve/deny affordance are
+ * decided here rather than twice in JSX — so both renderings offer the same
+ * actions on the same item, and a decision made in either one is described the
+ * same way.
+ */
+import {
+  AuthAdeApproveScope,
+  type AdeNeedsYouEntry,
+  type NeedsYouAction,
+  type NeedsYouDecision,
+  type NeedsYouItemId,
+  type NeedsYouKind,
+} from "@shuv2code/contracts";
+
+import { isBenignNeedsYouConflict, type AdeCaptainErrorReason } from "./logic.ts";
+
+export interface NeedsYouSubject {
+  readonly botId?: string | null;
+  readonly projectId?: string | null;
+  readonly assignmentId?: string | null;
+}
+
+/**
+ * The inline rendering shows only what is about the thing on screen, and only
+ * what is still open — an inline card for a resolved item is clutter beside a
+ * conversation. The inbox is where history lives.
+ */
+export function entriesForSubject(
+  entries: ReadonlyArray<AdeNeedsYouEntry>,
+  subject: NeedsYouSubject,
+): ReadonlyArray<AdeNeedsYouEntry> {
+  const wanted = [
+    subject.botId === undefined || subject.botId === null
+      ? null
+      : (entry: AdeNeedsYouEntry) => entry.botId === subject.botId,
+    subject.projectId === undefined || subject.projectId === null
+      ? null
+      : (entry: AdeNeedsYouEntry) => entry.projectId === subject.projectId,
+    subject.assignmentId === undefined || subject.assignmentId === null
+      ? null
+      : (entry: AdeNeedsYouEntry) => entry.assignmentId === subject.assignmentId,
+  ].filter((predicate) => predicate !== null);
+  if (wanted.length === 0) return [];
+  return entries.filter(
+    (entry) => entry.item.status === "open" && wanted.some((matches) => matches(entry)),
+  );
+}
+
+/**
+ * Which item the detail pane shows. An explicit selection wins while it is
+ * still in the list; otherwise the inbox opens on the thing most likely to be
+ * why the captain came — the first item they can act on.
+ */
+export function selectNeedsYouEntry(
+  entries: ReadonlyArray<AdeNeedsYouEntry>,
+  requestedId: NeedsYouItemId | null,
+): AdeNeedsYouEntry | null {
+  if (requestedId !== null) {
+    const requested = entries.find((entry) => entry.item.id === requestedId);
+    if (requested !== undefined) return requested;
+  }
+  return entries.find((entry) => entry.actionable) ?? entries[0] ?? null;
+}
+
+/**
+ * Whether this client holds `ade:approve` (spec §5). Positive knowledge only:
+ * a session that has not resolved yet, or a server that does not report
+ * scopes, leaves the controls up and lets the server refuse — the typed
+ * authorization error is the authority, and hiding approval on a *guess* is
+ * how a captain ends up unable to approve anything with no explanation.
+ */
+export function canApproveWithSession(
+  session: { readonly authenticated?: boolean; readonly scopes?: ReadonlyArray<string> } | null,
+): boolean {
+  if (session === null || session.scopes === undefined) return true;
+  if (session.authenticated === false) return false;
+  return session.scopes.includes(AuthAdeApproveScope);
+}
+
+export interface NeedsYouDecisionView {
+  readonly canDecide: boolean;
+  /**
+   * Which control to render. `approve-deny` gets Approve and Deny;
+   * `acknowledge` gets a single Acknowledge, because nothing is waiting on a
+   * verdict — the item just has no automatic way to clear.
+   */
+  readonly action: NeedsYouAction | null;
+  /** Why the buttons are absent, when they are. Null while they are shown. */
+  readonly unavailableReason: string | null;
+}
+
+/** The default remedy: the surface that can open the server's startup link. */
+export const NEEDS_YOU_UNSCOPED_REASON =
+  "This client cannot approve. Open the app from the server's startup link, or pair with `ade:approve`.";
+
+/**
+ * The captain's controls, offered when the server says the item still takes an
+ * action and the connection carries `ade:approve` (spec §5). An unscoped client
+ * is told so rather than shown buttons that will fail — the scope is a property
+ * of how this client paired, not a transient error.
+ */
+export function getNeedsYouDecisionView(input: {
+  readonly entry: AdeNeedsYouEntry | null;
+  readonly canApprove: boolean;
+  readonly busy: boolean;
+  /**
+   * What to say instead of {@link NEEDS_YOU_UNSCOPED_REASON} when this client
+   * holds no `ade:approve`.
+   *
+   * The *rule* is shared and must be — a client that cannot approve is told so
+   * rather than shown buttons that will fail — but the remedy is not the same
+   * everywhere. Web's sentence names the server's startup link, which is a
+   * thing a captain can act on at the machine they are sitting at; a paired
+   * phone has no such link to open, and telling it to would be advice it
+   * cannot take.
+   */
+  readonly unscopedReason?: string;
+}): NeedsYouDecisionView {
+  if (input.entry === null) {
+    return { canDecide: false, action: null, unavailableReason: null };
+  }
+  const action = input.entry.action;
+  if (action === null) {
+    return {
+      canDecide: false,
+      action: null,
+      unavailableReason:
+        input.entry.item.status === "open"
+          ? "This clears on its own once the condition does."
+          : "Already resolved.",
+    };
+  }
+  if (!input.canApprove) {
+    return {
+      canDecide: false,
+      action,
+      unavailableReason: input.unscopedReason ?? NEEDS_YOU_UNSCOPED_REASON,
+    };
+  }
+  return { canDecide: !input.busy, action, unavailableReason: null };
+}
+
+/**
+ * What the captain reads after deciding. A conflict is an outcome, not an
+ * error: it means the other rendering — or the service itself — already
+ * retired the item, which is exactly what "one durable item" promises.
+ */
+export function describeDecisionOutcome(input: {
+  readonly reason: AdeCaptainErrorReason | null;
+  readonly decision: NeedsYouDecision;
+  readonly failed: boolean;
+  readonly fallback: string;
+}): { readonly tone: "ok" | "conflict" | "error"; readonly message: string } {
+  if (!input.failed) {
+    return {
+      tone: "ok",
+      message:
+        input.decision === "approve"
+          ? "Approved."
+          : input.decision === "deny"
+            ? "Denied — bounced for repair."
+            : "Cleared.",
+    };
+  }
+  if (isBenignNeedsYouConflict(input.reason)) {
+    return { tone: "conflict", message: "Already handled elsewhere." };
+  }
+  return { tone: "error", message: input.fallback };
+}
+
+/**
+ * The two-word badge every rendering puts on an item.
+ *
+ * Shared rather than restated per surface because it is the only thing on a
+ * collapsed row that says what *sort* of interruption this is — an approval a
+ * delivery is parked on, a kernel outage, a stalled assignment — and a phone
+ * and a browser calling the same item two different things is how a captain
+ * loses track of which one they already dealt with.
+ */
+const NEEDS_YOU_KIND_LABELS: Record<NeedsYouKind, string> = {
+  approval: "Approval",
+  "kernel-down": "Kernel",
+  stall: "Stalled",
+  "provision-failure": "Desktop",
+  form: "Question",
+};
+
+export function needsYouKindLabel(kind: NeedsYouKind): string {
+  return NEEDS_YOU_KIND_LABELS[kind];
+}

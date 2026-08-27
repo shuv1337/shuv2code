@@ -41,6 +41,7 @@ export function FleetScreen(props: {
   readonly searchQuery: string;
   readonly onRefresh: () => void;
   readonly onSelectBot: (botId: BotId) => void;
+  readonly onOpenBotProfile: (botId: BotId) => void;
 }) {
   const rows = useMemo(() => getContactRowViews(props.roster), [props.roster]);
   const visibleRows = useMemo(
@@ -60,15 +61,15 @@ export function FleetScreen(props: {
     [groups, visibleRows],
   );
 
-  const { onSelectBot } = props;
+  const { onOpenBotProfile, onSelectBot } = props;
   const renderItem = useCallback(
     ({ item }: LegendListRenderItemProps<FleetListItem>) =>
       item.kind === "group" ? (
         <FleetGroupHeader name={item.name} />
       ) : (
-        <ContactRow row={item.row} onSelectBot={onSelectBot} />
+        <ContactRow onOpenBotProfile={onOpenBotProfile} onSelectBot={onSelectBot} row={item.row} />
       ),
-    [onSelectBot],
+    [onOpenBotProfile, onSelectBot],
   );
   const keyExtractor = useCallback((item: FleetListItem) => item.key, []);
 
@@ -115,14 +116,24 @@ export function FleetScreen(props: {
   );
 }
 
-/** The rail's two views, as the segmented control a phone expects. */
+/**
+ * The rail's two views as the segmented control a phone expects, plus the way
+ * in to Needs You.
+ *
+ * The inbox lives here rather than in the native header on purpose: the header
+ * is the part of this surface that could not be verified without a simulator,
+ * and a triage entry point that might not render is worse than one that is a
+ * row lower down.
+ */
 export function FleetFilterBar(props: {
   readonly filter: ContactRailFilter;
   readonly attentionCount: number;
+  readonly needsYouCount: number;
   readonly onFilterChange: (filter: ContactRailFilter) => void;
+  readonly onOpenNeedsYou: () => void;
 }) {
   return (
-    <View className="flex-row gap-2 bg-screen px-5 pb-2 pt-1">
+    <View className="flex-row items-center gap-2 bg-screen px-5 pb-2 pt-1">
       {CONTACT_RAIL_FILTERS.map((filter) => {
         const selected = filter === props.filter;
         const label = filter === "all" ? "All" : "Attention";
@@ -156,6 +167,33 @@ export function FleetFilterBar(props: {
           </Pressable>
         );
       })}
+      <View className="flex-1" />
+      <Pressable
+        accessibilityHint="Shows everything waiting on a decision"
+        accessibilityLabel={
+          props.needsYouCount === 0
+            ? "Needs You"
+            : `Needs You, ${unreadBadgeLabel(props.needsYouCount)} open`
+        }
+        accessibilityRole="button"
+        className={`flex-row items-center gap-1.5 rounded-full px-3.5 py-1.5 active:opacity-70 ${
+          props.needsYouCount > 0 ? "bg-danger" : "bg-card-alt"
+        }`}
+        onPress={props.onOpenNeedsYou}
+      >
+        <Text
+          className={`text-sm font-shuv2code-medium ${
+            props.needsYouCount > 0 ? "text-danger-foreground" : "text-foreground-secondary"
+          }`}
+        >
+          Needs You
+        </Text>
+        {props.needsYouCount > 0 ? (
+          <Text className="text-xs font-shuv2code-bold tabular-nums text-danger-foreground">
+            {unreadBadgeLabel(props.needsYouCount)}
+          </Text>
+        ) : null}
+      </Pressable>
     </View>
   );
 }
@@ -180,9 +218,11 @@ function FleetGroupHeader({ name }: { readonly name: string }) {
 
 const ContactRow = memo(function ContactRow({
   row,
+  onOpenBotProfile,
   onSelectBot,
 }: {
   readonly row: ContactRowView;
+  readonly onOpenBotProfile: (botId: BotId) => void;
   readonly onSelectBot: (botId: BotId) => void;
 }) {
   const separatorColor = useThemeColor("--color-separator");
@@ -198,6 +238,7 @@ const ContactRow = memo(function ContactRow({
       accessibilityLabel={row.unreadLabel === null ? row.name : `${row.name}, ${row.unreadLabel}`}
       accessibilityRole="button"
       className="bg-screen"
+      onLongPress={() => onOpenBotProfile(row.botId)}
       onPress={() => onSelectBot(row.botId)}
       style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
     >
@@ -228,12 +269,25 @@ const ContactRow = memo(function ContactRow({
                   {row.timeLabel}
                 </Text>
               )}
-              <SymbolView
-                name="chevron.right"
-                size={13}
-                tintColor={iconSubtleColor}
-                type="monochrome"
-              />
+              {/* The chevron this replaces said only "this row navigates",
+                  which tapping the row already does. An info control is the
+                  same one tap and adds the profile — where identity, model,
+                  desktop state and fleet health live. `hitSlop` rather than a
+                  bigger box so the row's rhythm is unchanged. */}
+              <Pressable
+                accessibilityHint="Opens this bot's profile"
+                accessibilityLabel={`About ${row.name}`}
+                accessibilityRole="button"
+                hitSlop={12}
+                onPress={() => onOpenBotProfile(row.botId)}
+              >
+                <SymbolView
+                  name="info.circle"
+                  size={17}
+                  tintColor={iconSubtleColor}
+                  type="monochrome"
+                />
+              </Pressable>
             </View>
             <View className="flex-row items-center gap-2">
               <Text
