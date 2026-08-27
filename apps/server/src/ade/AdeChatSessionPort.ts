@@ -15,7 +15,13 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { AdeCaptainError, type AdeBotChatSession, type BotId } from "@shuv2code/contracts";
+import {
+  AdeCaptainError,
+  type AdeBotChatSession,
+  type AdeBotModelSetting,
+  type AdeSetBotModelInput,
+  type BotId,
+} from "@shuv2code/contracts";
 
 export interface AdeChatSessionPortShape {
   /**
@@ -25,6 +31,25 @@ export interface AdeChatSessionPortShape {
    * (rollover is an explicit, separate act, ADR §12.3).
    */
   readonly startPrimaryChat: (botId: BotId) => Effect.Effect<AdeBotChatSession, AdeCaptainError>;
+  /**
+   * Set the model this bot runs on.
+   *
+   * It lives on the port rather than on the captain API for the same reason
+   * chat bootstrap does: the setting is written through an orchestration
+   * command against the bot's thread and validated against the kernel's live
+   * model catalog, and neither is reachable from a service that only owns
+   * persistence.
+   */
+  readonly setBotModel: (
+    input: AdeSetBotModelInput,
+  ) => Effect.Effect<AdeBotModelSetting, AdeCaptainError>;
+  /**
+   * Which model this bot is currently set to run on, or null when nothing has
+   * chosen one yet. A pure read: it never creates a thread, and it never
+   * fails, because the bot detail payload it feeds must keep rendering while
+   * the kernel is down.
+   */
+  readonly readBotModelSlug: (botId: BotId) => Effect.Effect<string | null>;
 }
 
 /**
@@ -40,6 +65,15 @@ export const adeChatSessionPortUnavailable: AdeChatSessionPortShape = {
         message: "No execution kernel is wired for ADE chat in this build.",
       }),
     ),
+  setBotModel: () =>
+    Effect.fail(
+      new AdeCaptainError({
+        reason: "session_unavailable",
+        message:
+          "No execution kernel is wired for ADE chat in this build, so there are no models to choose from.",
+      }),
+    ),
+  readBotModelSlug: () => Effect.succeed(null),
 };
 
 export class AdeChatSessionPort extends Context.Service<

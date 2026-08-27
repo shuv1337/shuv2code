@@ -16,7 +16,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import type { BotId, KernelSessionId } from "@shuv2code/contracts";
+import { ProviderInstanceId, type BotId, type KernelSessionId } from "@shuv2code/contracts";
 
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -92,6 +92,10 @@ interface Spy {
   readonly mintedSessionId: Ref.Ref<string | null>;
   /** Every `ProviderService.startSession`, as `threadId|cwd`. */
   readonly startedSessions: Ref.Ref<ReadonlyArray<string>>;
+  /** Every `ProviderService.stopSession`, as `threadId`. */
+  readonly stoppedSessions: Ref.Ref<ReadonlyArray<string>>;
+  /** Make `stopSession` fail, standing in for a session that will not drop. */
+  readonly stopSessionFails: Ref.Ref<boolean>;
 }
 
 /**
@@ -200,6 +204,12 @@ const makeLayer = (spy: Spy) =>
               yield* Ref.set(spy.adapterSessionLive, true);
               return { threadId, providerThreadId: minted };
             }),
+          stopSession: (input: { readonly threadId: string }) =>
+            Effect.gen(function* () {
+              if (yield* Ref.get(spy.stopSessionFails)) return yield* new StubAttachError();
+              yield* Ref.update(spy.stoppedSessions, (calls) => [...calls, input.threadId]);
+              yield* Ref.set(spy.adapterSessionLive, false);
+            }),
         } as unknown as ProviderService.ProviderService["Service"]),
         Layer.succeed(OrchestrationEngine.OrchestrationEngineService, {
           dispatch: (command: {
@@ -221,6 +231,21 @@ const makeLayer = (spy: Spy) =>
                     ).modelSelection,
                   },
                 ]);
+              }
+              if (command.type === "thread.meta.update") {
+                const update = command as unknown as {
+                  threadId: string;
+                  modelSelection?: { instanceId: string; model: string };
+                };
+                if (update.modelSelection !== undefined) {
+                  yield* Ref.update(spy.shellThreads, (threads) =>
+                    threads.map((thread) =>
+                      thread.id === update.threadId
+                        ? { ...thread, modelSelection: update.modelSelection! }
+                        : thread,
+                    ),
+                  );
+                }
               }
               if (command.type === "project.create" && (yield* Ref.get(spy.rejectProjectCreate))) {
                 return yield* Effect.fail(new StubAttachError());
@@ -277,6 +302,8 @@ const withChat = <A, E>(body: (spy: Spy) => Effect.Effect<A, E, ChatEnv>) =>
       probeSessionGone: yield* Ref.make(false),
       mintedSessionId: yield* Ref.make<string | null>(null),
       startedSessions: yield* Ref.make<ReadonlyArray<string>>([]),
+      stoppedSessions: yield* Ref.make<ReadonlyArray<string>>([]),
+      stopSessionFails: yield* Ref.make(false),
     };
     return yield* Effect.provide(body(spy), makeLayer(spy));
   });
@@ -795,6 +822,231 @@ describe("AdeShuvcodeChatSession.startPrimaryChat", () => {
         assert.equal(error.reason, "session_unavailable");
         assert.include(error.message, "'Ledger' has no repository path");
         assert.notInclude(error.message, "This bot has no project");
+      }),
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Setting a bot's model (issue #223 follow-up)
+// ---------------------------------------------------------------------------
+
+const shuvcodeSelection = (model: string) => ({
+  instanceId: ProviderInstanceId.make("opencodeV2"),
+  model,
+});
+
+/** The thread a pin is written to. `prepareThread` creates it on first chat. */
+const pinnedThread = (botId: string, model = "openai/gpt-5.6-sol") => ({
+  id: `ade-bot-${botId}`,
+  modelSelection: { instanceId: "opencodeV2", model },
+});
+
+describe("AdeShuvcodeChatSession.setBotModel", () => {
+  it.effect("writes the pin to the bot's own thread", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { chat, botId } = yield* setup;
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId, "openai/old")]);
+        yield* Ref.set(spy.catalogModels, [
+          { slug: "openai/old" },
+          { slug: "openai/gpt-5.6-sol", capabilities: { toolCalling: true, textOutput: true } },
+        ]);
+
+        const setting = yield* chat.setBotModel({
+          botId,
+          modelSelection: shuvcodeSelection("openai/gpt-5.6-sol"),
+        });
+
+        assert.equal(setting.modelSelection.model, "openai/gpt-5.6-sol");
+        assert.include(yield* Ref.get(spy.dispatches), "thread.meta.update");
+        assert.equal(yield* chat.readBotModelSlug(botId), "openai/gpt-5.6-sol");
+      }),
+    ),
+  );
+
+  it.effect("refuses a slug the kernel does not offer at all", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { chat, botId } = yield* setup;
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId)]);
+        yield* Ref.set(spy.catalogModels, [{ slug: "openai/gpt-5.6-sol" }]);
+
+        const failure = yield* Effect.flip(
+          chat.setBotModel({ botId, modelSelection: shuvcodeSelection("openai/typo") }),
+        );
+
+        assert.equal(failure.reason, "model_not_agent_capable");
+        assert.include(failure.message, "openai/typo");
+        // Nothing was written: a refused choice must not half-land.
+        assert.notInclude(yield* Ref.get(spy.dispatches), "thread.meta.update");
+      }),
+    ),
+  );
+
+  it.effect("accepts a model the kernel says cannot call tools", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { chat, botId } = yield* setup;
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId)]);
+        yield* Ref.set(spy.catalogModels, [
+          { slug: "openai/gpt-5.6-sol" },
+          { slug: "opencode/big-pickle", capabilities: { toolCalling: false, textOutput: true } },
+        ]);
+
+        // Provider-reported capabilities can be stale or absent for a model the
+        // captain knows works; refusing would leave no override in the product.
+        const setting = yield* chat.setBotModel({
+          botId,
+          modelSelection: shuvcodeSelection("opencode/big-pickle"),
+        });
+
+        assert.equal(setting.modelSelection.model, "opencode/big-pickle");
+      }),
+    ),
+  );
+
+  it.effect("refuses a selection that points at another provider instance", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { chat, botId } = yield* setup;
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId)]);
+
+        const failure = yield* Effect.flip(
+          chat.setBotModel({
+            botId,
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "codex/gpt-5",
+            },
+          }),
+        );
+
+        assert.equal(failure.reason, "model_not_agent_capable");
+        assert.include(failure.message, "codex");
+      }),
+    ),
+  );
+
+  it.effect("says which act comes first when the bot has no conversation yet", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { chat, botId } = yield* setup;
+        yield* Ref.set(spy.catalogModels, [{ slug: "openai/gpt-5.6-sol" }]);
+
+        const failure = yield* Effect.flip(
+          chat.setBotModel({ botId, modelSelection: shuvcodeSelection("openai/gpt-5.6-sol") }),
+        );
+
+        assert.equal(failure.reason, "session_unavailable");
+        assert.include(failure.message, "Open its chat once");
+      }),
+    ),
+  );
+
+  it.effect("reports a live session as still running the previous model", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { rollover, chat, botId } = yield* setup;
+        yield* rollover.startPrimarySession({
+          botId,
+          engine: "shuvcode",
+          sessionId: "oc-live" as KernelSessionId,
+        });
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId, "openai/old")]);
+        yield* Ref.set(spy.catalogModels, [{ slug: "openai/old" }, { slug: "openai/gpt-5.6-sol" }]);
+
+        const setting = yield* chat.setBotModel({
+          botId,
+          modelSelection: shuvcodeSelection("openai/gpt-5.6-sol"),
+        });
+
+        // The whole point of the flag: the pin landed, the bot has not moved.
+        assert.isFalse(setting.appliesToLiveSession);
+        assert.deepEqual(yield* Ref.get(spy.stoppedSessions), []);
+      }),
+    ),
+  );
+
+  it.effect("drops the live session when the captain asks for it", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { rollover, chat, botId } = yield* setup;
+        yield* rollover.startPrimarySession({
+          botId,
+          engine: "shuvcode",
+          sessionId: "oc-live" as KernelSessionId,
+        });
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId, "openai/old")]);
+        yield* Ref.set(spy.catalogModels, [{ slug: "openai/old" }, { slug: "openai/gpt-5.6-sol" }]);
+
+        const setting = yield* chat.setBotModel({
+          botId,
+          modelSelection: shuvcodeSelection("openai/gpt-5.6-sol"),
+          restartSession: true,
+        });
+
+        assert.isTrue(setting.appliesToLiveSession);
+        assert.deepEqual(yield* Ref.get(spy.stoppedSessions), [`ade-bot-${botId}`]);
+      }),
+    ),
+  );
+
+  it.effect("does not claim a restart that did not happen", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { rollover, chat, botId } = yield* setup;
+        yield* rollover.startPrimarySession({
+          botId,
+          engine: "shuvcode",
+          sessionId: "oc-live" as KernelSessionId,
+        });
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId, "openai/old")]);
+        yield* Ref.set(spy.catalogModels, [{ slug: "openai/old" }, { slug: "openai/gpt-5.6-sol" }]);
+        yield* Ref.set(spy.stopSessionFails, true);
+
+        const setting = yield* chat.setBotModel({
+          botId,
+          modelSelection: shuvcodeSelection("openai/gpt-5.6-sol"),
+          restartSession: true,
+        });
+
+        // The pin is real either way; only the "it took effect" half is not.
+        assert.isFalse(setting.appliesToLiveSession);
+        assert.equal(yield* chat.readBotModelSlug(botId), "openai/gpt-5.6-sol");
+      }),
+    ),
+  );
+
+  it.effect("reports a bot with no live session as already on the new model", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { chat, botId } = yield* setup;
+        yield* Ref.set(spy.shellThreads, [pinnedThread(botId, "openai/old")]);
+        yield* Ref.set(spy.catalogModels, [{ slug: "openai/old" }, { slug: "openai/gpt-5.6-sol" }]);
+
+        const setting = yield* chat.setBotModel({
+          botId,
+          modelSelection: shuvcodeSelection("openai/gpt-5.6-sol"),
+        });
+
+        assert.isTrue(setting.appliesToLiveSession);
+      }),
+    ),
+  );
+
+  it.effect("reads no model for a thread bound to a different provider", () =>
+    withChat((spy) =>
+      Effect.gen(function* () {
+        const { chat, botId } = yield* setup;
+        yield* Ref.set(spy.shellThreads, [
+          {
+            id: `ade-bot-${botId}`,
+            modelSelection: { instanceId: "codex", model: "codex/gpt-5" },
+          },
+        ]);
+
+        assert.equal(yield* chat.readBotModelSlug(botId), null);
       }),
     ),
   );

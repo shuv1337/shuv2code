@@ -34,6 +34,8 @@ import {
   AdeRoster,
   AdeSubmitNeedsYouDecisionInput,
   AdeSetComputerUseInput,
+  AdeBotModelSetting,
+  AdeSetBotModelInput,
   AdeUpdateBotIdentityInput,
   AdeUpsertBotGroupInput,
   AdeWriteMemoryInput,
@@ -439,6 +441,7 @@ export const WS_METHODS = {
   adeEditBotPersona: "ade.editBotPersona",
   adeSetBotComputerUse: "ade.setBotComputerUse",
   adeUpdateBotIdentity: "ade.updateBotIdentity",
+  adeSetBotModel: "ade.setBotModel",
   adeUpsertBotGroup: "ade.upsertBotGroup",
   adeDeleteBotGroup: "ade.deleteBotGroup",
   adeGetNeedsYouCount: "ade.getNeedsYouCount",
@@ -1396,6 +1399,21 @@ export const WsAdeUpdateBotIdentityRpc = Rpc.make(WS_METHODS.adeUpdateBotIdentit
   error: AdeCaptainRpcError,
 });
 
+/**
+ * Set the model one bot runs on. Separate from the identity patch because the
+ * model does not live on the bot row — it is written to the bot's chat thread
+ * and can restart a kernel session, which is a different failure surface.
+ *
+ * The success payload reports whether anything is still running the previous
+ * model, so the surface can say "applies next time" instead of implying the
+ * change already took.
+ */
+export const WsAdeSetBotModelRpc = Rpc.make(WS_METHODS.adeSetBotModel, {
+  payload: AdeSetBotModelInput,
+  success: AdeBotModelSetting,
+  error: AdeCaptainRpcError,
+});
+
 /** Create or rename/reorder one captain-defined contact group. */
 export const WsAdeUpsertBotGroupRpc = Rpc.make(WS_METHODS.adeUpsertBotGroup, {
   payload: AdeUpsertBotGroupInput,
@@ -1576,6 +1594,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAdeEditBotPersonaRpc,
   WsAdeSetBotComputerUseRpc,
   WsAdeUpdateBotIdentityRpc,
+  WsAdeSetBotModelRpc,
   WsAdeUpsertBotGroupRpc,
   WsAdeDeleteBotGroupRpc,
   WsAdeGetNeedsYouCountRpc,

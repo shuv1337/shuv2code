@@ -131,6 +131,12 @@ const stubApi = (calls: Ref.Ref<ReadonlyArray<string>>): AdeCaptainApi["Service"
       } as unknown as never),
     setBotComputerUse: () => note("setBotComputerUse", botDetail.bot),
     updateBotIdentity: () => note("updateBotIdentity", botDetail.bot),
+    setBotModel: (input) =>
+      note("setBotModel", {
+        botId: input.botId,
+        modelSelection: input.modelSelection,
+        appliesToLiveSession: input.restartSession === true,
+      } as unknown as never),
     upsertBotGroup: () =>
       note("upsertBotGroup", {
         id: "group-1",
@@ -332,11 +338,19 @@ describe("authenticated ADE captain RPCs", () => {
         displayMeta: { emoji: "⚓", color: "blue" },
         groupId: "group-1" as AdeBotGroupId,
       });
+      // The model is its own method: it is not written to the bot row, and it
+      // can restart a session, so it never rode the identity patch.
+      const modelSetting = yield* fullClient[WS_METHODS.adeSetBotModel]({
+        botId: BOT_ID,
+        modelSelection: { instanceId: "opencodeV2" as never, model: "openai/gpt-5.6-sol" },
+      });
       const group = yield* fullClient[WS_METHODS.adeUpsertBotGroup]({ name: "Backend" });
       const removed = yield* fullClient[WS_METHODS.adeDeleteBotGroup]({ groupId: group.id });
       const receipt = yield* fullClient[WS_METHODS.adeMarkBotChatRead]({ botId: BOT_ID });
 
       assert.strictEqual(receipt.unreadCount, 0);
+      // A change with no restart never claims the live session moved.
+      assert.isFalse(modelSetting.appliesToLiveSession);
       assert.strictEqual(chat.threadId, `ade-bot-${BOT_ID}`);
       // Deleting a bucket hands its members back, never deletes them.
       assert.deepStrictEqual(removed.ungroupedBotIds, [BOT_ID]);
@@ -347,6 +361,7 @@ describe("authenticated ADE captain RPCs", () => {
         "setBotComputerUse",
         "startBotChat",
         "updateBotIdentity",
+        "setBotModel",
         "upsertBotGroup",
         "deleteBotGroup",
         "markBotChatRead",

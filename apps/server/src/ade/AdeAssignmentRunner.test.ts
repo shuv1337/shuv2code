@@ -19,7 +19,7 @@ import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import { AdeAssignmentEngine, AdeAssignmentKernelPort } from "./AdeAssignmentEngine.ts";
 import { AdeAssignmentRunner, renderAssignmentBrief } from "./AdeAssignmentRunner.ts";
 import { AdeBootstrap } from "./AdeBootstrap.ts";
-import { AdeChatSessionPort } from "./AdeChatSessionPort.ts";
+import { adeChatSessionPortUnavailable, AdeChatSessionPort } from "./AdeChatSessionPort.ts";
 
 /** Tagged so the stub's failure stays distinguishable in the error channel. */
 class StubDispatchError extends Schema.TaggedErrorClass<StubDispatchError>()(
@@ -43,6 +43,9 @@ const makeLayer = (spy: Spy) =>
         AdeBootstrap.layer,
         AdeAssignmentEngine.layer,
         Layer.succeed(AdeChatSessionPort, {
+          // Only chat bootstrap is under test; the model setting keeps the
+          // port's own "no kernel wired" behaviour.
+          ...adeChatSessionPortUnavailable,
           startPrimaryChat: (botId: BotId) =>
             Ref.update(spy.chatted, (bots) => [...bots, botId]).pipe(
               Effect.as({

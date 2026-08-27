@@ -11,10 +11,11 @@
  */
 import type { AdeBotDetail, BotId } from "@shuv2code/contracts";
 import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtime";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { adeEnvironment, useAdeEnvironmentId } from "../../state/ade";
 import { adeCaptainErrorMessage, adeCaptainErrorReason } from "../../state/ade.logic";
+import { usePrimaryEnvironment } from "../../state/environments";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   canSaveMemory,
@@ -23,8 +24,173 @@ import {
 } from "../fleet/BotDetailPanel.logic";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
+import {
+  ADE_MODEL_INSTANCE_ID,
+  BOT_MODEL_NEXT_SESSION_NOTE,
+  BOT_MODEL_RESTART_NOTE,
+  BOT_MODEL_UNSUPPORTED_HINT,
+  getBotModelOptions,
+  getBotModelSavedMessage,
+  hasLivePrimarySession,
+  isFlaggedBotModel,
+  shouldSubmitBotModel,
+} from "./botModel.logic";
+
+const NO_PROVIDERS: ReadonlyArray<never> = [];
+
+/**
+ * Which model this bot runs on (issue #223 follow-up).
+ *
+ * This control exists because there was none: a bot ran whatever the kernel
+ * listed first, and the only way to change it was to hand-edit a projection
+ * row. Everything opinionated about it is in `botModel.logic` — most of all
+ * that a model the kernel reports as tool-incapable is *listed and
+ * selectable*, marked rather than hidden.
+ *
+ * Saving is explicit rather than on-change, and never says "Saved." alone: a
+ * live session keeps the model it was created with, so the outcome line always
+ * states which of the two things happened. "Restart now" is the second,
+ * deliberate tap that makes it immediate.
+ */
+export function BotModelPicker({
+  botId,
+  detail,
+}: {
+  readonly botId: BotId;
+  readonly detail: AdeBotDetail;
+}) {
+  const environmentId = useAdeEnvironmentId();
+  const providers = usePrimaryEnvironment()?.serverConfig?.providers ?? NO_PROVIDERS;
+  const setBotModel = useAtomCommand(adeEnvironment.setBotModel, { reportFailure: false });
+  const options = useMemo(() => getBotModelOptions(providers), [providers]);
+  const current = detail.modelSlug ?? null;
+  const live = hasLivePrimarySession(detail.bindings);
+  const [draft, setDraft] = useState<string | null>(current);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
+
+  // The bot detail re-reads on the 15s poll and after every sibling save, so
+  // adopting the server's slug is only safe while the captain has not picked
+  // something else — otherwise a poll lands on top of an open choice.
+  const [adopted, setAdopted] = useState(current);
+  useEffect(() => {
+    if (current !== adopted) {
+      setAdopted(current);
+      setDraft(current);
+    }
+  }, [adopted, current]);
+
+  const submit = async (restartSession: boolean) => {
+    if (environmentId === null) return;
+    if (!shouldSubmitBotModel(current, draft, restartSession)) return;
+    setBusy(true);
+    setError(null);
+    setSaved(null);
+    const result = await setBotModel({
+      environmentId,
+      input: {
+        botId,
+        modelSelection: { instanceId: ADE_MODEL_INSTANCE_ID, model: draft },
+        ...(restartSession ? { restartSession: true } : {}),
+      },
+    });
+    setBusy(false);
+    if (result._tag === "Failure") {
+      setError(
+        adeCaptainErrorMessage(squashAtomCommandFailure(result), "The model could not be changed."),
+      );
+      return;
+    }
+    setSaved(getBotModelSavedMessage(result.value));
+  };
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="text-sm font-medium">Model</h2>
+      {options.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          The shuvcode kernel is not reporting any models. Check Settings → Providers, then reopen
+          this sheet.
+        </p>
+      ) : (
+        <>
+          <Select
+            items={options.map((option) => ({ value: option.slug, label: option.label }))}
+            value={draft ?? ""}
+            onValueChange={(value) => setDraft(String(value))}
+          >
+            <SelectTrigger aria-label="Bot model" className="w-full">
+              <SelectValue placeholder="Kernel default" />
+            </SelectTrigger>
+            <SelectPopup>
+              {options.map((option) => (
+                <SelectItem key={option.slug} value={option.slug}>
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    <span className="truncate">{option.label}</span>
+                    {option.isKernelDefault ? (
+                      <Badge size="sm" variant="secondary">
+                        Kernel default
+                      </Badge>
+                    ) : null}
+                    {option.agentCapable ? null : (
+                      <Badge size="sm" variant="outline">
+                        {BOT_MODEL_UNSUPPORTED_HINT}
+                      </Badge>
+                    )}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+          {isFlaggedBotModel(options, draft) ? (
+            <p className="text-xs text-muted-foreground" role="status">
+              {`${draft} does not report tool calling on this kernel. It stays selectable — the report can be wrong — but the bot may be unable to delegate.`}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              disabled={busy || !shouldSubmitBotModel(current, draft, false)}
+              onClick={() => void submit(false)}
+              size="sm"
+            >
+              Save model
+            </Button>
+            {/* Offered only when something is actually still running the old
+                model — otherwise the setting is already in force. */}
+            {live ? (
+              <Button
+                disabled={busy || draft === null || draft.length === 0}
+                onClick={() => void submit(true)}
+                size="sm"
+                title={BOT_MODEL_RESTART_NOTE}
+                variant="outline"
+              >
+                Restart with this model
+              </Button>
+            ) : null}
+            {live ? (
+              <span className="text-xs text-muted-foreground">{BOT_MODEL_NEXT_SESSION_NOTE}</span>
+            ) : null}
+          </div>
+        </>
+      )}
+      {saved === null ? null : (
+        <p className="text-sm text-success-foreground" role="status">
+          {saved}
+        </p>
+      )}
+      {error === null ? null : (
+        <p className="text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
 
 export function BotComputerUseToggle({
   botId,

@@ -12,6 +12,8 @@ import {
   IntegrationBounce,
   type AdeBotChatSession,
   type AdeProjectId,
+  type AdeSetBotModelInput,
+  type ProviderInstanceId,
   type BotId,
   type NeedsYouItemId,
   type PublicationStackId,
@@ -53,7 +55,29 @@ const chatSession: AdeBotChatSession = {
 /** A chat port that always succeeds — chat wiring is exercised separately. */
 const chatPortOk = Layer.succeed(AdeChatSessionPort, {
   startPrimaryChat: (botId: BotId) => Effect.succeed({ ...chatSession, botId }),
+  setBotModel: (input) =>
+    Effect.succeed({
+      botId: input.botId,
+      modelSelection: input.modelSelection,
+      appliesToLiveSession: input.restartSession === true,
+    }),
+  readBotModelSlug: () => Effect.succeed("openai/gpt-5.6-sol"),
 });
+
+/** Records what actually reached the port, so delegation can be asserted. */
+const recordingChatPort = (calls: Array<AdeSetBotModelInput>) =>
+  Layer.succeed(AdeChatSessionPort, {
+    startPrimaryChat: (botId: BotId) => Effect.succeed({ ...chatSession, botId }),
+    setBotModel: (input) => {
+      calls.push(input);
+      return Effect.succeed({
+        botId: input.botId,
+        modelSelection: input.modelSelection,
+        appliesToLiveSession: input.restartSession === true,
+      });
+    },
+    readBotModelSlug: () => Effect.succeed(null),
+  });
 
 /** A port that accepts every verdict — the seam is exercised in detail below. */
 const approvalPortOk = Layer.succeed(AdeApprovalPort, {
@@ -482,6 +506,79 @@ describe("AdeCaptainApi.startBotChat", () => {
       // …and the rest of the captain surface still works while degraded.
       const roster = yield* api.getRoster();
       assert.isAbove(roster.entries.length, 0);
+    }).pipe(Effect.provide(makeLayer({ chatPort: AdeChatSessionPort.layerUnavailable }))),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Setting a bot's model (issue #223 follow-up)
+// ---------------------------------------------------------------------------
+
+const modelSelection = {
+  instanceId: "opencodeV2" as ProviderInstanceId,
+  model: "openai/gpt-5.6-sol",
+};
+
+describe("AdeCaptainApi.setBotModel", () => {
+  it.effect("refuses a missing bot before the kernel is touched", () => {
+    const calls: Array<AdeSetBotModelInput> = [];
+    return Effect.gen(function* () {
+      const { api } = yield* setup;
+      const error = yield* Effect.flip(api.setBotModel({ botId: "nope" as BotId, modelSelection }));
+      assert.equal(error.reason, "bot_not_found");
+      assert.lengthOf(calls, 0);
+    }).pipe(Effect.provide(makeLayer({ chatPort: recordingChatPort(calls) })));
+  });
+
+  it.effect("passes the captain's choice through to the chat port verbatim", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      const setting = yield* api.setBotModel({ botId: firstmateId, modelSelection });
+      assert.equal(setting.botId, firstmateId);
+      assert.equal(setting.modelSelection.model, "openai/gpt-5.6-sol");
+      // No restart was asked for, so nothing claims the live session changed.
+      assert.isFalse(setting.appliesToLiveSession);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("forwards an explicit restart rather than deciding for the captain", () => {
+    const calls: Array<AdeSetBotModelInput> = [];
+    return Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      const setting = yield* api.setBotModel({
+        botId: firstmateId,
+        modelSelection,
+        restartSession: true,
+      });
+      assert.isTrue(setting.appliesToLiveSession);
+      assert.deepEqual(
+        calls.map((call) => call.restartSession),
+        [true],
+      );
+    }).pipe(Effect.provide(makeLayer({ chatPort: recordingChatPort(calls) })));
+  });
+
+  it.effect("reports an unwired kernel as session_unavailable", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      const error = yield* Effect.flip(api.setBotModel({ botId: firstmateId, modelSelection }));
+      assert.equal(error.reason, "session_unavailable");
+    }).pipe(Effect.provide(makeLayer({ chatPort: AdeChatSessionPort.layerUnavailable }))),
+  );
+
+  it.effect("reports the model a bot is set to on its detail payload", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      const detail = yield* api.getBot(firstmateId);
+      assert.equal(detail.modelSlug, "openai/gpt-5.6-sol");
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("leaves the detail payload readable when no kernel is wired", () =>
+    Effect.gen(function* () {
+      const { api, firstmateId } = yield* setup;
+      const detail = yield* api.getBot(firstmateId);
+      assert.equal(detail.modelSlug, null);
     }).pipe(Effect.provide(makeLayer({ chatPort: AdeChatSessionPort.layerUnavailable }))),
   );
 });
