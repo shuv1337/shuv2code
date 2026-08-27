@@ -539,8 +539,30 @@ it("round-trips a chat session binding a thread to a kernel session", () => {
     startedNow: true,
     toolsProbe: "attached",
     toolsAttached: true,
+    modelHealth: "ok",
+    modelSlug: null,
   });
   assert.strictEqual(session.engine, "shuvcode");
+  assert.strictEqual(session.modelHealth, "ok");
+});
+
+const decodeChatSession = Schema.decodeUnknownSync(AdeBotChatSession);
+
+it("defaults an older peer's chat session to a healthy, unnamed model", () => {
+  // Silence is not a complaint: a payload minted before model health existed
+  // says nothing about the model, which must decode as `ok`.
+  const session = decodeChatSession({
+    botId: "bot-firstmate",
+    threadId: "ade-bot-bot-firstmate",
+    engine: "shuvcode",
+    bindingId: "binding-1",
+    sessionId: "oc-session-1",
+    startedNow: true,
+    toolsProbe: "attached",
+    toolsAttached: true,
+  });
+  assert.strictEqual(session.modelHealth, "ok");
+  assert.strictEqual(session.modelSlug, null);
 });
 
 it("derives the tool probe from the legacy boolean, both ways", () => {

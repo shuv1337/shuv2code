@@ -54,6 +54,8 @@ const makeLayer = (spy: Spy) =>
                 startedNow: true,
                 toolsProbe: "attached",
                 toolsAttached: true,
+                modelHealth: "ok" as const,
+                modelSlug: null,
               } satisfies AdeBotChatSession),
             ),
         }),

@@ -58,6 +58,8 @@ const chatSession: AdeBotChatSession = {
   startedNow: true,
   toolsProbe: "attached",
   toolsAttached: true,
+  modelHealth: "ok" as const,
+  modelSlug: null,
 };
 
 const makeLayer = () =>

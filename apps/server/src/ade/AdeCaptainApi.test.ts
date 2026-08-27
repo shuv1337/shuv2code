@@ -46,6 +46,8 @@ const chatSession: AdeBotChatSession = {
   startedNow: true,
   toolsProbe: "attached",
   toolsAttached: true,
+  modelHealth: "ok" as const,
+  modelSlug: null,
 };
 
 /** A chat port that always succeeds — chat wiring is exercised separately. */

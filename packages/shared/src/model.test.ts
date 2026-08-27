@@ -3,6 +3,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ModelCapabilities,
+  type ServerProviderModel,
 } from "@shuv2code/contracts";
 
 import {
@@ -14,6 +15,7 @@ import {
   getProviderOptionDescriptors,
   getProviderOptionBooleanSelectionValue,
   getProviderOptionStringSelectionValue,
+  isAgentCapableModel,
   normalizeCustomModelSlug,
   normalizeModelSlug,
 } from "./model.ts";
@@ -157,5 +159,51 @@ describe("model slug normalization", () => {
 
     expect(normalizeModelSlug("5.4", codex)).toBe("gpt-5.4");
     expect(normalizeCustomModelSlug(" 5.4 ")).toBe("5.4");
+  });
+});
+
+describe("isAgentCapableModel", () => {
+  const withCapabilities = (capabilities: ModelCapabilities | null): ServerProviderModel => ({
+    slug: "kernel/model",
+    name: "Kernel Model",
+    isCustom: false,
+    capabilities,
+  });
+
+  it("excludes only models that actively report they cannot do the job", () => {
+    expect(
+      isAgentCapableModel(
+        withCapabilities(createModelCapabilities({ optionDescriptors: [], toolCalling: false })),
+      ),
+    ).toBe(false);
+    expect(
+      isAgentCapableModel(
+        withCapabilities(
+          createModelCapabilities({
+            optionDescriptors: [],
+            toolCalling: true,
+            // An image model: it can call tools, it just cannot answer in text.
+            textOutput: false,
+          }),
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("treats unreported capabilities as capable", () => {
+    // Only the shuvcode kernel reports this. Reading silence as a denial would
+    // make every Codex, Cursor and hand-typed custom model unselectable.
+    expect(isAgentCapableModel(withCapabilities(null))).toBe(true);
+    expect(
+      isAgentCapableModel(withCapabilities(createModelCapabilities({ optionDescriptors: [] }))),
+    ).toBe(true);
+  });
+
+  it("keeps the reported flags on the capabilities it builds", () => {
+    expect(
+      createModelCapabilities({ optionDescriptors: [], toolCalling: true, textOutput: true }),
+    ).toEqual({ optionDescriptors: [], toolCalling: true, textOutput: true });
+    // Undefined stays absent rather than becoming an explicit `false`.
+    expect(createModelCapabilities({ optionDescriptors: [] })).toEqual({ optionDescriptors: [] });
   });
 });

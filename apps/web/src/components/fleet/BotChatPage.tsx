@@ -29,6 +29,7 @@ import { BotChatConnectNoticeStrip, BotChatPendingConversation } from "./BotChat
 import {
   BOT_CHAT_NO_PROJECT_ACTION,
   BOT_CHAT_NO_PROJECT_NOTICE,
+  botChatModelNotice,
   BOT_CHAT_TOOLS_MISSING_NOTICE,
   botChatStartNotice,
   canAutoConnect,
@@ -119,6 +120,7 @@ export function BotChatPage({
   const startChat = useAtomCommand(adeEnvironment.startBotChat, { reportFailure: false });
   const [startedThreadId, setStartedThreadId] = useState<ThreadId | null>(null);
   const [toolsMissing, setToolsMissing] = useState(false);
+  const [modelNotice, setModelNotice] = useState<BotChatConnectNotice | null>(null);
   /** When the current session was started, for the bounded sync fallback. */
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [syncElapsedMs, setSyncElapsedMs] = useState(0);
@@ -254,11 +256,15 @@ export function BotChatPage({
       // A failed start knows nothing about the tool catalog, so a strip a
       // previous start put up would otherwise outlive the session it described.
       setToolsMissing(false);
+      setModelNotice(null);
       return;
     }
     // Re-taken on every start, so an `unknown` probe (or a kernel upgraded
     // between visits) clears a strip a previous start put up.
     setToolsMissing(shouldWarnToolsMissing(result.value));
+    // Same lifetime as the tools strip: re-taken on every start, so a model
+    // swap that fixed it clears the strip on the next connect.
+    setModelNotice(botChatModelNotice(result.value));
     setStartedAt(Date.now());
     setSyncElapsedMs(0);
     setStartedThreadId(result.value.threadId);
@@ -417,6 +423,11 @@ export function BotChatPage({
           // The conversation works; delegation does not. Saying so beats
           // letting the captain watch the bot fail to delegate silently.
           <BotChatConnectNoticeStrip notice={BOT_CHAT_TOOLS_MISSING_NOTICE} tone="muted" />
+        ) : null}
+        {modelNotice !== null ? (
+          // The conversation runs; whether the model can *act* is the open
+          // question. Naming it beats letting the captain watch a silent loop.
+          <BotChatConnectNoticeStrip notice={modelNotice} tone="muted" />
         ) : null}
         {chatReady && threadRef !== null ? (
           renderConversation === undefined ? (

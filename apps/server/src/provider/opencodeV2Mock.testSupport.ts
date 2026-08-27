@@ -67,6 +67,11 @@ export interface OpenCodeV2Mock {
     call: { readonly callID: string; readonly tool: string; readonly input?: unknown },
   ) => void;
   readonly cancelDynamicToolCall: (sessionID: string, callID: string) => void;
+  /** Upstream's refusal of a tool call whose arguments were not valid JSON. */
+  readonly triggerMalformedToolInput: (
+    sessionID: string,
+    call: { readonly callID: string; readonly tool: string },
+  ) => void;
   readonly close: () => Promise<void>;
 }
 
@@ -207,6 +212,25 @@ export async function startOpenCodeV2Mock(
   const cancelDynamicToolCall = (sessionID: string, callID: string) => {
     pendingToolCalls.get(sessionID)?.delete(callID);
     emit({ type: "session.tool.dynamic.cancelled", data: { sessionID, callID } });
+  };
+  const triggerMalformedToolInput = (
+    sessionID: string,
+    call: { readonly callID: string; readonly tool: string },
+  ) => {
+    emit({
+      type: "session.tool.failed",
+      data: {
+        sessionID,
+        callID: call.callID,
+        name: call.tool,
+        executed: false,
+        error: {
+          type: "tool.input-json",
+          message:
+            "Tool call arguments were malformed JSON and were not executed. Retry with valid JSON.",
+        },
+      },
+    });
   };
 
   const server = NodeHttp.createServer((request, response) => {
@@ -501,6 +525,7 @@ export async function startOpenCodeV2Mock(
     triggerScript,
     triggerDynamicToolCall,
     cancelDynamicToolCall,
+    triggerMalformedToolInput,
     close: async () => {
       if (closed) return;
       closed = true;

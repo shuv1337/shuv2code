@@ -324,6 +324,38 @@ export const BOT_CHAT_TOOLS_MISSING_NOTICE: BotChatConnectNotice = {
     "a build with the dynamic-tool extension, then reopen this conversation.",
 };
 
+/**
+ * The model strip (also a start-time snapshot, for the same reason as the
+ * tools strip: it reports what was known when the session opened).
+ *
+ * Two different claims, deliberately worded apart. One is a *prediction* from
+ * what the provider said about the model; the other is an *observation* that
+ * the model already emitted tool calls the kernel refused. A captain watching
+ * a bot loop needs the second one to say so plainly — that silence is the bug.
+ */
+export function botChatModelNotice(session: AdeBotChatSession): BotChatConnectNotice | null {
+  const slug = session.modelSlug ?? "This bot's model";
+  switch (session.modelHealth) {
+    case "malformed-tool-input":
+      return {
+        message: "This bot's model isn't calling tools correctly.",
+        details:
+          `${slug} returned malformed tool-call arguments repeatedly in this session — the fleet ` +
+          "tools were never run. Pick a different model for this bot; the change applies the next " +
+          "time this conversation is restarted.",
+      };
+    case "unreported-tools":
+      return {
+        message: "This bot's model may not be able to use tools.",
+        details:
+          `${slug} does not report tool calling on this kernel. If the bot stops delegating or ` +
+          "loops, pick a different model.",
+      };
+    default:
+      return null;
+  }
+}
+
 export function getBotChatHeaderView(detail: AdeBotDetail): BotChatHeaderView {
   const open = openAssignments(detail);
   const running = runningAssignment(detail);

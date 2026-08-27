@@ -159,6 +159,28 @@ describe("OpenCodeV2Adapter dynamic tools", () => {
     }).pipe(Effect.provide(TestLayer)),
   );
 
+  it.effect("publishes a refused, never-executed tool call on the signal feed", () =>
+    Effect.gen(function* () {
+      const { mock, seam, startThread, takeSignal } = yield* makeMockedAdapter;
+      const threadId = ThreadId.make("thread-dyn-malformed");
+      yield* seam.configureThread({ threadId, tools: ADE_TOOLS });
+      const session = yield* startThread(threadId);
+
+      // The pseudo-XML case: upstream refuses the call and tells the model to
+      // retry, the model does the same thing again, and as a timeline item
+      // nobody inspects the loop is completely silent.
+      mock.triggerMalformedToolInput(session.providerThreadId ?? "", {
+        callID: "call_bad_1",
+        tool: "create_bot",
+      });
+
+      const signal = yield* takeSignal;
+      NodeAssert.deepEqual(signal, { kind: "input-malformed", threadId, tool: "create_bot" });
+      // Nothing was dispatched, so there is nothing to settle.
+      NodeAssert.deepEqual(Array.from(yield* seam.pendingCalls(threadId)), []);
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
   it.effect("dispatches invocations to the seam and settles replies", () =>
     Effect.gen(function* () {
       const { mock, seam, startThread, takeSignal } = yield* makeMockedAdapter;

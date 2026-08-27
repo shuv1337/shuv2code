@@ -48,7 +48,15 @@ export type ProviderDynamicToolResult =
 
 export type ProviderDynamicToolSignal =
   | { readonly kind: "requested"; readonly call: ProviderDynamicToolCall }
-  | { readonly kind: "cancelled"; readonly threadId: ThreadId; readonly callId: string };
+  | { readonly kind: "cancelled"; readonly threadId: ThreadId; readonly callId: string }
+  /**
+   * The model emitted a tool call whose arguments were not valid JSON, so the
+   * provider never executed it. There is no `callId` to settle — nothing was
+   * ever dispatched — which is exactly why this needs its own variant: the
+   * consumer's only useful response is to count it and, past a threshold, say
+   * the model cannot call tools instead of watching it loop.
+   */
+  | { readonly kind: "input-malformed"; readonly threadId: ThreadId; readonly tool: string };
 
 export interface ProviderDynamicToolThreadConfig {
   readonly tools: ReadonlyArray<ProviderDynamicToolDefinition>;

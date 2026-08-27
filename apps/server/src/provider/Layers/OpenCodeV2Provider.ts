@@ -36,6 +36,10 @@ class OpenCodeV2InventoryError extends Data.TaggedError("OpenCodeV2InventoryErro
 const V2VariantSchema = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
 });
+const V2ModelCapabilitiesSchema = Schema.Struct({
+  tools: Schema.optionalKey(Schema.Boolean),
+  output: Schema.optionalKey(Schema.Array(Schema.String)),
+});
 const V2ModelSchema = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
   providerID: Schema.optionalKey(Schema.String),
@@ -43,6 +47,7 @@ const V2ModelSchema = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   status: Schema.optionalKey(Schema.String),
   variants: Schema.optionalKey(Schema.Array(V2VariantSchema)),
+  capabilities: Schema.optionalKey(V2ModelCapabilitiesSchema),
 });
 const V2AgentSchema = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
@@ -83,10 +88,25 @@ export function openCodeV2SkillsFromInventory(
   });
 }
 
+/**
+ * The kernel's `/api/model/default` payload, reduced to the slug it names.
+ * Anything else (an older build's 404, a shape we do not recognize) is simply
+ * "no kernel default" — never a hard failure.
+ */
+export function openCodeV2DefaultModelSlug(input: unknown): string | undefined {
+  const decoded = decodeV2Model(input);
+  if (Option.isNone(decoded)) return undefined;
+  const id = nonEmptyTrimmed(decoded.value.id);
+  const providerID = nonEmptyTrimmed(decoded.value.providerID);
+  return id && providerID ? `${providerID}/${id}` : undefined;
+}
+
 export function openCodeV2ModelsFromInventory(input: {
   readonly models: ReadonlyArray<unknown>;
   readonly agents: ReadonlyArray<unknown>;
   readonly customModels: ReadonlyArray<string>;
+  /** Slug the kernel reports for `model:`, when it answered. */
+  readonly defaultSlug?: string | undefined;
 }): ReadonlyArray<ServerProviderModel> {
   const agents = input.agents.flatMap((agent) => {
     const decoded = decodeV2Agent(agent);
@@ -121,14 +141,25 @@ export function openCodeV2ModelsFromInventory(input: {
           ]
         : [];
     });
+    const slug = `${providerID}/${id}`;
+    const output = model.capabilities?.output;
     return [
       {
-        slug: `${providerID}/${id}`,
+        slug,
         name,
         subProvider: titleCaseSlug(providerID),
         isCustom: false,
         ...(model.status === "deprecated" ? { isLegacy: true } : {}),
+        ...(input.defaultSlug !== undefined && input.defaultSlug === slug
+          ? { isDefault: true as const }
+          : {}),
         capabilities: createModelCapabilities({
+          ...(model.capabilities?.tools === undefined
+            ? {}
+            : { toolCalling: model.capabilities.tools }),
+          ...(output === undefined
+            ? {}
+            : { textOutput: output.some((modality) => modality.startsWith("text")) }),
           optionDescriptors: [
             ...(variants.length > 0
               ? [{ id: "variant", label: "Variant", type: "select" as const, options: variants }]
@@ -211,7 +242,7 @@ export const checkOpenCodeV2ProviderStatus = Effect.fn("checkOpenCodeV2ProviderS
           directory: cwd,
           ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
         });
-        const [[models, agents], skills] = yield* Effect.all(
+        const [[models, agents], skills, defaultSlug] = yield* Effect.all(
           [
             Effect.tryPromise({
               try: () => Promise.all([client.model.list(), client.agent.list()]),
@@ -222,6 +253,13 @@ export const checkOpenCodeV2ProviderStatus = Effect.fn("checkOpenCodeV2ProviderS
               Effect.map((response) => openCodeV2SkillsFromInventory(response.data)),
               Effect.orElseSucceed((): ReadonlyArray<ServerProviderSkill> => []),
             ),
+            // Optional by construction: a kernel build without the route just
+            // has no configured default, which is a fallback, not an outage.
+            Effect.tryPromise(() => client.model.default()).pipe(
+              Effect.timeout("2 seconds"),
+              Effect.map((response) => openCodeV2DefaultModelSlug(response.data)),
+              Effect.orElseSucceed((): string | undefined => undefined),
+            ),
           ],
           { concurrency: "unbounded" },
         );
@@ -230,6 +268,7 @@ export const checkOpenCodeV2ProviderStatus = Effect.fn("checkOpenCodeV2ProviderS
             models: models.data,
             agents: agents.data,
             customModels: settings.customModels,
+            defaultSlug,
           }),
           skills,
         };

@@ -163,6 +163,8 @@ const makeFakeSeam = Effect.gen(function* () {
     Queue.offer(signals, { kind: "requested", call }).pipe(Effect.asVoid);
   const cancel = (threadId: ThreadId, callId: string) =>
     Queue.offer(signals, { kind: "cancelled", threadId, callId }).pipe(Effect.asVoid);
+  const malformed = (threadId: ThreadId, tool: string) =>
+    Queue.offer(signals, { kind: "input-malformed", threadId, tool }).pipe(Effect.asVoid);
   return {
     seam,
     replies,
@@ -173,6 +175,7 @@ const makeFakeSeam = Effect.gen(function* () {
     drainOnConfigure,
     request,
     cancel,
+    malformed,
   };
 });
 
@@ -296,6 +299,63 @@ describe("AdeToolGate dispatch attribution", () => {
           content: `memory:${BOT_B}:shuvcode:${SESSION_B}`,
         });
       }),
+  );
+
+  it.effect("reports malformed tool input to the loop owner without replying", () =>
+    Effect.gen(function* () {
+      const gate = makeEchoGate();
+      const fake = yield* makeFakeSeam;
+      const seen = yield* Queue.unbounded<string>();
+      const threadId = ThreadId.make("thread-a");
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      yield* Effect.forkChild(
+        gate.runShuvcodeDispatchLoop(fake.seam, {
+          onMalformedToolInput: ({ threadId: reported, tool }) =>
+            Queue.offer(seen, `${reported}|${tool}`).pipe(Effect.asVoid),
+        }),
+      );
+      yield* fake.malformed(threadId, "create_bot");
+
+      NodeAssert.equal(yield* Queue.take(seen), `${threadId}|create_bot`);
+
+      // Nothing was dispatched upstream, so there is no call to settle — a
+      // reply here would name a callId the provider never issued.
+      yield* fake.request({
+        threadId,
+        callId: "call-a",
+        tool: "update_memory",
+        input: { content: "a" },
+      });
+      const reply = yield* Queue.take(fake.replies);
+      NodeAssert.equal(reply.callId, "call-a");
+    }),
+  );
+
+  it.effect("keeps dispatching when no malformed-input hook was supplied", () =>
+    Effect.gen(function* () {
+      const gate = makeEchoGate();
+      const fake = yield* makeFakeSeam;
+      const threadId = ThreadId.make("thread-a");
+      yield* gate.attachShuvcodeThread(fake.seam, {
+        threadId,
+        sessionId: SESSION_A,
+        principal: principalA,
+      });
+      yield* Effect.forkChild(gate.runShuvcodeDispatchLoop(fake.seam));
+      yield* fake.malformed(threadId, "create_bot");
+      yield* fake.request({
+        threadId,
+        callId: "call-a",
+        tool: "update_memory",
+        input: { content: "a" },
+      });
+      const reply = yield* Queue.take(fake.replies);
+      NodeAssert.equal(reply.callId, "call-a");
+    }),
   );
 
   it.effect("refuses calls on shuvcode threads the gate never attached", () =>
