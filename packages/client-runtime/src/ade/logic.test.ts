@@ -1,5 +1,5 @@
 import type { AdeBotDetail, BotExecutionBinding, FleetHealthSnapshot } from "@shuv2code/contracts";
-import type { SupervisorConnectionState } from "@shuv2code/client-runtime/connection";
+import type { SupervisorConnectionState } from "../connection/index.ts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -11,7 +11,7 @@ import {
   openAssignments,
   runningAssignment,
   structuralRoleLabel,
-} from "./ade.logic";
+} from "./logic.ts";
 
 const snapshot: FleetHealthSnapshot = {
   targets: [

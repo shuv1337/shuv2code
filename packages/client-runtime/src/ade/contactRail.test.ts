@@ -32,7 +32,7 @@ import {
   rosterNeedsFirstProject,
   shouldShowFirstProjectCtaInRail,
   templateOptionLabel,
-} from "./contactRail.logic";
+} from "./contactRail.ts";
 
 const BACKEND = "group_backend" as AdeBotGroupId;
 const FRONTEND = "group_frontend" as AdeBotGroupId;

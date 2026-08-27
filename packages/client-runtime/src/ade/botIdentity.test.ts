@@ -16,7 +16,7 @@ import {
   reconcileBotIdentitySheet,
   resolveBotAvatarColor,
   UNGROUPED_MENU_VALUE,
-} from "./botIdentity.logic";
+} from "./botIdentity.ts";
 
 const bot = (overrides: Partial<Bot> = {}): Bot =>
   ({

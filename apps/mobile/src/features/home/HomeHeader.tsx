@@ -49,6 +49,8 @@ export function HomeHeader(props: {
   readonly onProjectSortOrderChange: (sortOrder: HomeProjectSortOrder) => void;
   readonly onThreadSortOrderChange: (sortOrder: SidebarThreadSortOrder) => void;
   readonly onOpenEnvironments: () => void;
+  /** Bot mode's entry point. Additive: Home itself is unchanged. */
+  readonly onOpenFleet: () => void;
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
 }) {
@@ -253,6 +255,14 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
                 />
               </Pressable>
             </ControlPillMenu>
+            <Pressable
+              accessibilityLabel="Open fleet"
+              accessibilityRole="button"
+              onPress={props.onOpenFleet}
+              className="size-11 items-center justify-center rounded-full bg-subtle"
+            >
+              <SymbolView name="person.2" size={18} tintColor={iconColor} type="monochrome" />
+            </Pressable>
             {/* Built identically to the filter button so the two circles
                 match exactly (ControlPill sizes via Tailwind classes and
                 resolves to a different box). */}
@@ -329,6 +339,14 @@ function IosHomeHeader(props: HomeHeaderProps) {
           unstable_headerRightItems:
             Platform.OS === "ios"
               ? () => [
+                  withNativeGlassHeaderItem({
+                    accessibilityLabel: "Open fleet",
+                    icon: { name: "person.2", type: "sfSymbol" } as const,
+                    identifier: "home-fleet",
+                    label: "",
+                    onPress: props.onOpenFleet,
+                    type: "button",
+                  }),
                   withNativeGlassHeaderItem({
                     accessibilityLabel: "Open settings",
                     icon: { name: "ellipsis", type: "sfSymbol" } as const,
