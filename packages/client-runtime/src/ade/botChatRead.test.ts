@@ -6,7 +6,7 @@ import {
   hasDwelledOnBotChat,
   shouldMarkBotChatRead,
   type BotChatReadMark,
-} from "./botChatRead.logic";
+} from "./botChatRead.ts";
 
 /**
  * Replays a sequence of roster frames through the decision the way the effect

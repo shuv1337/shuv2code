@@ -47,6 +47,30 @@
       "types": "./src/relay/index.ts",
       "default": "./src/relay/index.ts"
     },
+    "./ade/bot-chat": {
+      "types": "./src/ade/botChat.ts",
+      "default": "./src/ade/botChat.ts"
+    },
+    "./ade/bot-chat-read": {
+      "types": "./src/ade/botChatRead.ts",
+      "default": "./src/ade/botChatRead.ts"
+    },
+    "./ade/bot-identity": {
+      "types": "./src/ade/botIdentity.ts",
+      "default": "./src/ade/botIdentity.ts"
+    },
+    "./ade/contact-rail": {
+      "types": "./src/ade/contactRail.ts",
+      "default": "./src/ade/contactRail.ts"
+    },
+    "./ade/logic": {
+      "types": "./src/ade/logic.ts",
+      "default": "./src/ade/logic.ts"
+    },
+    "./ade/relative-time": {
+      "types": "./src/ade/relativeTime.ts",
+      "default": "./src/ade/relativeTime.ts"
+    },
     "./state/ade": {
       "types": "./src/state/ade.ts",
       "default": "./src/state/ade.ts"

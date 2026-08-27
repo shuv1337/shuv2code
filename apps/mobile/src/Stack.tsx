@@ -20,6 +20,8 @@ import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRo
 import { useAgentNotificationNavigation } from "./features/agent-awareness/notificationNavigation";
 import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboardingRouteScreen";
 import { useConnectOnboardingNavigation } from "./features/cloud/connectOnboardingNavigation";
+import { BotChatRouteScreen } from "./features/fleet/BotChatRouteScreen";
+import { FleetRouteScreen } from "./features/fleet/FleetRouteScreen";
 import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import { HardwareKeyboardCommandProvider } from "./features/keyboard/HardwareKeyboardCommandProvider";
@@ -473,6 +475,24 @@ export const RootStack = createNativeStackNavigator({
         headerBackVisible: false,
         ...getCompactBrandHeaderOptions(),
       },
+    }),
+    // Bot mode (ADE). Flat in the root stack for the same reason thread routes
+    // are: a nested navigator means a second UINavigationBar, and the header
+    // stops morphing between the fleet list and a bot's conversation.
+    Fleet: createNativeStackScreen({
+      screen: FleetRouteScreen,
+      linking: "fleet",
+      options: {
+        ...GLASS_HEADER_OPTIONS,
+        title: "Fleet",
+      },
+    }),
+    BotChat: createNativeStackScreen({
+      screen: BotChatRouteScreen,
+      // `threadId` is resolved by the screen and written back with
+      // `setParams`, so it is not part of the link.
+      linking: "fleet/:environmentId/:botId",
+      options: GLASS_HEADER_OPTIONS,
     }),
     Thread: createNativeStackScreen({
       screen: ThreadRouteScreen,

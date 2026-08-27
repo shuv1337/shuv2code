@@ -17,7 +17,7 @@ import {
   shouldWarnToolsMissing,
   type BotChatBody,
   type ChatSyncOutcome,
-} from "./BotChatPage.logic";
+} from "./botChat.ts";
 
 const chatSession = (
   toolsProbe: AdeBotChatSession["toolsProbe"],
