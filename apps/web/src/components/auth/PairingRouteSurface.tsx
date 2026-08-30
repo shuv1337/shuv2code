@@ -1,5 +1,6 @@
 import type { AuthSessionState } from "@shuv2code/contracts";
 import { squashAtomCommandFailure } from "@shuv2code/client-runtime/state/runtime";
+import { QrCodeIcon } from "lucide-react";
 import React, { startTransition, useEffect, useRef, useState, useCallback } from "react";
 
 import { APP_DISPLAY_NAME } from "../../branding";
@@ -13,6 +14,8 @@ import { readHostedPairingRequest } from "../../hostedPairing";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { PairingQrScanner } from "./PairingQrScanner";
+import { resolveScannedPairingTarget } from "./pairingQr";
 
 export function PairingPendingSurface() {
   return (
@@ -50,6 +53,7 @@ export function PairingRouteSurface({
   const [credential, setCredential] = useState(() => autoPairTokenRef.current ?? "");
   const [errorMessage, setErrorMessage] = useState(initialErrorMessage ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isQrScannerOpen, setIsQrScannerOpen] = useState(false);
   const autoSubmitAttemptedRef = useRef(false);
 
   const submitCredential = useCallback(
@@ -82,6 +86,28 @@ export function PairingRouteSurface({
       await submitCredential(credential);
     },
     [submitCredential, credential],
+  );
+
+  const handleQrDetected = useCallback(
+    async (rawValue: string): Promise<boolean> => {
+      let target: ReturnType<typeof resolveScannedPairingTarget>;
+      try {
+        target = resolveScannedPairingTarget(rawValue, new URL(window.location.href));
+      } catch {
+        return false;
+      }
+
+      if (target._tag === "RemoteEnvironment") {
+        window.location.assign(target.url);
+        return true;
+      }
+
+      setCredential(target.credential);
+      setIsQrScannerOpen(false);
+      await submitCredential(target.credential);
+      return true;
+    },
+    [submitCredential],
   );
 
   useEffect(() => {
@@ -150,7 +176,25 @@ export function PairingRouteSurface({
             >
               Reload app
             </Button>
+            <Button
+              className="sm:hidden"
+              disabled={isSubmitting}
+              onClick={() => setIsQrScannerOpen((open) => !open)}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <QrCodeIcon aria-hidden />
+              {isQrScannerOpen ? "Close scanner" : "Scan QR"}
+            </Button>
           </div>
+
+          {isQrScannerOpen ? (
+            <PairingQrScanner
+              onClose={() => setIsQrScannerOpen(false)}
+              onDetected={handleQrDetected}
+            />
+          ) : null}
         </form>
 
         <div className="mt-6 rounded-lg border border-border/70 bg-background/55 px-3 py-3 text-xs leading-relaxed text-muted-foreground">
