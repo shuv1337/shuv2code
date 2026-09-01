@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useState } from "react";
 import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
+import { ZoomableImage } from "../images/ZoomableImage";
 import { Button } from "../ui/button";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 
@@ -13,6 +14,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
   onClose,
 }: ExpandedImageDialogProps) {
   const [imageOffset, setImageOffset] = useState(0);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const index = (preview.index + imageOffset + preview.images.length) % preview.images.length;
 
   const navigateImage = useCallback((direction: -1 | 1) => {
@@ -52,6 +54,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
       role="dialog"
       aria-modal="true"
       aria-label="Expanded image preview"
+      data-slot="dialog-popup"
     >
       <button
         type="button"
@@ -71,24 +74,34 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
           <ChevronLeftIcon className="size-5" />
         </Button>
       )}
-      <div className="relative isolate z-10 max-h-[92vh] max-w-[92vw]">
+      <div className="relative isolate z-10 flex h-[92vh] w-[92vw] min-w-0 flex-col">
         <Button
           type="button"
           size="icon-xs"
           variant="ghost"
-          className="absolute right-2 top-2"
+          className="absolute right-2 top-2 z-30 bg-background/80 backdrop-blur"
           onClick={onClose}
           aria-label="Close image preview"
         >
           <XIcon />
         </Button>
-        <img
-          src={item.src}
-          alt={item.name}
-          className="max-h-[86vh] max-w-[92vw] select-none rounded-lg border border-border/70 bg-background object-contain shadow-2xl"
-          draggable={false}
-        />
-        <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground/80">
+        {failedSrc === item.src ? (
+          <div
+            className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-border/70 bg-background px-6 text-center text-sm text-destructive shadow-2xl"
+            role="alert"
+          >
+            Unable to load {item.name}.
+          </div>
+        ) : (
+          <ZoomableImage
+            key={`${index}:${item.src}`}
+            src={item.src}
+            alt={item.name}
+            className="min-h-0 flex-1 rounded-lg border border-border/70 bg-background shadow-2xl"
+            onError={() => setFailedSrc(item.src)}
+          />
+        )}
+        <p className="mt-2 shrink-0 truncate text-center text-xs text-muted-foreground/80">
           {item.name}
           {preview.images.length > 1 ? ` (${index + 1}/${preview.images.length})` : ""}
         </p>
