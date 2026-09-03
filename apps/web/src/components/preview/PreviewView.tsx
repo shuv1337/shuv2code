@@ -34,7 +34,6 @@ import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/prev
 import { useRightPanelStore } from "~/rightPanelStore";
 
 import { previewBridge } from "./previewBridge";
-import { capturePreviewFocusRestorer } from "./previewFocusRestore";
 import { subscribePreviewAction } from "./previewActionBus";
 import { openPreviewSession } from "./openPreviewSession";
 import { PreviewChromeRow } from "./PreviewChromeRow";
@@ -545,12 +544,6 @@ export function PreviewView({
       void previewBridge.cancelPickElement(runtimeTabId).catch(() => undefined);
       return;
     }
-    // Snapshot whatever the user was focused on (typically the chat
-    // composer textarea or the chrome-row pick button) BEFORE main steals
-    // focus into the guest webContents. We restore it when the pick
-    // resolves so the user's typing context isn't lost — otherwise after
-    // every pick they'd have to click back into the textarea.
-    const restoreFocus = capturePreviewFocusRestorer();
     pickActiveRef.current = true;
     setPickActive(true);
     void (async () => {
@@ -591,10 +584,6 @@ export function PreviewView({
         // Avoid `setState on unmounted component` if the panel/thread closed
         // while the pick was in flight.
         if (isMountedRef.current) setPickActive(false);
-        // Best-effort: restore focus to whatever the user had before the
-        // pick stole it into the guest webContents. Skip if the previously-
-        // focused element was unmounted or is no longer focusable.
-        restoreFocus();
       }
     })();
   }, [addImage, addPreviewAnnotation, onSendAnnotation, runtimeTabId, threadRef]);

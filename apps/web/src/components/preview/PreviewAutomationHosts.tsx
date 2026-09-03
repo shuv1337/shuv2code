@@ -48,7 +48,6 @@ import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { previewBridge } from "./previewBridge";
-import { withPreviewFocusPreserved } from "./previewFocusRestore";
 import {
   PreviewAutomationOperationError,
   PreviewAutomationOverlayTimeoutError,
@@ -602,11 +601,9 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           }
           case "press": {
             const ready = await requireReadyTab();
-            return await withPreviewFocusPreserved(() =>
-              ready.bridge.automation.press(
-                ready.runtimeTabId,
-                request.input as Parameters<typeof ready.bridge.automation.press>[1],
-              ),
+            return await ready.bridge.automation.press(
+              ready.runtimeTabId,
+              request.input as Parameters<typeof ready.bridge.automation.press>[1],
             );
           }
           case "scroll": {
