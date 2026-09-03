@@ -298,6 +298,7 @@ function RightPanelEmptyState(props: {
       if (document.querySelector(LAUNCHER_SHORTCUT_BLOCKING_LAYERS)) return;
       const target = event.target;
       if (target instanceof HTMLElement) {
+        if (target.closest("[data-keybinding-capture]")) return;
         if (target.closest("input, textarea, select")) return;
         // An empty contenteditable (the chat composer at rest) does not
         // count as typing; letters only become text once a draft exists.
