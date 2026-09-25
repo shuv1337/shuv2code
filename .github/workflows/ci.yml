@@ -47,4 +47,11 @@ jobs:
           vp run icons:check
 
       - name: Lint
-        run: vp check
+        # Job stdout is non-blocking. vp writes diagnostics straight to it and
+        # can die with EAGAIN (os error 11) even when lint itself succeeded.
+        # Capture to a file so the exit status is vp's, then replay best-effort.
+        run: |
+          status=0
+          vp check > "$RUNNER_TEMP/lint.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/lint.log" || true
+          exit "$status"
