@@ -93,9 +93,9 @@ or viewport.
 
 Run the `Mobile Showcase Screenshots` workflow from GitHub's Actions tab, choose `all`, `ios`, or
 `android`, and select `light`, `dark`, or `both`. The default dispatch captures both appearances and
-runs iOS and Android concurrently: iPhone and iPad capture on a
-12-vCPU Blacksmith macOS runner, while Android phone, 7-inch tablet, and 10-inch tablet capture on a
-16-vCPU Blacksmith Linux runner with a KVM-accelerated x86_64 emulator.
+runs iOS and Android concurrently: iPhone and iPad capture on a GitHub-hosted macOS 15
+runner, while Android phone, 7-inch tablet, and 10-inch tablet capture on a GitHub-hosted
+`ubuntu-latest` runner with a KVM-accelerated x86_64 emulator.
 
 Every job uploads its PNGs even when capture fails, which makes partial runs useful for diagnosis.
 The separate validation step is success-gated: it runs before upload only when capture succeeds. If
@@ -104,7 +104,7 @@ Download `app-store-connect-screenshots` and `google-play-screenshots` from the 
 Artifacts section. Artifacts are retained for 14 days.
 
 The workflow uses the same checked-in device and scene matrix as local capture. Android remains
-ARM64 by default for local Apple Silicon development; CI sets `T3_SHOWCASE_ANDROID_ABI=x86_64` so the
+ARM64 by default for local Apple Silicon development; CI sets `SHUV2CODE_SHOWCASE_ANDROID_ABI=x86_64` so the
 debug APK matches its accelerated emulator.
 
 ## Fast iteration
