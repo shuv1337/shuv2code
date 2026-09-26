@@ -18,12 +18,12 @@ binaries (`sqim_Darwin_arm64`, `sqim_Darwin_x86_64`). There is no Linux build.
 
 This has a direct consequence for automation: **the Sqim step cannot be added
 to the existing mobile CI workflows.** Both `mobile-eas-preview.yml` and
-`mobile-eas-production.yml` run on `[self-hosted, Linux, X64, shuv-ci,
-shuv2code-ci]`, and moving the production job to a macOS runner is not a free
-substitution — that workflow's own header documents why production builds must
-run on Linux CI: under the fingerprint runtime-version policy the fingerprint
-must be computed in the same OS/pnpm as the EAS build, and a macOS `eas build`
-computes a different fingerprint and errors.
+`mobile-eas-production.yml` run on GitHub-hosted `ubuntu-latest`, and moving
+the production job to a macOS runner is not a free substitution — that
+workflow's own header documents why production builds must run on Linux CI:
+under the fingerprint runtime-version policy the fingerprint must be computed
+in the same OS/pnpm as the EAS build, and a macOS `eas build` computes a
+different fingerprint and errors.
 
 Note also that Sqim builds an Xcode project on its own remote service rather
 than accepting an already-signed `.ipa`. It is a parallel build path, not an

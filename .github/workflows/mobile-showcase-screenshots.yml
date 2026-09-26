@@ -79,13 +79,16 @@ jobs:
   android:
     name: Android phone, 7-inch tablet, and 10-inch tablet
     if: inputs.platform == 'all' || inputs.platform == 'android'
-    runs-on: [self-hosted, Linux, X64, shuv-ci, shuv2code-ci]
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
       SHUV2CODE_SHOWCASE_ANDROID_ABI: x86_64
+      # Workflow env asks Node for an 8 GiB heap. This job also boots a 4 GiB
+      # emulator on the 16 GiB GitHub-hosted runner, so cap the heap lower.
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           sparse-checkout: |
             /*
@@ -93,7 +96,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
           cache: true
@@ -111,32 +114,37 @@ jobs:
           "$vp_pnpm_bin/pnpm" --version
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Gradle cache
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
 
       - name: Enable KVM
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS="static_node=kvm"' \
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
       - name: Capture Android showcase
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 36
           target: google_apis
           arch: x86_64
           profile: pixel_7_pro
           avd-name: Pixel_10_Pro
-          cores: 8
+          # ubuntu-latest has 4 vCPUs. The harness reuses this AVD (Pixel_10_Pro).
+          cores: 4
           ram-size: 4096M
           disable-animations: false
+          # React Native 0.85.3 (packages/react-native/gradle/libs.versions.toml).
+          ndk: 27.1.12297006
+          cmake: 3.22.1
+          pre-emulator-launch-script: 'sdkmanager --install "build-tools;36.0.0"'
           script: pnpm screenshots:mobile --platform android --appearance "${{ inputs.appearance }}"
 
       - name: Validate Google Play assets
@@ -144,7 +152,7 @@ jobs:
 
       - name: Upload Android screenshots
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: google-play-screenshots
           path: artifacts/app-store/screenshots/google-play/
