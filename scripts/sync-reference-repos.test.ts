@@ -1,3 +1,5 @@
+import * as NodeChildProcess from "node:child_process";
+import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -10,10 +12,15 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { referenceRepos } from "./lib/reference-repos.ts";
 import {
+  dropUnmappedGitlinks,
+  gitlinkPathsFromLsFiles,
   planReferenceRepoSync,
   resolveReferenceRepoRef,
   syncReferenceRepos,
+  type ReferenceRepoSyncPlan,
 } from "./sync-reference-repos.ts";
+
+const workspaceRoot = NodeURL.fileURLToPath(new URL("..", import.meta.url));
 
 const encoder = new TextEncoder();
 const effectSmol = referenceRepos[0]!;
@@ -236,6 +243,10 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
             "--squash",
           ],
         },
+        {
+          command: "git",
+          args: ["ls-files", "-s", "-z", "--", ".repos/effect-smol"],
+        },
       ]);
     });
   });
@@ -296,7 +307,96 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
       assert.notProperty(error, "args");
       assert.notProperty(error, "stderr");
       assert.notInclude(error.message, "secret-token-value");
+      assert.equal(error.step, "subtree");
       assert.ok(!("cause" in error));
     });
   });
+
+  it.effect("reads only mode-160000 paths from ls-files output", () =>
+    Effect.sync(() => {
+      const output = [
+        "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0\tREADME.md",
+        "160000 c9f5e549cf023632c3df948c207a58336192b3c7 0\t.repos/alchemy-effect/.vendor/alchemy",
+        "160000 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 0\t.repos/alchemy-effect/nested path",
+        "",
+      ].join("\0");
+
+      assert.deepStrictEqual(gitlinkPathsFromLsFiles(output), [
+        ".repos/alchemy-effect/.vendor/alchemy",
+        ".repos/alchemy-effect/nested path",
+      ]);
+      assert.deepStrictEqual(gitlinkPathsFromLsFiles(""), []);
+    }),
+  );
+
+  it.effect("commits removal of an unmapped gitlink without a .gitmodules entry", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const rootDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "sync-reference-repos-gitlink-",
+      });
+      const gitlink = `${alchemyEffect.prefix}/.vendor/alchemy`;
+      const readme = path.join(rootDir, alchemyEffect.prefix, "README.md");
+      yield* fs.makeDirectory(path.dirname(readme), { recursive: true });
+      yield* fs.writeFileString(readme, "keep\n");
+
+      const git = (args: ReadonlyArray<string>) =>
+        NodeChildProcess.execFileSync("git", args, { cwd: rootDir, stdio: "pipe" });
+      git(["init"]);
+      git(["config", "user.email", "papercut@example.com"]);
+      git(["config", "user.name", "Papercut"]);
+      git(["config", "commit.gpgsign", "false"]);
+      git(["add", "--", `${alchemyEffect.prefix}/README.md`]);
+      git(["commit", "-m", "init"]);
+      git([
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        `160000,c9f5e549cf023632c3df948c207a58336192b3c7,${gitlink}`,
+      ]);
+      git(["commit", "-m", "add gitlink"]);
+
+      const plan = {
+        repo: alchemyEffect,
+        action: "add",
+        ref: "vtest",
+        args: ["subtree", "add"],
+      } satisfies ReferenceRepoSyncPlan;
+      yield* dropUnmappedGitlinks(rootDir, plan).pipe(Effect.scoped);
+
+      const listed = git(["ls-files", "-s", "-z"]).toString("utf8");
+      assert.deepStrictEqual(gitlinkPathsFromLsFiles(listed), []);
+      git(["submodule", "status"]);
+      git(["submodule", "foreach", "--recursive", "git status --short"]);
+      const subject = git(["log", "-1", "--format=%s"]).toString("utf8").trim();
+      assert.equal(subject, `chore: drop unmapped gitlinks under ${alchemyEffect.prefix}`);
+      assert.equal(
+        git(["show", `HEAD:${alchemyEffect.prefix}/README.md`]).toString("utf8"),
+        "keep\n",
+      );
+    }),
+  );
+
+  it.effect("this checkout has no unmapped gitlinks", () =>
+    Effect.sync(() => {
+      const listed = NodeChildProcess.execFileSync("git", ["ls-files", "-s", "-z"], {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+      });
+      assert.deepStrictEqual(gitlinkPathsFromLsFiles(listed), []);
+      NodeChildProcess.execFileSync("git", ["submodule", "status"], {
+        cwd: workspaceRoot,
+        stdio: "pipe",
+      });
+      NodeChildProcess.execFileSync(
+        "git",
+        ["submodule", "foreach", "--recursive", "git status --short"],
+        {
+          cwd: workspaceRoot,
+          stdio: "pipe",
+        },
+      );
+    }),
+  );
 });

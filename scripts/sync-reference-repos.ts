@@ -70,10 +70,14 @@ export class ReferenceRepoVersionResolutionError extends Schema.TaggedErrorClass
   }
 }
 
+const gitSyncSteps = ["subtree", "ls-files", "rm", "commit"] as const;
+type GitSyncStep = (typeof gitSyncSteps)[number];
+
 export class ReferenceRepoGitSubtreeError extends Schema.TaggedErrorClass<ReferenceRepoGitSubtreeError>()(
   "ReferenceRepoGitSubtreeError",
   {
     operation: Schema.Literals(["spawn", "communicate", "exit"]),
+    step: Schema.Literals(gitSyncSteps),
     repoId: Schema.String,
     action: Schema.Literals(["add", "pull"]),
     repository: Schema.String,
@@ -87,7 +91,7 @@ export class ReferenceRepoGitSubtreeError extends Schema.TaggedErrorClass<Refere
   },
 ) {
   override get message(): string {
-    return `Git subtree ${this.action} for reference repo "${this.repoId}" failed during "${this.operation}".`;
+    return `Git ${this.step} for reference repo "${this.repoId}" failed during "${this.operation}" while syncing with subtree ${this.action}.`;
   }
 }
 
@@ -220,7 +224,39 @@ export const planReferenceRepoSync = Effect.fn("planReferenceRepoSync")(function
   } satisfies ReferenceRepoSyncPlan;
 });
 
-const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRepoSyncPlan) {
+/**
+ * Index records from `git ls-files -s -z`. Mode 160000 is a gitlink.
+ * A gitlink with no root `.gitmodules` entry makes `git submodule foreach`
+ * exit 128, which is what checkout uses to clean a persistent worktree.
+ */
+export function gitlinkPathsFromLsFiles(output: string): ReadonlyArray<string> {
+  const paths: Array<string> = [];
+  for (const record of output.split("\0")) {
+    if (!record.startsWith("160000 ")) {
+      continue;
+    }
+    const tab = record.indexOf("\t");
+    if (tab < 0) {
+      continue;
+    }
+    const filePath = record.slice(tab + 1);
+    if (filePath.length > 0) {
+      paths.push(filePath);
+    }
+  }
+  return paths;
+}
+
+function isPathUnderPrefix(filePath: string, prefix: string): boolean {
+  return filePath === prefix || filePath.startsWith(`${prefix}/`);
+}
+
+const spawnGit = Effect.fn("spawnGit")(function* (
+  rootDir: string,
+  args: ReadonlyArray<string>,
+  plan: ReferenceRepoSyncPlan,
+  step: GitSyncStep,
+) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const errorContext = {
     repoId: plan.repo.id,
@@ -228,9 +264,10 @@ const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRe
     repository: plan.repo.repository,
     ref: plan.ref,
     rootDir,
-    argumentCount: plan.args.length,
+    argumentCount: args.length,
+    step,
   } as const;
-  const child = yield* spawner.spawn(ChildProcess.make("git", plan.args, { cwd: rootDir })).pipe(
+  const child = yield* spawner.spawn(ChildProcess.make("git", args, { cwd: rootDir })).pipe(
     Effect.mapError(
       (cause) =>
         new ReferenceRepoGitSubtreeError({
@@ -268,8 +305,54 @@ const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRe
     });
   }
 
+  return stdout;
+});
+
+const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRepoSyncPlan) {
+  const stdout = yield* spawnGit(rootDir, plan.args, plan, "subtree");
   if (stdout.trim().length > 0) {
     yield* Console.log(stdout.trim());
+  }
+});
+
+export const dropUnmappedGitlinks = Effect.fn("dropUnmappedGitlinks")(function* (
+  rootDir: string,
+  plan: ReferenceRepoSyncPlan,
+) {
+  const listed = yield* spawnGit(
+    rootDir,
+    ["ls-files", "-s", "-z", "--", plan.repo.prefix],
+    plan,
+    "ls-files",
+  );
+  const gitlinks = gitlinkPathsFromLsFiles(listed).filter((filePath) =>
+    isPathUnderPrefix(filePath, plan.repo.prefix),
+  );
+  if (gitlinks.length === 0) {
+    return;
+  }
+
+  const removed = yield* spawnGit(rootDir, ["rm", "-f", "--cached", "--", ...gitlinks], plan, "rm");
+  if (removed.trim().length > 0) {
+    yield* Console.log(removed.trim());
+  }
+
+  const committed = yield* spawnGit(
+    rootDir,
+    [
+      "commit",
+      "-m",
+      `chore: drop unmapped gitlinks under ${plan.repo.prefix}`,
+      "-m",
+      "Vendored subtree sync copies nested submodule gitlinks. They have no root .gitmodules entry, so git submodule foreach fails during checkout clean.",
+      "--",
+      ...gitlinks,
+    ],
+    plan,
+    "commit",
+  );
+  if (committed.trim().length > 0) {
+    yield* Console.log(committed.trim());
   }
 });
 
@@ -287,6 +370,7 @@ export const syncReferenceRepos = Effect.fn("syncReferenceRepos")(function* (
     yield* Console.log(`Syncing ${repo.id} from ${plan.ref} with git subtree ${plan.action}.`);
     if (!(options.dryRun ?? false)) {
       yield* runGit(rootDir, plan).pipe(Effect.scoped);
+      yield* dropUnmappedGitlinks(rootDir, plan).pipe(Effect.scoped);
     }
   }
 
