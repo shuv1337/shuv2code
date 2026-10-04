@@ -77,7 +77,7 @@ When teardown is appropriate:
 
 1. Stop the dev process with its terminal interrupt.
 2. Preserve the isolated base directory when it contains useful reproduction evidence or state for a likely follow-up.
-3. Otherwise remove only a path created for this test after resolving and verifying the exact target.
+3. Otherwise remove only the exact path created for this test. Resolve it to an absolute path, verify it is that disposable directory, and remove it with `rm -r`. Disposable directories on a `/tmp` mount need that exact-path removal: `gio trash` cannot trash this mount, and a rejected broader recursive removal is not a reason to move the tree into Trash by hand.
 
 If completion is uncertain, keep the environment alive and mention that it is retained for further iteration. A fresh isolated base directory remains the safest reset when authentication, migrations, or fixture state becomes ambiguous.
 
