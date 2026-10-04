@@ -7,6 +7,7 @@
   - If the global `vp` command is not on `PATH`, use the repository-local `./node_modules/.bin/vp` with the same arguments after dependencies are installed.
   - Backend changes must include and run focused tests for the changed behavior.
   - Run targeted formatting, lint, and type checks for the affected scope when available.
+- `vp run` takes one task specifier (`taskName` or `packageName#taskName`). Extra positional names are arguments to that task, so run each task with its own `vp run` invocation. Use `-r` or `--filter` when the same task should run in more than one package.
 - Do not run repo-wide `vp check`, `vp run typecheck`, `vp run test`, or equivalent full-suite commands locally unless the user explicitly requests them. PR/`main` CI is a lean personal-project gate (brand/schema/icons + `vp check` only). Deeper monorepo verification (typecheck, full tests, release-smoke, resource-monitor cargo checks) runs on the manual release workflow `verify` job, not on every PR.
 - After frontend feature development or any user-visible frontend behavior change, the primary agent must run one integrated verification pass for each affected client surface after integrating the work:
   - Web: use the `test-shuv2code-app` skill. Launch one isolated environment, authenticate through the printed pairing URL, and verify the affected flow in the controlled browser.
