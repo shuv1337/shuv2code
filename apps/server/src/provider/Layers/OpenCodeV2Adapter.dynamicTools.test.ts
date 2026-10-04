@@ -4,6 +4,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ProviderDriverKind, ThreadId } from "@shuv2code/contracts";
 import { ServerConfig } from "../../config.ts";
@@ -81,7 +84,12 @@ const makeMockedAdapter = Effect.gen(function* () {
       runtimeMode: "full-access",
       ...(resumeCursor === undefined ? {} : { resumeCursor }),
     });
-  const takeSignal = seam.takeSignal.pipe(Effect.timeout("2 seconds"));
+  // `it.effect` installs TestClock, so a bare Effect.timeout sleeps on virtual
+  // time that never advances. A blocked take then hangs until the 60s suite
+  // timeout. Run this bound on the live clock (papercut pc_4e4e4bb05eac).
+  // Duplicate-replay checks take the next enqueued signal instead of timing
+  // out an empty Stream.fromQueue.
+  const takeSignal = seam.takeSignal.pipe(Effect.timeout("2 seconds"), TestClock.withLive);
   return { mock, adapter, seam, startThread, takeSignal };
 });
 
@@ -92,6 +100,21 @@ function expectRequested(signal: ProviderDynamicToolSignal) {
 }
 
 describe("OpenCodeV2Adapter dynamic tools", () => {
+  it.effect("times out a blocked Stream.fromQueue take on the live clock", () =>
+    Effect.gen(function* () {
+      const queue = yield* Queue.unbounded<string>();
+      const error = yield* Effect.flip(
+        Stream.fromQueue(queue).pipe(
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.timeout("100 millis"),
+          TestClock.withLive,
+        ),
+      );
+      NodeAssert.equal(error._tag, "TimeoutError");
+    }),
+  );
+
   it.effect("registers configured tools and metadata at session create", () =>
     Effect.gen(function* () {
       const { mock, seam, startThread } = yield* makeMockedAdapter;
