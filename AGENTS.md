@@ -4,6 +4,7 @@
 
 - Keep local verification focused on the files and packages changed. Run the smallest relevant test set; do not run the full workspace test suite as a routine completion step.
   - Use `vp test run <test-files>` for focused built-in Vite+ tests. Use `vp run test` only when the affected package specifically requires its `test` script.
+  - Put `vp run` options before the task name (`vp run --filter @shuv2code/web typecheck`, `vp run -r typecheck`). Tokens after the task name are forwarded to the script, so a trailing `--filter` or `-r` is a script argument and can run the wrong packages.
   - If the global `vp` command is not on `PATH`, use the repository-local `./node_modules/.bin/vp` with the same arguments after dependencies are installed.
   - Backend changes must include and run focused tests for the changed behavior.
   - Run targeted formatting, lint, and type checks for the affected scope when available.
