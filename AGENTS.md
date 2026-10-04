@@ -14,6 +14,11 @@
   - Subagents must not independently launch dev servers or repeat integrated client verification unless their delegated task explicitly requires it.
   - Stop dev servers, watchers, and other long-running verification processes when the focused verification is complete.
 
+## Pull requests
+
+- GitHub auto-merge is disabled on this repository. `gh api repos/shuv1337/shuv2code --jq .allow_auto_merge` returns `false`. GraphQL `repository.autoMergeAllowed` reports the same value. `gh repo view --json autoMergeAllowed` fails with `Unknown JSON field: autoMergeAllowed`.
+- `gh pr merge --auto` fails here. When a merge is requested, use `gh pr merge` without `--auto`.
+
 ## Boot Service
 
 - On hosts where the systemd user unit `shuv2code.service` runs `apps/server/dist/bin.mjs` from this checkout, a rebuilt dist changes nothing until the unit restarts — the long-running process keeps the old bundle in memory and drifts from the repo. After rebuilding the server dist on such a host, run `pnpm redeploy:boot-service` (build + restart + crash-loop check) instead of a bare `vp pack`. The script refuses to touch release-managed units; those update via `shuv2code service update`.
