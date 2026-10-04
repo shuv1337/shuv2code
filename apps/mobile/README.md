@@ -64,6 +64,36 @@ Build and run the local iOS preview app:
 vp run ios:preview
 ```
 
+Build and run the local Android dev client. Boot an emulator or connect a device first.
+`android:dev` runs `expo prebuild --clean`, then `expo run:android`. For a debug build, Expo reads
+that device's ABI and passes `-PreactNativeArchitectures` to Gradle, so an x86_64 emulator builds
+`x86_64` only.
+
+```bash
+vp run android:dev
+```
+
+With more than one device attached, pass the emulator AVD name or hardware model name through to
+`expo run:android`. `vp run` appends those arguments to the `expo run:android` half of the script:
+
+```bash
+vp run android:dev --device Pixel_7
+```
+
+`expo run:android` has no `--arch` flag. `prebuild --clean` rewrites `android/`, so
+`reactNativeArchitectures` in `android/gradle.properties` is not an override for this script, and a
+`-P` flag on `vp run android:dev` is not forwarded to Gradle. To assemble from Gradle after
+prebuild, run this in `apps/mobile/android`:
+
+```bash
+./gradlew :app:assembleDebug -PreactNativeArchitectures=x86_64
+```
+
+`--all-arch` builds `armeabi-v7a`, `arm64-v8a`, `x86`, and `x86_64`. The native Shiki engine links
+the `libonig.so` shipped for the ABI being built
+(`patches/react-native-shiki-engine@0.3.12.patch`), which keeps a host `libonig.so` out of ARM
+targets.
+
 Force the review diff highlighter engine:
 
 ```bash
