@@ -1,4 +1,3 @@
-import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -8,7 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { referenceRepos } from "./lib/reference-repos.ts";
 import {
@@ -21,6 +20,33 @@ import {
 } from "./sync-reference-repos.ts";
 
 const workspaceRoot = NodeURL.fileURLToPath(new URL("..", import.meta.url));
+
+const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>) =>
+  stream.pipe(
+    Stream.decodeText(),
+    Stream.runFold(
+      () => "",
+      (acc, chunk) => acc + chunk,
+    ),
+  );
+
+const runGit = (cwd: string, args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const child = yield* spawner.spawn(ChildProcess.make("git", args, { cwd }));
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [
+        collectStreamAsString(child.stdout),
+        collectStreamAsString(child.stderr),
+        child.exitCode.pipe(Effect.map(Number)),
+      ],
+      { concurrency: "unbounded" },
+    );
+    if (exitCode !== 0) {
+      assert.fail(`git ${args.join(" ")} exited ${exitCode}: ${stderr}`);
+    }
+    return stdout;
+  }).pipe(Effect.scoped);
 
 const encoder = new TextEncoder();
 const effectSmol = referenceRepos[0]!;
@@ -341,21 +367,20 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
       yield* fs.makeDirectory(path.dirname(readme), { recursive: true });
       yield* fs.writeFileString(readme, "keep\n");
 
-      const git = (args: ReadonlyArray<string>) =>
-        NodeChildProcess.execFileSync("git", args, { cwd: rootDir, stdio: "pipe" });
-      git(["init"]);
-      git(["config", "user.email", "papercut@example.com"]);
-      git(["config", "user.name", "Papercut"]);
-      git(["config", "commit.gpgsign", "false"]);
-      git(["add", "--", `${alchemyEffect.prefix}/README.md`]);
-      git(["commit", "-m", "init"]);
-      git([
+      const git = (args: ReadonlyArray<string>) => runGit(rootDir, args);
+      yield* git(["init"]);
+      yield* git(["config", "user.email", "papercut@example.com"]);
+      yield* git(["config", "user.name", "Papercut"]);
+      yield* git(["config", "commit.gpgsign", "false"]);
+      yield* git(["add", "--", `${alchemyEffect.prefix}/README.md`]);
+      yield* git(["commit", "-m", "init"]);
+      yield* git([
         "update-index",
         "--add",
         "--cacheinfo",
         `160000,c9f5e549cf023632c3df948c207a58336192b3c7,${gitlink}`,
       ]);
-      git(["commit", "-m", "add gitlink"]);
+      yield* git(["commit", "-m", "add gitlink"]);
 
       const plan = {
         repo: alchemyEffect,
@@ -365,38 +390,22 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
       } satisfies ReferenceRepoSyncPlan;
       yield* dropUnmappedGitlinks(rootDir, plan).pipe(Effect.scoped);
 
-      const listed = git(["ls-files", "-s", "-z"]).toString("utf8");
+      const listed = yield* git(["ls-files", "-s", "-z"]);
       assert.deepStrictEqual(gitlinkPathsFromLsFiles(listed), []);
-      git(["submodule", "status"]);
-      git(["submodule", "foreach", "--recursive", "git status --short"]);
-      const subject = git(["log", "-1", "--format=%s"]).toString("utf8").trim();
+      yield* git(["submodule", "status"]);
+      yield* git(["submodule", "foreach", "--recursive", "git status --short"]);
+      const subject = (yield* git(["log", "-1", "--format=%s"])).trim();
       assert.equal(subject, `chore: drop unmapped gitlinks under ${alchemyEffect.prefix}`);
-      assert.equal(
-        git(["show", `HEAD:${alchemyEffect.prefix}/README.md`]).toString("utf8"),
-        "keep\n",
-      );
+      assert.equal(yield* git(["show", `HEAD:${alchemyEffect.prefix}/README.md`]), "keep\n");
     }),
   );
 
   it.effect("this checkout has no unmapped gitlinks", () =>
-    Effect.sync(() => {
-      const listed = NodeChildProcess.execFileSync("git", ["ls-files", "-s", "-z"], {
-        cwd: workspaceRoot,
-        encoding: "utf8",
-      });
+    Effect.gen(function* () {
+      const listed = yield* runGit(workspaceRoot, ["ls-files", "-s", "-z"]);
       assert.deepStrictEqual(gitlinkPathsFromLsFiles(listed), []);
-      NodeChildProcess.execFileSync("git", ["submodule", "status"], {
-        cwd: workspaceRoot,
-        stdio: "pipe",
-      });
-      NodeChildProcess.execFileSync(
-        "git",
-        ["submodule", "foreach", "--recursive", "git status --short"],
-        {
-          cwd: workspaceRoot,
-          stdio: "pipe",
-        },
-      );
+      yield* runGit(workspaceRoot, ["submodule", "status"]);
+      yield* runGit(workspaceRoot, ["submodule", "foreach", "--recursive", "git status --short"]);
     }),
   );
 });
