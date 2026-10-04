@@ -19,6 +19,7 @@
     "icons:export": "node scripts/export-brand-icons.ts",
     "icons:check": "node scripts/export-brand-icons.ts --check",
     "brand:check": "node scripts/check-brand-identity.ts",
+    "check": "node scripts/run-vp-check.ts",
     "schema:export": "node scripts/export-project-schema.ts",
     "schema:check": "node scripts/export-project-schema.ts --check",
     "probe:codex-realtime": "node scripts/probe-codex-realtime.ts",
