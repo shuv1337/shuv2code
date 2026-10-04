@@ -56,8 +56,11 @@ authenticated.
   web. Shared packages are consumed and bundled transitively rather than built separately.
 - `vp run build:desktop`: Builds the desktop pipeline (desktop plus server).
 - `vp run start`: Runs the production server (serves the built web app as static files).
+- `vp run check`: Spools `vp check` to a file and replays the log in bounded writes. A Vite+
+  stdout panic (`EAGAIN`, os error 11) is a failure even when `vp` exits 0. Run this for repo-wide
+  format and lint.
 - `vp check`: Vite+ format, lint, and type checks. This repo sets `typeCheck: false` in its lint
-  options, so workspace type checking runs separately.
+  options, so workspace type checking runs separately. Prefer `vp run check` when stdout is a pipe.
 - `vp run typecheck`: Strict TypeScript checks for all packages.
 - `vp run test`: Runs workspace tests.
 - `vp run lint:mobile`: Mobile native static analysis (`scripts/mobile-native-static-check.ts`).

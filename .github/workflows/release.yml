@@ -214,7 +214,7 @@ jobs:
       - name: Release preflight verification
         run: |
           set -euo pipefail
-          vp check
+          node scripts/run-vp-check.ts
           vp run typecheck
           vp run test
           node scripts/release-smoke.ts

@@ -67,7 +67,7 @@ vp test run src/environments/EnvironmentLinker.test.ts
 Before considering a change complete, run the repository-wide checks from the root:
 
 ```sh
-vp check
+vp run check
 vp run typecheck
 ```
 
