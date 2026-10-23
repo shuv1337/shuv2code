@@ -1,7 +1,8 @@
-# Real cmd.exe check for the Windows s2code command shims.
-# Fork release run 54 ran the CLI archive smoke test on windows-2025 and
-# windows-11-arm, under Windows PowerShell 5.1. Linux pwsh does not parse
-# these .cmd bodies. Do not start the Fork release workflow to debug them.
+# Real cmd.exe check for the Windows s2code command shims, plus a smoke test
+# of the built CLI archive on the same runners. Fork release run 54 ran the
+# archive smoke test on windows-2025 and windows-11-arm, under Windows
+# PowerShell 5.1. Linux pwsh does not parse these .cmd bodies. Do not start
+# the Fork release workflow to debug them.
 name: Windows shim check
 
 on:
@@ -11,6 +12,8 @@ on:
       - scripts/install.ps1
       - scripts/install-isolation.test.ts
       - scripts/smoke-cli-archive.ts
+      - scripts/build-cli-archive.ts
+      - scripts/lib/cli-external-packages.ts
       - scripts/windows-shim-runner-check.ps1
       - apps/server/src/cli/windowsForwarderShim.ts
       - apps/server/src/cli/update.ts
@@ -59,3 +62,106 @@ jobs:
           name: windows-shim-check-${{ matrix.runner }}
           path: shim-check.log
           if-no-files-found: warn
+
+  # The shim job plants a stub executable. This job builds the real archive and
+  # runs scripts/smoke-cli-archive.ts, which installs that archive and launches
+  # it through the Windows command shim.
+  cli-archive:
+    name: CLI archive (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+            rust_target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+    env:
+      CLI_VERSION: 0.0.0-nightly.shim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Install CLI archive dependencies
+        run: vp install --filter=@t3tools/web... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Spectre-mitigated MSVC libs
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
+            "Microsoft.VisualStudio.Component.VC.Runtimes.${{ matrix.arch == 'arm64' && 'ARM64' || 'x86.x64' }}.Spectre", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
+            Write-Error "Visual Studio Installer failed with exit code $code"
+            exit $code
+          }
+
+      - name: Build resource monitor
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release \
+            --manifest-path native/resource-monitor/Cargo.toml \
+            --target "${{ matrix.rust_target }}"
+          mkdir -p "$RUNNER_TEMP/cli-resource-monitor"
+          cp "native/resource-monitor/target/${{ matrix.rust_target }}/release/t3-resource-monitor.exe" \
+            "$RUNNER_TEMP/cli-resource-monitor/t3-resource-monitor.exe"
+
+      # --version is compiled from apps/server/package.json. The release job
+      # rewrites that before packing; without it the exe still prints 0.1.0
+      # and the smoke test rejects the archive.
+      - name: Align package versions to the smoke version
+        shell: bash
+        run: node scripts/update-release-package-versions.ts "$CLI_VERSION"
+
+      - name: Build web client and CLI executable
+        shell: bash
+        env:
+          VP_NODE_VERSION: "26.8.2"
+        run: |
+          set -euo pipefail
+          vp run --filter @t3tools/web build
+          node apps/server/scripts/cli.ts build --verbose
+          node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Build CLI archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/build-cli-archive.ts \
+            --platform win \
+            --arch "${{ matrix.arch }}" \
+            --version "$CLI_VERSION" \
+            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" \
+            --output-dir release-cli
+
+      - name: Smoke-test CLI archive
+        shell: bash
+        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "$CLI_VERSION"

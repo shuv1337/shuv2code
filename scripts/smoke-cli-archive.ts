@@ -149,8 +149,12 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     const installerHome = path.join(scratch, "installer home");
     const bin = path.join(scratch, "installer bin");
     const cache = path.join(installerHome, "runtime", "versions", input.expectVersion);
-    yield* fs.makeDirectory(cache, { recursive: true });
-    yield* fs.copyFile(executable, path.join(cache, "t3.exe"));
+    // A Node SEA resolves runtime externals (@cursor/sdk and the rest of the
+    // staged node_modules) from the directory that contains the executable.
+    // install.ps1 publishes the whole archive root into this cache; t3.exe
+    // alone cannot start.
+    yield* fs.makeDirectory(path.dirname(cache), { recursive: true });
+    yield* fs.copy(contentDir, cache);
     yield* fs.writeFileString(path.join(installerHome, ".product-identity"), "shuv2code\n");
     yield* fs.writeFileString(path.join(cache, ".install-product"), "shuv2code\n");
     yield* fs.writeFileString(path.join(cache, ".install-complete"), `${input.expectVersion}\n`);
