@@ -1,0 +1,33 @@
+name: S2CodeTV
+options:
+  xcodeVersion: "27.2"
+  deploymentTarget:
+    tvOS: "26.0"
+packages:
+  T3WatchKit:
+    path: ../../packages/watch-native
+targets:
+  S2CodeTV:
+    type: application
+    platform: tvOS
+    sources: [S2CodeTV]
+    dependencies:
+      - package: T3WatchKit
+        product: T3WatchKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.shuv.s2code.tv
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        # Merged with the generated keys; carries the ATS exception INFOPLIST_KEY_* cannot express.
+        INFOPLIST_FILE: S2CodeTV/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: S2Code
+        DEVELOPMENT_TEAM: 7H54B326YZ
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
+schemes:
+  S2CodeTV:
+    build:
+      targets:
+        S2CodeTV: all
