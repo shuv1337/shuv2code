@@ -727,10 +727,10 @@ jobs:
             echo "::error::$(basename "$app") is not signed by team $EXPECTED_TEAM." >&2
             exit 1
           fi
-          if ! xcrun stapler validate "$app"; then
-            echo "::error::$(basename "$app") carries no stapled notarization ticket, so it would be checked online on first launch." >&2
-            exit 1
-          fi
+          # CloudKit drops this lookup on arm64 runners after staple succeeded.
+          # The script retries Error 68 / NSURLError -1005 and fails immediately
+          # on Error 65 (no ticket) or any other stapler failure.
+          bash .github/scripts/macos-stapler-validate.sh "$app"
           # Not a gate: hosted runners answer "Insufficient Context" for a
           # stapled app often enough that Gatekeeper's verdict is only a note.
           spctl --assess --type execute --verbose=2 "$app" || true
